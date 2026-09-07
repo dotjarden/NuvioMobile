@@ -355,7 +355,10 @@ final class MPVTVPlayerViewController: UIViewController {
             ("subs-fallback", "yes"),
         ]
         for (key, value) in options {
-            checkError(mpv_set_option_string(mpv, key, value))
+            let status = mpv_set_option_string(mpv, key, value)
+            if status < 0 {
+                print("[MPV] option rejected: \(key)=\(value) (\(String(cString: mpv_error_string(status))))")
+            }
         }
 
         // Preferred audio language as an OPTION, before `mpv_initialize`: this is what makes mpv's
@@ -366,9 +369,12 @@ final class MPVTVPlayerViewController: UIViewController {
         // where the settings store had not hydrated yet at this point.
         preferredAudioLanguages = resolvePreferredAudioLanguages()
         if !preferredAudioLanguages.isEmpty {
-            checkError(mpv_set_option_string(
+            let alangStatus = mpv_set_option_string(
                 mpv, "alang", PlayerAudioLanguagePlan.alangValue(targets: preferredAudioLanguages)
-            ))
+            )
+            if alangStatus < 0 {
+                print("[MPV] option rejected: alang (\(String(cString: mpv_error_string(alangStatus))))")
+            }
             didApplyAlang = true
         }
         alangTrace("targets=\(preferredAudioLanguages) applied=\(didApplyAlang)")
