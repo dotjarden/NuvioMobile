@@ -21,6 +21,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -55,7 +56,7 @@ object CollectionRepository {
         runCatching {
             val parsed = json.parseToJsonElement(payload)
             rawCollectionsJson = parsed
-            val decoded = json.decodeFromString<List<Collection>>(payload)
+            val decoded = json.decodeFromJsonElement<List<Collection>>(parsed)
             val normalized = normalizeCollections(decoded, source = "local storage")
             _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
             if (normalized.size != decoded.size) {
@@ -155,8 +156,10 @@ object CollectionRepository {
             if (!validation.valid) {
                 throw IllegalArgumentException(validation.error.orEmpty())
             }
-            rawCollectionsJson = json.parseToJsonElement(jsonString)
-            val imported = json.decodeFromString<List<Collection>>(jsonString).deduplicatedById()
+            // Fork: same idiom as upstream 8b43fd89 applied to the import path.
+            val parsed = json.parseToJsonElement(jsonString)
+            rawCollectionsJson = parsed
+            val imported = json.decodeFromJsonElement<List<Collection>>(parsed).deduplicatedById()
             _collections.value = CollectionMobileSettingsRepository.applyToCollections(imported)
             persist()
             imported
