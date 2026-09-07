@@ -89,6 +89,11 @@ struct PlaybackMeta: Equatable {
     var imdbRating: String? = nil
     var ageRating: String? = nil
     var genres: [String] = []
+    /// The title's original language (ISO 639-1) for the "Original" audio preference, resolved the
+    /// same way upstream's `resolveLaunchContentLanguage` does (TMDB `original_language`, with the
+    /// production country as a tie-break for pt/es/zh variants). nil when the launch path has no
+    /// catalog record — the players then fall back to `MetaDetailsRepository.peek`.
+    var originalLanguage: String? = nil
 
     /// From a full catalog record (Detail / episode shelf launch paths).
     init(details: MetaDetails) {
@@ -98,12 +103,15 @@ struct PlaybackMeta: Equatable {
         imdbRating = nonEmpty(details.imdbRating)
         ageRating = nonEmpty(details.ageRating)
         genres = details.genres
+        originalLanguage = PlayerLanguagePreferencesKt.resolveContentLanguage(
+            language: details.language, country: details.country
+        )
     }
 
     init(year: String? = nil, runtime: String? = nil, imdbRating: String? = nil,
-         ageRating: String? = nil, genres: [String] = []) {
+         ageRating: String? = nil, genres: [String] = [], originalLanguage: String? = nil) {
         self.year = year; self.runtime = runtime; self.imdbRating = imdbRating
-        self.ageRating = ageRating; self.genres = genres
+        self.ageRating = ageRating; self.genres = genres; self.originalLanguage = originalLanguage
     }
 }
 

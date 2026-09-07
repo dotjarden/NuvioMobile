@@ -106,6 +106,16 @@ final class MPVTVPlayerViewController: UIViewController {
     private var playerSettingsWatcher: FlowWatcher?
     private var playerSettings: PlayerSettingsUiState?
     private var didAutoSelectTracks = false
+    /// Preferred audio-language targets in priority order, resolved once in `setupMpv()` (before
+    /// `mpv_initialize`) so mpv's own first `aid=auto` resolution already honors them.
+    private var preferredAudioLanguages: [String] = []
+    /// True once `alang` reached mpv — as an option pre-init, or via the property re-apply.
+    private var didApplyAlang = false
+    /// Set by an explicit pick in selectAudio(_:); no automatic path may override it afterwards.
+    /// Insurance, not a live race: there is exactly one `loadfile` per controller (SwiftUI rebuilds
+    /// the player per episode via `.id(ctx.id)`), so a user pick can only ever follow the automatic
+    /// selection, never race it. The flag keeps that true if the controller is ever reused.
+    private var didUserSelectAudio = false
     private var addedSubtitleUrls = Set<String>()
     private var fileLoaded = false
     /// Trakt scrobbling (no-ops while Trakt is disconnected — the shared repo checks auth).
@@ -148,7 +158,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Observation ids for mpv_observe_property (arrive back as `reply_userdata`).
     private enum ObservedProp: UInt64 {
         case timePos = 1, duration, pause, coreIdle, pausedForCache, eofReached, trackCount
-        case videoW, videoH
+        case videoW, videoH, aid
     }
 
     private func cachedProps() -> PropSnapshot {
@@ -225,6 +235,9 @@ final class MPVTVPlayerViewController: UIViewController {
             didLoad = true
             computeResumePosition()
             applyRequestHeaders(context.requestHeaders)
+            // Re-assert the audio-language preference on the live handle right before the load —
+            // the fallback for a `setupMpv()` that ran before the settings store had hydrated.
+            applyAudioLanguagePreferences()
             command("loadfile", args: [context.url.absoluteString, "replace"])
             startPolling()
             flashControls()
@@ -345,6 +358,21 @@ final class MPVTVPlayerViewController: UIViewController {
             checkError(mpv_set_option_string(mpv, key, value))
         }
 
+        // Preferred audio language as an OPTION, before `mpv_initialize`: this is what makes mpv's
+        // own first `aid=auto` resolution honor the preference, so the right track is playing from
+        // the first frame instead of being switched into a beat later (the audible mid-playback
+        // switch upstream 4f79bfe0 removed on mobile). The property re-apply in
+        // `applyAudioLanguagePreferences()` just before `loadfile` is only the fallback for the case
+        // where the settings store had not hydrated yet at this point.
+        preferredAudioLanguages = resolvePreferredAudioLanguages()
+        if !preferredAudioLanguages.isEmpty {
+            checkError(mpv_set_option_string(
+                mpv, "alang", PlayerAudioLanguagePlan.alangValue(targets: preferredAudioLanguages)
+            ))
+            didApplyAlang = true
+        }
+        alangTrace("targets=\(preferredAudioLanguages) applied=\(didApplyAlang)")
+
         // User-tunable streaming buffer (Settings > Playback > Streaming Buffer). 0 = mpv defaults.
         let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
         if bufferMB > 0 {
@@ -370,11 +398,57 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.trackCount.rawValue, "track-list/count", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.videoW.rawValue, "video-params/w", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.videoH.rawValue, "video-params/h", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
 
         mpv_set_wakeup_callback(mpv, { ctx in
             let vc = unsafeBitCast(ctx, to: MPVTVPlayerViewController.self)
             vc.readEvents()
         }, UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()))
+    }
+
+    // MARK: - Preferred audio language
+
+    /// Read the player settings SYNCHRONOUSLY (the same pattern the native engine uses in
+    /// `NativePlaybackCoordinator.resolveLanguagePlan`) and resolve the audio-language targets in
+    /// priority order. The `playerSettingsWatcher` installed in `viewDidAppear` only starts AFTER
+    /// `loadfile`, far too late to steer mpv's first track pick, so the preference has to be read
+    /// here. Also seeds `playerSettings`, which closes the hole where `autoSelectPreferredTracks`
+    /// used to bail out (without latching) on the first track walk because settings were still nil.
+    private func resolvePreferredAudioLanguages() -> [String] {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        guard let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState else {
+            return []
+        }
+        playerSettings = settings
+        return PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
+            preferredAudioLanguage: settings.preferredAudioLanguage,
+            secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
+            deviceLanguages: DeviceLanguagePreferences.shared.preferredLanguageCodes(),
+            contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context)
+        )
+    }
+
+    /// Property-level re-apply of the audio-language preference, mirroring upstream's
+    /// `MPVPlayerBridge.applyAudioLanguagePreferences`: set `alang`, write the current numeric `aid`
+    /// straight back, then hand selection to `auto` so the core re-resolves it against the new
+    /// `alang`. Called once, immediately before `loadfile`.
+    ///
+    /// These are synchronous property calls on the main thread, which the BUG-2/BUG-3 rule
+    /// documented above `refreshTracksAsync()` otherwise forbids. They are safe HERE and only here:
+    /// nothing is loaded yet, so the core lock is uncontended and cannot stall. Do not move any
+    /// synchronous mpv property access onto the main thread once playback has started.
+    private func applyAudioLanguagePreferences() {
+        guard mpv != nil, !didUserSelectAudio else { return }
+        if preferredAudioLanguages.isEmpty {
+            preferredAudioLanguages = resolvePreferredAudioLanguages()
+        }
+        guard !preferredAudioLanguages.isEmpty else { return }
+        setMpvString("alang", PlayerAudioLanguagePlan.alangValue(targets: preferredAudioLanguages))
+        if let currentId = getString("aid"), Int(currentId) != nil {
+            setMpvString("aid", currentId)
+        }
+        setMpvString("aid", "auto")
+        didApplyAlang = true
     }
 
     /// Addon-declared stream headers (`context.requestHeaders`, already sanitized by the shared
@@ -481,13 +555,22 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    /// Once, on first load: pick the audio track matching the user's preferred languages, then run
-    /// the shared audio-aware subtitle auto-selection plan (upstream v0.3.0 parity). With "Use
-    /// forced subtitles" on and the audio already in your preferred language, only a FORCED track
-    /// in that language is selected (none -> subtitles off); otherwise non-forced tracks in the
-    /// preferred languages are considered. No plan (e.g. forced-subs on but audio language
-    /// undeterminable) -> leave mpv's own defaults untouched.
+    /// Once, on first load: reconcile the audio track against the user's preferred languages, then
+    /// run the shared audio-aware subtitle auto-selection plan (upstream v0.3.0 parity).
+    ///
+    /// Audio is now a FALLBACK here: `alang` was already handed to mpv before init (see
+    /// `setupMpv()`), so the core's own pick normally satisfies the preference and this pass does
+    /// nothing. It only forces `aid` when mpv's selection does not match any target — e.g. a track
+    /// whose language tag mpv reads differently than the shared matcher does.
+    ///
+    /// Subtitles are unchanged: with "Use forced subtitles" on and the audio already in your
+    /// preferred language, only a FORCED track in that language is selected (none -> subtitles
+    /// off); otherwise non-forced tracks in the preferred languages are considered. No plan (e.g.
+    /// forced-subs on but audio language undeterminable) -> leave mpv's own defaults untouched.
     private func autoSelectPreferredTracks(audioInfos: [TrackInfo], subInfos: [TrackInfo]) {
+        // `playerSettings` is now seeded synchronously in `setupMpv()`, so this guard can no longer
+        // return without latching on the first walk (which used to defer the whole selection to a
+        // later track-list change, or to the panel being opened).
         guard !didAutoSelectTracks, let settings = playerSettings, mpv != nil else { return }
         guard !audioInfos.isEmpty || !subInfos.isEmpty else { return }
         didAutoSelectTracks = true
@@ -497,13 +580,20 @@ final class MPVTVPlayerViewController: UIViewController {
             preferredAudioLanguage: settings.preferredAudioLanguage,
             secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
             deviceLanguages: deviceLanguages,
-            contentOriginalLanguage: nil
+            contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context)
         )
 
-        // Audio: only worth switching when there's more than one option.
+        // Audio: only worth switching when there's more than one option, and only when mpv's own
+        // pick misses. `alang` already steered that pick, so re-poking `aid` whenever a target
+        // merely matches would switch the track after the first frame — exactly the audible switch
+        // the proactive `alang` exists to eliminate. `trackToForce` returns nil when a matching
+        // track is already selected.
         var pickedAudioId: Int?
-        if audioInfos.count > 1,
-           let id = firstTrackId(matching: audioTargets, in: audioInfos.map { (id: $0.id, lang: $0.lang) }) {
+        if !didUserSelectAudio, audioInfos.count > 1,
+           let id = PlayerAudioLanguagePlan.trackToForce(
+               targets: audioTargets,
+               tracks: audioInfos.map { (id: $0.id, lang: $0.lang, selected: $0.selected) }
+           ) {
             eventQueue.async { [weak self] in self?.setMpvInt("aid", Int64(id)) }
             pickedAudioId = id
         }
@@ -559,16 +649,6 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    /// First track (in track order) whose language matches the highest-priority target with any hit.
-    private func firstTrackId(matching targets: [String], in tracks: [(id: Int, lang: String)]) -> Int? {
-        for target in targets {
-            for track in tracks where PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: track.lang, targetLanguage: target) {
-                return track.id
-            }
-        }
-        return nil
-    }
-
     private func trackLabel(index: Int, fallbackId: Int) -> String {
         let lang = (getString("track-list/\(index)/lang") ?? "").trimmingCharacters(in: .whitespaces)
         let title = (getString("track-list/\(index)/title") ?? "").trimmingCharacters(in: .whitespaces)
@@ -580,6 +660,7 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func selectAudio(_ id: Int) {
+        didUserSelectAudio = true
         guard mpv != nil else { return }
         eventQueue.async { [weak self] in
             guard let self, let mpv = self.mpv else { return }
@@ -787,6 +868,16 @@ final class MPVTVPlayerViewController: UIViewController {
         let backgroundAlpha = (s.backgroundColor >> 24) & 0xFF
         return backgroundAlpha > 0 ? "opaque-box" : "outline-and-shadow"
     }
+
+    #if DEBUG
+    /// Sim-harness trace for the proactive `alang` audio preference (`debug.mpvAlangTrace`).
+    private func alangTrace(_ message: @autoclosure () -> String) {
+        guard UserDefaults.standard.bool(forKey: "debug.mpvAlangTrace") else { return }
+        print("[MPVAlang] \(message())")
+    }
+    #else
+    private func alangTrace(_ message: @autoclosure () -> String) {}
+    #endif
 
     private func setMpvString(_ name: String, _ value: String) {
         guard let mpv else { return }
@@ -1275,6 +1366,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 if id == MPV_EVENT_SHUTDOWN { return }
                 if id == MPV_EVENT_FILE_LOADED {
                     self.fileLoadedUptime = ProcessInfo.processInfo.systemUptime
+                    self.alangTrace("file-loaded alang=\(self.getString("alang") ?? "-") aid=\(self.getString("aid") ?? "-")")
                     DispatchQueue.main.async {
                         self.applyPendingResume()
                         self.onFileLoaded()
@@ -1342,6 +1434,8 @@ final class MPVTVPlayerViewController: UIViewController {
             if let v = asInt() { updateProps { $0.videoW = v } }
         case .videoH:
             if let v = asInt() { updateProps { $0.videoH = v } }
+        case .aid:
+            if let v = asInt() { alangTrace("aid changed -> \(v)") }
         }
     }
 

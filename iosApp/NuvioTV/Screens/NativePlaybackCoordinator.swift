@@ -225,7 +225,8 @@ final class NativePlaybackCoordinator: ObservableObject {
             preferredAudioLanguage: settings.preferredAudioLanguage,
             secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
             deviceLanguages: deviceLanguages,
-            contentOriginalLanguage: nil
+            // Title's original language for the "Original" audio preference (was nil = inert).
+            contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context)
         )
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
@@ -333,7 +334,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     /// First playable track whose language matches the highest-priority target with any hit
-    /// (same rule as the mpv screen's `firstTrackId(matching:)`). Pure — runs on the remux worker.
+    /// (same rule as `PlayerAudioLanguagePlan.trackToForce(targets:tracks:)`). Pure — runs on the remux worker.
     nonisolated private static func preferredAudioStream(in tracks: [RemuxAudioTrack], targets: [String]) -> Int? {
         for target in targets {
             for track in tracks where track.playable {
