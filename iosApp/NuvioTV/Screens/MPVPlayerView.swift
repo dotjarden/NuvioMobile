@@ -346,7 +346,13 @@ final class MPVTVPlayerViewController: UIViewController {
             ("vulkan-queue-count", "1"),
             ("vulkan-async-compute", "no"),
             ("vulkan-async-transfer", "no"),
-            ("vulkan-disable-interop", "yes"),
+            // `vulkan-disable-interop` was dropped 2026-09-07: it is not an mpv option and never was
+            // (absent from `video/out/vulkan/context.c` in every tag from v0.34.0 through v0.41.0,
+            // and from the bundled libmpv 0.41.0 / MPVKit 0.41.0-n8.1.2 binary). It came in with the
+            // iOS bridge's option list (upstream 4476a3f5); libmpv rejected it on every launch, which
+            // was the long-standing anonymous `[MPV] API error: option not found`. Nothing replaces
+            // it: it never took effect, so the proven Apple TV vulkan/moltenvk behaviour is already
+            // the behaviour without it. The four vulkan-* options above are still valid in 0.41.
             ("video-rotate", "no"),
             ("keep-open", "yes"),
             ("target-colorspace-hint", "yes"),
