@@ -45,6 +45,7 @@ fun AddonResource.isCompatibleSubtitleResource(type: String, videoId: String): B
     return idPrefixes.isEmpty() || idPrefixes.any { prefix -> videoId.startsWith(prefix) }
 }
 
+// Fork: retained (upstream deleted in 4f79bfe0) — still used by composeApp PlayerScreenRuntimeTrackActions.kt; remove when the runtime half is ported.
 fun <T> findPreferredTrackIndex(
     tracks: List<T>,
     targets: List<String>,
@@ -502,16 +503,38 @@ fun findPersistedAudioTrackIndex(
     tracks: List<AudioTrack>,
     preference: PersistedPlayerTrackPreference,
 ): Int {
-    preference.audioTrackId?.takeIf { it.isNotBlank() }?.let { trackId ->
-        tracks.firstOrNull { it.id == trackId }?.let { return it.index }
+    val targetId = preference.audioTrackId?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    val targetName = preference.audioName?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    val targetLanguage = normalizeLanguageCode(preference.audioLanguage)
+    val strictCandidates = tracks.filter {
+        targetLanguage == null || normalizeLanguageCode(it.language) == targetLanguage
     }
-    preference.audioLanguage?.takeIf { it.isNotBlank() }?.let { language ->
-        tracks.firstOrNull { languageMatchesPreference(it.language, language) }?.let { return it.index }
+    if (targetId != null) {
+        strictCandidates.firstOrNull {
+            it.id.trim().lowercase() == targetId &&
+                (targetName == null || it.label.trim().lowercase().contains(targetName))
+        }?.let { return it.index }
     }
-    preference.audioName?.takeIf { it.isNotBlank() }?.let { name ->
-        tracks.firstOrNull { it.label.equals(name, ignoreCase = true) }?.let { return it.index }
+    if (targetName != null) {
+        strictCandidates.firstOrNull { it.label.trim().lowercase() == targetName }
+            ?.let { return it.index }
+        strictCandidates.firstOrNull { it.label.trim().lowercase().contains(targetName) }
+            ?.let { return it.index }
     }
-    return -1
+    if (targetLanguage == null) return -1
+    val languageCandidates = tracks.filter { languageMatchesPreference(it.language, targetLanguage) }
+    val targetVariant = SubtitleLanguageMatching.detectTrackLanguageVariant(
+        language = preference.audioLanguage,
+        name = preference.audioName,
+        trackId = preference.audioTrackId,
+    )
+    return languageCandidates.firstOrNull {
+        SubtitleLanguageMatching.detectTrackLanguageVariant(
+            language = it.language,
+            name = it.label,
+            trackId = it.id,
+        ) == targetVariant
+    }?.index ?: languageCandidates.firstOrNull()?.index ?: -1
 }
 
 fun findPersistedSubtitleTrackIndex(
