@@ -102,11 +102,15 @@ internal fun PlayerScreenRuntime.restorePersistedTrackPreferenceIfNeeded() {
             !preference.audioName.isNullOrBlank())
     ) {
         val restoredAudioIndex = findPersistedAudioTrackIndex(audioTracks, preference)
-        if (restoredAudioIndex >= 0 && restoredAudioIndex != selectedAudioIndex) {
-            playerController?.selectAudioTrack(restoredAudioIndex)
-            selectedAudioIndex = restoredAudioIndex
+        // Latch only on a successful restore (upstream 4f79bfe0 semantics): a -1 from the stricter
+        // matcher must leave the preferred-language pass in refreshTracks() free to run.
+        if (restoredAudioIndex >= 0) {
+            if (restoredAudioIndex != selectedAudioIndex) {
+                playerController?.selectAudioTrack(restoredAudioIndex)
+                selectedAudioIndex = restoredAudioIndex
+            }
+            preferredAudioSelectionApplied = true
         }
-        preferredAudioSelectionApplied = true
     }
 
     when (preference.subtitleType) {
