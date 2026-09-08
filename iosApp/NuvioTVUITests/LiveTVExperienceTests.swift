@@ -123,6 +123,99 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(app.otherElements["player.mpv"].exists)
     }
 
+    private func playbackSeconds(_ label: String) -> Int {
+        label.split(separator: ":").compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
+    }
+
+    @MainActor func testMPVTransportAfterDrawer() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--mpv-player-ui-test"]
+        app.launch()
+        let playPause = app.buttons["player.playPause"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: 20))
+        XCUIRemote.shared.press(.playPause)
+        XCTAssertEqual(playPause.label, "Play", "The remote Play/Pause button must pause exactly once")
+        select(playPause, in: app)
+        XCTAssertEqual(playPause.label, "Pause", "Select on Play must resume")
+        XCUIRemote.shared.press(.playPause)
+        XCTAssertEqual(playPause.label, "Play")
+        select(app.buttons["player.settings"], in: app)
+        let playback = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch
+        XCTAssertTrue(playback.waitForExistence(timeout: 5))
+        select(playback, in: app)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
+        XCUIRemote.shared.press(.playPause)
+        XCTAssertEqual(playPause.label, "Pause", "Play/Pause must work after closing Settings")
+        let elapsed = app.descendants(matching: .any)["player.timeline"]
+        let previous = elapsed.value as? String ?? ""
+        let advances = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", previous), object: elapsed)
+        XCTAssertEqual(XCTWaiter.wait(for: [advances], timeout: 4), .completed, "Playback time must continue updating after the drawer closes")
+        XCUIRemote.shared.press(.playPause)
+        XCTAssertEqual(playPause.label, "Play")
+        let timeline = app.descendants(matching: .any)["player.timeline"]
+        XCTAssertTrue(timeline.exists, "The visible timeline must be focusable for seeking")
+        // Move focus without selecting: Select on the timeline intentionally toggles playback.
+        for _ in 0..<3 where !timeline.hasFocus { XCUIRemote.shared.press(.up) }
+        XCTAssertTrue(timeline.hasFocus, app.debugDescription)
+        let beforeSeek = timeline.value as? String ?? ""
+        XCUIRemote.shared.press(.right)
+        let seeks = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", beforeSeek), object: timeline)
+        XCTAssertEqual(XCTWaiter.wait(for: [seeks], timeout: 5), .completed, "Right on the timeline must change playback position")
+        let forward = timeline.value as? String ?? ""
+        XCUIRemote.shared.press(.left)
+        let seeksBack = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", forward), object: timeline)
+        XCTAssertEqual(XCTWaiter.wait(for: [seeksBack], timeout: 5), .completed)
+        XCUIRemote.shared.press(.select)
+        XCTAssertEqual(playPause.label, "Pause", "Select on the timeline must resume exactly once")
+        let beforeHide = playbackSeconds(timeline.value as? String ?? "")
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == false"), object: timeline)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 6), .completed)
+        XCUIRemote.shared.press(.right)
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.playPause)
+        Thread.sleep(forTimeInterval: 1)
+        let afterHiddenSeek = playbackSeconds(timeline.value as? String ?? "")
+        XCTAssertGreaterThan(afterHiddenSeek, beforeHide + 7, "Right must seek while the controls are hidden")
+        XCTAssertLessThan(afterHiddenSeek, beforeHide + 25, "Releasing Right must stop repeat seeking")
+
+    }
+
+    @MainActor func testNativeTransportAfterDrawer() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--native-player-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60))
+        Thread.sleep(forTimeInterval: 2)
+        openNativeDrawer(app)
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
+        // The drawer must return control to AVKit's timeline, including repeated play/pause.
+        XCUIRemote.shared.press(.playPause)
+        let elapsed = app.otherElements["AXElapsedTime"]
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 5), app.debugDescription)
+        let first = elapsed.label
+        Thread.sleep(forTimeInterval: 1.5)
+        let initiallyPlaying = elapsed.label != first
+        XCUIRemote.shared.press(.playPause)
+        Thread.sleep(forTimeInterval: 0.5)
+        let second = elapsed.label
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertNotEqual(elapsed.label != second, initiallyPlaying, "Play/Pause must change the actual playback state after closing the drawer")
+        // Pause before seeking. Down enters the native scrubber from the transport action row.
+        if !initiallyPlaying { XCUIRemote.shared.press(.playPause) }
+        XCUIRemote.shared.press(.down)
+        let beforeSeek = playbackSeconds(elapsed.label)
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.select)
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertGreaterThan(playbackSeconds(elapsed.label), beforeSeek + 5, app.debugDescription)
+        XCTAssertTrue(app.otherElements["player.native"].exists)
+    }
+
     @MainActor func testBrowseTypeSelection() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

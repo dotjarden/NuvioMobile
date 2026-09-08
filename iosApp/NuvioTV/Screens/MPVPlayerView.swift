@@ -41,6 +41,9 @@ final class MPVPlaybackState: ObservableObject {
     var requestDetails: (() -> Void)?
     var openPanel: ((PlayerPanelTab) -> Void)?
     var togglePlayback: (() -> Void)?
+    var seekRelative: ((Double) -> Void)?
+    var revealControls: (() -> Void)?
+    var performDownAction: (() -> Void)?
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
 
@@ -207,7 +210,16 @@ final class MPVTVPlayerViewController: UIViewController {
         layoutMetalLayer()
 
         state.requestDetails = { [weak self] in self?.refreshStreamInfoAsync() }
+        state.revealControls = { [weak self] in self?.flashControls() }
+        state.performDownAction = { [weak self] in self?.performDownAction() }
         state.togglePlayback = { [weak self] in self?.togglePause(); self?.flashControls() }
+        state.seekRelative = { [weak self] delta in
+            guard let self, delta.isFinite, self.state.durationSec > 0 else { return }
+            if delta < 0 { self.state.upNextCancel?() }
+            let target = min(max(self.cachedProps().position + delta, 0), max(self.state.durationSec - 0.5, 0))
+            self.seekAbsolute(target)
+            self.flashControls()
+        }
         state.selectAudio = { [weak self] id in self?.selectAudio(id) }
         state.selectSubtitle = { [weak self] id in self?.selectSubtitle(id) }
         state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
@@ -1244,25 +1256,8 @@ final class MPVTVPlayerViewController: UIViewController {
             case .rightArrow:
                 beginSeek(1); handled = true
             case .downArrow:
-                if state.upNextPlayNow?() == true {
-                    handled = true
-                } else if let prompt = state.skipPrompt {
-                    // Clamp against duration: a skip-outro target past EOF wedges mpv.
-                    // durationSec is still 0 before the first duration event — seek unclamped then.
-                    let target = state.durationSec > 0
-                        ? min(prompt.targetSec, state.durationSec - 0.5)
-                        : prompt.targetSec
-                    seekAbsolute(target)
-                    state.skipPrompt = nil
-                    flashControls()
-                    handled = true
-                } else if presentedViewController == nil {
-                    // Preserve the MPV Down shortcut to the shared drawer. Track lists
-                    // are refreshed on open (the async walk fills them if this raced the events).
-                    refreshTracksAsync()
-                    onOpenPanel?(.playback)
-                    handled = true
-                }
+                performDownAction()
+                handled = true
             case .menu:
                 // Back out of the transient up-next chip first; the next Menu exits (same
                 // convention as the top panel: overlay first, player second).
@@ -1294,6 +1289,20 @@ final class MPVTVPlayerViewController: UIViewController {
             endSeek(); handled = true
         }
         if !handled { super.pressesEnded(presses, with: event) }
+    }
+
+    private func performDownAction() {
+        guard presentedViewController == nil else { return }
+        if state.upNextPlayNow?() == true { return }
+        if let prompt = state.skipPrompt {
+            let target = state.durationSec > 0 ? min(prompt.targetSec, state.durationSec - 0.5) : prompt.targetSec
+            seekAbsolute(target)
+            state.skipPrompt = nil
+            flashControls()
+        } else {
+            refreshTracksAsync()
+            onOpenPanel?(.playback)
+        }
     }
 
     /// Start seeking in `dir` (±1). Immediate ±10s, then holds seek in accelerating steps.
@@ -1584,6 +1593,7 @@ struct MPVPlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
+    @FocusState private var videoFocused: Bool
 
     /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
     private var upNextChipAction: String? {
@@ -1625,6 +1635,26 @@ struct MPVPlayerScreen: View {
             )
             .ignoresSafeArea()
 
+            // SwiftUI owns focus while its controls are hidden. Merely making the sibling
+            // UIKit renderer first responder does not give it tvOS directional focus.
+            Color.clear
+                .contentShape(Rectangle())
+                .focusable(!state.controlsVisible && !state.panelOpen)
+                .focused($videoFocused)
+                .accessibilityLabel("Video")
+                .accessibilityIdentifier("player.videoSurface")
+                .onTapGesture { state.togglePlayback?() }
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .left: state.seekRelative?(-10)
+                    case .right: state.seekRelative?(10)
+                    case .up: state.revealControls?()
+                    case .down: state.performDownAction?()
+                    default: break
+                    }
+                }
+                .allowsHitTesting(!state.controlsVisible && !state.panelOpen)
+
             if state.isBuffering {
                 ProgressView()
                     .scaleEffect(1.6)
@@ -1638,7 +1668,7 @@ struct MPVPlayerScreen: View {
                 .accessibilityHidden(!state.controlsVisible || state.panelOpen)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
                 .onMoveCommand { direction in
-                    if direction == .down { state.openPanel?(.playback) }
+                    if direction == .down { state.performDownAction?() }
                 }
 
             // Transient prompts, bottom-trailing — same chip family as the native screen's
@@ -1662,7 +1692,10 @@ struct MPVPlayerScreen: View {
             }
         }
         .onChange(of: state.controlsVisible) { _, visible in
-            if !visible && !state.panelOpen { state.reclaimFocus?() }
+            videoFocused = !visible && !state.panelOpen
+        }
+        .onChange(of: state.panelOpen) { _, open in
+            videoFocused = !open && !state.controlsVisible
         }
         .onPlayPauseCommand { state.togglePlayback?() }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
@@ -1717,6 +1750,7 @@ struct MPVPlayerScreen: View {
 /// Bottom transport bar: title, scrubber, elapsed/remaining time, play/pause indicator.
 private struct PlayerControlsOverlay: View {
     @ObservedObject var state: MPVPlaybackState
+    @FocusState private var timelineFocused: Bool
 
     var body: some View {
         // Floating glass transport bar (HIG revamp): mirrors the native AVPlayerViewController
@@ -1740,11 +1774,27 @@ private struct PlayerControlsOverlay: View {
                 Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
                     .font(Theme.Font.body).monospacedDigit()
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(.white.opacity(timelineFocused ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+            .focusable(state.durationSec > 0)
+            .focused($timelineFocused)
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("player.timeline")
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(timeString(state.positionSec))
+            .accessibilityHint("Press Left or Right to seek ten seconds. Press Select to play or pause.")
+            .onTapGesture { state.togglePlayback?() }
+            .onMoveCommand { direction in
+                if direction == .left { state.seekRelative?(-10) }
+                if direction == .right { state.seekRelative?(10) }
+            }
 
             HStack(spacing: 24) {
                 Button { state.togglePlayback?() } label: {
                     Label(state.isPaused ? "Play" : "Pause", systemImage: state.isPaused ? "play.fill" : "pause.fill")
-                }
+                }.accessibilityIdentifier("player.playPause")
                 Menu {
                     ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
                         Button(tab.title) { state.openPanel?(tab) }

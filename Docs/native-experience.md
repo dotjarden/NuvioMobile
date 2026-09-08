@@ -81,3 +81,9 @@ Diagnostics run only while Details is visible. MPV deduplicates state publicatio
 Validation for this update: tvOS 27 remote tests passed for repeated Browse scroll returns at Medium and Large poster sizes; type/genre/reset filters; pinned Home/Browse interaction and trailing See All; live channel switching and Guide; and both native and MPV movie drawers with actual audio/subtitle selection, speed changes, and Back preserving playback. Player media is synthetic and served on loopback by the fixture script. The physical-device target builds and signs successfully; hardware playback/performance validation remains outstanding.
 
 All 14 pinned-row geometry unit tests pass, including the filter-reservation bounds. Final device build passes strict deep signature verification.
+
+## Playback remote focus regression
+
+Adding focusable transport buttons left MPV's progress bar without a focusable seek target, and returning first-responder status to the sibling UIKit renderer did not reliably restore directional input after the controls hid. The timeline is now one focusable, labelled accessibility control: Left/Right seek ten seconds and Select toggles playback. A SwiftUI video focus target owns remote input while controls are hidden. Down continues to prioritize next-episode/skip actions before opening Playback settings. Seek targets are clamped to the file's duration.
+
+New remote regression tests check actual time changes, play/pause before and after dismissing Settings, seeking forward/back on the timeline, and seeking immediately after automatic control hiding without repeated seeks continuing after release. Native AVKit also passes post-drawer pause/resume and seek-position checks. These are simulator results, not physical-device verification.
