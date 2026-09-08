@@ -22,3 +22,7 @@ The filter row belongs outside the catalog's lazy scrolling container, directly 
 Detail pages use a wide backdrop without a separate poster layer or portrait-poster fallback. Keep poster artwork for cards and playback metadata.
 
 Jordan asked whether Home and Browse should merge. Recommended direction: one Home entry with All / Movies / Shows; All retains personal rows such as Continue Watching and collections. This navigation change remains a discussion decision; the current fix preserves both entries.
+
+## Player appearance reference
+
+Jordan's manual playback review prefers the clean native AVKit transport and rejects the boxy MPV transport. The shared Settings drawer did not unify the transport appearance. Use the native player's layout and remote behavior as the reference for subsequent MPV UI work; preserve per-stream engine selection for compatibility. This appearance follow-up remains unimplemented.
