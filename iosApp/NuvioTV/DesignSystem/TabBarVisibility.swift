@@ -65,6 +65,14 @@ final class TabBarVisibility: ObservableObject {
     /// still hierarchy-resident (that's the bug) but may not re-render while hidden, so a
     /// render-driven gate could defer teardown exactly when it matters.
     @Published private(set) var homeSurfaceCovered = false
+    @Published private(set) var browseSurfaceCovered = true
+    private var browseTabSelected = false
+
+    func setBrowseTabSelected(_ selected: Bool) {
+        guard browseTabSelected != selected else { return }
+        browseTabSelected = selected
+        recomputeHomeCovered()
+    }
 
     private var homeTabSelected = true {
         didSet { recomputeHomeCovered() }
@@ -90,6 +98,8 @@ final class TabBarVisibility: ObservableObject {
     private func recomputeHomeCovered() {
         let covered = !homeTabSelected || detailDepth > 0 || rootCoverActive
         if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
+        let browseCovered = !browseTabSelected || detailDepth > 0 || rootCoverActive
+        if browseSurfaceCovered != browseCovered { browseSurfaceCovered = browseCovered }
     }
 
     /// T3: also drives `immersiveHidden` now — see that property's doc comment for why the write
@@ -272,7 +282,7 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// keep their existing `tab:` signature, and the names they already pass are the same ones
     /// `TabBarProbe.tabNames` fixes for the diagnostics readout. Settings and Profile never attach
     /// this modifier (they don't meaningfully scroll), so they are correctly absent.
-    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3]
+    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3, "Live TV": 6, "Browse": 7]
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: TabBarScrollSample.self, of: { geo in

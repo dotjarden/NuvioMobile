@@ -50,6 +50,7 @@ final class LiveTVExperienceTests: XCTestCase {
         app.launch()
         let menu = app.buttons["Browse: Movies"]
         XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        let filterY = menu.frame.midY
         select(menu, in: app)
         let shows = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch
         XCTAssertTrue(shows.waitForExistence(timeout: 5))
@@ -57,8 +58,70 @@ final class LiveTVExperienceTests: XCTestCase {
         dropdown.name = "Anchored Browse dropdown"; dropdown.lifetime = .keepAlways; add(dropdown)
         select(shows, in: app)
         XCTAssertTrue(app.buttons["Browse: Shows"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["Browse: Shows"].frame.midY, filterY, accuracy: 2)
+        select(app.buttons["Genre: All genres"], in: app)
+        let action = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Action")).firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 10))
+        select(action, in: app)
+        XCTAssertTrue(app.buttons["Genre: Action"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["Browse: Shows"].frame.midY, filterY, accuracy: 2)
+        select(app.buttons["Reset"], in: app)
+        XCTAssertTrue(app.buttons["Genre: All genres"].waitForExistence(timeout: 10))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Browse shows"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testBrowseSharesPinnedHomeInteraction() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let heroPredicate = NSPredicate(format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "Go to Movie:", "Go to Show:")
+        app.launchArguments = ["--home-ui-test", "-hero_nuvio_style", "YES"]
+        app.launch()
+        let homeHero = app.buttons.matching(heroPredicate).firstMatch
+        XCTAssertTrue(homeHero.waitForExistence(timeout: 40))
+        let homeY = homeHero.frame.midY
+        let homeShot = XCTAttachment(screenshot: app.screenshot())
+        homeShot.name = "Home pinned baseline"; homeShot.lifetime = .keepAlways; add(homeShot)
+        app.terminate()
+
+        app.launchArguments = ["--browse-ui-test", "-hero_nuvio_style", "YES"]
+        app.launch()
+        let browseHero = app.buttons.matching(heroPredicate).firstMatch
+        XCTAssertTrue(browseHero.waitForExistence(timeout: 40))
+        XCTAssertEqual(browseHero.frame.midY, homeY, accuracy: 2)
+        select(app.buttons["Browse: Movies"], in: app)
+        XCUIRemote.shared.press(.menu)
+        XCUIRemote.shared.press(.down)
+        Thread.sleep(forTimeInterval: 1)
+        XCUIRemote.shared.press(.down)
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertEqual(browseHero.frame.midY, homeY, accuracy: 2, "The hero must remain pinned while rows scroll")
+        var reachedSeeAll = false
+        for _ in 0..<25 {
+            let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+            if focused.label.localizedCaseInsensitiveContains("see all") { reachedSeeAll = true; break }
+            XCUIRemote.shared.press(.right)
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        XCTAssertTrue(reachedSeeAll, "See All must be reachable at the end of the catalog row")
+        Thread.sleep(forTimeInterval: 1)
+        let browseShot = XCTAttachment(screenshot: app.screenshot())
+        browseShot.name = "Browse pinned header and trailing See All"; browseShot.lifetime = .keepAlways; add(browseShot)
+    }
+
+    @MainActor func testAddonsInlineInstallLayout() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--addons-ui-test"]
+        app.launch()
+        let field = app.textFields["addons.manifest"]
+        XCTAssertTrue(field.waitForExistence(timeout: 20))
+        let install = app.buttons["addons.install"]
+        XCTAssertTrue(install.exists)
+        XCTAssertEqual(field.frame.midY, install.frame.midY, accuracy: 3)
+        XCTAssertGreaterThan(install.frame.minX, field.frame.maxX)
+        XCTAssertFalse(app.staticTexts["Install from manifest URL"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Add-ons inline install"; shot.lifetime = .keepAlways; add(shot)
     }
 
     @MainActor func testSettingsCategorySelection() throws {
@@ -66,11 +129,10 @@ final class LiveTVExperienceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--settings-ui-test"]
         app.launch()
-        let title = app.staticTexts["settingsPaneTitle"]
-        XCTAssertTrue(title.waitForExistence(timeout: 20))
-        XCTAssertEqual(title.label, "Playback")
+        XCTAssertTrue(app.descendants(matching: .any)["settings.pane.playback"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.staticTexts["settingsPaneTitle"].exists)
         select(app.cells.containing(.button, identifier: "settings.category.appearance").firstMatch, in: app)
-        XCTAssertEqual(title.label, "Appearance")
+        XCTAssertTrue(app.descendants(matching: .any)["settings.pane.appearance"].waitForExistence(timeout: 5))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Settings layout"; shot.lifetime = .keepAlways; add(shot)
     }

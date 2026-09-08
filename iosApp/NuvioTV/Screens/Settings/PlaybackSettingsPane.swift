@@ -23,7 +23,7 @@ struct PlaybackSettingsPane: View {
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
 
     var body: some View {
-        SettingsSection(String(localized: "Playback")) {
+        SettingsSection(nil) {
             // Hidden entirely unless an external player (Infuse) is installed —
             // see DefaultPlayerRow.
             DefaultPlayerRow()

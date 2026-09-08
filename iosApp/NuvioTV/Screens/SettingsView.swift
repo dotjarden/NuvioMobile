@@ -46,14 +46,8 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             HStack(alignment: .top, spacing: 36) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Settings").font(Theme.Font.sectionTitle).padding(.horizontal, 20)
-                    categorySidebar
-                }.frame(width: 400)
-                VStack(alignment: .leading, spacing: 20) {
-                    Text(selectedCategory.title).accessibilityIdentifier("settingsPaneTitle").font(Theme.Font.sectionTitle).padding(.horizontal, 20)
-                    detailPane
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                categorySidebar.frame(width: 400)
+                detailPane.frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, Theme.Spacing.screen).padding(.top, Theme.Spacing.lg)
             // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar is
             // gone from THIS root too, so Menu / an unplaceable Up at the split root need the same
@@ -161,6 +155,7 @@ struct SettingsView: View {
         .focusSection()
         .id(selectedCategory)
         .environment(\.settingsUsesNativeList, true)
+        .accessibilityIdentifier("settings.pane.\(selectedCategory.rawValue)")
     }
 
     /// The detail pane's content for the currently selected sidebar category. Only the selected

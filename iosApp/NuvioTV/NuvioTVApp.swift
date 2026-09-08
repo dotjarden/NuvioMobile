@@ -146,6 +146,10 @@ struct NuvioTVApp: App {
             LiveTVView(profile: "live-tv-ui-test")
         } else if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
             LiveTVView(profile: "live-player-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--home-ui-test") {
+            HomeUITestRoot()
+        } else if ProcessInfo.processInfo.arguments.contains("--addons-ui-test") {
+            AddonsView()
         } else if ProcessInfo.processInfo.arguments.contains("--settings-ui-test") {
             SettingsUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
@@ -181,6 +185,10 @@ private struct SettingsUITestRoot: View {
     var body: some View {
         SettingsView(selectedCategory: $category, pendingThemeSwatchFocus: $themeFocus, pendingAppearanceRowFocus: $appearanceFocus).environmentObject(auth)
     }
+}
+private struct HomeUITestRoot: View {
+    @StateObject private var home = HomeViewModel()
+    var body: some View { HomeView(model: home) }
 }
 private struct BrowseUITestRoot: View {
     @StateObject private var home = HomeViewModel()

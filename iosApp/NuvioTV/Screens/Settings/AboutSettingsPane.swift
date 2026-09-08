@@ -80,7 +80,7 @@ struct AboutSettingsPane: View {
     }
 
     var body: some View {
-        SettingsSection(String(localized: "About")) {
+        SettingsSection(nil) {
             SettingsValueRow(
                 title: String(localized: "Version"),
                 value: "\(Self.marketingVersion) (\(Self.buildNumber))"

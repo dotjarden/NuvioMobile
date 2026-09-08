@@ -409,6 +409,7 @@ struct MainTabView: View {
         // teardown can't be deferred along with a hidden tab's rendering.
         .onAppear {
             tabBarVisibility.setHomeTabSelected(selectedTab == 0)
+            tabBarVisibility.setBrowseTabSelected(selectedTab == 7)
             tabBarVisibility.setRootCoverActive(rootCoverActive)
         }
         .onChange(of: rootCoverActive) { _, active in
@@ -416,6 +417,7 @@ struct MainTabView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
+            tabBarVisibility.setBrowseTabSelected(tab == 7)
         }
     }
 }

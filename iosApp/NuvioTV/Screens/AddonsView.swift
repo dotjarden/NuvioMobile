@@ -21,11 +21,11 @@ struct AddonsView: View {
                 .padding(60)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .background(Theme.Palette.background.ignoresSafeArea())
             .reportsScrollToTabBar(tab: "Add-ons")
             // FEAT-30: Menu summons the sidebar in sidebar mode (a second Menu, with focus in the
             // sidebar, exits as before). No modifier at all in tabs mode.
             .sidebarMenuReveal()
-            .navigationTitle("Add-ons")
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -48,53 +48,33 @@ struct AddonsView: View {
 
     private var installSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Install from manifest URL").font(Theme.Font.screenTitle)
-            Text("Paste the manifest URL from your streaming addon's config page (e.g. your TorBox or Torrentio URL with your API key). It ends in /manifest.json.")
-                .font(Theme.Font.body).foregroundStyle(.secondary)
-                .frame(maxWidth: 1200, alignment: .leading)
-
-            HStack(spacing: 16) {
-                Image(systemName: "link").foregroundStyle(.secondary)
-                TextField("https://\u{2026}/manifest.json", text: $newUrl)
+            HStack(spacing: 24) {
+                TextField("Manifest URL", text: $newUrl)
                     .textFieldStyle(.plain)
-                    .font(Theme.Font.screenTitle.weight(.regular))
-            }
-
-            HStack(spacing: 20) {
+                    .font(Theme.Font.body)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("addons.manifest")
                 Button {
                     model.install(newUrl)
                     newUrl = ""
                 } label: {
                     Label("Install", systemImage: "plus.circle.fill")
-                        .padding(.horizontal, 16).padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isInstalling)
-
-                #if DEBUG
-                if DebugConfig.hasManifestURL {
-                    Button {
-                        model.install(DebugConfig.manifestURL)
-                    } label: {
-                        Label("Quick install (from DebugConfig)", systemImage: "wrench.and.screwdriver")
-                            .padding(.horizontal, 16).padding(.vertical, 6)
-                    }
-                    .buttonStyle(.chip)
-                    .disabled(model.isInstalling)
-                }
-                #endif
-
-                if model.isInstalling { ProgressView() }
-                if let status = model.statusMessage {
-                    Text(status).font(Theme.Font.body).foregroundStyle(.secondary)
-                }
+                .buttonStyle(.glassProminent)
+                .disabled(model.isInstalling || newUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("addons.install")
+            }
+            if model.isInstalling { ProgressView() }
+            if let status = model.statusMessage {
+                Text(status).font(Theme.Font.body).foregroundStyle(.secondary)
             }
         }
     }
 
     private var installedSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Installed").font(Theme.Font.screenTitle)
+            Text("Installed").font(Theme.Font.sectionTitle)
 
             if model.addons.isEmpty {
                 Text("No addons installed yet.").foregroundStyle(.secondary)
@@ -103,7 +83,7 @@ struct AddonsView: View {
             ForEach(Array(model.addons.enumerated()), id: \.offset) { _, addon in
                 AddonRow(
                     title: model.displayName(addon),
-                    subtitle: addon.manifestUrl,
+                    subtitle: URL(string: addon.manifestUrl)?.host ?? String(localized: "Custom manifest"),
                     enabled: addon.enabled,
                     onToggle: { model.setEnabled(addon, !addon.enabled) },
                     onRemove: { addonPendingRemoval = addon }

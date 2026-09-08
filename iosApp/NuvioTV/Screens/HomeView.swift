@@ -15,6 +15,10 @@ struct HomeView: View {
     /// report. Home's DATA lifetime is now independent of Home's VIEW identity; the view only
     /// retains/releases it (see `HomeViewModel.acquire()` for the ordering that forces refcounting).
     @ObservedObject var model: HomeViewModel
+    /// Browse supplies catalog data and filters; both tabs use this same presentation and focus graph.
+    var browse: HomeBrowseConfiguration? = nil
+    private var displayRows: [HomeRow] { browse?.rows ?? model.rows }
+    private var includesPersonalRows: Bool { browse == nil }
     @State private var resume: ResumeTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The Poster Style Home renders with. Read in RELEASE as well as debug builds as of Wave 10:
@@ -217,7 +221,10 @@ struct HomeView: View {
     /// is off — the commit is immediate there, exactly as it ships today.
     @State private var folderFocusGeneration = 0
 
-    private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
+    private var heroItems: [MetaPreview] {
+        guard let browse else { return Array(model.heroItems.prefix(8)) }
+        return heroSettings.heroEnabled ? Array(browse.items.prefix(8)) : []
+    }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
         return heroItems[min(heroIndex, heroItems.count - 1)]
@@ -241,13 +248,15 @@ struct HomeView: View {
     // flips (the BUG-19 identity rule), never per scroll frame and never per focus event.
 
     /// Show Hero on AND the hero fan-out has landed: the rotating carousel exists.
-    private var heroCarouselActive: Bool { !heroItems.isEmpty }
+    private var heroCarouselActive: Bool {
+        browse != nil ? heroSettings.heroEnabled : !heroItems.isEmpty
+    }
 
     /// Anything a row card can focus. The focus panel has nothing to reflect (and nothing to
     /// reserve space above) until Home has at least one row, so it mounts on this — a one-shot
     /// load-boundary flip, the same class as `heroItems` empty→loaded, NOT a per-focus value.
     private var hasFocusableRows: Bool {
-        !model.rows.isEmpty || !model.continueWatching.isEmpty
+        !displayRows.isEmpty || (includesPersonalRows && !model.continueWatching.isEmpty)
     }
 
     /// FEAT-15: the hero region is the focus-only panel. Gated on the SETTING, never on
@@ -265,7 +274,8 @@ struct HomeView: View {
 
     /// Whether a hero header is mounted above the rows ScrollView at all.
     private var heroHeaderVisible: Bool {
-        focusHeroActive || (heroNuvioStyle && heroCarouselActive)
+        // Filtering may temporarily clear the catalog; its loading state must not move the controls.
+        browse != nil || focusHeroActive || (heroNuvioStyle && heroCarouselActive)
     }
 
     /// Which CONTAINER the rows ScrollView lives in (BUG-19: this may change only when a Settings
@@ -275,7 +285,7 @@ struct HomeView: View {
     /// until the settings flow publishes (very early on the Home path — `AddonRepository.initialize`
     /// and `CollectionRepository.initialize` both drive `ensureLoaded` → `publish`), so a hero-off
     /// user sees at most one container flip, before rows exist.
-    private var heroContainerPinned: Bool { heroNuvioStyle || !heroSettings.heroEnabled }
+    private var heroContainerPinned: Bool { browse != nil || heroNuvioStyle || !heroSettings.heroEnabled }
 
     /// FEAT-15 resting state for the focus panel: the first title of the first CATALOG row.
     ///
@@ -307,16 +317,16 @@ struct HomeView: View {
         // that the rows' first publish then replaced (test31 leg D, first fixture run: CW title at
         // 5659 ms, first-catalog-row title at 6507 ms). The "Loading catalogs…" placeholder stays up
         // instead — the same hold the carousel hero already gets from `HeroPublishRoute.hold`.
-        guard model.rowsGateOpen else { return nil }
-        for row in model.rows {
+        guard browse != nil || model.rowsGateOpen else { return nil }
+        for row in displayRows {
             if case .catalog(let section) = row, let first = section.items.first { return first }
         }
-        if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
+        if includesPersonalRows, let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
         // BUG-38 round three (Codex r2): a collection-only Home — no catalog rows, no Continue
         // Watching — still has something the panel can represent when a folder carries its own
         // hero artwork. Same load-boundary character as the branches above (it moves when the
         // collections publish, never per focus).
-        for row in model.rows {
+        for row in displayRows {
             if case .collection(let collection) = row,
                let first = collection.folders.lazy.compactMap({ folderHeroPreview(collection: collection, folder: $0) }).first {
                 return first
@@ -643,9 +653,10 @@ struct HomeView: View {
                         // FEAT-15: the focus panel always uses that treatment (see heroNuvioStyle).
                         HomeHeroBackdrop(
                             presentation: presentation,
-                            nuvioStyle: heroNuvioStyle || focusHeroActive,
+                            nuvioStyle: browse != nil || heroNuvioStyle || focusHeroActive,
                             autoplaysTrailer: heroTrailerActive,
-                            trailerModel: heroTrailerModel
+                            trailerModel: heroTrailerModel,
+                            isBrowseSurface: browse != nil
                         )
                         HomeHeroScrim()
                     }
@@ -800,7 +811,7 @@ struct HomeView: View {
                     // In tabs mode `sidebarMenuRevealHandler` is `nil`, so this site resolves
                     // exactly as it always has.
                     .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
-                        if heroNuvioStyle {
+                        if heroContainerPinned {
                             // Pinned hero: the CTA lives above the ScrollView in the VStack, so
                             // it is ALWAYS mounted — there is no "wait for the lazy top region
                             // to build" window to lose the handoff in. Take focus FIRST and
@@ -1003,7 +1014,7 @@ struct HomeView: View {
             // HomeView still holds the model — the count goes 1 → 2 → 1 and the pipeline never
             // stops, restarts, or republishes.
             model.acquire()
-            if upcomingRowEnabled { model.startUpcoming() }
+            if includesPersonalRows && upcomingRowEnabled { model.startUpcoming() }
             heroSettings.start()
             prefetchHeroArt()
             // Wave H: the repository cache can already have published hero items before this view
@@ -1031,6 +1042,11 @@ struct HomeView: View {
             // cache published before this view appeared), and `.onChange` only sees changes.
             if !heroItems.isEmpty { heroSurfaceSeen = true }
         }
+        .onChange(of: browse?.selectionKey) { _, _ in
+            focusModel.cancelAndRevert()
+            heroIndex = 0
+            presentHero()
+        }
         .onChange(of: heroFocusTrailerMode) { _, mode in
             NSLog("[TrailerPipeline] trailerLocation heroMode=%@", mode ? "YES" : "NO")
         }
@@ -1045,7 +1061,7 @@ struct HomeView: View {
             heroSettings.stop()
         }
         .onChange(of: upcomingRowEnabled) { _, enabled in
-            if enabled { model.startUpcoming() } else { model.stopUpcoming() }
+            if includesPersonalRows { if enabled { model.startUpcoming() } else { model.stopUpcoming() } }
         }
     }
 
@@ -1104,11 +1120,16 @@ struct HomeView: View {
                     heroCarousel(compact: false, topReach: Self.classicHeroTopReach)
                 }
 
-                if model.rows.isEmpty {
+                if let browse {
+                    browse.controls
+                        .focusSection()
+                        .padding(.bottom, Theme.Spacing.lg)
+                    if browse.rows.isEmpty { browse.emptyState }
+                } else if displayRows.isEmpty {
                     placeholder
                 }
 
-                if !model.continueWatching.isEmpty {
+                if includesPersonalRows, !model.continueWatching.isEmpty {
                     ContinueWatchingRow(
                         entries: model.continueWatching,
                         onSelect: { resume = ResumeTarget(entry: $0) },
@@ -1124,7 +1145,7 @@ struct HomeView: View {
                 // Upcoming: next airing episode per followed show, directly under Continue
                 // Watching and above every settings-ordered row (like CW, not part of
                 // `model.rows`). Hidden while empty or toggled off.
-                if upcomingRowEnabled, !model.upcoming.isEmpty {
+                if includesPersonalRows, upcomingRowEnabled, !model.upcoming.isEmpty {
                     UpcomingRow(
                         items: model.upcoming,
                         onItemFocusChange: { item in
@@ -1136,15 +1157,16 @@ struct HomeView: View {
 
                 // Catalog sections and collection folder-tile rows, interleaved per the
                 // user's Home Rows settings order.
-                ForEach(model.rows) { row in
+                ForEach(displayRows) { row in
                     Group {
                         switch row {
                         case .catalog(let section):
                             CatalogRowView(
                                 section: section,
-                                previewLimit: CatalogRowView.homePreviewLimit,
+                                previewLimit: browse?.filtered == true ? nil : CatalogRowView.homePreviewLimit,
                                 // UX-7 (see reportRowFocus for the gating rationale).
                                 onItemFocusChange: { item in
+                                    browse?.onItemFocus(item)
                                     reportRowFocus(item, source: section.key,
                                                    prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
                                 }
@@ -1223,7 +1245,7 @@ struct HomeView: View {
                     // below (`rowsInsets`) is the actual fix; this flag is what lets the tracker's
                     // `debug_pinned` line say `last=1` instead of reading an unreachable rest as a
                     // fresh failure.
-                    .environment(\.pinnedRowIsLast, row.id == model.rows.last?.id)
+                    .environment(\.pinnedRowIsLast, row.id == displayRows.last?.id)
                 }
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
@@ -1270,7 +1292,7 @@ struct HomeView: View {
         // `.scrollView(axis: .vertical)` doesn't resolve through the row's nested horizontal
         // shelf. Inert otherwise — naming a coordinate space changes no layout.
         .coordinateSpace(.named(PinnedRowTitle.rowsScrollSpace))
-        .reportsScrollToTabBar(tab: "Home", isScrolledDown: $isScrolledDown)
+        .reportsScrollToTabBar(tab: browse == nil ? "Home" : "Browse", isScrolledDown: $isScrolledDown)
         // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
         // contentOffset/contentInsets — and the RESIDUAL they imply — on every change, plus a
         // debounced REST line, so `log show` after a D-pad walk-up shows exactly where
@@ -1342,10 +1364,14 @@ struct HomeView: View {
                 if let presentation = heroResolver.presented {
                     HomeHeroForeground(presentation: presentation, heroFocused: $heroFocused, compact: compact,
                                        showsCTA: heroCarouselActive,
-                                       forceNuvioLayout: focusHeroActive,
-                                       folderRoute: isCollectionHero(presentation.item)
-                                           ? heroFolderRoutes[presentation.item.id] : nil,
-                                       compression: compact ? pinnedPlan.compression : 0)
+                                       forceNuvioLayout: browse != nil || focusHeroActive,
+                                        folderRoute: isCollectionHero(presentation.item)
+                                            ? heroFolderRoutes[presentation.item.id] : nil,
+                                        compression: compact ? pinnedPlan.compression : 0)
+                } else if browse != nil {
+                    // An empty Group has no frame. Keep Browse's header slot during first load
+                    // and filter transitions so a focused menu cannot move as artwork arrives.
+                    Color.clear.frame(width: 1).accessibilityHidden(true)
                 }
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
@@ -1569,7 +1595,7 @@ struct HomeView: View {
     /// `nil` when Home has nothing to lay out yet (placeholder only) — the caller floors to the
     /// uniform inset in that case.
     private var pinnedLastRowHeight: CGFloat? {
-        if let last = model.rows.last {
+        if let last = displayRows.last {
             switch last {
             case .catalog:
                 let artworkHeight = posterStyle.landscapeCatalogRows
@@ -1594,10 +1620,10 @@ struct HomeView: View {
         // claim. Overstating the last row's height understates `pinnedRowsBottomInset` by the same
         // amount, which is the one thing that inset exists to get right.
         let fallbackCaption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
-        if upcomingRowEnabled, !model.upcoming.isEmpty {
+        if includesPersonalRows, upcomingRowEnabled, !model.upcoming.isEmpty {
             return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
         }
-        if !model.continueWatching.isEmpty {
+        if includesPersonalRows, !model.continueWatching.isEmpty {
             return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
         }
         return nil
@@ -1614,9 +1640,9 @@ struct HomeView: View {
     /// Identifies `pinnedLastRowHeight`'s row for the probe line — `HomeRow.id` in the common
     /// case, the fixed row keys `rowsScroll` uses for CW/Upcoming otherwise.
     private var pinnedLastRowId: String? {
-        if let id = model.rows.last?.id { return id }
-        if upcomingRowEnabled, !model.upcoming.isEmpty { return "upcoming" }
-        if !model.continueWatching.isEmpty { return "continue-watching" }
+        if let id = displayRows.last?.id { return id }
+        if includesPersonalRows, upcomingRowEnabled, !model.upcoming.isEmpty { return "upcoming" }
+        if includesPersonalRows, !model.continueWatching.isEmpty { return "continue-watching" }
         return nil
     }
 
@@ -2943,6 +2969,7 @@ struct HomeHeroBackdrop: View {
     /// Owned by `HomeView` (Codex beta.14 r2) so the carousel tick can poll the attempt phase;
     /// this view still drives its whole lifecycle via `syncTrailer()`.
     @ObservedObject var trailerModel: InlineTrailerCardModel
+    var isBrowseSurface = false
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2969,7 +2996,10 @@ struct HomeHeroBackdrop: View {
             // of a computed prop could defer teardown indefinitely. `onReceive` fires regardless.
             // `@Published` emits on willSet, so use the payload, not the property.
             .onReceive(tabBarVisibility.$homeSurfaceCovered) { covered in
-                syncTrailer(homeCovered: covered)
+                if !isBrowseSurface { syncTrailer(homeCovered: covered) }
+            }
+            .onReceive(tabBarVisibility.$browseSurfaceCovered) { covered in
+                if isBrowseSurface { syncTrailer(homeCovered: covered) }
             }
             .onDisappear { trailerModel.reset() }
     }
@@ -2984,7 +3014,7 @@ struct HomeHeroBackdrop: View {
     private func syncTrailer(homeCovered: Bool? = nil) {
         trailerModel.reset()
         guard autoplaysTrailer, scenePhase == .active,
-              !(homeCovered ?? tabBarVisibility.homeSurfaceCovered) else { return }
+              !(homeCovered ?? (isBrowseSurface ? tabBarVisibility.browseSurfaceCovered : tabBarVisibility.homeSurfaceCovered)) else { return }
         trailerModel.focusChanged(true, item: item)
     }
 

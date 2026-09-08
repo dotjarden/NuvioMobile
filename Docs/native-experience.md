@@ -55,10 +55,16 @@ Live TV defaults to On now channel cards; the timed guide remains available thro
 
 Settings uses an aligned category rail and detail list. Select opens a category; moving focus through categories preserves the current pane. Additional material and padding wrappers were removed from search, login, profile, source URL, API key, and numeric-filter fields so tvOS owns their input and focus appearance.
 
-Validated on tvOS 27 simulator: anchored type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV; Settings category selection. Native screenshots reviewed for overlapping text and contrast. Signed device build succeeds. Home source was not modified.
+Validated on tvOS 27 simulator: anchored type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV; Settings category selection. Native screenshots reviewed for overlapping text and contrast. Signed device build succeeds. Home and Browse now share the same surface; Home retains its existing default content and controls.
 
 ## Live player control ownership
 
 Removed the SwiftUI transport bar layered over AVKit and MPV. AVKit now owns Live TV actions through `transportBarCustomMenuItems`; select the TV icon in the native playback controls for previous/next channel, Go Live, favorite, and Channel guide. MPV exposes these actions inside its existing Playback panel. Channel guide opens the programme grid. Error recovery is a separate solid screen.
 
 `testLivePlayerNativeMenuFocus` uses the synthetic HLS stream from `tests/livetv/run-player-fixture.sh` (ffmpeg and Python required, loopback port 8767). On tvOS 27 the test opens the native menu with Up/Select, switches channels, reopens it, and returns to the guide. This test passed with real HLS segment delivery. MPV integration is compile-checked; the remote test covers the native player.
+
+## Shared Home surface and heading rules
+
+Browse now supplies data and anchored filters to HomeView itself. It shares Home’s scrim, pinned geometry, focus dwell, CatalogRowView, end-of-row See All tile, and scroll settling. Filtered discovery uses the same horizontal catalog row and requests more pages near its end. Settings removes page-title duplication, retaining useful subgroup labels. Add-ons puts Install beside Manifest URL and removes its introductory block. See [design-rules.md](design-rules.md) for the user’s persistent hierarchy rules and the pending playback discussion.
+
+Verified on tvOS 27: Home/Browse hero-button vertical alignment, unchanged hero position after remote row navigation, trailing See All reachability, stable filter placement through type and genre changes and Reset, Settings selection without a duplicate title, and inline Add-ons field/action alignment. Signed Apple TV build passes. Playback controls and performance changes remain a discussion proposal.
