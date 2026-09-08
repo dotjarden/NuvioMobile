@@ -11,7 +11,7 @@ import SharedCore
 enum TopShelf {
     /// Must match the App Group registered on BOTH the app and extension targets in
     /// Signing & Capabilities, and the id in the extension's ContentProvider.
-    static let appGroupId = "group.com.nuvio.media.NuvioTV"
+    static let appGroupId = Bundle.main.object(forInfoDictionaryKey: "NuvioAppGroupIdentifier") as? String
     static let snapshotFilename = "top-shelf.json"
 
     /// The custom URL scheme the extension's actions launch the app with (registered on the
@@ -22,7 +22,8 @@ enum TopShelf {
     /// is read-only under tvOS's no-persistent-storage policy). Caches can theoretically be
     /// purged, but the app rewrites the snapshot on every progress change, so that's fine.
     static var snapshotDirectoryURL: URL? {
-        FileManager.default
+        guard let appGroupId, !appGroupId.isEmpty else { return nil }
+        return FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)?
             .appendingPathComponent("Library/Caches", isDirectory: true)
     }

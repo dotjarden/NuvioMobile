@@ -19,7 +19,7 @@ import TVServices
 class ContentProvider: TVTopShelfContentProvider {
 
     // Keep in sync with the app's TopShelf enum (TopShelfSnapshot.swift).
-    private static let appGroupId = "group.com.nuvio.media.NuvioTV"
+    private static let appGroupId = Bundle.main.object(forInfoDictionaryKey: "NuvioAppGroupIdentifier") as? String
     private static let snapshotFilename = "top-shelf.json"
     private static let urlScheme = "nuviotv"
 
@@ -43,8 +43,9 @@ class ContentProvider: TVTopShelfContentProvider {
     }
 
     override func loadTopShelfContent() async -> (any TVTopShelfContent)? {
+        guard let appGroupId = Self.appGroupId, !appGroupId.isEmpty else { return nil }
         guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId)
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)
         else { return nil }
 
         // tvOS group containers are only writable under Library/Caches — the app writes there.
