@@ -244,12 +244,22 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     // Primary URL/key: accept both the fork's historical SUPABASE_* keys and upstream's
     // NUVIO_SUPABASE_* names so existing local.properties keep working after the
     // upstream runtime-config refactor (switchdb revert).
-    supabaseUrl.set(
-        sharedRuntimeConfigValue("SUPABASE_URL").ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_URL") }
-    )
-    supabaseAnonKey.set(
-        sharedRuntimeConfigValue("SUPABASE_ANON_KEY").ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_ANON_KEY") }
-    )
+    // Public client defaults, documented in NuvioTV/docs/nuvio-cloud-api-reference.md.
+    // A custom build endpoint must supply its own key; never pair it with the official key.
+    val configuredUrl = sharedRuntimeConfigValue("SUPABASE_URL")
+        .ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_URL") }
+    val configuredKey = sharedRuntimeConfigValue("SUPABASE_ANON_KEY")
+        .ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_ANON_KEY") }
+    val officialUrl = "https://api.nuvio.tv"
+    val resolvedUrl = configuredUrl.ifBlank { officialUrl }
+    require(resolvedUrl.startsWith("https://") || resolvedUrl.startsWith("http://")) {
+        "SUPABASE_URL must be an absolute HTTP(S) URL"
+    }
+    require(configuredKey.isNotBlank() || resolvedUrl.trimEnd('/') == officialUrl) {
+        "Custom SUPABASE_URL requires SUPABASE_ANON_KEY"
+    }
+    supabaseUrl.set(resolvedUrl)
+    supabaseAnonKey.set(configuredKey.ifBlank { "sb_publishable_1Clq8rlTVACkdcZuqr6_AD__xUUC_EN" })
     supabaseFallbackUrl.set(
         sharedRuntimeConfigValue("NUVIO_SUPABASE_FALLBACK_URL").ifBlank { sharedRuntimeConfigValue("SUPABASE_FALLBACK_URL") }
     )

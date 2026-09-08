@@ -55,6 +55,11 @@ enum AppFontRegistrar {
 struct NuvioTVApp: App {
     init() {
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--live-tv-ui-test") {
+            // Isolated test profile; never installed in release builds or normal launches.
+            let source = LiveTVSource(name: "Local test provider", kind: .m3u, address: "http://127.0.0.1:8766/playlist.m3u")
+            try? LiveTVSecureStorage.write([source], profile: "live-tv-ui-test")
+        }
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
@@ -72,7 +77,7 @@ struct NuvioTVApp: App {
         // docs/tvos-native-player-info-panel-plan.md). Registered — not written — so a user's explicit
         // OFF survives, and every `bool(forKey:)` reader (PlayerScreen routing, SettingsViewModel)
         // sees the same default without its own fallback logic.
-        UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true])
+        UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true, "hero_nuvio_style": true])
 
         // FEAT-11: seed the shared hero-trailer audio state from the user's configured default
         // (PlaybackSettingsPane's "Trailer Sound by Default" toggle, same `trailer_audio_default_on`
@@ -131,9 +136,23 @@ struct NuvioTVApp: App {
         // guest id on EVERY launch and shadowed real account sessions.
     }
 
+    @ViewBuilder private var appContent: some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--live-tv-ui-test") {
+            LiveTVView(profile: "live-tv-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--qr-sign-in-ui-test") {
+            QrSignInView()
+        } else {
+            ContentView()
+        }
+        #else
+        ContentView()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            appContent
                 // The app is a dark-canvas streaming UI (HIG: TV apps default dark). Pinning the
                 // scheme makes every semantic color (.primary, .secondary, materials) resolve to
                 // its dark variant regardless of the system appearance, so the semantic token

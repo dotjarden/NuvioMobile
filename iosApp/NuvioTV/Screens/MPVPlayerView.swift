@@ -790,6 +790,7 @@ final class MPVTVPlayerViewController: UIViewController {
     // resolves IMDB/TMDB ids itself and silently no-ops when Trakt isn't connected.
 
     private func startTraktScrobble() {
+        guard !context.isLive else { return }
         guard !traktScrobbleRequested else { return }
         // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
         // open a Trakt session — mirrors the shared short-placeholder guard.
@@ -906,6 +907,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// numbers). Works for anime out of the box (AniSkip/AnimeSkip); other content needs an
     /// `INTRO_DB_URL` configured. `requireSkipIntroEnabled: false` bypasses the mobile settings gate.
     private func fetchSkipSegments() {
+        guard !context.isLive else { return }
         guard let season = context.season, let episode = context.episode else { return }
         SkipIntroRepository.shared.getSkipIntervalsForContentId(
             // Routes kitsu:/mal: anime ids to the anime providers; everything else keeps the
@@ -1060,6 +1062,7 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
+        guard !context.isLive else { return }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -1093,6 +1096,7 @@ final class MPVTVPlayerViewController: UIViewController {
     )
 
     private func saveProgress(flush: Bool = false) {
+        guard !context.isLive else { return }
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec

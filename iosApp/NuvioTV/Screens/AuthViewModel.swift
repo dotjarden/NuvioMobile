@@ -68,7 +68,7 @@ final class AuthViewModel: ObservableObject {
         }
 
         errorWatcher = FlowWatcherKt.watch(AuthRepository.shared.error) { [weak self] emitted in
-            self?.errorMessage = emitted as? String
+            self?.errorMessage = (emitted as? String).map(AuthErrorMessage.readable)
         }
     }
 

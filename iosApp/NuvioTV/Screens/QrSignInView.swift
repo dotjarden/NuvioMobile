@@ -95,6 +95,7 @@ struct QrSignInView: View {
                     .interpolation(.none)
                     .resizable()
                     .scaledToFit()
+                    .accessibilityLabel("Sign-in QR code")
                     .frame(width: 420, height: 420)
                     .padding(Theme.Spacing.lg)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
@@ -103,7 +104,7 @@ struct QrSignInView: View {
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
                         .fill(Theme.Surface.panel)
                         .frame(width: 460, height: 460)
-                    if unsupportedByServer {
+                    if unsupportedByServer || errorMessage != nil {
                         Image(systemName: "qrcode")
                             .font(Theme.Font.hero)
                             .foregroundStyle(Theme.Palette.textSecondary)
@@ -240,7 +241,7 @@ struct QrSignInView: View {
 
     private var errorMessage: String? {
         let message: String? = model.state?.errorMessage
-        return message
+        return message.map(AuthErrorMessage.readable)
     }
 
     private var shortCode: String? {

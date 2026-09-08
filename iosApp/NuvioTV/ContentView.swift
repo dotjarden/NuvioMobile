@@ -281,6 +281,10 @@ struct MainTabView: View {
     /// Home gets covered that neither tab selection nor push depth can see (Codex beta.14 r8).
     var rootCoverActive: Bool = false
 
+    private var liveProfileKey: String {
+        LiveTVIdentity.digest("\(activeProfile?.userId ?? "guest")|\(activeProfile?.id ?? String(ProfileRepository.shared.activeProfileId))")
+    }
+
     /// Single shared instance for the whole tab shell — provided to every tab root (and anything
     /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. Declared here
     /// (not further up in `ContentView`) so it lives and dies with the tab shell itself.
@@ -315,6 +319,17 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView(model: home)
+                    .tabBarImmersiveHide()
+            }
+            Tab("Movies", systemImage: "film", value: 7) {
+                MediaBrowseView(model: home, mediaType: "movie").tabBarImmersiveHide()
+            }
+            Tab("Shows", systemImage: "rectangle.stack", value: 8) {
+                MediaBrowseView(model: home, mediaType: "series").tabBarImmersiveHide()
+            }
+            Tab("Live TV", systemImage: "tv", value: 6) {
+                LiveTVView(profile: liveProfileKey)
+                    .id(liveProfileKey)
                     .tabBarImmersiveHide()
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {

@@ -243,8 +243,27 @@
         }
       }
     },
+    "%@ – %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ – %2$@"
+          }
+        }
+      }
+    },
+    "%@, %@, %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@, %2$@, %3$@"
+          }
+        }
+      }
+    },
     "%@: %@": {
-      "shouldTranslate": false,
       "localizations": {
         "de": {
           "stringUnit": {
@@ -276,7 +295,8 @@
             "value": "%@: %@"
           }
         }
-      }
+      },
+      "shouldTranslate": false
     },
     "%d": {
       "localizations": {
@@ -347,6 +367,7 @@
       }
     },
     "%d filter%@ · %@": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -415,6 +436,7 @@
       }
     },
     "%d provider%@": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -1264,6 +1286,7 @@
         }
       }
     },
+    "0 as shipped": {},
     "0–10": {
       "localizations": {
         "de": {
@@ -1332,6 +1355,7 @@
         }
       }
     },
+    "1 defer hero": {},
     "1 entry": {
       "localizations": {
         "de": {
@@ -1504,13 +1528,19 @@
     },
     "10": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "10"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "10"
@@ -1523,12 +1553,6 @@
           }
         },
         "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "10"
-          }
-        },
-        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "10"
@@ -1538,13 +1562,19 @@
     },
     "100": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "100"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "100"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "100"
@@ -1557,12 +1587,6 @@
           }
         },
         "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "100"
-          }
-        },
-        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "100"
@@ -1674,13 +1698,19 @@
     },
     "18,35": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "18,35"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "18,35"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "18,35"
@@ -1693,12 +1723,6 @@
           }
         },
         "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "18,35"
-          }
-        },
-        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "18,35"
@@ -1706,15 +1730,22 @@
         }
       }
     },
+    "2 no tile animation": {},
     "2024": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "2024"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2024"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "2024"
@@ -1727,12 +1758,6 @@
           }
         },
         "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "2024"
-          }
-        },
-        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "2024"
@@ -1776,13 +1801,19 @@
     },
     "2024-12-31": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "2024-12-31"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2024-12-31"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "2024-12-31"
@@ -1799,21 +1830,15 @@
             "state": "translated",
             "value": "2024-12-31"
           }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "2024-12-31"
-          }
         }
       }
     },
     "213 for Netflix": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "213 pour Netflix"
+            "value": "213 für Netflix"
           }
         },
         "es": {
@@ -1822,10 +1847,10 @@
             "value": "213 para Netflix"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "213 für Netflix"
+            "value": "213 pour Netflix"
           }
         },
         "it": {
@@ -1844,13 +1869,19 @@
     },
     "28,12": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "28,12"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "28,12"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "28,12"
@@ -1867,15 +1898,10 @@
             "state": "translated",
             "value": "28,12"
           }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "28,12"
-          }
         }
       }
     },
+    "3 both": {},
     "30 s": {
       "localizations": {
         "de": {
@@ -1980,10 +2006,10 @@
     },
     "420 for Marvel Studios": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "420 pour Marvel Studios"
+            "value": "420 für Marvel Studios"
           }
         },
         "es": {
@@ -1992,10 +2018,10 @@
             "value": "420 para Marvel Studios"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "420 für Marvel Studios"
+            "value": "420 pour Marvel Studios"
           }
         },
         "it": {
@@ -2150,13 +2176,19 @@
     },
     "8|337|350": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "8|337|350"
           }
         },
         "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8|337|350"
+          }
+        },
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "8|337|350"
@@ -2169,12 +2201,6 @@
           }
         },
         "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "8|337|350"
-          }
-        },
-        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "8|337|350"
@@ -2252,10 +2278,10 @@
     },
     "9715 for superhero": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "9715 pour super-héros"
+            "value": "9715 für Superheld"
           }
         },
         "es": {
@@ -2264,10 +2290,10 @@
             "value": "9715 para superhéroes"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "9715 für Superheld"
+            "value": "9715 pour super-héros"
           }
         },
         "it": {
@@ -2290,10 +2316,10 @@
     "API key saved": {},
     "About": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "À propos"
+            "value": "Über"
           }
         },
         "es": {
@@ -2302,10 +2328,10 @@
             "value": "Acerca de"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Über"
+            "value": "À propos"
           }
         },
         "it": {
@@ -2662,6 +2688,8 @@
         }
       }
     },
+    "Add a source": {},
+    "Add favorite": {},
     "Add movies and shows with the + button on a title’s page.": {
       "localizations": {
         "de": {
@@ -2697,7 +2725,9 @@
       }
     },
     "Add one in Settings → Content Sources → Addons.": {},
+    "Add source": {},
     "Add to Library": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -3687,10 +3717,10 @@
     },
     "Back": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retour"
+            "value": "Zurück"
           }
         },
         "es": {
@@ -3699,10 +3729,10 @@
             "value": "Atrás"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Zurück"
+            "value": "Retour"
           }
         },
         "it": {
@@ -4706,6 +4736,8 @@
         }
       }
     },
+    "Channel": {},
+    "Channels": {},
     "Check Server": {
       "localizations": {
         "de": {
@@ -5048,6 +5080,7 @@
       }
     },
     "Classic layout with the logo on the lower left": {},
+    "Clear": {},
     "Clear All Filters": {
       "localizations": {
         "de": {
@@ -5186,10 +5219,10 @@
     },
     "Close": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fermer"
+            "value": "Schließen"
           }
         },
         "es": {
@@ -5198,10 +5231,10 @@
             "value": "Cerrar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Schließen"
+            "value": "Fermer"
           }
         },
         "it": {
@@ -5286,6 +5319,8 @@
         }
       }
     },
+    "Collection Focus A/B": {},
+    "Collection Frame Probe": {},
     "Comments": {
       "localizations": {
         "de": {
@@ -5356,10 +5391,10 @@
     },
     "Company IDs": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "ID de société"
+            "value": "Firmen-IDs"
           }
         },
         "es": {
@@ -5368,10 +5403,10 @@
             "value": "IDs de compañía"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Firmen-IDs"
+            "value": "ID de société"
           }
         },
         "it": {
@@ -5388,6 +5423,7 @@
         }
       }
     },
+    "Compatibility player": {},
     "Confirm the PIN before choosing a new one.": {
       "localizations": {
         "de": {
@@ -5626,6 +5662,7 @@
         }
       }
     },
+    "Connect an M3U playlist or Xtream provider to watch Live TV.": {},
     "Connect an account in Settings.": {
       "localizations": {
         "de": {
@@ -5898,6 +5935,7 @@
         }
       }
     },
+    "Connecting…": {},
     "Contains spoilers — press to reveal": {
       "localizations": {
         "de": {
@@ -6989,6 +7027,7 @@
       }
     },
     "Declared bandwidth": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -7872,6 +7911,7 @@
         }
       }
     },
+    "Done": {},
     "Draw an outline around text for readability": {
       "localizations": {
         "de": {
@@ -8008,6 +8048,7 @@
         }
       }
     },
+    "Earlier": {},
     "Edge": {
       "localizations": {
         "de": {
@@ -8248,10 +8289,10 @@
     },
     "Embedded": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Intégré"
+            "value": "Eingebettet"
           }
         },
         "es": {
@@ -8260,10 +8301,10 @@
             "value": "Integrado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Eingebettet"
+            "value": "Intégré"
           }
         },
         "it": {
@@ -8382,6 +8423,7 @@
         }
       }
     },
+    "Enable a catalog for this media type in Add-ons.": {},
     "Enable the edge highlight and top sheen": {
       "localizations": {
         "de": {
@@ -9130,6 +9172,7 @@
         }
       }
     },
+    "Favorite %@": {},
     "File Size Badges": {
       "localizations": {
         "de": {
@@ -9302,12 +9345,13 @@
     },
     "Focused artwork shows a ring in your accent color": {},
     "Focused cards keep their size — highlight and shadow only": {},
+    "Fonts": {},
     "Forced": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Forcé"
+            "value": "Erzwungen"
           }
         },
         "es": {
@@ -9316,10 +9360,10 @@
             "value": "Forzado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erzwungen"
+            "value": "Forcé"
           }
         },
         "it": {
@@ -9472,6 +9516,7 @@
         }
       }
     },
+    "Frame timing per focus step on collection rows; requires relaunch to change the A/B leg": {},
     "French": {
       "localizations": {
         "de": {
@@ -9678,10 +9723,10 @@
     },
     "Genre IDs": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "ID de genre"
+            "value": "Genre-IDs"
           }
         },
         "es": {
@@ -9690,10 +9735,10 @@
             "value": "IDs de género"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Genre-IDs"
+            "value": "ID de genre"
           }
         },
         "it": {
@@ -9812,6 +9857,7 @@
         }
       }
     },
+    "Go live": {},
     "Go to Movie": {
       "localizations": {
         "de": {
@@ -9914,6 +9960,7 @@
         }
       }
     },
+    "Guide": {},
     "Half": {
       "localizations": {
         "de": {
@@ -10018,6 +10065,7 @@
       }
     },
     "Hero Info on the Right": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -10086,6 +10134,7 @@
       }
     },
     "Hero Poster Only When Focused": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -10187,6 +10236,7 @@
         }
       }
     },
+    "Hide": {},
     "Hide Discover": {
       "localizations": {
         "de": {
@@ -10801,6 +10851,7 @@
       }
     },
     "In Library": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -10937,6 +10988,7 @@
       }
     },
     "Indicated bitrate": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -11311,6 +11363,7 @@
         }
       }
     },
+    "Its channels will be removed from this profile’s guide and favorites.": {},
     "JS plugin providers add extra stream sources. Install a repository by its manifest URL — it syncs to your other Nuvio devices automatically.": {
       "localizations": {
         "de": {
@@ -11483,10 +11536,10 @@
     },
     "Keyword IDs": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "ID de mots-clés"
+            "value": "Stichwort-IDs"
           }
         },
         "es": {
@@ -11495,10 +11548,10 @@
             "value": "IDs de palabra clave"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Stichwort-IDs"
+            "value": "ID de mots-clés"
           }
         },
         "it": {
@@ -11821,6 +11874,8 @@
         }
       }
     },
+    "Later": {},
+    "Leave blank to use the guide supplied by your playlist or Xtream provider.": {},
     "Library": {
       "localizations": {
         "de": {
@@ -11891,16 +11946,22 @@
     },
     "Library Source": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Source de la bibliothèque"
+            "value": "Bibliotheksquelle"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Fuente de la biblioteca"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source de la bibliothèque"
           }
         },
         "it": {
@@ -11913,12 +11974,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nguồn thư viện"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bibliotheksquelle"
           }
         }
       }
@@ -11958,6 +12013,9 @@
       }
     },
     "Limit reached — turn another source off first": {},
+    "Live": {},
+    "Live TV": {},
+    "Live TV sources": {},
     "Loading catalogs…": {
       "localizations": {
         "de": {
@@ -12230,6 +12288,7 @@
         }
       }
     },
+    "Manage Add-ons": {},
     "Manage add-ons, Home rows, API keys, and stream badge packs from a phone or laptop browser on the same network — no on-screen keyboard. Changes only apply after you confirm them here.": {
       "localizations": {
         "de": {
@@ -12265,6 +12324,7 @@
       }
     },
     "Mark Watched": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -12334,10 +12394,10 @@
     },
     "Maximum rating": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Note maximale"
+            "value": "Maximalbewertung"
           }
         },
         "es": {
@@ -12346,10 +12406,10 @@
             "value": "Calificación máxima"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Maximalbewertung"
+            "value": "Note maximale"
           }
         },
         "it": {
@@ -12538,10 +12598,10 @@
     },
     "Minimum rating": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Note minimale"
+            "value": "Mindestbewertung"
           }
         },
         "es": {
@@ -12550,10 +12610,10 @@
             "value": "Calificación mínima"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mindestbewertung"
+            "value": "Note minimale"
           }
         },
         "it": {
@@ -12572,10 +12632,10 @@
     },
     "Minimum votes": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Votes minimum"
+            "value": "Mindeststimmen"
           }
         },
         "es": {
@@ -12584,10 +12644,10 @@
             "value": "Votos mínimos"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mindeststimmen"
+            "value": "Votes minimum"
           }
         },
         "it": {
@@ -12945,6 +13005,7 @@
       }
     },
     "Native player for Dolby Vision (beta)": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -13049,10 +13110,10 @@
     },
     "Network IDs": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "ID de chaîne"
+            "value": "Sender-IDs"
           }
         },
         "es": {
@@ -13061,10 +13122,10 @@
             "value": "IDs de cadena"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sender-IDs"
+            "value": "ID de chaîne"
           }
         },
         "it": {
@@ -13117,10 +13178,10 @@
     },
     "Networks": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chaînes"
+            "value": "Sender"
           }
         },
         "es": {
@@ -13129,10 +13190,10 @@
             "value": "Cadenas"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sender"
+            "value": "Chaînes"
           }
         },
         "it": {
@@ -13149,6 +13210,7 @@
         }
       }
     },
+    "Next": {},
     "No Upcoming row on Home": {},
     "No Zoom on Focus": {
       "localizations": {
@@ -13320,6 +13382,7 @@
         }
       }
     },
+    "No catalogs available": {},
     "No changes detected.": {
       "localizations": {
         "de": {
@@ -13388,6 +13451,7 @@
         }
       }
     },
+    "No focus steps measured yet — walk a collection row on Home.": {},
     "No installed add-on offers search. Install a catalog add-on with search support and its sources will appear here.": {
       "extractionState": "manual",
       "localizations": {
@@ -13457,6 +13521,7 @@
         }
       }
     },
+    "No matching channels": {},
     "No playable files": {
       "localizations": {
         "de": {
@@ -13559,6 +13624,7 @@
         }
       }
     },
+    "No programme information · Watch live": {},
     "No results.": {
       "localizations": {
         "de": {
@@ -13698,6 +13764,7 @@
     },
     "No stream lookups yet — press Play on the title that fails.": {},
     "No streaming addons installed — only a metadata catalog (Cinemeta) is set up.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14004,6 +14071,7 @@
         }
       }
     },
+    "Now": {},
     "Nudity": {
       "localizations": {
         "de": {
@@ -14074,16 +14142,22 @@
     },
     "Nuvio Library": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bibliothèque Nuvio"
+            "value": "Nuvio-Bibliothek"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Biblioteca Nuvio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bibliothèque Nuvio"
           }
         },
         "it": {
@@ -14097,27 +14171,27 @@
             "state": "translated",
             "value": "Thư viện Nuvio"
           }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nuvio-Bibliothek"
-          }
         }
       }
     },
     "Nuvio Sync": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nuvio Sync"
+            "value": "Nuvio-Sync"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Sincronización Nuvio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio Sync"
           }
         },
         "it": {
@@ -14130,12 +14204,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nuvio Sync"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nuvio-Sync"
           }
         }
       }
@@ -14380,6 +14448,7 @@
       }
     },
     "Off · API key saved": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14414,6 +14483,7 @@
       }
     },
     "Off · Buttons show text and icons": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14448,6 +14518,7 @@
       }
     },
     "Off · Classic layout with the logo on the lower left": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14482,6 +14553,7 @@
       }
     },
     "Off · Detail pages show only the backdrop": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14516,6 +14588,7 @@
       }
     },
     "Off · Detail pages stay on the still artwork": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14550,6 +14623,7 @@
       }
     },
     "Off · Focused artwork uses the system highlight only": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14584,6 +14658,7 @@
       }
     },
     "Off · Focused cards lift and zoom slightly": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14653,6 +14728,7 @@
       }
     },
     "Off · Home hero artwork is always visible": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14687,6 +14763,7 @@
       }
     },
     "Off · Home starts directly with catalog rows": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14721,6 +14798,7 @@
       }
     },
     "Off · No Upcoming row on Home": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14755,6 +14833,7 @@
       }
     },
     "Off · No rotating banner — the top of Home shows the focused title's artwork and description": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14789,6 +14868,7 @@
       }
     },
     "Off · Posters show artwork only": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14823,6 +14903,7 @@
       }
     },
     "Off · Search shows the Discover section (types, catalogs, genres) below the field": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14857,6 +14938,7 @@
       }
     },
     "Off · The hero shows artwork only": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14891,6 +14973,7 @@
       }
     },
     "Off · Trailers only play when selected": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14925,6 +15008,7 @@
       }
     },
     "Off · Trailers start muted": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14959,6 +15043,7 @@
       }
     },
     "Off · Turn on before walking Home down and back up, or running Detail push/pop cycles": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -14993,6 +15078,7 @@
       }
     },
     "Off · Turn on if asked to capture a hero artwork report, then relaunch the app": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15027,6 +15113,7 @@
       }
     },
     "Off · add-on release dates are used as-is": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15061,6 +15148,7 @@
       }
     },
     "Off · rows use the add-on's catalog name": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15196,6 +15284,7 @@
         }
       }
     },
+    "On now": {},
     "On your phone or computer, go to": {
       "localizations": {
         "de": {
@@ -15266,6 +15355,7 @@
       }
     },
     "On · A muted trailer plays behind the description on detail pages": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15300,6 +15390,7 @@
       }
     },
     "On · A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15334,6 +15425,7 @@
       }
     },
     "On · A row under Continue Watching with your shows' next episodes airing in the next 14 days": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15368,6 +15460,7 @@
       }
     },
     "On · API key saved": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15402,6 +15495,7 @@
       }
     },
     "On · After relaunching, this launch's hero paint log appears below — photograph it when reporting": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15471,6 +15565,7 @@
       }
     },
     "On · Buttons show icons only": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15505,6 +15600,7 @@
       }
     },
     "On · Focused artwork shows a ring in your accent color": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15539,6 +15635,7 @@
       }
     },
     "On · Focused cards keep their size — highlight and shadow only": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15573,6 +15670,7 @@
       }
     },
     "On · Home hero artwork fades in only while the hero carousel is focused": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15607,6 +15705,7 @@
       }
     },
     "On · Home opens with a rotating banner built from up to 2 of your catalogs": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15641,6 +15740,7 @@
       }
     },
     "On · Play the trailer full screen shortly after opening a title": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15675,6 +15775,7 @@
       }
     },
     "On · Poster and description sit in the top right, Nuvio-style": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15709,6 +15810,7 @@
       }
     },
     "On · Posters play a muted trailer preview after a moment of focus": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15743,6 +15845,7 @@
       }
     },
     "On · Scroll-geometry and push/pop counters below — photograph after testing": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15777,6 +15880,7 @@
       }
     },
     "On · Search shows only the search field and recent searches": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15811,6 +15915,7 @@
       }
     },
     "On · Show the title's poster on the right side of detail pages": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15845,6 +15950,7 @@
       }
     },
     "On · TMDB air dates override add-on release dates": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15879,6 +15985,7 @@
       }
     },
     "On · The hero plays a muted trailer preview after a moment of focus on a poster": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15913,6 +16020,7 @@
       }
     },
     "On · The hero plays its trailer by itself, without waiting for focus": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15947,6 +16055,7 @@
       }
     },
     "On · Title and description on the left, artwork on the right, hero pinned while rows scroll": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -15981,6 +16090,7 @@
       }
     },
     "On · Trailers start with sound; play/pause mutes": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -16015,6 +16125,7 @@
       }
     },
     "On · rows read like “Popular - Movies”": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -16287,6 +16398,7 @@
       }
     },
     "Or go to nuvio.tv/tv-login and enter:": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -16390,10 +16502,10 @@
     },
     "Origin country": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pays d’origine"
+            "value": "Herkunftsland"
           }
         },
         "es": {
@@ -16402,10 +16514,10 @@
             "value": "País de origen"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Herkunftsland"
+            "value": "Pays d’origine"
           }
         },
         "it": {
@@ -16458,10 +16570,10 @@
     },
     "Original language": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Langue originale"
+            "value": "Originalsprache"
           }
         },
         "es": {
@@ -16470,10 +16582,10 @@
             "value": "Idioma original"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Originalsprache"
+            "value": "Langue originale"
           }
         },
         "it": {
@@ -16729,6 +16841,7 @@
       }
     },
     "Play": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17035,6 +17148,7 @@
         }
       }
     },
+    "Playlist URL": {},
     "Plugins": {
       "localizations": {
         "de": {
@@ -17683,6 +17797,7 @@
         }
       }
     },
+    "Previous": {},
     "Production": {
       "localizations": {
         "de": {
@@ -17819,6 +17934,7 @@
         }
       }
     },
+    "Programme information unavailable": {},
     "Publishable key discovered automatically": {
       "localizations": {
         "de": {
@@ -17922,6 +18038,7 @@
       }
     },
     "Quick install (from DebugConfig)": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -18401,12 +18518,6 @@
     },
     "Relaunch, walk down every row on Home and back up, then photograph this pane": {
       "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Relancez, parcourez toutes les rangées de l'accueil vers le bas puis vers le haut, puis photographiez ce panneau"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -18417,6 +18528,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Reinicia, recorre todas las filas de Inicio hacia abajo y de vuelta arriba, y luego fotografía este panel"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancez, parcourez toutes les rangées de l'accueil vers le bas puis vers le haut, puis photographiez ce panneau"
           }
         },
         "it": {
@@ -18469,10 +18586,10 @@
     },
     "Release or air date from": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Date de sortie ou de diffusion depuis"
+            "value": "Erscheinungs- oder Ausstrahlungsdatum von"
           }
         },
         "es": {
@@ -18481,10 +18598,10 @@
             "value": "Fecha de estreno o emisión desde"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erscheinungs- oder Ausstrahlungsdatum von"
+            "value": "Date de sortie ou de diffusion depuis"
           }
         },
         "it": {
@@ -18503,10 +18620,10 @@
     },
     "Release or air date to": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Date de sortie ou de diffusion jusqu’au"
+            "value": "Erscheinungs- oder Ausstrahlungsdatum bis"
           }
         },
         "es": {
@@ -18515,10 +18632,10 @@
             "value": "Fecha de estreno o emisión hasta"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erscheinungs- oder Ausstrahlungsdatum bis"
+            "value": "Date de sortie ou de diffusion jusqu’au"
           }
         },
         "it": {
@@ -18603,6 +18720,7 @@
         }
       }
     },
+    "Remove %@ from favorites": {},
     "Remove %@?": {
       "localizations": {
         "de": {
@@ -18739,6 +18857,7 @@
         }
       }
     },
+    "Remove favorite": {},
     "Remove from Continue Watching": {
       "localizations": {
         "de": {
@@ -18841,6 +18960,7 @@
         }
       }
     },
+    "Remove source?": {},
     "Removes this provider's key from this profile. Streams will no longer resolve through it.": {
       "localizations": {
         "de": {
@@ -19149,10 +19269,10 @@
     },
     "Retry": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Réessayer"
+            "value": "Erneut versuchen"
           }
         },
         "es": {
@@ -19161,10 +19281,10 @@
             "value": "Reintentar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erneut versuchen"
+            "value": "Réessayer"
           }
         },
         "it": {
@@ -19353,12 +19473,6 @@
     },
     "Row Settle Diagnostics": {
       "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Diagnostic de position des rangées"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -19369,6 +19483,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Diagnóstico de posición de filas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de position des rangées"
           }
         },
         "it": {
@@ -19657,6 +19777,7 @@
         }
       }
     },
+    "Save and connect": {},
     "Saved": {
       "localizations": {
         "de": {
@@ -19693,16 +19814,22 @@
     },
     "Saving…": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enregistrement…"
+            "value": "Wird gespeichert…"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Ahorro…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enregistrement…"
           }
         },
         "it": {
@@ -19715,12 +19842,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang lưu…"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wird gespeichert…"
           }
         }
       }
@@ -19999,6 +20120,7 @@
         }
       }
     },
+    "Search channels": {},
     "Search movies & shows": {
       "localizations": {
         "de": {
@@ -20205,6 +20327,7 @@
         }
       }
     },
+    "See all": {},
     "Segments": {
       "localizations": {
         "de": {
@@ -20375,6 +20498,7 @@
         }
       }
     },
+    "Server URL": {},
     "Server: %@": {
       "localizations": {
         "de": {
@@ -21022,6 +21146,7 @@
         }
       }
     },
+    "Shows": {},
     "Shows a short code to enter at simkl.com/pin on your phone or computer.": {
       "localizations": {
         "de": {
@@ -21331,6 +21456,7 @@
       }
     },
     "Sign In with Phone": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -21467,6 +21593,7 @@
       }
     },
     "Sign in to sync your library, watch progress, and profiles across devices — or continue as a guest on this Apple TV only.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -21602,6 +21729,7 @@
         }
       }
     },
+    "Sign-in QR code": {},
     "Sign-in failed. Try again, or paste an API key manually below.": {
       "localizations": {
         "de": {
@@ -21978,10 +22106,10 @@
     },
     "Sort": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tri"
+            "value": "Sortieren"
           }
         },
         "es": {
@@ -21990,10 +22118,10 @@
             "value": "Orden"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sortieren"
+            "value": "Tri"
           }
         },
         "it": {
@@ -22112,6 +22240,8 @@
         }
       }
     },
+    "Source name": {},
+    "Source type": {},
     "Sources": {
       "localizations": {
         "de": {
@@ -22146,6 +22276,7 @@
         }
       }
     },
+    "Sources are saved securely on this Apple TV for the active profile. Your existing Stremio addons remain available in Add-ons.": {},
     "Spanish": {
       "localizations": {
         "de": {
@@ -22283,6 +22414,7 @@
       }
     },
     "Stalls": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -23000,16 +23132,22 @@
     },
     "Switch": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Changer"
+            "value": "Wechseln"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Cambiar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changer"
           }
         },
         "it": {
@@ -23022,12 +23160,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chuyển"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wechseln"
           }
         }
       }
@@ -23203,6 +23335,7 @@
       }
     },
     "Switching Audio…": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -24942,6 +25075,7 @@
       }
     },
     "Title and description on the left, artwork on the right, hero pinned while rows scroll": {},
+    "Toggle favorite": {},
     "Too many attempts. Try again in %ds.": {
       "localizations": {
         "de": {
@@ -25318,6 +25452,7 @@
       }
     },
     "Trailer muted — press play/pause to unmute": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -25386,6 +25521,7 @@
       }
     },
     "Trailer sound on — press play/pause to mute": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -25726,6 +25862,7 @@
         }
       }
     },
+    "Try another category or search, or check your source connection.": {},
     "Turn cached torrent results into direct links automatically": {
       "localizations": {
         "de": {
@@ -25764,12 +25901,6 @@
     "Turn on if asked to capture a hero artwork report, then relaunch the app": {},
     "Turn on if asked to capture a row position report, then relaunch the app": {
       "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activez si l'on vous demande un rapport de position des rangées, puis relancez l'app"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -25780,6 +25911,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Actívalo si te piden un informe de posición de filas y luego reinicia la app"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activez si l'on vous demande un rapport de position des rangées, puis relancez l'app"
           }
         },
         "it": {
@@ -26070,6 +26207,7 @@
         }
       }
     },
+    "Up next · %@": {},
     "Up next · %@ · playing in %llds": {
       "localizations": {
         "de": {
@@ -26106,10 +26244,10 @@
     },
     "Upcoming": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "À venir"
+            "value": "Demnächst"
           }
         },
         "es": {
@@ -26118,10 +26256,10 @@
             "value": "Próximamente"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Demnächst"
+            "value": "À venir"
           }
         },
         "it": {
@@ -26172,6 +26310,7 @@
         }
       }
     },
+    "Updating channels and guide…": {},
     "Use Official Server": {
       "localizations": {
         "de": {
@@ -26378,10 +26517,10 @@
     },
     "Use YYYY-MM-DD, for example 2024-01-01.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Utilisez le format AAAA-MM-JJ, ex. 2024-01-01."
+            "value": "Verwende JJJJ-MM-TT, zum Beispiel 2024-01-01."
           }
         },
         "es": {
@@ -26390,10 +26529,10 @@
             "value": "Usa YYYY-MM-DD, por ejemplo 2024-01-01."
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verwende JJJJ-MM-TT, zum Beispiel 2024-01-01."
+            "value": "Utilisez le format AAAA-MM-JJ, ex. 2024-01-01."
           }
         },
         "it": {
@@ -26546,6 +26685,7 @@
         }
       }
     },
+    "Username": {},
     "Version": {
       "localizations": {
         "de": {
@@ -26650,10 +26790,10 @@
     },
     "Vietnamese": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vietnamien"
+            "value": "Vietnamesisch"
           }
         },
         "es": {
@@ -26662,10 +26802,10 @@
             "value": "Vietnamita"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vietnamesisch"
+            "value": "Vietnamien"
           }
         },
         "it": {
@@ -26682,6 +26822,7 @@
         }
       }
     },
+    "View": {},
     "Violence": {
       "localizations": {
         "de": {
@@ -26955,6 +27096,7 @@
       }
     },
     "Watch Trailer": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -26990,16 +27132,22 @@
     },
     "Watch provider IDs": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "ID des fournisseurs de visionnage"
+            "value": "Anbieter-IDs"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Ver ID de proveedores"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID des fournisseurs de visionnage"
           }
         },
         "it": {
@@ -27013,27 +27161,27 @@
             "state": "translated",
             "value": "ID nền tảng"
           }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Anbieter-IDs"
-          }
         }
       }
     },
     "Watch region": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Région de visionnage"
+            "value": "Anbieterregion"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Ver región"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Région de visionnage"
           }
         },
         "it": {
@@ -27047,16 +27195,11 @@
             "state": "translated",
             "value": "Khu vực phát hành"
           }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Anbieterregion"
-          }
         }
       }
     },
     "Watched": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -27396,12 +27539,13 @@
         }
       }
     },
+    "XMLTV URL (optional)": {},
     "Year": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Année"
+            "value": "Jahr"
           }
         },
         "es": {
@@ -27410,10 +27554,10 @@
             "value": "Año"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Jahr"
+            "value": "Année"
           }
         },
         "it": {
@@ -27498,6 +27642,7 @@
         }
       }
     },
+    "Your channels belong here": {},
     "Your installed addons either don’t serve streams, or don’t cover this content type.": {},
     "Your library is empty": {
       "localizations": {
@@ -27773,6 +27918,7 @@
       }
     },
     "debug_env cr=%lld w=%lld depth=%lld edge=%lld": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -27807,6 +27953,7 @@
       }
     },
     "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -27840,8 +27987,8 @@
         }
       }
     },
-    "debug_pinned %@": {},
     "debug_trailers n=%lld thumbs=%lld": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -27876,6 +28023,7 @@
       }
     },
     "debug_ux6 dark=%lld": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -28144,6 +28292,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "trên %@"
+          }
+        }
+      }
+    },
+    "refresh=%lld leg=%lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "refresh=%1$lld leg=%2$lld"
           }
         }
       }

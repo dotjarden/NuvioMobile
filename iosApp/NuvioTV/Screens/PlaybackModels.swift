@@ -63,6 +63,8 @@ struct PlaybackContext: Identifiable {
     /// overwhelming majority of streams. Consumed by BOTH engines: mpv (`http-header-fields`)
     /// and the native path's FFmpeg source opens (MediaProbe + RemuxSession `headers` option).
     var requestHeaders: [String: String] = [:]
+    /// Live channels must never resume, scrobble, or enter movie/episode watch history.
+    var isLive: Bool = false
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and

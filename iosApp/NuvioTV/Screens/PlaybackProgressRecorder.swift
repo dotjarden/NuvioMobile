@@ -15,6 +15,7 @@ final class PlaybackProgressRecorder {
 
     /// Saved resume position in seconds — only if >10s in and not completed (mirrors MPV's gate).
     func resumePositionSec() -> Double? {
+        guard !context.isLive else { return nil }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -51,6 +52,7 @@ final class PlaybackProgressRecorder {
 
     /// Record playback progress. `flush` forces an immediate write (use on teardown).
     func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool) {
+        guard !context.isLive else { return }
         guard durationSec > 0, positionSec > 1 else { return }
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -77,6 +79,7 @@ final class PlaybackProgressRecorder {
     private var traktClosed = false
 
     func startTrakt(positionSec: Double, durationSec: Double) {
+        guard !context.isLive else { return }
         guard !traktRequested else { return }
         // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
         // open a Trakt session — mirrors the shared short-placeholder guard.
