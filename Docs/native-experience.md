@@ -46,3 +46,11 @@ The dedicated `NuvioTVUITests` scheme contains `LiveTVExperienceTests`. It exerc
 Clean builds use the official public `https://api.nuvio.tv` endpoint and publishable client key documented in the outer repository's cloud API reference. `SUPABASE_URL` / `SUPABASE_ANON_KEY` and the equivalent `NUVIO_` variables still override defaults. A custom build endpoint without a key now fails during configuration instead of producing a broken login screen. Runtime self-hosted server selection is unchanged.
 
 `AuthenticationConnectivityTests` is an opt-in integration test against the live official service. It creates a temporary anonymous pairing session and verifies that the native screen renders a QR code; it does not approve a pairing or authenticate a personal account. `tests/auth/AuthErrorChecks.swift` verifies readable error handling and removal of raw request diagnostics.
+
+## September UX revision
+
+Home is unchanged. Movies and Shows now share Browse, with featured artwork and horizontal shelves. Its type, catalog, genre, and sort selectors use opaque remote-focusable selection panels. Catalog/genre filtering uses the shared paginated Discover service. A–Z and rating sorts apply to fetched pages; provider ordering remains the default. Search merges provider result rows into one deduplicated grid, keyed by content type and ID. Library adds title search and content-type filtering, preserving its existing profile-scoped sort and cloud source.
+
+Live TV defaults to On now channel cards; the timed guide remains available through View. Categories are selected from a panel instead of a long chip row. Source setup is one opaque presentation with an inline editor, persistent field labels, adjacent action buttons, and visible validation. A source name is optional and defaults to the provider host. Source and programme presentations use solid backgrounds.
+
+Validated on tvOS 27 simulator: type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV. Native screenshots reviewed for overlapping text and contrast. Device build succeeds. Home source was not modified.

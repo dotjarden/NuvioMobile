@@ -17,6 +17,21 @@ final class LiveTVExperienceTests: XCTestCase {
         }
         XCTFail("Could not focus \(target.label) using the remote")
     }
+    @MainActor func testBrowseTypeSelection() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--browse-ui-test"]
+        app.launch()
+        let menu = app.buttons["Browse: Movies"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        select(menu, in: app)
+        XCTAssertTrue(app.buttons["Shows"].waitForExistence(timeout: 5))
+        select(app.buttons["Shows"], in: app)
+        XCTAssertTrue(app.buttons["Browse: Shows"].waitForExistence(timeout: 10))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Browse shows"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     @MainActor func testGuideAndNativeSourceManagement() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -30,10 +45,19 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(app.buttons["Add source"].waitForExistence(timeout: 10))
         select(app.buttons["Add source"], in: app)
         XCTAssertTrue(app.textFields["Source name"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["Save and connect"].isEnabled)
+        XCTAssertTrue(app.buttons["Save and connect"].isEnabled)
+        select(app.buttons["Save and connect"], in: app)
+        XCTAssertTrue(app.staticTexts["sourceValidation"].waitForExistence(timeout: 5))
+        let editorShot = XCTAttachment(screenshot: app.screenshot())
+        editorShot.name = "Readable source editor"; editorShot.lifetime = .keepAlways; add(editorShot)
         XCTAssertTrue(app.buttons["Cancel"].exists)
         select(app.buttons["Cancel"], in: app)
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10))
+        let existing = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Local test provider")).firstMatch
+        select(existing, in: app)
+        XCTAssertTrue(app.buttons["Save and connect"].waitForExistence(timeout: 5))
+        select(app.buttons["Save and connect"], in: app)
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 30))
         select(app.buttons["Done"], in: app)
         XCTAssertTrue(app.buttons["Sources"].waitForExistence(timeout: 10))
     }

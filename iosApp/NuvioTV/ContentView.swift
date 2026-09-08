@@ -321,11 +321,8 @@ struct MainTabView: View {
                 HomeView(model: home)
                     .tabBarImmersiveHide()
             }
-            Tab("Movies", systemImage: "film", value: 7) {
+            Tab("Browse", systemImage: "film", value: 7) {
                 MediaBrowseView(model: home, mediaType: "movie").tabBarImmersiveHide()
-            }
-            Tab("Shows", systemImage: "rectangle.stack", value: 8) {
-                MediaBrowseView(model: home, mediaType: "series").tabBarImmersiveHide()
             }
             Tab("Live TV", systemImage: "tv", value: 6) {
                 LiveTVView(profile: liveProfileKey)

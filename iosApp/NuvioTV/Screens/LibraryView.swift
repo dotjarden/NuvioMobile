@@ -1,5 +1,6 @@
 import SwiftUI
 import SharedCore
+import class SharedCore.LibraryItem
 
 /// The Library tab: a focusable poster grid of the titles saved via "Add to Library" (tap opens
 /// detail; long-press removes), plus — when a debrid provider with cloud support is connected —
@@ -9,6 +10,8 @@ struct LibraryView: View {
     @StateObject private var cloud = CloudLibraryViewModel()
     @Environment(\.posterStyle) private var posterStyle
     @State private var showingCloud = false
+    @State private var mediaType = "All titles"
+    @State private var query = ""
     @State private var filePicker: CloudFilePickerRoute?
 
     private var columns: [GridItem] {
@@ -25,9 +28,11 @@ struct LibraryView: View {
 
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                        Text("Library")
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                        HStack(spacing: 24) {
+                            TextField("Search your library", text: $query).frame(maxWidth: 600)
+                            TVSelectionMenu(title: "Content type", value: mediaType, options: ["All titles", "Movies", "Shows"]) { mediaType = $0 }
+                            if !showingCloud { sortChips }
+                        }
 
                         if cloud.hasConnectedProvider {
                             sourceChips
@@ -38,9 +43,9 @@ struct LibraryView: View {
                         } else if model.items.isEmpty {
                             emptyState
                         } else {
-                            sortChips
+                            if visibleItems.isEmpty { Text("No saved titles match these filters.").foregroundStyle(.secondary) }
                             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                                ForEach(model.items, id: \.id) { item in
+                                ForEach(visibleItems, id: \.id) { item in
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
                                         PosterCard(title: item.name, imageURL: item.poster)
                                     }
@@ -99,16 +104,13 @@ struct LibraryView: View {
 
     // MARK: - Sort (shared LibraryDisplaySettingsRepository — persisted + profile-scoped)
 
+    private var visibleItems: [LibraryItem] {
+        model.items.filter { (mediaType == "All titles" || $0.type == (mediaType == "Movies" ? "movie" : "series")) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }
+    }
+
     private var sortChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(model.availableSortOptions, id: \.name) { option in
-                    sourceChip(Self.sortLabel(option), isActive: option == model.sortOption) {
-                        model.setSort(option)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
+        TVSelectionMenu(title: "Sort library", value: Self.sortLabel(model.sortOption), options: model.availableSortOptions.map(Self.sortLabel)) { selected in
+            if let option = model.availableSortOptions.first(where: { Self.sortLabel($0) == selected }) { model.setSort(option) }
         }
     }
 

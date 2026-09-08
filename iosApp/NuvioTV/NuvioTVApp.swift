@@ -140,6 +140,8 @@ struct NuvioTVApp: App {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--live-tv-ui-test") {
             LiveTVView(profile: "live-tv-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
+            BrowseUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--qr-sign-in-ui-test") {
             QrSignInView()
         } else {
@@ -161,3 +163,10 @@ struct NuvioTVApp: App {
         }
     }
 }
+
+#if DEBUG
+private struct BrowseUITestRoot: View {
+    @StateObject private var home = HomeViewModel()
+    var body: some View { MediaBrowseView(model: home, mediaType: "movie") }
+}
+#endif

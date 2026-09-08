@@ -11,6 +11,7 @@ import SharedCore
 struct SearchView: View {
     @StateObject private var model = SearchViewModel()
     @State private var query = ""
+    @State private var resultType = "All titles"
     @Environment(\.posterStyle) private var posterStyle
 
     private var gridColumns: [GridItem] {
@@ -114,9 +115,30 @@ struct SearchView: View {
             Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
         }
 
-        ForEach(model.sections, id: \.key) { section in
-            CatalogRowView(section: section)
+        HStack {
+            TVSelectionMenu(title: "Content type", value: resultType, options: ["All titles", "Movies", "Shows"]) { resultType = $0 }
+            Spacer()
+            Text("\(uniqueResults.count) titles").font(.caption).foregroundStyle(.secondary)
         }
+        LazyVGrid(columns: gridColumns, spacing: Theme.Spacing.xl) {
+            ForEach(uniqueResults) { result in
+                let item = result.item
+                NavigationLink(value: TitleRoute(preview: item)) { PosterCard(title: item.name, imageURL: item.poster) }
+                    .cardFocusButtonStyle().posterButtonShape()
+            }
+        }
+    }
+
+    private struct SearchHit: Identifiable {
+        let item: MetaPreview
+        var id: String { item.type + ":" + item.id }
+    }
+
+    private var uniqueResults: [SearchHit] {
+        var seen = Set<String>()
+        return model.sections.flatMap { $0.items }.filter {
+            (resultType == "All titles" || $0.type == (resultType == "Movies" ? "movie" : "series")) && seen.insert($0.type + ":" + $0.id).inserted
+        }.map { SearchHit(item: $0) }
     }
 
     // MARK: - Recent searches
@@ -155,50 +177,17 @@ struct SearchView: View {
     private var discoverSection: some View {
         if let discover = model.discover {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                Text("Discover")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-
-                if !discover.typeOptions.isEmpty {
-                    chipRow(
-                        options: discover.typeOptions,
-                        isSelected: { widen(discover.selectedType) == $0 },
-                        label: { typeLabel($0) }
-                    ) { model.selectDiscoverType($0) }
-                }
-
-                if discover.catalogOptions.count > 1 {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            ForEach(discover.catalogOptions, id: \.key) { option in
-                                DiscoverChip(
-                                    title: option.catalogName,
-                                    subtitle: option.addonName,
-                                    isSelected: widen(discover.selectedCatalogKey) == option.key
-                                ) {
-                                    model.selectDiscoverCatalog(option.key)
-                                }
-                            }
-                        }
-                        .padding(.vertical, Theme.Spacing.xs)
+                HStack(spacing: 24) {
+                    TVSelectionMenu(title: "Content type", value: typeLabel(widen(discover.selectedType) ?? "movie"), options: discover.typeOptions.map(typeLabel)) { selected in
+                        if let type = discover.typeOptions.first(where: { typeLabel($0) == selected }) { model.selectDiscoverType(type) }
                     }
-                }
-
-                if !discover.genreOptions.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            if discover.selectedCatalog?.genreRequired != true {
-                                DiscoverChip(title: String(localized: "All"), subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
-                                    model.selectDiscoverGenre(nil)
-                                }
-                            }
-                            ForEach(discover.genreOptions, id: \.self) { genre in
-                                DiscoverChip(title: genre, subtitle: nil, isSelected: widen(discover.selectedGenre) == genre) {
-                                    model.selectDiscoverGenre(genre)
-                                }
-                            }
+                    TVSelectionMenu(title: "Catalog", value: discover.selectedCatalog?.catalogName ?? "Catalog", options: discover.catalogOptions.map { $0.catalogName + " · " + $0.addonName }) { selected in
+                        if let option = discover.catalogOptions.first(where: { $0.catalogName + " · " + $0.addonName == selected }) { model.selectDiscoverCatalog(option.key) }
+                    }
+                    if !discover.genreOptions.isEmpty {
+                        TVSelectionMenu(title: "Genre", value: widen(discover.selectedGenre) ?? "All genres", options: (discover.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + discover.genreOptions) {
+                            model.selectDiscoverGenre($0 == "All genres" ? nil : $0)
                         }
-                        .padding(.vertical, Theme.Spacing.xs)
                     }
                 }
 
