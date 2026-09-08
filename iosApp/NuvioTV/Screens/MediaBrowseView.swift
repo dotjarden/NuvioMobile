@@ -6,11 +6,20 @@ import SharedCore
 struct MediaBrowseView: View {
     @ObservedObject var model: HomeViewModel
     @State var mediaType: String
+    @StateObject private var heroArt = HeroArtResolver()
+    @StateObject private var heroTrailer = InlineTrailerCardModel()
+    @FocusState private var heroFocused: Bool
+    @FocusState private var focusedTitle: String?
+    private var heroTarget: MetaPreview? { results.first(where: { $0.type + ":" + $0.id == focusedTitle }) ?? results.first }
     @StateObject private var discovery = SearchViewModel()
     @State private var genre = "All genres"
     @State private var catalog = "All catalogs"
     @State private var order = "Recommended"
     @Environment(\.posterStyle) private var posterStyle
+    private var selectedCatalogLabel: String {
+        guard let selected = discovery.discover?.selectedCatalog else { return "Catalog" }
+        return selected.catalogName + " · " + selected.addonName
+    }
     private var availableGenres: [String] { discovery.discover?.genreOptions ?? [] }
     private var filtered: Bool { genre != "All genres" || catalog != "All catalogs" || order != "Recommended" }
     private var results: [MetaPreview] {
@@ -30,30 +39,43 @@ struct MediaBrowseView: View {
         NavigationStack {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
+                GeometryReader { geometry in
+                    if let presentation = heroArt.presented {
+                        HomeHeroBackdrop(presentation: presentation, nuvioStyle: true, trailerModel: heroTrailer)
+                            .frame(width: geometry.size.width, height: geometry.size.height * 0.8)
+                            .mask(LinearGradient(stops: [.init(color: .white, location: 0), .init(color: .white, location: 0.68), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    }
+                }.ignoresSafeArea().allowsHitTesting(false)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                        if model.isLoading && sections.isEmpty { ProgressView("Loading catalogs…") }
                         if sections.isEmpty && !model.isLoading {
                             ContentUnavailableView("No catalogs available", systemImage: "rectangle.stack", description: Text("Enable a catalog for this media type in Add-ons."))
                             NavigationLink("Manage Add-ons") { AddonsView() }.buttonStyle(.glass)
                         }
+                        ZStack(alignment: .leading) {
+                            if let presentation = heroArt.presented {
+                                HomeHeroForeground(presentation: presentation, heroFocused: $heroFocused, compact: true, forceNuvioLayout: true)
+                                    .padding(.horizontal, -Theme.Spacing.screen)
+                            } else if model.isLoading || discovery.discover?.isLoading == true {
+                                ProgressView("Loading titles…")
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).frame(height: 440)
                         HStack(spacing: 24) {
                             TVSelectionMenu(title: "Browse", value: mediaType == "movie" ? "Movies" : "Shows", options: ["Movies", "Shows"]) { mediaType = $0 == "Movies" ? "movie" : "series"; genre = "All genres"; catalog = "All catalogs"; discovery.selectDiscoverType(mediaType) }
-                            TVSelectionMenu(title: "Genre", value: genre, options: (discovery.discover?.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + availableGenres) { genre = $0; catalog = discovery.discover?.selectedCatalog?.catalogName ?? "Catalog"; discovery.selectDiscoverGenre($0 == "All genres" ? nil : $0) }
+                            TVSelectionMenu(title: "Genre", value: genre, options: (discovery.discover?.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + availableGenres) { genre = $0; catalog = selectedCatalogLabel; discovery.selectDiscoverGenre($0 == "All genres" ? nil : $0) }
                             TVSelectionMenu(title: "Catalog", value: catalog, options: ["All catalogs"] + (discovery.discover?.catalogOptions.map { $0.catalogName + " · " + $0.addonName } ?? [])) { selected in
                                 catalog = selected; genre = "All genres"
                                 if let option = discovery.discover?.catalogOptions.first(where: { $0.catalogName + " · " + $0.addonName == selected }) { discovery.selectDiscoverCatalog(option.key) }
                             }
-                            TVSelectionMenu(title: "Sort", value: order, options: ["Recommended", "A–Z", "Highest rated"]) { order = $0; if filtered && catalog == "All catalogs" { catalog = discovery.discover?.selectedCatalog?.catalogName ?? "Catalog" } }
+                            TVSelectionMenu(title: "Sort", value: order, options: ["Recommended", "A–Z", "Highest rated"]) { order = $0; if filtered && catalog == "All catalogs" { catalog = selectedCatalogLabel } }
                             if filtered { Button("Reset") { genre = "All genres"; catalog = "All catalogs"; order = "Recommended" }.buttonStyle(.glass) }
                         }.padding(.bottom, 12)
-                        if !filtered, let item = results.first { featured(item) }
                         if filtered {
                             if discovery.discover?.isLoading == true { ProgressView("Loading titles…") }
                             if results.isEmpty && discovery.discover?.isLoading != true { Text("No titles match these filters.").foregroundStyle(.secondary) }
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap), spacing: Theme.Spacing.rowGap)], spacing: 40) {
                                 ForEach(Array(results.enumerated()), id: \.element.id) { index, item in
-                                    NavigationLink(value: TitleRoute(preview: item)) { PosterCard(title: item.name, imageURL: item.poster) }.cardFocusButtonStyle().posterButtonShape().onAppear { discovery.discoverItemAppeared(at: index) }
+                                    NavigationLink(value: TitleRoute(preview: item)) { PosterCard(title: item.name, imageURL: item.poster) }.cardFocusButtonStyle().posterButtonShape().focused($focusedTitle, equals: item.type + ":" + item.id).onAppear { discovery.discoverItemAppeared(at: index) }
                                 }
                             }
                         } else {
@@ -68,7 +90,7 @@ struct MediaBrowseView: View {
                                     LazyHStack(spacing: Theme.Spacing.rowGap) {
                                         ForEach(section.items.filter { $0.type == mediaType }, id: \.id) { item in
                                             NavigationLink(value: TitleRoute(preview: item)) { PosterCard(title: item.name, imageURL: item.poster) }
-                                                .cardFocusButtonStyle().posterButtonShape()
+                                                .cardFocusButtonStyle().posterButtonShape().focused($focusedTitle, equals: item.type + ":" + item.id)
                                         }
                                     }.padding(.vertical, 20)
                                 }.scrollClipDisabled()
@@ -82,26 +104,12 @@ struct MediaBrowseView: View {
             .navigationDestination(for: CatalogRoute.self) { CatalogGridView(route: $0) }
             .navigationDestination(for: PersonRoute.self) { PersonDetailView(personId: $0.id, personName: $0.name) }
             .navigationDestination(for: EntityRoute.self) { EntityBrowseView(route: $0) }
-        }.onAppear { model.acquire(); discovery.start(); discovery.selectDiscoverType(mediaType) }
+        }
+        .task(id: heroTarget.map { $0.type + ":" + $0.id }) { heroArt.present(heroTarget, isFolder: false) }
+        .onAppear { model.acquire(); discovery.start(); discovery.selectDiscoverType(mediaType) }
         .onDisappear { model.release(); discovery.stop() }
         .onChange(of: discovery.discover?.selectedType) { _, selected in
             if let selected, selected != mediaType { discovery.selectDiscoverType(mediaType) }
         }
     }
-    private func featured(_ item: MetaPreview) -> some View {
-        ZStack(alignment: .leading) {
-            GeometryReader { proxy in
-                AsyncImage(url: URL(string: item.banner ?? item.poster ?? "")) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
-                    .frame(width: proxy.size.width, height: 450).clipped()
-            }
-            LinearGradient(colors: [Theme.Palette.background, Theme.Palette.background.opacity(0.85), .clear], startPoint: .leading, endPoint: .trailing)
-            VStack(alignment: .leading, spacing: 22) {
-                Text(item.name).font(.system(size: 54, weight: .bold)).lineLimit(2)
-                Text(item.genres.prefix(3).joined(separator: " · ")).font(.callout).foregroundStyle(.secondary)
-                Text(item.description_ ?? "").font(.body).lineLimit(3)
-                NavigationLink(value: TitleRoute(preview: item)) { Label("View details", systemImage: "info.circle") }.buttonStyle(.glass)
-            }.frame(maxWidth: 720, alignment: .leading).padding(36)
-        }.frame(height: 450).clipShape(RoundedRectangle(cornerRadius: 24)).padding(.bottom, 16)
-    }
-
 }

@@ -34,11 +34,8 @@ struct SearchView: View {
                             TextField("Search movies & shows", text: $query)
                                 .textFieldStyle(.plain)
                                 .font(Theme.Font.body)
-                                .foregroundStyle(Theme.Palette.textPrimary)
                                 .onSubmit { model.recordSearch(query) }
                         }
-                        .padding(Theme.Spacing.lg)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
                         if queryIsEmpty {
                             historyChips
@@ -181,7 +178,7 @@ struct SearchView: View {
                     TVSelectionMenu(title: "Content type", value: typeLabel(widen(discover.selectedType) ?? "movie"), options: discover.typeOptions.map(typeLabel)) { selected in
                         if let type = discover.typeOptions.first(where: { typeLabel($0) == selected }) { model.selectDiscoverType(type) }
                     }
-                    TVSelectionMenu(title: "Catalog", value: discover.selectedCatalog?.catalogName ?? "Catalog", options: discover.catalogOptions.map { $0.catalogName + " · " + $0.addonName }) { selected in
+                    TVSelectionMenu(title: "Catalog", value: discover.selectedCatalog.map { $0.catalogName + " · " + $0.addonName } ?? "Catalog", options: discover.catalogOptions.map { $0.catalogName + " · " + $0.addonName }) { selected in
                         if let option = discover.catalogOptions.first(where: { $0.catalogName + " · " + $0.addonName == selected }) { model.selectDiscoverCatalog(option.key) }
                     }
                     if !discover.genreOptions.isEmpty {

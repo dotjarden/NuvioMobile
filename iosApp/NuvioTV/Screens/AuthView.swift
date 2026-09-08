@@ -43,19 +43,13 @@ struct AuthView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
-                        .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 800)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
                     SecureField("Password", text: $password)
                         .textFieldStyle(.plain)
                         .textContentType(isSignUp ? .newPassword : .password)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
-                        .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 800)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
                 }
 
                 if let error = model.errorMessage {

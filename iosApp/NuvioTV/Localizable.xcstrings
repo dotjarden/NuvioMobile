@@ -640,6 +640,7 @@
         }
       }
     },
+    "%lld channels": {},
     "%lld entries": {
       "localizations": {
         "de": {
@@ -1014,6 +1015,7 @@
         }
       }
     },
+    "%lld titles": {},
     "%lld · %lld in the Audio tab (%lld unsupported)": {
       "localizations": {
         "de": {
@@ -2761,6 +2763,7 @@
         }
       }
     },
+    "Add your playlist or provider to get started.": {},
     "Add-ons": {
       "localizations": {
         "de": {
@@ -2932,6 +2935,7 @@
       }
     },
     "All": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -4327,6 +4331,7 @@
         }
       }
     },
+    "Browse": {},
     "Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.": {
       "localizations": {
         "de": {
@@ -4737,7 +4742,7 @@
       }
     },
     "Channel": {},
-    "Channels": {},
+    "Channel guide": {},
     "Check Server": {
       "localizations": {
         "de": {
@@ -5662,6 +5667,7 @@
         }
       }
     },
+    "Connect a source": {},
     "Connect an M3U playlist or Xtream provider to watch Live TV.": {},
     "Connect an account in Settings.": {
       "localizations": {
@@ -7844,6 +7850,7 @@
       }
     },
     "Discover": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -9172,7 +9179,7 @@
         }
       }
     },
-    "Favorite %@": {},
+    "Favorite channel": {},
     "File Size Badges": {
       "localizations": {
         "de": {
@@ -9857,7 +9864,7 @@
         }
       }
     },
-    "Go live": {},
+    "Go Live": {},
     "Go to Movie": {
       "localizations": {
         "de": {
@@ -9960,7 +9967,6 @@
         }
       }
     },
-    "Guide": {},
     "Half": {
       "localizations": {
         "de": {
@@ -10236,7 +10242,6 @@
         }
       }
     },
-    "Hide": {},
     "Hide Discover": {
       "localizations": {
         "de": {
@@ -11670,6 +11675,7 @@
         }
       }
     },
+    "LIVE": {},
     "Landscape Rows": {
       "localizations": {
         "de": {
@@ -11875,7 +11881,7 @@
       }
     },
     "Later": {},
-    "Leave blank to use the guide supplied by your playlist or Xtream provider.": {},
+    "Leave the guide blank to use the one supplied by your provider.": {},
     "Library": {
       "localizations": {
         "de": {
@@ -12013,7 +12019,6 @@
       }
     },
     "Limit reached — turn another source off first": {},
-    "Live": {},
     "Live TV": {},
     "Live TV sources": {},
     "Loading catalogs…": {
@@ -12118,6 +12123,7 @@
         }
       }
     },
+    "Loading titles…": {},
     "Loading…": {
       "localizations": {
         "de": {
@@ -13210,7 +13216,7 @@
         }
       }
     },
-    "Next": {},
+    "Next channel": {},
     "No Upcoming row on Home": {},
     "No Zoom on Focus": {
       "localizations": {
@@ -13660,6 +13666,7 @@
       }
     },
     "No rotating banner — the top of Home shows the focused title's artwork and description": {},
+    "No saved titles match these filters.": {},
     "No search performed yet.": {
       "localizations": {
         "de": {
@@ -13900,6 +13907,7 @@
         }
       }
     },
+    "No titles match these filters.": {},
     "No trailer measurements yet — open a title and let its trailer play.": {
       "localizations": {
         "de": {
@@ -15284,7 +15292,6 @@
         }
       }
     },
-    "On now": {},
     "On your phone or computer, go to": {
       "localizations": {
         "de": {
@@ -17797,7 +17804,7 @@
         }
       }
     },
-    "Previous": {},
+    "Previous channel": {},
     "Production": {
       "localizations": {
         "de": {
@@ -17934,7 +17941,6 @@
         }
       }
     },
-    "Programme information unavailable": {},
     "Publishable key discovered automatically": {
       "localizations": {
         "de": {
@@ -18720,7 +18726,6 @@
         }
       }
     },
-    "Remove %@ from favorites": {},
     "Remove %@?": {
       "localizations": {
         "de": {
@@ -19812,6 +19817,7 @@
         }
       }
     },
+    "Saved securely on this Apple TV for this profile.": {},
     "Saving…": {
       "localizations": {
         "de": {
@@ -20157,6 +20163,7 @@
     },
     "Search shows only the search field and recent searches": {},
     "Search shows the Discover section (types, catalogs, genres) below the field": {},
+    "Search your library": {},
     "Searching addon subtitles…": {
       "localizations": {
         "de": {
@@ -21146,7 +21153,6 @@
         }
       }
     },
-    "Shows": {},
     "Shows a short code to enter at simkl.com/pin on your phone or computer.": {
       "localizations": {
         "de": {
@@ -22276,7 +22282,6 @@
         }
       }
     },
-    "Sources are saved securely on this Apple TV for the active profile. Your existing Stremio addons remain available in Add-ons.": {},
     "Spanish": {
       "localizations": {
         "de": {
@@ -25075,7 +25080,6 @@
       }
     },
     "Title and description on the left, artwork on the right, hero pinned while rows scroll": {},
-    "Toggle favorite": {},
     "Too many attempts. Try again in %ds.": {
       "localizations": {
         "de": {
@@ -26207,7 +26211,7 @@
         }
       }
     },
-    "Up next · %@": {},
+    "Until %@": {},
     "Up next · %@ · playing in %llds": {
       "localizations": {
         "de": {
@@ -26822,7 +26826,7 @@
         }
       }
     },
-    "View": {},
+    "View details": {},
     "Violence": {
       "localizations": {
         "de": {

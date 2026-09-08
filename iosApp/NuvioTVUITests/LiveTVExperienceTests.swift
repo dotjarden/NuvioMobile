@@ -51,11 +51,28 @@ final class LiveTVExperienceTests: XCTestCase {
         let menu = app.buttons["Browse: Movies"]
         XCTAssertTrue(menu.waitForExistence(timeout: 30))
         select(menu, in: app)
-        XCTAssertTrue(app.buttons["Shows"].waitForExistence(timeout: 5))
-        select(app.buttons["Shows"], in: app)
+        let shows = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch
+        XCTAssertTrue(shows.waitForExistence(timeout: 5))
+        let dropdown = XCTAttachment(screenshot: app.screenshot())
+        dropdown.name = "Anchored Browse dropdown"; dropdown.lifetime = .keepAlways; add(dropdown)
+        select(shows, in: app)
         XCTAssertTrue(app.buttons["Browse: Shows"].waitForExistence(timeout: 10))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Browse shows"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testSettingsCategorySelection() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--settings-ui-test"]
+        app.launch()
+        let title = app.staticTexts["settingsPaneTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 20))
+        XCTAssertEqual(title.label, "Playback")
+        select(app.cells.containing(.button, identifier: "settings.category.appearance").firstMatch, in: app)
+        XCTAssertEqual(title.label, "Appearance")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Settings layout"; shot.lifetime = .keepAlways; add(shot)
     }
 
     @MainActor func testGuideAndNativeSourceManagement() throws {

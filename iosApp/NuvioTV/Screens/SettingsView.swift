@@ -1,55 +1,9 @@
 import SwiftUI
 import SharedCore
 
-/// The Settings tab: a two-pane split — a native `List` of categories on the left (~1/3), the
-/// selected category's pane rendered inside a native `List` on the right (~2/3), under one page
-/// title. Each category's rows live in their own `*SettingsPane` file; the shared row primitives
-/// live in Settings/SettingsRowViews.swift.
-///
-/// beta.15 §C (C2): this was a hand-rolled `HStack` of custom `SettingsRowButtonStyle` buttons in
-/// a `ScrollView`. Everything focus- and colour-related is now the system's job — no custom
-/// `ButtonStyle`, no `hoverEffect`, no focus-derived label colours (the BUG-45 sidebar
-/// special-case and the BUG-65 published-focus-environment-key hack are gone from this file).
-///
-/// ## Focus graph (written before the code, per the tvOS skill's workflow)
-///
-/// **Default focus.** The sidebar `List` is a `.focusScope(sidebarFocus)`; the SELECTED category
-/// row carries `.prefersDefaultFocus(true, in: sidebarFocus)` — on a cold mount that is the first
-/// row (Account & Services), and after a theme-change remount it is whichever category the user
-/// was standing in, so picking a theme swatch no longer throws them to the top. Entering the
-/// Settings tab — from the tab bar, or back from a pushed sub-page — lands focus on a sidebar
-/// row, never in the detail pane. There is no `@FocusState` write on appear: the scope's default
-/// is the only mechanism, so a restored focus (tvOS remembers the last focused row within the
-/// tab) still wins where the system wants it to.
-///
-/// **Sidebar.**
-/// - Up / Down walk the seven categories. Focus *is* selection: `onChange(of: focusedCategory)`
-///   writes `selectedCategory`, so the detail pane live-previews the focused category (the
-///   Settings.app behaviour the old screen had, kept deliberately).
-/// - Up from the first row leaves the list upward and lands on the app's tab bar (the standard
-///   tvOS top-edge exit). Down from the last row does nothing — the list ends.
-/// - Left does nothing: the sidebar is the leading edge of the screen.
-/// - Right enters the detail `List` and lands on its first focusable row.
-///
-/// **Detail.**
-/// - Up / Down walk the rows and sections; the `List` scrolls to reveal.
-/// - Left from any row returns to the sidebar, on the row that is still selected (the sidebar
-///   keeps its focus memory, so the walk resumes where it left off).
-/// - Right does nothing at row level. Inside a row it is the control's own business: a `Toggle`
-///   ignores it, a `Menu { Picker }` opens on Select, not on Right.
-/// - Up from the first detail row leaves upward to the tab bar; Down from the last does nothing.
-///
-/// **Empty / error panes (BUG-47 class).** A pane whose `List` has no focusable row cannot be
-/// entered: Right from the sidebar is a no-op and focus stays on the category row — it is never
-/// stranded, and Menu still exits cleanly. Every pane today has at least one focusable control in
-/// every state (e.g. Advanced offers "Start Remote Setup" when the server is stopped), and every
-/// pushed sub-page a `SettingsLinkRow` presents must keep one too.
-///
-/// **Menu.** Exactly one level per press, all of it the system's default — this file installs no
-/// `onExitCommand` anywhere. Inside an open `Menu`/`Picker` popover it dismisses the popover; on a
-/// page pushed by a `SettingsLinkRow` it pops back to the detail list; at the `NavigationStack`
-/// root (the split itself) it leaves Settings for the app's tab bar. An `.alert` is dismissed by
-/// its own Cancel button.
+/// Native category rail and detail list. Select commits a category; moving remote focus does
+/// not replace the content. The selected category survives theme changes and owns default focus.
+/// Native menus handle their own dismissal, and pushed pages keep NavigationStack's Back behavior.
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
@@ -91,24 +45,16 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                // One title for the whole split (HIG Split views: never one per pane).
-                Text("Settings")
-                    .font(Theme.Font.screenTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .padding(.horizontal, Theme.Spacing.screen)
-                    .padding(.top, Theme.Spacing.lg)
-
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        categorySidebar
-                            .frame(width: max(400, geo.size.width / 3))
-
-                        detailPane
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-            }
+            HStack(alignment: .top, spacing: 36) {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Settings").font(Theme.Font.sectionTitle).padding(.horizontal, 20)
+                    categorySidebar
+                }.frame(width: 400)
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(selectedCategory.title).accessibilityIdentifier("settingsPaneTitle").font(Theme.Font.sectionTitle).padding(.horizontal, 20)
+                    detailPane
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.padding(.horizontal, Theme.Spacing.screen).padding(.top, Theme.Spacing.lg)
             // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar is
             // gone from THIS root too, so Menu / an unplaceable Up at the split root need the same
             // route to the replacement chrome the four scrolling roots have. Attached INSIDE the
@@ -211,6 +157,9 @@ struct SettingsView: View {
         List {
             pane
         }
+        .listStyle(.plain)
+        .focusSection()
+        .id(selectedCategory)
         .environment(\.settingsUsesNativeList, true)
     }
 
@@ -259,62 +208,23 @@ struct SettingsView: View {
     /// `foregroundStyle` here on purpose — the system inverts the row's label colour on the focus
     /// platter, which is what BUG-45's hand-rolled three-way colour switch was working around.
     private var categorySidebar: some View {
-        List(selection: sidebarSelection) {
+        List {
             ForEach(SettingsCategory.allCases) { category in
-                Button {
-                    selectedCategory = category
-                } label: {
-                    if settingsStyle == "minimal" {
-                        Text(category.title)
-                            .font(Theme.Font.body)
-                    } else {
-                        // FEAT-31 (rc2 tester report, 2026-09-06): the category labels carried no font
-                        // token, so a `List` row's system default rendered them while every other
-                        // Settings label took the Open Sans face. Both branches now read `Theme.Font.body`.
-                        // HStack, not `Label`: the system label's icon-to-title spacing is too tight in a tvOS
-                        // List row (device pass 2026-08-28, and the tester's "icons overlap the text" report) —
-                        // this matches the detail rows' `SettingsRowLabel` spacing instead.
-                        // Icon in the theme accent at rest, `.primary` under the focus platter —
-                        // same `SettingsAccentTint` the detail rows use. The label itself keeps
-                        // NO explicit colour (BUG-45: an accent label here was white-on-white for
-                        // the White theme's near-white accent).
-                        HStack(spacing: Theme.Spacing.md) {
-                            Image(systemName: category.icon)
-                                .settingsAccentTint()
-                                // Decorative: `Label` used to fold the symbol into one
-                                // accessibility element; the raw HStack must not let VoiceOver
-                                // announce the symbol's generated name before the title.
-                                .accessibilityHidden(true)
-                            Text(category.title)
-                                .font(Theme.Font.body)
-                        }
+                Button { selectedCategory = category } label: {
+                    HStack(spacing: 18) {
+                        if settingsStyle != "minimal" { Image(systemName: category.icon).frame(width: 30).accessibilityHidden(true) }
+                        Text(category.title).font(Theme.Font.body)
+                        Spacer(minLength: 0)
+                        if selectedCategory == category { Image(systemName: "checkmark").font(.caption) }
                     }
                 }
-                .tag(category)
+                .accessibilityIdentifier("settings.category.\(category.rawValue)")
                 .focused($focusedCategory, equals: category)
-                // The scope's default follows the SELECTED category rather than always the first
-                // row. On a cold mount `selectedCategory` is `.accountServices` — the first row —
-                // so the documented "entering Settings lands on Account & Services" behaviour is
-                // unchanged. After a theme-change remount it lands back on the category the user
-                // was actually in, and (because focus IS selection here) the `onChange` below then
-                // re-writes the same value instead of clobbering it with the first row's.
                 .prefersDefaultFocus(category == selectedCategory, in: sidebarFocus)
+                .listRowBackground(Color.clear)
             }
-        }
-        .focusScope(sidebarFocus)
-        .onChange(of: focusedCategory) { _, newValue in
-            // Live-preview the focused category in the detail pane.
-            if let newValue { selectedCategory = newValue }
-        }
-    }
-
-    /// `List(selection:)` wants an optional binding; the screen's own state is non-optional so the
-    /// pane switch (and the panes) never deal with "no category".
-    private var sidebarSelection: Binding<SettingsCategory?> {
-        Binding(
-            get: { selectedCategory },
-            set: { if let newValue = $0 { selectedCategory = newValue } }
-        )
+        }.listStyle(.plain)
+        .focusScope(sidebarFocus).focusSection()
     }
 }
 

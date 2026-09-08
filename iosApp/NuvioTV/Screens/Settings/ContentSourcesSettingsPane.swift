@@ -303,10 +303,7 @@ private struct TmdbKeyEntryRow: View {
                 TextField("TMDB API Key (v3 auth)", text: $key)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
             }
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
             Button {
                 if !key.isEmpty { onSave(key) }
@@ -339,10 +336,7 @@ private struct PluginRepoEntryRow: View {
                 TextField("Repository manifest URL", text: $url)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
             }
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
             Button {
                 if !url.isEmpty {

@@ -564,13 +564,10 @@ private struct FilterTextRow: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
                     .accessibilityIdentifier(identifier ?? "")
                     .onSubmit { commit() }
             }
-            .padding(Theme.Spacing.lg)
             .frame(maxWidth: 1100)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
             Text(helper)
                 .font(Theme.Font.caption)
                 .foregroundStyle(invalid ? Color.red : Theme.Palette.textSecondary)

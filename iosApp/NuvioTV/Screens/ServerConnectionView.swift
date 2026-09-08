@@ -107,13 +107,10 @@ struct ServerConnectionView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textPrimary)
                 .accessibilityIdentifier("server.url")
                 .focused($focusTarget, equals: .url)
         }
-        .padding(Theme.Spacing.lg)
         .frame(maxWidth: 900)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
         if let message = vm.failureMessage {
             Text(message)

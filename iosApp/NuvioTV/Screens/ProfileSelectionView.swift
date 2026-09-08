@@ -346,10 +346,7 @@ struct ProfileEditView: View {
                     TextField("Name", text: $name)
                         .textFieldStyle(.plain)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
-                        .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 700)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
                     // Cloud avatar catalog (hidden when empty — guest mode / offline).
                     if !model.avatars.isEmpty {

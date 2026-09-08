@@ -59,8 +59,6 @@ struct AddonsView: View {
                     .textFieldStyle(.plain)
                     .font(Theme.Font.screenTitle.weight(.regular))
             }
-            .padding(20)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
 
             HStack(spacing: 20) {
                 Button {

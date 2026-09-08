@@ -100,10 +100,7 @@ private struct BadgeUrlEntryRow: View {
                 TextField("Badge pack JSON URL", text: $url)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
             }
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
             Button {
                 if !url.isEmpty {

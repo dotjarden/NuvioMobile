@@ -28,22 +28,18 @@ struct LiveTVView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
                         if !store.sources.isEmpty {
-                        HStack(spacing: 20) {
-                            TextField("Search channels", text: $query)
-                                .textFieldStyle(.plain).padding(20)
-                                .glassEffect(.regular, in: Capsule())
-                            Button { Task { await store.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                                .buttonStyle(.glass).disabled(store.loading)
-                            Button { showingSources = true } label: { Label("Sources", systemImage: "plus") }.buttonStyle(.glass)
-                        }
-                        }
-                        if !store.sources.isEmpty {
                             HStack(spacing: 24) {
                                 TVSelectionMenu(title: "View", value: guideMode ? "Programme guide" : "On now", options: ["On now", "Programme guide"]) { guideMode = $0 == "Programme guide" }
                                 TVSelectionMenu(title: "Category", value: group, options: ["All channels", "Favorites", "Recent"] + store.groups) { group = $0 }
                                 Spacer()
-                                Text("\(visibleChannels.count) channels").font(.caption).foregroundStyle(.secondary)
-                            }
+                                Button { Task { await store.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(store.loading)
+                                Button { showingSources = true } label: { Label("Sources", systemImage: "plus") }
+                            }.buttonStyle(.glass)
+                            HStack(spacing: 32) {
+                                TextField("Search channels", text: $query).textFieldStyle(.plain).frame(maxWidth: 720)
+                                Spacer()
+                                Text(visibleChannels.count == 1 ? "1 channel" : "\(visibleChannels.count) channels").font(.caption).foregroundStyle(.secondary)
+                            }.padding(.bottom, 12)
                         }
                         if store.loading { ProgressView("Updating channels and guide…") }
                         if let error = store.error {
@@ -70,7 +66,7 @@ struct LiveTVView: View {
                             }
                             }
                         }
-                    }.padding(56)
+                    }.padding(Theme.Spacing.screen)
                 }.scrollClipDisabled()
                 .reportsScrollToTabBar(tab: "Live TV")
                 .sidebarMenuReveal()

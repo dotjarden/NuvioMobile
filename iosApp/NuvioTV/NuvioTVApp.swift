@@ -146,6 +146,8 @@ struct NuvioTVApp: App {
             LiveTVView(profile: "live-tv-ui-test")
         } else if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
             LiveTVView(profile: "live-player-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--settings-ui-test") {
+            SettingsUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
             BrowseUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--qr-sign-in-ui-test") {
@@ -171,6 +173,15 @@ struct NuvioTVApp: App {
 }
 
 #if DEBUG
+private struct SettingsUITestRoot: View {
+    @StateObject private var auth = AuthViewModel()
+    @State private var category: SettingsCategory = .playback
+    @State private var themeFocus: String?
+    @State private var appearanceFocus: String?
+    var body: some View {
+        SettingsView(selectedCategory: $category, pendingThemeSwatchFocus: $themeFocus, pendingAppearanceRowFocus: $appearanceFocus).environmentObject(auth)
+    }
+}
 private struct BrowseUITestRoot: View {
     @StateObject private var home = HomeViewModel()
     var body: some View { MediaBrowseView(model: home, mediaType: "movie") }

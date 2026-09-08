@@ -49,11 +49,13 @@ Clean builds use the official public `https://api.nuvio.tv` endpoint and publish
 
 ## September UX revision
 
-Home is unchanged. Movies and Shows now share Browse, with featured artwork and horizontal shelves. Its type, catalog, genre, and sort selectors use opaque remote-focusable selection panels. Catalog/genre filtering uses the shared paginated Discover service. A–Z and rating sorts apply to fetched pages; provider ordering remains the default. Search merges provider result rows into one deduplicated grid, keyed by content type and ID. Library adds title search and content-type filtering, preserving its existing profile-scoped sort and cloud source.
+Home is unchanged. Movies and Shows now share Browse, reusing Home's full-bleed backdrop and hero foreground above horizontal shelves. The hero area keeps a fixed height while filters load. Type, catalog, genre, and sort controls open native anchored menus. Catalog/genre filtering uses the shared paginated Discover service. A–Z and rating sorts apply to fetched pages; provider ordering remains the default. Search merges provider result rows into one deduplicated grid, keyed by content type and ID. Library adds title search and content-type filtering, preserving its existing profile-scoped sort and cloud source.
 
-Live TV defaults to On now channel cards; the timed guide remains available through View. Categories are selected from a panel instead of a long chip row. Source setup is one opaque presentation with an inline editor, persistent field labels, adjacent action buttons, and visible validation. A source name is optional and defaults to the provider host. Source and programme presentations use solid backgrounds.
+Live TV defaults to On now channel cards; the timed guide remains available through View. View and Category use anchored menus in a single toolbar alongside Refresh and Sources, with channel search underneath. Source setup is one opaque presentation with an inline editor, persistent field labels, adjacent action buttons, and visible validation. A source name is optional and defaults to the provider host. Source and programme presentations use solid backgrounds.
 
-Validated on tvOS 27 simulator: type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV. Native screenshots reviewed for overlapping text and contrast. Device build succeeds. Home source was not modified.
+Settings uses an aligned category rail and detail list. Select opens a category; moving focus through categories preserves the current pane. Additional material and padding wrappers were removed from search, login, profile, source URL, API key, and numeric-filter fields so tvOS owns their input and focus appearance.
+
+Validated on tvOS 27 simulator: anchored type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV; Settings category selection. Native screenshots reviewed for overlapping text and contrast. Signed device build succeeds. Home source was not modified.
 
 ## Live player control ownership
 
