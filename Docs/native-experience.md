@@ -54,3 +54,9 @@ Home is unchanged. Movies and Shows now share Browse, with featured artwork and 
 Live TV defaults to On now channel cards; the timed guide remains available through View. Categories are selected from a panel instead of a long chip row. Source setup is one opaque presentation with an inline editor, persistent field labels, adjacent action buttons, and visible validation. A source name is optional and defaults to the provider host. Source and programme presentations use solid backgrounds.
 
 Validated on tvOS 27 simulator: type-selector round trip; source manager entry; invalid-source validation; save of a valid local provider; return to Live TV. Native screenshots reviewed for overlapping text and contrast. Device build succeeds. Home source was not modified.
+
+## Live player control ownership
+
+Removed the SwiftUI transport bar layered over AVKit and MPV. AVKit now owns Live TV actions through `transportBarCustomMenuItems`; select the TV icon in the native playback controls for previous/next channel, Go Live, favorite, and Channel guide. MPV exposes these actions inside its existing Playback panel. Channel guide opens the programme grid. Error recovery is a separate solid screen.
+
+`testLivePlayerNativeMenuFocus` uses the synthetic HLS stream from `tests/livetv/run-player-fixture.sh` (ffmpeg and Python required, loopback port 8767). On tvOS 27 the test opens the native menu with Up/Select, switches channels, reopens it, and returns to the guide. This test passed with real HLS segment delivery. MPV integration is compile-checked; the remote test covers the native player.

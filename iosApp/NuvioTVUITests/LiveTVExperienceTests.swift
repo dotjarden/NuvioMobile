@@ -5,7 +5,7 @@ final class LiveTVExperienceTests: XCTestCase {
         for _ in 0..<25 {
             let focusedMatch = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
             let focused: XCUIElement? = focusedMatch.exists ? focusedMatch : nil
-            if target.hasFocus || focused?.frame.contains(CGPoint(x: target.frame.midX, y: target.frame.midY)) == true {
+            if target.hasFocus || (focused?.frame.contains(CGPoint(x: target.frame.midX, y: target.frame.midY)) == true && (focused?.frame.width ?? 0) * (focused?.frame.height ?? 0) <= target.frame.width * target.frame.height * 1.5) {
                 XCUIRemote.shared.press(.select)
                 return
             }
@@ -17,6 +17,32 @@ final class LiveTVExperienceTests: XCTestCase {
         }
         XCTFail("Could not focus \(target.label) using the remote")
     }
+    @MainActor func testLivePlayerNativeMenuFocus() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--live-player-ui-test"]
+        app.launch()
+        let channel = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Focus Test One")).firstMatch
+        XCTAssertTrue(channel.waitForExistence(timeout: 20))
+        select(channel, in: app)
+        Thread.sleep(forTimeInterval: 4)
+        XCUIRemote.shared.press(.select)
+        let menu = app.cells["Live TV"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 15), app.debugDescription)
+        XCUIRemote.shared.press(.up)
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Next channel")).firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Native Live TV menu"; shot.lifetime = .keepAlways; add(shot)
+        select(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Next channel")).firstMatch, in: app)
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        XCUIRemote.shared.press(.up)
+        XCUIRemote.shared.press(.select)
+        select(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Channel guide")).firstMatch, in: app)
+        XCTAssertTrue(app.buttons["Sources"].waitForExistence(timeout: 10))
+    }
+
     @MainActor func testBrowseTypeSelection() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

@@ -79,7 +79,7 @@ struct LiveTVView: View {
         .task { await store.start() }
         .fullScreenCover(isPresented: $showingSources) { LiveTVSourcesView(store: store) }
         .fullScreenCover(item: $playing, onDismiss: { if let id = focusedChannel { focusedChannel = id } }) { channel in
-            LiveTVPlayerView(store: store, initialChannel: channel, channels: visibleChannels)
+            LiveTVPlayerView(store: store, initialChannel: channel, channels: visibleChannels, onShowGuide: { guideMode = true })
         }
         .fullScreenCover(item: $selectedProgramme) { programme in
             VStack(alignment: .leading, spacing: 24) {

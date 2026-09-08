@@ -17,6 +17,10 @@ import Combine
         error = nil; waiting = true
         let asset = AVURLAsset(url: channel.url, options: channel.headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": channel.headers])
         let item = AVPlayerItem(asset: asset)
+        let title = AVMutableMetadataItem()
+        title.identifier = .commonIdentifierTitle
+        title.value = channel.name as NSString
+        item.externalMetadata = [title]
         item.preferredForwardBufferDuration = 5
         status = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
             Task { @MainActor in
@@ -41,9 +45,10 @@ import Combine
         }
         player.replaceCurrentItem(with: item); player.play()
     }
-    func goLive() {
-        guard let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue else { return }
+    @discardableResult func goLive() -> Bool {
+        guard let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue else { return false }
         player.seek(to: CMTimeRangeGetEnd(range), toleranceBefore: .zero, toleranceAfter: .positiveInfinity); player.play()
+        return true
     }
     func stop() {
         generation = UUID(); waiting = false
@@ -57,9 +62,9 @@ struct LiveTVPlayerView: View {
     @ObservedObject var store: LiveTVStore
     let initialChannel: LiveTVChannel
     let channels: [LiveTVChannel]
+    var onShowGuide: () -> Void = {}
     @StateObject private var model = LiveTVPlayer()
     @State private var channel: LiveTVChannel?
-    @State private var controlsVisible = true
     @State private var compatibilityPlayer = false
     @State private var playbackGeneration = UUID()
     @Environment(\.dismiss) private var dismiss
@@ -73,45 +78,46 @@ struct LiveTVPlayerView: View {
         return context
     }
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
+            Color.black.ignoresSafeArea()
             if compatibilityPlayer {
-                MPVPlayerScreen(context: compatibilityContext).id(active.id + playbackGeneration.uuidString).ignoresSafeArea()
+                MPVPlayerScreen(context: compatibilityContext, liveActions: AnyView(compatibilityActions))
+                    .id(active.id + playbackGeneration.uuidString).ignoresSafeArea()
+            } else if let error = model.error {
+                VStack(alignment: .leading, spacing: 28) {
+                    Text(active.name).font(.title2.bold())
+                    Text(error).font(.body)
+                    HStack(spacing: 24) {
+                        Button("Retry") { model.tune(active) }
+                        Button("Compatibility player") { model.stop(); compatibilityPlayer = true; model.error = nil }
+                        Button("Channel guide") { returnToGuide() }
+                    }.buttonStyle(.glass).focusSection()
+                }.padding(60).frame(maxWidth: 1300)
             } else {
-                NativeLiveTVPlayer(player: model.player).ignoresSafeArea()
+                NativeLiveTVPlayer(player: model.player, channel: active, favorite: store.favorites.contains(active.id), canSwitch: channels.count > 1,
+                    previous: { switchChannel(-1) }, next: { switchChannel(1) }, goLive: { if !model.goLive() { model.tune(active) } },
+                    toggleFavorite: { store.toggleFavorite(active) }, guide: { returnToGuide() })
+                    .ignoresSafeArea()
+                if model.waiting { ProgressView("Connecting…").padding(25).background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16)).allowsHitTesting(false) }
             }
-            if model.waiting && !compatibilityPlayer { ProgressView("Connecting…").padding(25).glassEffect().frame(maxHeight: .infinity) }
-            if controlsVisible || model.error != nil {
-                VStack(alignment: .leading, spacing: 20) {
-                    HStack { Label("Live", systemImage: "dot.radiowaves.left.and.right").foregroundStyle(.red); Text(active.name).font(.title2.bold()); Spacer() }
-                    if let programme = store.schedule(for: active).first, programme.isCurrent(at: Date()) { Text(programme.title).foregroundStyle(.secondary) }
-                    if let error = model.error { Text(error) }
-                    HStack(spacing: 20) {
-                        Button { switchChannel(-1) } label: { Label("Previous", systemImage: "backward.end") }.disabled(channels.count < 2)
-                        Button { switchChannel(1) } label: { Label("Next", systemImage: "forward.end") }.disabled(channels.count < 2)
-                        Button("Go live") { if compatibilityPlayer { playbackGeneration = UUID() } else { model.goLive() } }
-                        if model.error != nil {
-                            Button("Retry") { model.tune(active) }
-                            Button("Compatibility player") { model.stop(); compatibilityPlayer = true; model.error = nil }
-                        }
-                        Button { store.toggleFavorite(active) } label: { Image(systemName: store.favorites.contains(active.id) ? "star.fill" : "star") }.accessibilityLabel("Toggle favorite")
-                        Button("Guide") { dismiss() }
-                        Button("Hide") { controlsVisible = false }
-                    }.buttonStyle(.glass)
-                }.padding(30).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28)).padding(45)
-            }
-        }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             compatibilityPlayer = ["ts", "mpeg", "mpg"].contains(active.url.pathExtension.lowercased())
             if !compatibilityPlayer { model.tune(active) }
             store.watched(active)
         }
         .onDisappear { model.stop() }
-        .onExitCommand { if !controlsVisible { controlsVisible = true } else { dismiss() } }
-        .onMoveCommand { direction in if direction == .down || direction == .up { controlsVisible = true } }
+        .onExitCommand { dismiss() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { model.stop() }
             else if phase == .active && !compatibilityPlayer { model.tune(active) }
         }
+    }
+    private func returnToGuide() { onShowGuide(); dismiss() }
+
+    private var compatibilityActions: some View {
+        LiveTVCompatibilityActions(store: store, channel: active, canSwitch: channels.count > 1,
+            previous: { switchChannel(-1) }, next: { switchChannel(1) }, goLive: { playbackGeneration = UUID() }, guide: { returnToGuide() })
     }
     private func switchChannel(_ step: Int) {
         guard !channels.isEmpty else { return }
@@ -121,15 +127,68 @@ struct LiveTVPlayerView: View {
     }
 }
 
+/// AVKit owns presentation, placement, and focus for these actions. Never layer a second
+/// SwiftUI transport bar over AVPlayerViewController (or over MPV's existing controls).
 private struct NativeLiveTVPlayer: UIViewControllerRepresentable {
     let player: AVPlayer
+    let channel: LiveTVChannel
+    let favorite: Bool
+    let canSwitch: Bool
+    let previous: () -> Void
+    let next: () -> Void
+    let goLive: () -> Void
+    let toggleFavorite: () -> Void
+    let guide: () -> Void
+    final class Coordinator { var menuKey = "" }
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController(); controller.player = player
+        let controller = AVPlayerViewController()
+        controller.player = player
         controller.showsPlaybackControls = true
+        updateUIViewController(controller, context: context)
         return controller
     }
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        let key = "\(channel.id):\(favorite):\(canSwitch)"
+        guard context.coordinator.menuKey != key else { return }
+        context.coordinator.menuKey = key
+        let actions = [
+            UIAction(title: "Previous channel", image: UIImage(systemName: "backward.end"), attributes: canSwitch ? [] : [.disabled]) { _ in previous() },
+            UIAction(title: "Next channel", image: UIImage(systemName: "forward.end"), attributes: canSwitch ? [] : [.disabled]) { _ in next() },
+            UIAction(title: "Go Live", image: UIImage(systemName: "dot.radiowaves.left.and.right")) { _ in goLive() },
+            UIAction(title: favorite ? "Remove favorite" : "Favorite channel", image: UIImage(systemName: favorite ? "star.fill" : "star")) { _ in toggleFavorite() },
+            UIAction(title: "Channel guide", image: UIImage(systemName: "list.bullet.rectangle")) { _ in guide() }
+        ]
+        controller.transportBarCustomMenuItems = [UIMenu(title: "Live TV", image: UIImage(systemName: "tv"), children: actions)]
     }
-    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: ()) { controller.player = nil }
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        controller.transportBarCustomMenuItems = []
+        controller.player = nil
+    }
+}
+
+/// Compatibility playback uses MPV's existing Playback panel, never a competing overlay.
+private struct LiveTVCompatibilityActions: View {
+    @ObservedObject var store: LiveTVStore
+    let channel: LiveTVChannel
+    let canSwitch: Bool
+    let previous: () -> Void
+    let next: () -> Void
+    let goLive: () -> Void
+    let guide: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Text(channel.name).font(.headline)
+            HStack(spacing: 24) {
+                Button("Previous channel", action: previous).disabled(!canSwitch)
+                Button("Next channel", action: next).disabled(!canSwitch)
+                Button("Go Live", action: goLive)
+            }.focusSection()
+            HStack(spacing: 24) {
+                Button(store.favorites.contains(channel.id) ? "Remove favorite" : "Favorite channel") { store.toggleFavorite(channel) }
+                Button("Channel guide", action: guide)
+            }.focusSection()
+        }.padding(28).background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 20))
+    }
 }

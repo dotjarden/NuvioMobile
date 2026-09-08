@@ -60,6 +60,10 @@ struct NuvioTVApp: App {
             let source = LiveTVSource(name: "Local test provider", kind: .m3u, address: "http://127.0.0.1:8766/playlist.m3u")
             try? LiveTVSecureStorage.write([source], profile: "live-tv-ui-test")
         }
+        if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
+            let source = LiveTVSource(name: "Player focus fixture", kind: .m3u, address: "http://127.0.0.1:8767/playlist.m3u")
+            try? LiveTVSecureStorage.write([source], profile: "live-player-ui-test")
+        }
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
@@ -140,6 +144,8 @@ struct NuvioTVApp: App {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--live-tv-ui-test") {
             LiveTVView(profile: "live-tv-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
+            LiveTVView(profile: "live-player-ui-test")
         } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
             BrowseUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--qr-sign-in-ui-test") {

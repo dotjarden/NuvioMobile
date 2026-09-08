@@ -1558,6 +1558,7 @@ struct MPVPlayerScreen: View {
     /// Phase 1 routing diagnostic (from `PlayerEngineRouter`) surfaced in Stream Info; playback is
     /// unaffected — this screen always renders via libmpv.
     var routingNote: String? = nil
+    var liveActions: AnyView? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -1576,10 +1577,11 @@ struct MPVPlayerScreen: View {
         }
     }
 
-    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil) {
+    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil, liveActions: AnyView? = nil) {
         self.context = context
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
+        self.liveActions = liveActions
         _state = StateObject(wrappedValue: MPVPlaybackState(title: context.title))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
             context: context,
@@ -1593,10 +1595,13 @@ struct MPVPlayerScreen: View {
         ZStack(alignment: .bottom) {
             MPVPlayerRepresentable(
                 context: context, state: state, panelModel: panelModel,
-                makeExtraTab: { [state, upNext, onPlayNext, panelModel] in
+                makeExtraTab: { [state, upNext, onPlayNext, panelModel, liveActions] in
                     PlayerPanelExtraTab {
-                        MPVPlaybackTab(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
-                                       onClose: { panelModel.onClose?() })
+                        if let liveActions { liveActions }
+                        else {
+                            MPVPlaybackTab(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                           onClose: { panelModel.onClose?() })
+                        }
                     }
                 },
                 onExit: { dismiss() }
