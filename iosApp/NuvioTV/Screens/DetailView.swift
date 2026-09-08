@@ -290,8 +290,6 @@ struct DetailView: View {
 
     /// Tester ask: auto full-screen the hero trailer a few seconds after opening a title.
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
-    /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
-    @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = true
     /// UX-4b (tester ask): the muted trailer looping behind the description previously had no
     /// switch at all — only auto-play did. Off = detail pages stay on the still artwork; the
     /// explicit "Watch Trailer" button and auto-play (if enabled) still work.
@@ -417,10 +415,6 @@ struct DetailView: View {
                 // FEAT-32: the still lands enlarged when the trailer cover goes and settles to 1.
                 .scaleEffect(TrailerBridgeChoreography.backdropScale(bridgePhase))
                 .animation(TrailerBridgeChoreography.backdropAnimation(to: bridgePhase), value: bridgePhase)
-            if showPosterBackdrop {
-                posterBackdropLayer
-                    .transition(.opacity)
-            }
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio). BUG-41: also
@@ -440,7 +434,7 @@ struct DetailView: View {
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
-            scrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            scrimOverlay
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
             ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
@@ -766,7 +760,7 @@ struct DetailView: View {
                 // Codex round 3 (P2): composed exactly as the description composes it underneath
                 // (scrim, then the scroll dim at its current value; the poster layer is held for
                 // the whole bridge), or the crossfade runs between a raw and a darkened frame.
-                scrimOverlay(posterBackdropVisible: false)
+                scrimOverlay
                 ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat, showsProbe: false)
                 FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                     model.trailerPlayback = nil
@@ -889,10 +883,9 @@ struct DetailView: View {
     // Kotlin `description` collides with NSObject.description, so KMP exposes it as `description_`.
     private var overview: String? { model.meta?.description_ ?? preview.description_ }
     private var genres: [String] { model.meta?.genres ?? preview.genres }
-    private var backgroundUrl: String? { model.meta?.background ?? preview.banner ?? preview.poster }
+    private var backgroundUrl: String? { model.meta?.background ?? preview.banner }
     private var logoUrl: String? { model.meta?.logo ?? preview.logo }
-    /// Poster art for the right-hand backdrop layer — independent of `backgroundUrl`'s
-    /// banner/backdrop preference (tester ask: mirror mobile's "poster stays on the right" layout).
+    /// Poster art carried into playback metadata. The detail background uses wide artwork only.
     private var posterUrl: String? { model.meta?.poster ?? preview.poster }
 
     /// BUG-74: the id a STREAM request must use — the resolved meta's canonical id whenever we
@@ -980,18 +973,6 @@ struct DetailView: View {
         trailerActive || scrolling || glassDisabled
     }
 
-    /// The poster-backdrop layer only earns its keep when it would show something the plain
-    /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
-    /// back to poster art itself) — and only while the hero trailer isn't occupying that same area.
-    private var showPosterBackdrop: Bool {
-        // FEAT-32: `!isTrailerActive` is also true for the whole full-screen trailer bridge (the
-        // request pauses the background loop), which used to mount this layer unseen under the
-        // opaque cover. The cover is transparent on its way out now, so the layer would show
-        // through the reveal as a second artwork fading over the settling still. Idle only.
-        posterBackdropEnabled && posterUrl != nil && posterUrl != backgroundUrl && !isTrailerActive
-            && bridgePhase == .idle
-    }
-
     // MARK: - Sections
 
     private var backdropImage: some View {
@@ -1006,43 +987,14 @@ struct DetailView: View {
         .accessibilityHidden(true)
     }
 
-    /// The poster pinned to the right 40% of the screen, behind the description (tester ask, mirrors
-    /// mobile's Detail layout). Its own leading edge fades to transparent so it blends into the plain
-    /// backdrop underneath instead of showing a hard seam.
-    private var posterBackdropLayer: some View {
-        GeometryReader { geo in
-            CachedAsyncImage(string: posterUrl)
-                .frame(width: geo.size.width * 0.4, height: geo.size.height, alignment: .trailing)
-                .clipped()
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: .black, location: 0.3),
-                            .init(color: .black, location: 1)
-                        ],
-                        startPoint: .leading, endPoint: .trailing
-                    )
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        }
-        .ignoresSafeArea()
-        // Same reasoning as backdropImage — decorative right-edge poster art, not a control.
-        .accessibilityHidden(true)
-    }
-
     /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
-    /// `posterBackdropVisible` softens the trailing (right-edge) stop so the poster-backdrop layer
-    /// behind it (pinned to the right 40%) reads through instead of going nearly opaque black; the
-    /// leading 0.95 stop (left-text readability invariant) and the bottom vertical gradient are
-    /// unchanged either way.
-    private func scrimOverlay(posterBackdropVisible: Bool) -> some View {
+    private var scrimOverlay: some View {
         ZStack {
             LinearGradient(
                 colors: [
                     .black.opacity(0.95),
                     .black.opacity(0.4),
-                    .black.opacity(posterBackdropVisible ? 0.45 : 0.85)
+                    .black.opacity(0.85)
                 ],
                 startPoint: .leading, endPoint: .trailing
             )

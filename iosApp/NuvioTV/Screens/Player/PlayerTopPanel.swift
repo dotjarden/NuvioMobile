@@ -2,13 +2,13 @@ import SwiftUI
 
 enum PlayerPanelTab: String, CaseIterable, Identifiable {
     case info, subtitles, audio
-    /// Engine-specific fourth tab (the mpv player's Playback: speed · timing · episodes · sources).
+    /// Shared playback controls; each engine supplies its supported actions.
     case playback
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .info: return String(localized: "Info")
+        case .info: return String(localized: "Details")
         case .subtitles: return String(localized: "Subtitles")
         case .audio: return String(localized: "Audio")
         case .playback: return String(localized: "Playback")
@@ -16,52 +16,44 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// Content for the optional fourth tab; supplied by the engine that has one.
+/// Engine-supported content for the shared Playback tab.
 struct PlayerPanelExtraTab {
     let content: AnyView
     init<V: View>(@ViewBuilder content: () -> V) { self.content = AnyView(content()) }
 }
 
-/// The app-drawn swipe-down top panel (Infuse-style rendition of the classic tvOS player panel):
-/// full width, anchored to the top, glass over the live video, a centred tab row (Info · Subtitles ·
-/// Audio) whose selection follows focus, and the tab's content below. Presented by
-/// `NativePlayerHostController` (which also owns Menu-to-close); playback continues underneath.
-///
-/// Focus: the tab row and the content are separate focus sections, so Down from a tab enters the
-/// content list and Up returns to the tabs. Left/Right on the tab row switches tabs. Everything
-/// uses system focus (docs/design/hig-hybrid-contract.md) — no custom rings.
+/// Shared bottom drawer for native, MPV, and Live TV playback. Select commits a tab;
+/// navigation focus alone does not rebuild the content. Back closes the drawer first.
 struct PlayerTopPanel: View {
     @ObservedObject var model: PlayerTopPanelModel
     var extraTab: PlayerPanelExtraTab? = nil
-    @State private var tab: PlayerPanelTab = .info
+    @State private var tab: PlayerPanelTab
+    init(model: PlayerTopPanelModel, extraTab: PlayerPanelExtraTab? = nil, initialTab: PlayerPanelTab = .playback) {
+        self.model = model
+        self.extraTab = extraTab
+        _tab = State(initialValue: initialTab)
+    }
     @State private var shown = false
     @FocusState private var focusedTab: PlayerPanelTab?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .bottom) {
             // Full-screen clear layer so the hosting view fills the window (focus + gestures).
             Color.clear.ignoresSafeArea()
             if shown {
                 panel
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .onAppear {
             withAnimation(reduceMotion ? nil : PlayerChipStyle.animation) { shown = true }
             focusedTab = tab
         }
-        .onChange(of: focusedTab) { oldValue, newValue in
-            guard let newValue else { return }
-            if oldValue == nil, newValue != tab {
-                // Focus came back UP from the content list: land on the current tab (the focus
-                // engine picks the geometrically nearest one, which would silently switch tabs).
-                focusedTab = tab
-            } else {
-                tab = newValue
-            }
-        }
+        .onAppear { model.onPresentation?(); model.setDetailsVisible(tab == .info) }
+        .onChange(of: tab) { _, value in model.setDetailsVisible(value == .info) }
+        .onDisappear { model.setDetailsVisible(false) }
         .onExitCommand { model.onClose?() }
     }
 
@@ -70,19 +62,19 @@ struct PlayerTopPanel: View {
             tabRow
                 .focusSection()
             content
-                .focusSection()
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: 440, alignment: .top)
+                .clipped()
+                .focusSection()
         }
         .padding(.horizontal, Theme.Spacing.screen)
         .padding(.top, Theme.Spacing.xl)
         .padding(.bottom, Theme.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .top)
-        // Same recipe as the mpv transport bar (PlayerControlsOverlay): dark-tinted glass keeps text
-        // legible over bright scenes; only the bottom corners are rounded (the top edge is the screen edge).
-        .glassEffect(.regular.tint(.black.opacity(0.35)),
-                     in: UnevenRoundedRectangle(bottomLeadingRadius: Theme.Radius.hero,
-                                                bottomTrailingRadius: Theme.Radius.hero, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        .background(Color(white: 0.055).opacity(0.98),
+                    in: UnevenRoundedRectangle(topLeadingRadius: Theme.Radius.hero, topTrailingRadius: Theme.Radius.hero))
+        .overlay(alignment: .top) { Capsule().fill(.white.opacity(0.2)).frame(width: 70, height: 5).padding(.top, 10).allowsHitTesting(false) }
+
     }
 
     private var tabRow: some View {
@@ -90,17 +82,16 @@ struct PlayerTopPanel: View {
             ForEach(tabs) { item in
                 Button(item.title) { tab = item }
                     .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(item == tab ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                     .focused($focusedTab, equals: item)
                     .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
                     .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var tabs: [PlayerPanelTab] {
-        extraTab == nil ? [.info, .subtitles, .audio] : PlayerPanelTab.allCases
+        [.audio, .subtitles, .playback, .info]
     }
 
     @ViewBuilder
@@ -113,7 +104,7 @@ struct PlayerTopPanel: View {
         case .audio:
             PlayerAudioTab(model: model)
         case .playback:
-            if let extraTab { extraTab.content } else { EmptyView() }
+            if let extraTab { extraTab.content } else { Text("Playback controls are available below the video.") }
         }
     }
 }

@@ -34,8 +34,6 @@ struct AppearanceSettingsPane: View {
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
     /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
     @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
-    /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
-    @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
     /// UX-4b: the muted background trailer on detail pages (distinct from auto-play above).
     @AppStorage("detail_trailer_background") private var detailTrailerBackground = true
     /// FEAT-8: mirrors DetailView's `detail_trailer_duration` key. 0 = play forever.
@@ -259,11 +257,6 @@ struct AppearanceSettingsPane: View {
                     label: { value in Self.trailerDurationOptions.first { $0.value == value }?.label ?? "\(value)" }
                 )
             }
-            SettingsToggleRow(
-                title: String(localized: "Poster in Detail Background"),
-                subtitle: String(localized: "Show the title's poster on the right side of detail pages"),
-                isOn: $detailPosterBackdrop
-            )
             // FEAT-9
             SettingsToggleRow(
                 title: String(localized: "Icon-Only Detail Buttons"),

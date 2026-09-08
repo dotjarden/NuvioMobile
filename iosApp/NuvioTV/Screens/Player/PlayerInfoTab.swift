@@ -31,10 +31,10 @@ struct NativeInfoHeader: Equatable {
             let episodeName = context.episodes.first { $0.season?.value == s && $0.episode?.value == e }?.title
             if let episodeName, !episodeName.isEmpty {
                 parts.append(episodeName)
-            } else if let st = context.streamTitle, !st.isEmpty {
+            } else if let st = context.streamTitle, !st.isEmpty, st != context.title {
                 parts.append(st); usedStreamLabel = true
             }
-        } else if let st = context.streamTitle, !st.isEmpty {
+        } else if let st = context.streamTitle, !st.isEmpty, st != context.title {
             parts.append(st); usedStreamLabel = true
         }
         subtitle = parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -42,20 +42,21 @@ struct NativeInfoHeader: Equatable {
         let still = context.episodeStill.flatMap { $0.isEmpty ? nil : $0 }
         poster = still ?? context.poster.flatMap { $0.isEmpty ? nil : $0 }
         landscapeArtwork = still != nil
-        streamLabel = usedStreamLabel ? nil : context.streamTitle.flatMap { $0.isEmpty ? nil : $0 }
+        streamLabel = usedStreamLabel ? nil : context.streamTitle.flatMap { $0.isEmpty || $0 == context.title ? nil : $0 }
     }
 }
 
 /// Info tab: what's-playing header (art · title · S/E · synopsis), a metadata chip row (Infuse-style:
 /// runtime · year · size · codec · resolution class · audio · bitrate · fps · genres · rating), then
-/// the live stream rows in two columns. Nothing here is focusable — it's a read-only tab.
+/// the live stream rows in two columns. Read-only rows can take focus so the remote can scroll long details.
 struct PlayerInfoTab: View {
     let info: PlayerPanelInfo
 
     /// Header art height; poster (2:3) or episode still (16:9) scale into it.
-    private static let artHeight: CGFloat = 150
+    private static let artHeight: CGFloat = 100
 
     var body: some View {
+        ScrollView(.vertical) {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             headerView
             if !info.chips.isEmpty { chipRow }
@@ -63,6 +64,7 @@ struct PlayerInfoTab: View {
             rowsView
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        }.frame(maxHeight: 440)
     }
 
     private var headerView: some View {
@@ -76,7 +78,7 @@ struct PlayerInfoTab: View {
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text(info.header.title)
-                    .font(Theme.Font.screenTitle)
+                    .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                     .lineLimit(1)
                 if let subtitle = info.header.subtitle {
@@ -131,8 +133,8 @@ struct PlayerInfoTab: View {
         return Grid(alignment: .topLeading, horizontalSpacing: Theme.Spacing.xl, verticalSpacing: Theme.Spacing.xs) {
             ForEach(0..<max(half, 1), id: \.self) { i in
                 GridRow {
-                    if i < rows.count { rowView(rows[i]) } else { Color.clear.frame(height: 1) }
-                    if i + half < rows.count { rowView(rows[i + half]) } else { Color.clear.frame(height: 1) }
+                    if i < rows.count { rowView(rows[i]).focusable() } else { Color.clear.frame(height: 1) }
+                    if i + half < rows.count { rowView(rows[i + half]).focusable() } else { Color.clear.frame(height: 1) }
                 }
             }
             if rows.isEmpty {

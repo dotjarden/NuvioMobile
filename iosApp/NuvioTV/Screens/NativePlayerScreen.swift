@@ -16,10 +16,8 @@ import SwiftUI
 //    segments come from the shared `SkipIntroRepository`, evaluated against playback ticks).
 //  - "Play Next Episode" / "Continue Watching" are contextual actions too; the countdown is a small
 //    app-drawn caption (`PlayerChipCaption`, shared with the mpv screen) above them.
-//  - Info · Subtitles · Audio live in an app-drawn swipe-down top panel (Infuse-style) presented by
-//    `NativePlayerHostController` over the system player — tvOS 26 has no system swipe-down panel
-//    (a `customInfoViewControllers` tab would render as an "Info" pill under the seek bar). The
-//    native transport-bar Subtitles/Audio popovers stay (Enhance Dialogue etc. have no public API).
+//  - Settings presents the shared bottom Audio / Subtitles / Playback / Details drawer.
+//    Native Audio and Subtitles popovers remain for system features such as Enhance Dialogue.
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
@@ -34,10 +32,6 @@ struct NativePlayerScreen: View {
     @State private var panelAdapter: NativePlayerPanelAdapter?
     @State private var skipSegments: [SkipSegment] = []
     @State private var skipPrompt: SkipPrompt?
-    /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
-    @State private var showSwipeHint = false
-    @State private var swipeHintTask: Task<Void, Never>?
-    @State private var swipeHintReason: SwipeHintReason?
     @State private var panelOpen = false
     @Environment(\.dismiss) private var dismiss
 
@@ -76,6 +70,10 @@ struct NativePlayerScreen: View {
                         allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
                             ? coordinator.languagePlan.subtitleFilterLanguages : nil,
                         panelModel: panelModel,
+                        makePlaybackTab: { PlayerPanelExtraTab {
+                            NativePlaybackOptions(player: player, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                                  onClose: { panelModel.onClose?() })
+                        } },
                         onSkip: { [weak coordinator] target in
                             coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                         },
@@ -97,11 +95,8 @@ struct NativePlayerScreen: View {
             // (a per-second UIAction title change re-animates the transport bar), so the countdown
             // lives here, in the shared chip caption both engines draw. Inset above the system's
             // contextual-action pill; the extra bottom offset is device-tuned for tvOS 26.
-            if showSwipeHint, !panelOpen, coordinator.phase == .playing {
-                PlayerSwipeHint().transition(.opacity)
-            }
 
-            if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
+            if !panelOpen, let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
                 PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(.trailing, PlayerChipStyle.edgePadding)
@@ -110,20 +105,6 @@ struct NativePlayerScreen: View {
             }
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
-        .animation(PlayerChipStyle.animation, value: showSwipeHint)
-        .onChange(of: coordinator.phase) { _, phase in
-            if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
-        }
-        .onChange(of: coordinator.isPaused) { _, paused in
-            // Re-show the hint once per pause (after the pause has settled), like Infuse. Resuming
-            // only cancels a PAUSE hint — the start hint must survive the initial paused→playing
-            // transition, which happens right after readyToPlay.
-            if paused {
-                if coordinator.phase == .playing { flashSwipeHint(after: 1.5, reason: .pause) }
-            } else if swipeHintReason == .pause {
-                hideSwipeHint()
-            }
-        }
         .onAppear {
             let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,
                                                    context: context, routingNote: routingNote)
@@ -139,30 +120,9 @@ struct NativePlayerScreen: View {
             fetchSkipSegments()
         }
         .onDisappear {
-            swipeHintTask?.cancel()
             coordinator.stop()
             upNext.stop()
         }
-    }
-
-    private enum SwipeHintReason { case start, pause }
-
-    private func flashSwipeHint(after delay: Double, reason: SwipeHintReason) {
-        swipeHintTask?.cancel()
-        swipeHintReason = reason
-        swipeHintTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = true
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled else { return }
-            showSwipeHint = false
-        }
-    }
-
-    private func hideSwipeHint() {
-        swipeHintTask?.cancel()
-        showSwipeHint = false
     }
 
     /// Vertical room the system contextual-action pill occupies above the bottom inset on tvOS 26,
@@ -237,6 +197,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     /// Subtitles list to these BCP-47 tags. nil = show every rendition.
     let allowedSubtitleLanguages: [String]?
     let panelModel: PlayerTopPanelModel
+    let makePlaybackTab: () -> PlayerPanelExtraTab
     let onSkip: (Double) -> Void
     let onPlayNow: () -> Void
     /// Menu while the up-next chip is showing → dismiss it (returns true) instead of exiting.
@@ -252,9 +213,10 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         // bar. Info lives in the app-drawn swipe-down panel presented by the host instead.
         let model = panelModel
         let openChanged = onPanelOpenChanged
-        host.onOpenPanel = { [weak host] in
+        let makePlaybackTab = makePlaybackTab
+        host.onOpenPanel = { [weak host] tab in
             guard let host else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model))
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makePlaybackTab(), initialTab: tab))
             model.onClose = { [weak panel] in panel?.close(animated: true) }
             host.present(panel: panel)
             openChanged(true)
@@ -309,5 +271,21 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
+    }
+}
+
+private struct NativePlaybackOptions: View {
+    let player: AVPlayer
+    @ObservedObject var engine: NextEpisodeEngine
+    let canSwitchStreams: Bool
+    let onClose: () -> Void
+    @State private var speed = 1.0
+    var body: some View {
+        PlayerPlaybackTab(playbackSpeed: speed, audioDelaySec: nil, onSpeed: { value in
+            speed = value
+            player.defaultRate = Float(value)
+            if player.rate != 0 { player.rate = Float(value) }
+        }, onAudioDelay: nil, engine: engine, canSwitchStreams: canSwitchStreams, onClose: onClose)
+        .onAppear { speed = Double(player.defaultRate) }
     }
 }

@@ -9,10 +9,16 @@ Recorded from Jordan’s review, September 8, 2026. Apply these rules to subsequ
 - Inputs use native tvOS input and focus styling without extra glass containers. Put related submit actions beside their input; Add-ons Install belongs beside Manifest URL.
 - Liquid Glass is appropriate for navigation and controls. Readability and reachable remote focus take precedence over translucency.
 
-## Playback discussion — proposal, not implemented
+## Playback — approved and implemented
 
-Retain both decoding engines because their format and playback capabilities differ. Give them a common bottom control organization: Audio, Subtitles, Playback, Details. Show only supported actions. Live TV adds channel navigation, Guide, Favorites, and Go Live in the same location. Detailed information remains available on demand rather than competing with transport controls.
+Retain AVPlayer and MPV because their format capabilities differ. Both movie players and Live TV use the same opaque bottom Settings drawer: Audio, Subtitles, Playback, Details. Select changes a tab; moving focus alone does not rebuild it. Back closes the drawer before exiting playback. Native AVKit keeps system transport and sound enhancements; MPV supplies its own transport with the same Settings entry point.
 
-Use the existing PlayerTopPanelModel and native/MPV adapters as the starting point for shared presentation state. AVKit owns native transport; MPV requires equivalent custom transport. Matching layout and remote grammar is feasible, but native AVKit’s internal controls cannot simply be transplanted into MPV.
+Playback offers supported speed, timing, episode and source controls. Live TV puts Previous/Next channel, Go Live, Favorite and Guide there. Stream information is available in Details, without separate pause or diagnostics overlays. MPV publishes changed values only, coalesces diagnostic requests and samples details at most once per second while visible. Native and live diagnostics also stop when Details is closed. These changes reduce unnecessary work; Apple TV hardware profiling is still required to quantify performance.
 
-Before implementation, agree the common layout with Jordan. Profile the information-heavy MPV UI on an actual Apple TV. Current code polls cached state every 0.5 seconds, republishes duration/state, and rebuilds information through the adapter; expensive diagnostics already run off-main but can be requested while any panel is open. These are investigation targets, not a measured diagnosis. Separate playback work from visible UI updates, deduplicate unchanged values, and sample diagnostics only while Details needs them. Preserve seek, track selection, HDR routing, and live playback behavior.
+## Browse and detail follow-up
+
+The filter row belongs outside the catalog's lazy scrolling container, directly beneath the pinned hero. It must remain visible and reachable after scrolling down and returning, including with large posters. Its width and leading alignment must participate in the remote focus section.
+
+Detail pages use a wide backdrop without a separate poster layer or portrait-poster fallback. Keep poster artwork for cards and playback metadata.
+
+Jordan asked whether Home and Browse should merge. Recommended direction: one Home entry with All / Movies / Shows; All retains personal rows such as Continue Watching and collections. This navigation change remains a discussion decision; the current fix preserves both entries.

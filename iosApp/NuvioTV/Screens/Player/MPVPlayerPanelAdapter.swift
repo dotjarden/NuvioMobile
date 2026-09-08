@@ -18,6 +18,11 @@ final class MPVPlayerPanelAdapter {
         self.state = state
         self.model = model
         self.context = context
+        model.onPresentation = { [weak self] in self?.rebuildSelections() }
+        model.onDetailsVisibilityChange = { [weak self, weak state] visible in
+            state?.detailsVisible = visible
+            if visible { state?.requestDetails?(); self?.rebuildInfo() }
+        }
 
         model.onSelectSubtitle = { [weak state] option in
             state?.selectSubtitle?(option.flatMap { Int($0.id) } ?? -1)
@@ -56,7 +61,7 @@ final class MPVPlayerPanelAdapter {
 
         Publishers.Merge3(
             state.$streamInfo.map { _ in () }.eraseToAnyPublisher(),
-            state.$durationSec.map { _ in () }.eraseToAnyPublisher(),
+            state.$durationSec.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             state.$routingNote.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
@@ -101,6 +106,7 @@ final class MPVPlayerPanelAdapter {
     }
 
     private func rebuildInfo() {
+        guard model.detailsVisible else { return }
         var rows: [NativeInfoRow] = []
         if let info = state.streamInfo {
             rows = info.rows.map { NativeInfoRow(label: $0.0, value: $0.1) }

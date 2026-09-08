@@ -19,6 +19,7 @@ struct HomeView: View {
     var browse: HomeBrowseConfiguration? = nil
     private var displayRows: [HomeRow] { browse?.rows ?? model.rows }
     private var includesPersonalRows: Bool { browse == nil }
+    private var filterBarHeight: CGFloat { browse == nil ? 0 : 84 }
     @State private var resume: ResumeTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The Poster Style Home renders with. Read in RELEASE as well as debug builds as of Wave 10:
@@ -716,6 +717,14 @@ struct HomeView: View {
                                 if heroHeaderVisible {
                                     pinnedHeroHeader
                                 }
+                                if let browse {
+                                    browse.controls
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, Theme.Spacing.screen)
+                                        .frame(height: filterBarHeight)
+                                        .focusSection()
+                                        .zIndex(1)
+                                }
                                 rowsScroll(pinned: heroHeaderVisible, settleReveal: true)
                             }
                             // BUG-89 (beta.18): a Poster Size switch (Medium → Large) changes the
@@ -1121,9 +1130,6 @@ struct HomeView: View {
                 }
 
                 if let browse {
-                    browse.controls
-                        .focusSection()
-                        .padding(.bottom, Theme.Spacing.lg)
                     if browse.rows.isEmpty { browse.emptyState }
                 } else if displayRows.isEmpty {
                     placeholder
@@ -1308,7 +1314,7 @@ struct HomeView: View {
         // view moves; the pinned hero is a sibling above it in the VStack split. Full mechanism,
         // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
         .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal,
-                                               compression: pinnedPlan.compression,
+                                               compression: pinnedPlan.compression - filterBarHeight,
                                                onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
         // the shipped tree is unchanged.
@@ -1689,7 +1695,8 @@ struct HomeView: View {
         PinnedRowGeometry.plan(posterHeight: posterStyle.height,
                                captionVisible: posterStyle.showTitle,
                                showsCTA: heroCarouselActive,
-                               landscapeRows: posterStyle.landscapeCatalogRows)
+                               landscapeRows: posterStyle.landscapeCatalogRows,
+                               reservedHeight: filterBarHeight)
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact

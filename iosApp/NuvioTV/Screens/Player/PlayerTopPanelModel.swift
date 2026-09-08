@@ -1,10 +1,8 @@
 import Combine
 import SwiftUI
 
-// Engine-agnostic backing model for the swipe-down top panel (Info · Subtitles · Audio). The native
-// AVPlayer screen fills it through `NativePlayerPanelAdapter`; the mpv screen can plug in the same
-// way later (its `MPVPlaybackState` already exposes track lists + select closures). Closures rather
-// than a protocol keep it a plain ObservableObject the SwiftUI panel can observe directly.
+// Shared drawer state populated by the native, MPV and Live TV adapters.
+// Closures route selections to the active engine.
 
 /// One selectable row in the Subtitles or Audio tab.
 struct PlayerPanelOption: Identifiable, Equatable {
@@ -49,6 +47,7 @@ final class PlayerTopPanelModel: ObservableObject {
     /// Whether the Audio tab offers the system route picker (AirPlay/Bluetooth). False on engines
     /// that don't drive AVAudioSession routing.
     @Published var canPickRoute = true
+    var hasNativeSoundOptions = false
 
     /// Current subtitle delay in milliseconds (0 = none, positive = subtitles later). Meaningless
     /// while `supportsSubtitleDelay` is false.
@@ -64,6 +63,14 @@ final class PlayerTopPanelModel: ObservableObject {
     /// New delay in milliseconds, already clamped to ±`SUBTITLE_DELAY_MAX_MS`.
     var onSubtitleDelayChange: ((Int) -> Void)?
     var onClose: (() -> Void)?
+    var onPresentation: (() -> Void)?
+    private(set) var detailsVisible = false
+    var onDetailsVisibilityChange: ((Bool) -> Void)?
+    func setDetailsVisible(_ visible: Bool) {
+        guard detailsVisible != visible else { return }
+        detailsVisible = visible
+        onDetailsVisibilityChange?(visible)
+    }
 
     init(info: PlayerPanelInfo) {
         self.info = info

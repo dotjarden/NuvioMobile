@@ -275,16 +275,17 @@ enum PinnedRowGeometry {
     nonisolated static func plan(posterHeight: CGFloat,
                                  captionVisible: Bool,
                                  showsCTA: Bool,
-                                 landscapeRows: Bool) -> Plan {
+                                 landscapeRows: Bool,
+                                 reservedHeight: CGFloat = 0) -> Plan {
         let artwork = landscapeRows ? Theme.Size.landscapeHeight : posterHeight
         let captionChrome = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let baseTopReach = Theme.Size.heroPinnedRowTopPad
         let baseBottomReach = Theme.Size.heroPinnedRowBottomReach
-        let budget = Theme.Size.heroPinnedRowsViewportBudget
+        let budget = max(0, Theme.Size.heroPinnedRowsViewportBudget - reservedHeight)
         let key = regimeKey(posterHeight: posterHeight,
                             captionVisible: captionVisible,
                             showsCTA: showsCTA,
-                            landscapeRows: landscapeRows)
+                            landscapeRows: landscapeRows) + (reservedHeight > 0 ? "f\(Int(reservedHeight))" : "")
 
         // Wave 10's number for this artwork, and the scope gate in one read: it is 0 at exactly the
         // Poster Sizes whose rows already fit the pre-BUG-87 extent rule, and 0 everywhere when
@@ -309,7 +310,7 @@ enum PinnedRowGeometry {
                                 topReach: baseTopReach,
                                 bottomReach: baseBottomReach)
 
-        guard legacyCompression > 0 else {
+        guard legacyCompression > 0 || reservedHeight > 0 else {
             noteIfShort(unchanged)
             return unchanged
         }

@@ -18,7 +18,6 @@ struct PlayerSubtitlesTab: View {
         // lazy/scrolling content no longer breaks the panel's height measurement.
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                PlayerPanelSectionCaption(text: String(localized: "Subtitles"))
                 if let off { row(off) }
                 if labelled { PlayerPanelSectionCaption(text: String(localized: "Embedded")).padding(.top, Theme.Spacing.sm) }
                 ForEach(embedded) { row($0) }

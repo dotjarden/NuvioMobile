@@ -26,7 +26,7 @@ struct PlayerAudioTab: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            // Full-width rows: Down from the (centred) tab row must land on the first language row,
+            // Full-width rows: Down from the tab row must land on the first language row,
             // not on the route picker in the trailing column — the focus engine prefers overlap.
             .frame(maxWidth: .infinity, alignment: .leading)
             .focusSection()
@@ -47,11 +47,13 @@ struct PlayerAudioTab: View {
                         .padding(.top, Theme.Spacing.xs)
                         .accessibilityIdentifier("player.panel.audio.route")
                 }
-                Text("Enhance Dialogue and sound options are in the player's Audio button.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, Theme.Spacing.sm)
+                if model.hasNativeSoundOptions {
+                    Text("Enhance Dialogue and sound options are in the player's Audio button.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Theme.Spacing.sm)
+                }
             }
             .frame(width: 520, alignment: .leading)
             .focusSection()

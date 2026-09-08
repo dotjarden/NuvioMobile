@@ -59,12 +59,25 @@ Validated on tvOS 27 simulator: anchored type-selector round trip; source manage
 
 ## Live player control ownership
 
-Removed the SwiftUI transport bar layered over AVKit and MPV. AVKit now owns Live TV actions through `transportBarCustomMenuItems`; select the TV icon in the native playback controls for previous/next channel, Go Live, favorite, and Channel guide. MPV exposes these actions inside its existing Playback panel. Channel guide opens the programme grid. Error recovery is a separate solid screen.
+Removed the SwiftUI transport bar layered over AVKit and MPV. AVKit exposes the shared drawer through its native Settings menu; Playback contains previous/next channel, Go Live, favorite, and Channel guide. MPV uses the same drawer and actions. Channel guide opens the programme grid. Error recovery is a separate solid screen.
 
-`testLivePlayerNativeMenuFocus` uses the synthetic HLS stream from `tests/livetv/run-player-fixture.sh` (ffmpeg and Python required, loopback port 8767). On tvOS 27 the test opens the native menu with Up/Select, switches channels, reopens it, and returns to the guide. This test passed with real HLS segment delivery. MPV integration is compile-checked; the remote test covers the native player.
+`testLivePlayerNativeMenuFocus` uses the synthetic HLS stream from `tests/livetv/run-player-fixture.sh` (ffmpeg and Python required, loopback port 8767). On tvOS 27 the test opens the native menu with Up/Select, switches channels, reopens it, and returns to the guide. This test passed with real HLS segment delivery. The movie-player tests also exercise MPV against a generated local two-audio-track, subtitled file.
 
 ## Shared Home surface and heading rules
 
-Browse now supplies data and anchored filters to HomeView itself. It shares Home’s scrim, pinned geometry, focus dwell, CatalogRowView, end-of-row See All tile, and scroll settling. Filtered discovery uses the same horizontal catalog row and requests more pages near its end. Settings removes page-title duplication, retaining useful subgroup labels. Add-ons puts Install beside Manifest URL and removes its introductory block. See [design-rules.md](design-rules.md) for the user’s persistent hierarchy rules and the pending playback discussion.
+Browse now supplies data and anchored filters to HomeView itself. It shares Home’s scrim, pinned geometry, focus dwell, CatalogRowView, end-of-row See All tile, and scroll settling. Filtered discovery uses the same horizontal catalog row and requests more pages near its end. Settings removes page-title duplication, retaining useful subgroup labels. Add-ons puts Install beside Manifest URL and removes its introductory block. See [design-rules.md](design-rules.md) for the user’s persistent hierarchy rules and the approved playback layout.
 
-Verified on tvOS 27: Home/Browse hero-button vertical alignment, unchanged hero position after remote row navigation, trailing See All reachability, stable filter placement through type and genre changes and Reset, Settings selection without a duplicate title, and inline Add-ons field/action alignment. Signed Apple TV build passes. Playback controls and performance changes remain a discussion proposal.
+Verified on tvOS 27: Home/Browse hero-button vertical alignment, unchanged hero position after remote row navigation, trailing See All reachability, stable filter placement through type and genre changes and Reset, Settings selection without a duplicate title, and inline Add-ons field/action alignment. Signed Apple TV build passes. The shared bottom drawer is now implemented; see below.
+
+
+## Pinned filters and common player drawer
+
+Browse filters now stay outside HomeView's lazy rows, so row virtualization and scroll correction cannot remove them. The row viewport accounts for their reserved height. Opening content no longer mounts a separate poster over its wide background, and portrait posters are not used as a temporary backdrop.
+
+AVPlayer movies, MPV movies, and Live TV share Audio / Subtitles / Playback / Details in a readable bottom drawer. Native menus finish dismissing before drawer presentation. Tabs and contents have aligned focus regions, and Back dismisses the drawer without exiting playback. Native system transport and audio enhancements remain available. Engine-specific timing, episode/source controls, and live actions are shown only where supported.
+
+Diagnostics run only while Details is visible. MPV deduplicates state publications and coalesces requests, capped at one details sample per second. Old pause/diagnostic overlays and their timers were removed. Hardware smoothness has not been measured.
+
+Validation for this update: tvOS 27 remote tests passed for repeated Browse scroll returns at Medium and Large poster sizes; type/genre/reset filters; pinned Home/Browse interaction and trailing See All; live channel switching and Guide; and both native and MPV movie drawers with actual audio/subtitle selection, speed changes, and Back preserving playback. Player media is synthetic and served on loopback by the fixture script. The physical-device target builds and signs successfully; hardware playback/performance validation remains outstanding.
+
+All 14 pinned-row geometry unit tests pass, including the filter-reservation bounds. Final device build passes strict deep signature verification.

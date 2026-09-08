@@ -89,6 +89,22 @@ final class PinnedRowGeometryTests: XCTestCase {
         }
     }
 
+    func testReservedFilterHeightUsesRemainingViewportWithoutBreakingHeroFloors() {
+        for height in [Self.small, Self.medium, Self.large] {
+            for captions in [false, true] {
+                for cta in [false, true] {
+                    let plan = PinnedRowGeometry.plan(posterHeight: height, captionVisible: captions,
+                                                      showsCTA: cta, landscapeRows: false, reservedHeight: 84)
+                    XCTAssertEqual(plan.viewport, Theme.Size.heroPinnedRowsViewportBudget - 84 + plan.compression, accuracy: epsilon)
+                    XCTAssertGreaterThanOrEqual(plan.topReach, PinnedRowGeometry.topReachFloor)
+                    XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor)
+                    XCTAssertLessThanOrEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: cta))
+                    XCTAssertEqual(plan.fits, plan.linkFrame <= plan.viewport)
+                }
+            }
+        }
+    }
+
     // MARK: - Floors and bounds
 
     /// No dial may leave its legal range, ever — including for a synced `widthDp` past Large, which

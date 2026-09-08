@@ -1357,6 +1357,7 @@
         }
       }
     },
+    "1 channel": {},
     "1 defer hero": {},
     "1 entry": {
       "localizations": {
@@ -6930,6 +6931,7 @@
         }
       }
     },
+    "Custom manifest": {},
     "Dates & Ratings": {
       "localizations": {
         "de": {
@@ -7476,6 +7478,7 @@
       }
     },
     "Diagnostics": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -8430,7 +8433,6 @@
         }
       }
     },
-    "Enable a catalog for this media type in Add-ons.": {},
     "Enable the edge highlight and top sheen": {
       "localizations": {
         "de": {
@@ -10312,6 +10314,7 @@
       }
     },
     "Hide Stream Info": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -11028,6 +11031,7 @@
       }
     },
     "Info": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -11198,6 +11202,7 @@
       }
     },
     "Install from manifest URL": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -12329,6 +12334,7 @@
         }
       }
     },
+    "Manifest URL": {},
     "Mark Watched": {
       "extractionState": "stale",
       "localizations": {
@@ -13388,7 +13394,6 @@
         }
       }
     },
-    "No catalogs available": {},
     "No changes detected.": {
       "localizations": {
         "de": {
@@ -16780,6 +16785,7 @@
       }
     },
     "Paste the manifest URL from your streaming addon's config page (e.g. your TorBox or Torrentio URL with your API key). It ends in /manifest.json.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -16813,6 +16819,7 @@
         }
       }
     },
+    "Pause": {},
     "Paused": {
       "localizations": {
         "de": {
@@ -16848,7 +16855,6 @@
       }
     },
     "Play": {
-      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17121,6 +17127,7 @@
         }
       }
     },
+    "Playback controls are available below the video.": {},
     "Playing": {
       "localizations": {
         "de": {
@@ -17361,6 +17368,7 @@
       }
     },
     "Positive values delay the track; negative values play it earlier.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17463,6 +17471,7 @@
       }
     },
     "Poster in Detail Background": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -20334,7 +20343,6 @@
         }
       }
     },
-    "See all": {},
     "Segments": {
       "localizations": {
         "de": {
@@ -20983,6 +20991,7 @@
       }
     },
     "Show Stream Info": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -21118,7 +21127,6 @@
         }
       }
     },
-    "Show the title's poster on the right side of detail pages": {},
     "Show the video size (GB/MB) as a chip on stream results.": {
       "localizations": {
         "de": {
@@ -26826,7 +26834,6 @@
         }
       }
     },
-    "View details": {},
     "Violence": {
       "localizations": {
         "de": {
@@ -28165,6 +28172,7 @@
       }
     },
     "https://…/manifest.json": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {

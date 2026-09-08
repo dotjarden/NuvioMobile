@@ -146,6 +146,10 @@ struct NuvioTVApp: App {
             LiveTVView(profile: "live-tv-ui-test")
         } else if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
             LiveTVView(profile: "live-player-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--native-player-ui-test") {
+            NativePlayerScreen(context: Self.playerTestContext)
+        } else if ProcessInfo.processInfo.arguments.contains("--mpv-player-ui-test") {
+            MPVPlayerScreen(context: Self.playerTestContext)
         } else if ProcessInfo.processInfo.arguments.contains("--home-ui-test") {
             HomeUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--addons-ui-test") {
@@ -174,6 +178,15 @@ struct NuvioTVApp: App {
                 .preferredColorScheme(.dark)
         }
     }
+    #if DEBUG
+    private static var playerTestContext: PlaybackContext {
+        PlaybackContext(url: URL(string: "http://127.0.0.1:8767/movie.mp4")!, title: "Player test film",
+            contentType: "movie", parentMetaId: "player-ui-fixture", videoId: "player-ui-fixture",
+            season: nil, episode: nil, poster: nil, background: nil, providerName: "Local fixture",
+            providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [])
+    }
+    #endif
+
 }
 
 #if DEBUG
@@ -192,6 +205,14 @@ private struct HomeUITestRoot: View {
 }
 private struct BrowseUITestRoot: View {
     @StateObject private var home = HomeViewModel()
-    var body: some View { MediaBrowseView(model: home, mediaType: "movie") }
+    private var style: PosterStyle {
+        var value = PosterStyle.default
+        if ProcessInfo.processInfo.arguments.contains("--large-posters") {
+            value.width *= 154.0 / 126.0
+            value.height *= 154.0 / 126.0
+        }
+        return value
+    }
+    var body: some View { MediaBrowseView(model: home, mediaType: "movie").environment(\.posterStyle, style) }
 }
 #endif

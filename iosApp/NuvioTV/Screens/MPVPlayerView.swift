@@ -35,8 +35,12 @@ final class MPVPlaybackState: ObservableObject {
 
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
-    /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
+    /// The shared bottom Settings drawer is presented.
     @Published var panelOpen: Bool = false
+    var detailsVisible = false
+    var requestDetails: (() -> Void)?
+    var openPanel: ((PlayerPanelTab) -> Void)?
+    var togglePlayback: (() -> Void)?
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
 
@@ -47,7 +51,6 @@ final class MPVPlaybackState: ObservableObject {
     @Published var playbackSpeed: Double = 1.0
     @Published var subtitleDelaySec: Double = 0
     @Published var audioDelaySec: Double = 0
-    @Published var showStreamInfo: Bool = false
     @Published var streamInfo: StreamInfoSnapshot?
     /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
     /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
@@ -97,6 +100,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var pollTimer: Timer?
     private var hideWork: DispatchWorkItem?
     private var lastSaveUptime: TimeInterval = 0
+    private var lastDetailsUptime: TimeInterval = 0
+    private var detailsRequestInFlight = false
     private var pendingResumeSec: Double?
     private var seekTimer: Timer?
     private var seekDirection: Double = 0
@@ -176,8 +181,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
     /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
     private var swallowMenuRelease = false
-    /// Open the swipe-down top panel (D-pad Down with nothing else to do, or a down swipe).
-    var onOpenPanel: (() -> Void)?
+    /// Open a drawer tab from Settings, or via the existing Down shortcut.
+    var onOpenPanel: ((PlayerPanelTab) -> Void)?
 
     init(context: PlaybackContext, state: MPVPlaybackState) {
         self.context = context
@@ -201,6 +206,8 @@ final class MPVTVPlayerViewController: UIViewController {
         view.layer.addSublayer(metalLayer)
         layoutMetalLayer()
 
+        state.requestDetails = { [weak self] in self?.refreshStreamInfoAsync() }
+        state.togglePlayback = { [weak self] in self?.togglePause(); self?.flashControls() }
         state.selectAudio = { [weak self] id in self?.selectAudio(id) }
         state.selectSubtitle = { [weak self] id in self?.selectSubtitle(id) }
         state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
@@ -220,7 +227,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     @objc private func handleSwipeDown() {
         guard presentedViewController == nil else { return }
-        onOpenPanel?()
+        onOpenPanel?(.playback)
     }
 
     override func viewDidLayoutSubviews() {
@@ -1137,10 +1144,12 @@ final class MPVTVPlayerViewController: UIViewController {
         // synchronous reads stall for seconds while the core fills its cache early in playback).
         let snap = cachedProps()
 
-        state.durationSec = snap.duration
-        state.positionSec = max(snap.position, 0)
-        state.isPaused = snap.paused
-        state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        if state.durationSec != snap.duration { state.durationSec = snap.duration }
+        let position = max(snap.position, 0)
+        if state.positionSec != position { state.positionSec = position }
+        if state.isPaused != snap.paused { state.isPaused = snap.paused }
+        let buffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        if state.isBuffering != buffering { state.isBuffering = buffering }
 
         // Rising-edge detection: eof-reached STAYS true while keep-open holds the last frame, so
         // only propagate transitions — otherwise a dismissed post-play cover re-presents each tick.
@@ -1149,11 +1158,12 @@ final class MPVTVPlayerViewController: UIViewController {
             state.isEnded = snap.eof
         }
 
-        if state.showStreamInfo || state.panelOpen {
+        let now = ProcessInfo.processInfo.systemUptime
+        if state.detailsVisible, now - lastDetailsUptime >= 1 {
+            lastDetailsUptime = now
             refreshStreamInfoAsync()
         }
 
-        let now = ProcessInfo.processInfo.systemUptime
         if !snap.paused, now - lastSaveUptime > 5 {
             lastSaveUptime = now
             saveProgress()
@@ -1186,12 +1196,20 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Rebuilds the Stream Info panel rows off-main (it reads a dozen mpv properties).
     private func refreshStreamInfoAsync() {
+        guard !detailsRequestInFlight else { return }
+        detailsRequestInFlight = true
+        lastDetailsUptime = ProcessInfo.processInfo.systemUptime
         let engine = state.routingNote
         let subtitleDelaySec = state.subtitleDelaySec
         eventQueue.async { [weak self] in
-            guard let self, self.mpv != nil else { return }
+            guard let self else { return }
+            guard self.mpv != nil else {
+                DispatchQueue.main.async { self.detailsRequestInFlight = false }
+                return
+            }
             let info = self.buildStreamInfo(engine: engine, subtitleDelaySec: subtitleDelaySec)
             DispatchQueue.main.async {
+                self.detailsRequestInFlight = false
                 if info != self.state.streamInfo { self.state.streamInfo = info }
             }
         }
@@ -1239,10 +1257,10 @@ final class MPVTVPlayerViewController: UIViewController {
                     flashControls()
                     handled = true
                 } else if presentedViewController == nil {
-                    // Same gesture as the native player: Down opens the top panel. Track lists
+                    // Preserve the MPV Down shortcut to the shared drawer. Track lists
                     // are refreshed on open (the async walk fills them if this raced the events).
                     refreshTracksAsync()
-                    onOpenPanel?()
+                    onOpenPanel?(.playback)
                     handled = true
                 }
             case .menu:
@@ -1519,7 +1537,7 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
     let panelModel: PlayerTopPanelModel
-    /// Builds the engine-specific fourth tab at open time (its views observe live state).
+    /// Builds supported Playback controls at open time (its views observe live state).
     let makeExtraTab: () -> PlayerPanelExtraTab
     let onExit: () -> Void
 
@@ -1527,9 +1545,9 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
         let controller = MPVTVPlayerViewController(context: context, state: state)
         controller.onExit = onExit
         let state = state, model = panelModel, makeExtraTab = makeExtraTab
-        controller.onOpenPanel = { [weak controller] in
+        controller.onOpenPanel = { [weak controller] tab in
             guard let controller, controller.presentedViewController == nil else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab()))
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab(), initialTab: tab))
             panel.modalPresentationStyle = .overFullScreen
             panel.modalTransitionStyle = .crossDissolve
             model.onClose = { [weak panel] in panel?.close(animated: true) }
@@ -1540,6 +1558,7 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             state.panelOpen = true
             controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
         }
+        state.openPanel = { [weak controller] tab in controller?.onOpenPanel?(tab) }
         return controller
     }
 
@@ -1563,8 +1582,6 @@ struct MPVPlayerScreen: View {
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
     @Environment(\.dismiss) private var dismiss
-    @State private var showPauseInfo = false
-    @State private var pauseInfoTask: Task<Void, Never>?
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
 
@@ -1599,8 +1616,8 @@ struct MPVPlayerScreen: View {
                     PlayerPanelExtraTab {
                         if let liveActions { liveActions }
                         else {
-                            MPVPlaybackTab(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
-                                           onClose: { panelModel.onClose?() })
+                            MPVPlaybackOptions(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                               onClose: { panelModel.onClose?() })
                         }
                     }
                 },
@@ -1615,24 +1632,14 @@ struct MPVPlayerScreen: View {
             }
 
             PlayerControlsOverlay(state: state)
-                .opacity(state.controlsVisible ? 1 : 0)
+                .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
+                .allowsHitTesting(state.controlsVisible && !state.panelOpen)
+                .disabled(!state.controlsVisible || state.panelOpen)
+                .accessibilityHidden(!state.controlsVisible || state.panelOpen)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
-
-            // Metadata card after a sustained pause (Android TV PauseOverlay parity).
-            if showPauseInfo, state.isPaused, !state.isBuffering {
-                PauseInfoCard(context: context, state: state)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(60)
-                    .transition(.opacity)
-            }
-
-            // Live diagnostics, toggled from the playback-settings panel.
-            if state.showStreamInfo, let info = state.streamInfo {
-                StreamInfoOverlayView(info: info)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(60)
-                    .transition(.opacity)
-            }
+                .onMoveCommand { direction in
+                    if direction == .down { state.openPanel?(.playback) }
+                }
 
             // Transient prompts, bottom-trailing — same chip family as the native screen's
             // contextual actions (PlayerChipStyle). libmpv owns the remote, so these are drawn
@@ -1654,10 +1661,12 @@ struct MPVPlayerScreen: View {
                     .transition(.opacity)
             }
         }
+        .onChange(of: state.controlsVisible) { _, visible in
+            if !visible && !state.panelOpen { state.reclaimFocus?() }
+        }
+        .onPlayPauseCommand { state.togglePlayback?() }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
         .animation(PlayerChipStyle.animation, value: upNext.phase)
-        .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
-        .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(
             isPresented: Binding(
                 get: { state.isEnded && upNext.phase == .hidden },
@@ -1700,16 +1709,7 @@ struct MPVPlayerScreen: View {
             // Paused → let the idle timer run again (a long-paused frame should be allowed to
             // hand off to the screensaver, same as the native player); playing → hold it.
             UIApplication.shared.isIdleTimerDisabled = !paused
-            pauseInfoTask?.cancel()
-            if paused {
-                pauseInfoTask = Task {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    guard !Task.isCancelled else { return }
-                    showPauseInfo = true
-                }
-            } else {
-                showPauseInfo = false
-            }
+
         }
     }
 }
@@ -1741,10 +1741,19 @@ private struct PlayerControlsOverlay: View {
                     .font(Theme.Font.body).monospacedDigit()
             }
 
-            Label("Swipe down for info", systemImage: "chevron.down")
-                .font(Theme.Font.caption).foregroundStyle(.white.opacity(0.7))
+            HStack(spacing: 24) {
+                Button { state.togglePlayback?() } label: {
+                    Label(state.isPaused ? "Play" : "Pause", systemImage: state.isPaused ? "play.fill" : "pause.fill")
+                }
+                Menu {
+                    ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
+                        Button(tab.title) { state.openPanel?(tab) }
+                    }
+                } label: { Label("Settings", systemImage: "slider.horizontal.3") }
+                .accessibilityIdentifier("player.settings")
+                Spacer()
+            }.buttonStyle(.glass)
         }
-        .foregroundStyle(.white)
         .padding(28)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular.tint(.black.opacity(0.35)), in: RoundedRectangle(cornerRadius: 24))
@@ -1827,86 +1836,6 @@ private struct PostPlayView: View {
             }
             .padding(80)
         }
-    }
-}
-
-/// Metadata card shown top-leading after playback has been paused for a moment: artwork, title,
-/// episode line, stream/source info, and time remaining (Android TV `PauseOverlay` parity).
-private struct PauseInfoCard: View {
-    let context: PlaybackContext
-    @ObservedObject var state: MPVPlaybackState
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 24) {
-            if let poster = context.poster, !poster.isEmpty {
-                CachedAsyncImage(string: poster)
-                    .frame(width: 140, height: 210)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Paused")
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(.white.opacity(0.7))
-                Text(context.title)
-                    .font(Theme.Font.screenTitle)
-                    .lineLimit(2)
-                if let season = context.season, let episode = context.episode {
-                    Text("Season \(season) \u{00B7} Episode \(episode)")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-                if state.durationSec > 0 {
-                    Text("\(remainingString) remaining")
-                        .font(Theme.Font.body).monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-                if let provider = context.providerName, !provider.isEmpty {
-                    Text(provider)
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(28)
-        .frame(maxWidth: 860, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
-    }
-
-    private var remainingString: String {
-        let total = Int(max(state.durationSec - state.positionSec, 0))
-        let h = total / 3600, m = (total % 3600) / 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
-    }
-}
-
-/// Top-trailing live diagnostics card (codec, resolution, fps, hwdec, bitrate, audio, cache).
-private struct StreamInfoOverlayView: View {
-    let info: StreamInfoSnapshot
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Stream Info")
-                .font(Theme.Font.meta)
-                .foregroundStyle(.white.opacity(0.7))
-            ForEach(info.rows, id: \.0) { row in
-                HStack(alignment: .top, spacing: 12) {
-                    Text(row.0)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .frame(width: 190, alignment: .leading)
-                    Text(row.1)
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                }
-                .font(Theme.Font.caption.monospacedDigit())
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: 560, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 14))
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }
 

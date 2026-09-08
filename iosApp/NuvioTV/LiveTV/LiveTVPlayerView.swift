@@ -94,9 +94,8 @@ struct LiveTVPlayerView: View {
                     }.buttonStyle(.glass).focusSection()
                 }.padding(60).frame(maxWidth: 1300)
             } else {
-                NativeLiveTVPlayer(player: model.player, channel: active, favorite: store.favorites.contains(active.id), canSwitch: channels.count > 1,
-                    previous: { switchChannel(-1) }, next: { switchChannel(1) }, goLive: { if !model.goLive() { model.tune(active) } },
-                    toggleFavorite: { store.toggleFavorite(active) }, guide: { returnToGuide() })
+                NativeLiveTVPlayer(player: model.player, playbackContext: compatibilityContext,
+                                   playbackActions: AnyView(compatibilityActions))
                     .ignoresSafeArea()
                 if model.waiting { ProgressView("Connecting…").padding(25).background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16)).allowsHitTesting(false) }
             }
@@ -127,48 +126,138 @@ struct LiveTVPlayerView: View {
     }
 }
 
-/// AVKit owns presentation, placement, and focus for these actions. Never layer a second
-/// SwiftUI transport bar over AVPlayerViewController (or over MPV's existing controls).
+/// Native live playback uses the same Settings entry point and bottom drawer as movie playback.
 private struct NativeLiveTVPlayer: UIViewControllerRepresentable {
     let player: AVPlayer
-    let channel: LiveTVChannel
-    let favorite: Bool
-    let canSwitch: Bool
-    let previous: () -> Void
-    let next: () -> Void
-    let goLive: () -> Void
-    let toggleFavorite: () -> Void
-    let guide: () -> Void
-    final class Coordinator { var menuKey = "" }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.showsPlaybackControls = true
-        updateUIViewController(controller, context: context)
-        return controller
+    let playbackContext: PlaybackContext
+    let playbackActions: AnyView
+    final class Coordinator {
+        let model: PlayerTopPanelModel
+        var adapter: LivePlayerPanelAdapter?
+        var item: AVPlayerItem?
+        init(context: PlaybackContext) {
+            model = PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: context)))
+        }
     }
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        if controller.player !== player { controller.player = player }
-        let key = "\(channel.id):\(favorite):\(canSwitch)"
-        guard context.coordinator.menuKey != key else { return }
-        context.coordinator.menuKey = key
-        let actions = [
-            UIAction(title: "Previous channel", image: UIImage(systemName: "backward.end"), attributes: canSwitch ? [] : [.disabled]) { _ in previous() },
-            UIAction(title: "Next channel", image: UIImage(systemName: "forward.end"), attributes: canSwitch ? [] : [.disabled]) { _ in next() },
-            UIAction(title: "Go Live", image: UIImage(systemName: "dot.radiowaves.left.and.right")) { _ in goLive() },
-            UIAction(title: favorite ? "Remove favorite" : "Favorite channel", image: UIImage(systemName: favorite ? "star.fill" : "star")) { _ in toggleFavorite() },
-            UIAction(title: "Channel guide", image: UIImage(systemName: "list.bullet.rectangle")) { _ in guide() }
-        ]
-        controller.transportBarCustomMenuItems = [UIMenu(title: "Live TV", image: UIImage(systemName: "tv"), children: actions)]
+    func makeCoordinator() -> Coordinator { Coordinator(context: playbackContext) }
+    func makeUIViewController(context: Context) -> NativePlayerHostController {
+        let host = NativePlayerHostController()
+        host.playerVC.player = player
+        updateUIViewController(host, context: context)
+        return host
     }
-    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
-        controller.transportBarCustomMenuItems = []
-        controller.player = nil
+    func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
+        if host.playerVC.player !== player { host.playerVC.player = player }
+        let coordinator = context.coordinator
+        if coordinator.item !== player.currentItem {
+            host.closePanel(animated: false)
+            coordinator.item = player.currentItem
+            coordinator.adapter = LivePlayerPanelAdapter(player: player, model: coordinator.model, context: playbackContext)
+        }
+        let model = coordinator.model, actions = playbackActions
+        host.onOpenPanel = { [weak host] tab in
+            guard let host else { return }
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model,
+                extraTab: PlayerPanelExtraTab { actions }, initialTab: tab))
+            model.onClose = { [weak panel] in panel?.close(animated: true) }
+            host.present(panel: panel)
+        }
+    }
+    static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
+        host.closePanel(animated: false)
+        coordinator.adapter = nil
+        host.playerVC.player = nil
     }
 }
 
-/// Compatibility playback uses MPV's existing Playback panel, never a competing overlay.
+/// Direct AVPlayer media selections for live streams; no movie progress or scrobbling pipeline.
+@MainActor private final class LivePlayerPanelAdapter {
+    private let player: AVPlayer
+    private let model: PlayerTopPanelModel
+    private var audible: AVMediaSelectionGroup?
+    private var legible: AVMediaSelectionGroup?
+    private var loadTask: Task<Void, Never>?
+    private var status: NSKeyValueObservation?
+    private var detailsTimer: Timer?
+
+    init(player: AVPlayer, model: PlayerTopPanelModel, context: PlaybackContext) {
+        self.player = player; self.model = model
+        model.info = PlayerPanelInfo(header: NativeInfoHeader(context: context), chips: [PlayerPanelChip(text: "LIVE")])
+        model.subtitlesSearching = false
+        model.supportsSubtitleDelay = false
+        model.audio = []; model.subtitles = []
+        model.onSelectAudio = { [weak self] option in
+            guard let self, let group = self.audible, let index = Int(option.id), group.options.indices.contains(index) else { return }
+            self.player.currentItem?.select(group.options[index], in: group)
+            self.updateSelections()
+        }
+        model.onSelectSubtitle = { [weak self] option in
+            guard let self, let group = self.legible else { return }
+            let selected = option.flatMap { Int($0.id) }.flatMap { group.options.indices.contains($0) ? group.options[$0] : nil }
+            self.player.currentItem?.select(selected, in: group)
+            self.updateSelections()
+        }
+        model.hasNativeSoundOptions = true
+        model.onPresentation = { [weak self] in self?.updateSelections() }
+        model.onDetailsVisibilityChange = { [weak self] visible in
+            guard let self else { return }
+            self.detailsTimer?.invalidate(); self.detailsTimer = nil
+            if visible {
+                self.updateDetails()
+                self.detailsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                    Task { @MainActor in self?.updateDetails() }
+                }
+            }
+        }
+        status = player.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .readyToPlay else { return }
+            Task { @MainActor in self?.loadSelections() }
+        }
+    }
+    deinit { loadTask?.cancel(); status?.invalidate(); detailsTimer?.invalidate() }
+
+    private func loadSelections() {
+        loadTask?.cancel()
+        guard let item = player.currentItem else { return }
+        loadTask = Task { [weak self] in
+            let audio = try? await item.asset.loadMediaSelectionGroup(for: .audible)
+            let subtitles = try? await item.asset.loadMediaSelectionGroup(for: .legible)
+            guard !Task.isCancelled, let self, self.player.currentItem === item else { return }
+            self.audible = audio; self.legible = subtitles
+            self.updateSelections()
+        }
+    }
+    private func updateSelections() {
+        guard let item = player.currentItem else { return }
+        if let audible {
+            let selected = item.currentMediaSelection.selectedMediaOption(in: audible)
+            model.audio = audible.options.enumerated().map { index, option in
+                PlayerPanelOption(id: String(index), title: option.displayName, group: .audio, isSelected: option == selected)
+            }
+        }
+        if let legible {
+            let selected = item.currentMediaSelection.selectedMediaOption(in: legible)
+            model.subtitles = [PlayerPanelOption(id: "off", title: String(localized: "Off"), group: .off, isSelected: selected == nil)]
+                + legible.options.enumerated().map { index, option in
+                    PlayerPanelOption(id: String(index), title: option.displayName, group: .embedded, isSelected: option == selected)
+                }
+        }
+        model.outputRouteName = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName).joined(separator: ", ")
+    }
+    private func updateDetails() {
+        guard model.detailsVisible, let item = player.currentItem else { return }
+        let size = item.presentationSize
+        var rows = [NativeInfoRow(label: "Engine", value: "Native"),
+                    NativeInfoRow(label: "Status", value: player.timeControlStatus == .waitingToPlayAtSpecifiedRate ? "Buffering" : "Live")]
+        if size.width > 0 { rows.append(NativeInfoRow(label: "Resolution", value: "\(Int(size.width)) × \(Int(size.height))")) }
+        if let event = item.accessLog()?.events.last, event.indicatedBitrate > 0 {
+            rows.append(NativeInfoRow(label: "Bitrate", value: String(format: "%.1f Mbps", event.indicatedBitrate / 1_000_000)))
+        }
+        if model.info.rows != rows { model.info.rows = rows }
+    }
+}
+
+/// Live actions occupy the same Playback drawer on both decoding engines.
 private struct LiveTVCompatibilityActions: View {
     @ObservedObject var store: LiveTVStore
     let channel: LiveTVChannel
@@ -189,6 +278,6 @@ private struct LiveTVCompatibilityActions: View {
                 Button(store.favorites.contains(channel.id) ? "Remove favorite" : "Favorite channel") { store.toggleFavorite(channel) }
                 Button("Channel guide", action: guide)
             }.focusSection()
-        }.padding(28).background(Color(white: 0.06), in: RoundedRectangle(cornerRadius: 20))
+        }.padding(.vertical, 20)
     }
 }

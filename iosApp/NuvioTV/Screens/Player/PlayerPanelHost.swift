@@ -2,27 +2,14 @@ import AVKit
 import SwiftUI
 import UIKit
 
-// tvOS 26 removed AVPlayerViewController's classic swipe-down tabbed panel (Info · Subtitles ·
-// Audio): custom info view controllers now render as a pill under the seek bar, and Subtitles /
-// Audio became transport-bar popovers. Nuvio wants the classic top panel back (Infuse-style), so
-// this file owns the two UIKit pieces that make an app-drawn panel possible ON TOP of the system
-// player without giving up its transport bar, popovers, or contextual actions:
-//
-//  - `NativePlayerHostController` — container VC whose only child is the `AVPlayerViewController`.
-//    Remote presses and swipes are dispatched to the FOCUSED view's responder chain; gesture
-//    recognizers on any superview in that chain observe them too, so recognizers on this container's
-//    view see the Down press / down swipe regardless of which internal AVPVC view holds focus.
-//    (`contentOverlayView` is the wrong place — it sits below the controls, outside the chain.)
-//  - `PlayerPanelHostController` — the presented panel. Presenting (`.overFullScreen`, clear
-//    background) gives focus containment for free (AVPVC's focus environment goes inactive so the
-//    transport bar can't react to the panel's presses), keeps the video rendering underneath, and
-//    lets us swallow Menu deterministically so it closes the panel instead of popping the player.
-final class NativePlayerHostController: UIViewController, UIGestureRecognizerDelegate {
+// Native AVKit transport owns the Settings entry point. Both engines present the same bottom
+// drawer in a modal focus environment so underlying playback controls cannot steal remote input.
+final class NativePlayerHostController: UIViewController {
     let playerVC = AVPlayerViewController()
-    /// Asked to open the panel (Down press / down swipe while nothing is presented). The owner
+    /// Asked to open a drawer tab from the native Settings menu. The owner
     /// builds the panel content and calls `present(panel:)`.
-    var onOpenPanel: (() -> Void)?
-    /// Fired after a presented panel has been dismissed (any way: Menu, swipe up, programmatic).
+    var onOpenPanel: ((PlayerPanelTab) -> Void)?
+    /// Fired after a presented panel has been dismissed (Back or programmatically).
     var onPanelClosed: (() -> Void)?
     /// Menu press hook (upstream 4026ec92 parity): return true to consume it — the up-next chip
     /// was dismissed — or false to let the press continue up to SwiftUI, whose `fullScreenCover`
@@ -30,8 +17,6 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     var onMenuPress: (() -> Bool)?
     private var swallowMenuRelease = false
     private(set) var panelHost: PlayerPanelPresenting?
-    private var downPress: UITapGestureRecognizer!
-    private var downSwipe: UISwipeGestureRecognizer!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -43,36 +28,47 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         view.addSubview(playerVC.view)
         playerVC.didMove(toParent: self)
 
-        downPress = UITapGestureRecognizer(target: self, action: #selector(handleOpenGesture))
-        downPress.allowedPressTypes = [NSNumber(value: UIPress.PressType.downArrow.rawValue)]
-        downPress.delegate = self
-        downSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleOpenGesture))
-        downSwipe.direction = .down
-        downSwipe.delegate = self
-        view.addGestureRecognizer(downPress)
-        view.addGestureRecognizer(downSwipe)
+        installSettingsMenu()
     }
 
-    /// Recognize alongside AVPlayerViewController's own recognizers — never block the system player.
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+    func installSettingsMenu() {
+        let actions = [PlayerPanelTab.audio, .subtitles, .playback, .info].map { tab in
+            UIAction(title: tab.title) { [weak self] _ in
+                guard let self, self.panelHost == nil else { return }
+                self.openPanelAfterMenuDismissal(tab)
+            }
+        }
+        playerVC.transportBarCustomMenuItems = [UIMenu(title: String(localized: "Settings"),
+            image: UIImage(systemName: "slider.horizontal.3"), children: actions)]
     }
 
-    @objc private func handleOpenGesture() {
-        // Not while our panel is up, and not while the system player has one of ITS popovers
-        // (Subtitles / Audio menus) presented — a Down there navigates the popover's rows and
-        // must not also open the panel over it (`presentedViewController` reports ancestors'
-        // presentations, not the child's, so check the player VC explicitly).
-        guard panelHost == nil, presentedViewController == nil,
-              playerVC.presentedViewController == nil else { return }
-        onOpenPanel?()
+    private func openPanelAfterMenuDismissal(_ tab: PlayerPanelTab) {
+        // AVKit invokes UIAction before its menu finishes dismissing. Presenting here directly
+        // loses the drawer to that transition. Wait for the actual presentation to finish.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panelHost == nil else { return }
+            let open = { [weak self] in
+                guard let self, self.view.window != nil, self.panelHost == nil else { return }
+                self.onOpenPanel?(tab)
+            }
+            if let menu = self.playerVC.presentedViewController ?? self.presentedViewController {
+                if menu.isBeingDismissed, let transition = menu.transitionCoordinator {
+                    transition.animate(alongsideTransition: nil) { _ in open() }
+                } else {
+                    menu.dismiss(animated: true, completion: open)
+                }
+            } else if let transition = self.playerVC.transitionCoordinator {
+                transition.animate(alongsideTransition: nil) { _ in open() }
+            } else {
+                open()
+            }
+        }
     }
 
     // This controller sits between AVPlayerViewController and the SwiftUI host in the focused
     // responder chain, so a Menu the system player did not consume (transport bar hidden) passes
     // through here on its way to the cover's default exit. Not while our panel or one of AVPVC's
-    // own popovers is up — those own Menu themselves (same guard as `handleOpenGesture`).
+    // own popovers is up — those own Menu themselves.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if presses.contains(where: { $0.type == .menu }),
            panelHost == nil, presentedViewController == nil, playerVC.presentedViewController == nil,
@@ -117,7 +113,7 @@ protocol PlayerPanelPresenting: AnyObject {
 }
 
 /// Hosts the SwiftUI panel over the player. Menu closes the panel (swallowed here so it never
-/// reaches the SwiftUI `fullScreenCover` that would pop the whole player); swipe up also closes.
+/// reaches the SwiftUI `fullScreenCover` that would pop the whole player).
 final class PlayerPanelHostController<Content: View>: UIHostingController<Content>, PlayerPanelPresenting {
     var onClosed: (() -> Void)?
     private var closing = false
@@ -126,9 +122,6 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.accessibilityIdentifier = "player.panel"
-        let up = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeUp))
-        up.direction = .up
-        view.addGestureRecognizer(up)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -145,7 +138,6 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
         super.pressesEnded(presses, with: event)
     }
 
-    @objc private func handleSwipeUp() { close(animated: true) }
 
     func close(animated: Bool) {
         guard !closing else { return }

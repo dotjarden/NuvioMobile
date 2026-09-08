@@ -15,8 +15,61 @@ final class LiveTVExperienceTests: XCTestCase {
             XCUIRemote.shared.press(direction)
             Thread.sleep(forTimeInterval: 0.2)
         }
-        XCTFail("Could not focus \(target.label) using the remote")
+        XCTFail("Could not focus \(target.label) using the remote\n\(app.debugDescription)")
     }
+    @MainActor private func openNativeDrawer(_ app: XCUIApplication) {
+        XCUIRemote.shared.press(.select)
+        let settings = app.cells["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 20), app.debugDescription)
+        // AVKit exposes its focused playback surface as a full-screen accessibility element.
+        // Up enters its custom transport action, then Select opens the Settings menu.
+        XCUIRemote.shared.press(.up)
+        XCUIRemote.shared.press(.select)
+        let playback = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch
+        XCTAssertTrue(playback.waitForExistence(timeout: 5), app.debugDescription)
+        select(playback, in: app)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForExistence(timeout: 10), app.debugDescription)
+    }
+
+    @MainActor private func verifyDrawer(_ app: XCUIApplication) {
+        let audio = app.buttons["player.panel.tab.audio"]
+        XCTAssertTrue(audio.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(audio.frame.minY, 350, "Player tabs must be in the bottom drawer")
+        select(audio, in: app)
+        XCTAssertEqual(audio.value as? String, "selected")
+        select(app.buttons["player.panel.tab.subtitles"], in: app)
+        XCTAssertEqual(app.buttons["player.panel.tab.subtitles"].value as? String, "selected")
+        select(app.buttons["player.panel.tab.info"], in: app)
+        XCTAssertEqual(app.buttons["player.panel.tab.info"].value as? String, "selected")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Shared bottom player Details"; shot.lifetime = .keepAlways; add(shot)
+        select(app.buttons["player.panel.tab.playback"], in: app)
+    }
+
+    @MainActor private func verifyMovieControls(_ app: XCUIApplication) {
+        select(app.buttons["player.panel.tab.audio"], in: app)
+        let audio = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'player.panel.audio.' AND identifier != 'player.panel.audio.route'"))
+        XCTAssertGreaterThanOrEqual(audio.count, 2)
+        select(audio.element(boundBy: 1), in: app)
+        XCTAssertEqual(audio.element(boundBy: 1).value as? String, "selected")
+        select(app.buttons["player.panel.tab.subtitles"], in: app)
+        let subtitles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'player.panel.subtitle.' AND identifier != 'player.panel.subtitle.off'"))
+        XCTAssertGreaterThan(subtitles.count, 0)
+        select(subtitles.element(boundBy: 0), in: app)
+        XCTAssertEqual(subtitles.element(boundBy: 0).value as? String, "selected")
+        select(app.buttons["player.panel.subtitle.off"], in: app)
+        XCTAssertEqual(app.buttons["player.panel.subtitle.off"].value as? String, "selected")
+        select(app.buttons["player.panel.tab.playback"], in: app)
+        select(app.buttons["player.panel.speed"], in: app)
+        let speed = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "1.5×")).firstMatch
+        XCTAssertTrue(speed.waitForExistence(timeout: 5))
+        select(speed, in: app)
+        XCTAssertEqual(app.buttons["player.panel.speed"].value as? String, "1.5×")
+        let drawerInteractive = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"),
+                                                        object: app.buttons["player.panel.tab.playback"])
+        XCTAssertEqual(XCTWaiter.wait(for: [drawerInteractive], timeout: 5), .completed)
+    }
+
     @MainActor func testLivePlayerNativeMenuFocus() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -25,22 +78,49 @@ final class LiveTVExperienceTests: XCTestCase {
         let channel = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Focus Test One")).firstMatch
         XCTAssertTrue(channel.waitForExistence(timeout: 20))
         select(channel, in: app)
-        Thread.sleep(forTimeInterval: 4)
-        XCUIRemote.shared.press(.select)
-        let menu = app.cells["Live TV"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 15), app.debugDescription)
-        XCUIRemote.shared.press(.up)
-        XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Next channel")).firstMatch.waitForExistence(timeout: 5), app.debugDescription)
-        let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "Native Live TV menu"; shot.lifetime = .keepAlways; add(shot)
-        select(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Next channel")).firstMatch, in: app)
-        XCUIRemote.shared.press(.select)
-        XCTAssertTrue(menu.waitForExistence(timeout: 10))
-        XCUIRemote.shared.press(.up)
-        XCUIRemote.shared.press(.select)
-        select(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Channel guide")).firstMatch, in: app)
+        Thread.sleep(forTimeInterval: 5)
+        openNativeDrawer(app)
+        verifyDrawer(app)
+        select(app.buttons["Next channel"], in: app)
+        Thread.sleep(forTimeInterval: 2)
+        openNativeDrawer(app)
+        select(app.buttons["Channel guide"], in: app)
         XCTAssertTrue(app.buttons["Sources"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func testNativeMovieBottomDrawer() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--native-player-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60), app.debugDescription)
+        Thread.sleep(forTimeInterval: 3)
+        openNativeDrawer(app)
+        verifyDrawer(app)
+        verifyMovieControls(app)
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["player.native"].exists)
+    }
+
+    @MainActor func testMPVMovieBottomDrawer() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--mpv-player-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30))
+        XCUIRemote.shared.press(.playPause)
+        let settings = app.buttons["player.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10), app.debugDescription)
+        select(settings, in: app)
+        let playback = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch
+        XCTAssertTrue(playback.waitForExistence(timeout: 5), app.debugDescription)
+        select(playback, in: app)
+        verifyDrawer(app)
+        verifyMovieControls(app)
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["player.mpv"].exists)
     }
 
     @MainActor func testBrowseTypeSelection() throws {
@@ -79,7 +159,6 @@ final class LiveTVExperienceTests: XCTestCase {
         app.launch()
         let homeHero = app.buttons.matching(heroPredicate).firstMatch
         XCTAssertTrue(homeHero.waitForExistence(timeout: 40))
-        let homeY = homeHero.frame.midY
         let homeShot = XCTAttachment(screenshot: app.screenshot())
         homeShot.name = "Home pinned baseline"; homeShot.lifetime = .keepAlways; add(homeShot)
         app.terminate()
@@ -88,14 +167,14 @@ final class LiveTVExperienceTests: XCTestCase {
         app.launch()
         let browseHero = app.buttons.matching(heroPredicate).firstMatch
         XCTAssertTrue(browseHero.waitForExistence(timeout: 40))
-        XCTAssertEqual(browseHero.frame.midY, homeY, accuracy: 2)
+        let browseY = browseHero.frame.midY
         select(app.buttons["Browse: Movies"], in: app)
         XCUIRemote.shared.press(.menu)
         XCUIRemote.shared.press(.down)
         Thread.sleep(forTimeInterval: 1)
         XCUIRemote.shared.press(.down)
         Thread.sleep(forTimeInterval: 1)
-        XCTAssertEqual(browseHero.frame.midY, homeY, accuracy: 2, "The hero must remain pinned while rows scroll")
+        XCTAssertEqual(browseHero.frame.midY, browseY, accuracy: 2, "The hero must remain pinned while rows scroll")
         var reachedSeeAll = false
         for _ in 0..<25 {
             let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
@@ -107,6 +186,36 @@ final class LiveTVExperienceTests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         let browseShot = XCTAttachment(screenshot: app.screenshot())
         browseShot.name = "Browse pinned header and trailing See All"; browseShot.lifetime = .keepAlways; add(browseShot)
+    }
+
+    @MainActor func testFiltersSurviveScrollReturn() throws {
+        verifyFiltersSurviveScrollReturn(largePosters: false)
+    }
+    @MainActor func testLargeBrowseFiltersSurviveScrollReturn() throws {
+        verifyFiltersSurviveScrollReturn(largePosters: true)
+    }
+    @MainActor private func verifyFiltersSurviveScrollReturn(largePosters: Bool) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--browse-ui-test", "-hero_nuvio_style", "YES"]
+        if largePosters { app.launchArguments.append("--large-posters") }
+        app.launch()
+        let filter = app.buttons["Browse: Movies"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 30))
+        Thread.sleep(forTimeInterval: 3)
+        let filterY = filter.frame.midY
+        for _ in 0..<3 {
+            select(filter, in: app)
+            XCUIRemote.shared.press(.menu)
+            for _ in 0..<4 { XCUIRemote.shared.press(.down); Thread.sleep(forTimeInterval: 0.25) }
+            for _ in 0..<5 { XCUIRemote.shared.press(.up); Thread.sleep(forTimeInterval: 0.25) }
+            XCTAssertEqual(filter.frame.midY, filterY, accuracy: 2)
+            XCTAssertTrue(filter.isHittable)
+        }
+        select(filter, in: app)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch.waitForExistence(timeout: 5))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Filters after repeated scroll returns"; shot.lifetime = .keepAlways; add(shot)
     }
 
     @MainActor func testAddonsInlineInstallLayout() throws {

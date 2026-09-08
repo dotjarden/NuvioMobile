@@ -3,7 +3,7 @@ import Combine
 import SharedCore
 import SwiftUI
 
-/// Feeds the swipe-down top panel from the native AVPlayer path: media-selection groups →
+/// Feeds the shared bottom drawer from the native AVPlayer path: media-selection groups →
 /// Subtitles/Audio rows, playback ticks → Info rows/chips, AVAudioSession → output route name.
 /// Panel picks go straight back to `NativePlaybackCoordinator.select(...)`, which uses the same
 /// `AVPlayerItem.select(_:in:)` path as the native transport-bar popovers, so both UIs stay in step.
@@ -22,6 +22,9 @@ final class NativePlayerPanelAdapter {
         self.model = model
         self.context = context
         self.routingNote = routingNote
+        model.hasNativeSoundOptions = true
+        model.onPresentation = { [weak self] in self?.rebuildSelections() }
+        model.onDetailsVisibilityChange = { [weak self] visible in if visible { self?.onTick() } }
 
         model.onSelectSubtitle = { [weak self] option in self?.selectSubtitle(option) }
         model.onSelectAudio = { [weak self] option in self?.selectAudio(option) }
@@ -60,6 +63,7 @@ final class NativePlayerPanelAdapter {
     /// Called from the coordinator's tick: refresh the Info tab and re-derive the checkmarks (the
     /// media-selection notification is not reliable everywhere).
     func onTick() {
+        guard model.detailsVisible else { return }
         let rows = coordinator.streamInfoRows(routingNote: routingNote)
         var dynamic = coordinator.infoChips()
         // The catalog runtime stands in until the player reports a real duration.
