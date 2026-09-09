@@ -92,13 +92,18 @@ final class NativePlayerHostController: UIViewController {
     /// animates its own slide-in. Reduce Motion → no animation at all.
     func present<Content: View>(panel: PlayerPanelHostController<Content>) {
         guard panelHost == nil, presentedViewController == nil else { return }
+        let restorePlaybackControls = playerVC.showsPlaybackControls
         panel.modalPresentationStyle = .overFullScreen
         panel.modalTransitionStyle = .crossDissolve
         panel.onClosed = { [weak self] in
             self?.panelHost = nil
+            self?.playerVC.showsPlaybackControls = restorePlaybackControls
             self?.onPanelClosed?()
         }
         panelHost = panel
+        // The compact panel leaves more video visible. Hide AVKit's transport underneath it
+        // so only one set of controls is on screen, then restore native interaction on Back.
+        playerVC.showsPlaybackControls = false
         present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
     }
 

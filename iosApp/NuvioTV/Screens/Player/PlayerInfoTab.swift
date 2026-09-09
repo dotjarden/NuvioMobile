@@ -56,7 +56,7 @@ struct PlayerInfoTab: View {
     private static let artHeight: CGFloat = 100
 
     var body: some View {
-        ScrollView(.vertical) {
+        PlayerPanelScroll {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             headerView
             if !info.chips.isEmpty { chipRow }
@@ -64,7 +64,7 @@ struct PlayerInfoTab: View {
             rowsView
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        }.frame(maxHeight: 440)
+        }
     }
 
     private var headerView: some View {

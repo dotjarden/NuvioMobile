@@ -127,6 +127,32 @@ final class LiveTVExperienceTests: XCTestCase {
         label.split(separator: ":").compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
     }
 
+    @MainActor func testCompactPanelLongTrackLists() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--player-panel-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.buttons["player.panel.tab.audio"].waitForExistence(timeout: 20))
+        let lastAudio = app.buttons["player.panel.audio.20"]
+        select(lastAudio, in: app)
+        XCTAssertEqual(lastAudio.value as? String, "selected")
+        XCTAssertTrue(lastAudio.isHittable, "The final audio track must remain reachable in a compact panel")
+        select(app.buttons["player.panel.tab.subtitles"], in: app)
+        let lastSubtitle = app.buttons["player.panel.subtitle.20"]
+        select(lastSubtitle, in: app)
+        XCTAssertEqual(lastSubtitle.value as? String, "selected")
+        XCTAssertTrue(lastSubtitle.isHittable)
+        select(app.buttons["player.panel.subtitleDelay.plus"], in: app)
+        XCTAssertEqual(app.staticTexts["player.panel.subtitleDelay.value"].label, "+0.10 s")
+        select(app.buttons["player.panel.subtitleDelay.reset"], in: app)
+        XCTAssertEqual(app.staticTexts["player.panel.subtitleDelay.value"].label, "+0.00 s")
+        let timingRemainsVisible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true AND isHittable == true"),
+                                                           object: app.buttons["player.panel.subtitleDelay.plus"])
+        XCTAssertEqual(XCTWaiter.wait(for: [timingRemainsVisible], timeout: 5), .completed)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Compact subtitle timing after long list"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     @MainActor func testMPVTransportAfterDrawer() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -134,6 +160,11 @@ final class LiveTVExperienceTests: XCTestCase {
         app.launch()
         let playPause = app.buttons["player.playPause"]
         XCTAssertTrue(playPause.waitForExistence(timeout: 20))
+        let transportHeight = app.descendants(matching: .any)["player.timeline"].frame.maxY - playPause.frame.minY
+        XCTAssertGreaterThan(transportHeight, 60, "The timeline belongs beneath the transport buttons")
+        XCTAssertLessThan(transportHeight, 160, "Transport should remain a compact bottom control area")
+        let compact = XCTAttachment(screenshot: app.screenshot())
+        compact.name = "Compact MPV transport"; compact.lifetime = .keepAlways; add(compact)
         XCUIRemote.shared.press(.playPause)
         XCTAssertEqual(playPause.label, "Play", "The remote Play/Pause button must pause exactly once")
         select(playPause, in: app)
@@ -158,7 +189,7 @@ final class LiveTVExperienceTests: XCTestCase {
         let timeline = app.descendants(matching: .any)["player.timeline"]
         XCTAssertTrue(timeline.exists, "The visible timeline must be focusable for seeking")
         // Move focus without selecting: Select on the timeline intentionally toggles playback.
-        for _ in 0..<3 where !timeline.hasFocus { XCUIRemote.shared.press(.up) }
+        for _ in 0..<3 where !timeline.hasFocus { XCUIRemote.shared.press(.down) }
         XCTAssertTrue(timeline.hasFocus, app.debugDescription)
         let beforeSeek = timeline.value as? String ?? ""
         XCUIRemote.shared.press(.right)

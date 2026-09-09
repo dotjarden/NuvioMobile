@@ -11,7 +11,7 @@ Recorded from Jordan’s review, September 8, 2026. Apply these rules to subsequ
 
 ## Playback — approved and implemented
 
-Retain AVPlayer and MPV because their format capabilities differ. Both movie players and Live TV use the same opaque bottom Settings drawer: Audio, Subtitles, Playback, Details. Select changes a tab; moving focus alone does not rebuild it. Back closes the drawer before exiting playback. Native AVKit keeps system transport and sound enhancements; MPV supplies its own transport with the same Settings entry point.
+Retain AVPlayer and MPV because their format capabilities differ. Both movie players and Live TV use the same readable, content-sized bottom Settings panel: Audio, Subtitles, Playback, Details. Select changes a tab; moving focus alone does not rebuild it. Back closes the drawer before exiting playback. Native AVKit keeps system transport and sound enhancements; MPV supplies its own transport with the same Settings entry point.
 
 Playback offers supported speed, timing, episode and source controls. Live TV puts Previous/Next channel, Go Live, Favorite and Guide there. Stream information is available in Details, without separate pause or diagnostics overlays. MPV publishes changed values only, coalesces diagnostic requests and samples details at most once per second while visible. Native and live diagnostics also stop when Details is closed. These changes reduce unnecessary work; Apple TV hardware profiling is still required to quantify performance.
 
@@ -25,4 +25,4 @@ Jordan asked whether Home and Browse should merge. Recommended direction: one Ho
 
 ## Player appearance reference
 
-Jordan's manual playback review prefers the clean native AVKit transport and rejects the boxy MPV transport. The shared Settings drawer did not unify the transport appearance. Use the native player's layout and remote behavior as the reference for subsequent MPV UI work; preserve per-stream engine selection for compatibility. This appearance follow-up remains unimplemented.
+Jordan's manual playback review prefers the clean native AVKit transport and rejects the boxy MPV transport. The shared Settings drawer did not unify the transport appearance. Use the native player's layout and remote behavior as the reference for subsequent MPV UI work; preserve per-stream engine selection for compatibility. The MPV transport now uses a compact title row, small glass play/pause and Settings buttons, and a slim timeline over a full-width bottom fade. Settings float in a bounded-width Liquid Glass panel with a dark backing; short tabs size to content and long lists scroll. Down from the transport buttons enters the timeline; Down again retains the contextual skip/next/settings action. Preserve every supported playback function when changing appearance or interaction.

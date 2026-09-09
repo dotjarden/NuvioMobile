@@ -19,7 +19,11 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
 /// Engine-supported content for the shared Playback tab.
 struct PlayerPanelExtraTab {
     let content: AnyView
-    init<V: View>(@ViewBuilder content: () -> V) { self.content = AnyView(content()) }
+    let maximumWidth: CGFloat
+    init<V: View>(maximumWidth: CGFloat = 1640, @ViewBuilder content: () -> V) {
+        self.maximumWidth = maximumWidth
+        self.content = AnyView(content())
+    }
 }
 
 /// Shared bottom drawer for native, MPV, and Live TV playback. Select commits a tab;
@@ -63,25 +67,31 @@ struct PlayerTopPanel: View {
                 .focusSection()
             content
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(height: 440, alignment: .top)
-                .clipped()
                 .focusSection()
         }
-        .padding(.horizontal, Theme.Spacing.screen)
-        .padding(.top, Theme.Spacing.xl)
-        .padding(.bottom, Theme.Spacing.lg)
-        .frame(maxWidth: .infinity, alignment: .top)
-        .background(Color(white: 0.055).opacity(0.98),
-                    in: UnevenRoundedRectangle(topLeadingRadius: Theme.Radius.hero, topTrailingRadius: Theme.Radius.hero))
-        .overlay(alignment: .top) { Capsule().fill(.white.opacity(0.2)).frame(width: 70, height: 5).padding(.top, 10).allowsHitTesting(false) }
+        .padding(24)
+        .frame(maxWidth: panelWidth, alignment: .topLeading)
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 24))
+        .glassEffect(.regular.tint(.black.opacity(0.3)), in: RoundedRectangle(cornerRadius: 24))
+        .padding(.horizontal, 24)
+        .padding(.bottom, 12)
+    }
 
+    private var panelWidth: CGFloat {
+        switch tab {
+        case .audio: return 1320
+        case .subtitles: return 1320
+        case .info: return 1480
+        case .playback: return extraTab?.maximumWidth ?? 1000
+        }
     }
 
     private var tabRow: some View {
         HStack(spacing: Theme.Spacing.md) {
             ForEach(tabs) { item in
                 Button(item.title) { tab = item }
-                    .font(Theme.Font.sectionTitle)
+                    .font(Theme.Font.body)
+                    .controlSize(.small)
                     .focused($focusedTab, equals: item)
                     .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
                     .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
@@ -154,5 +164,25 @@ struct PlayerPanelSectionCaption: View {
             .font(Theme.Font.caption.weight(.semibold))
             .foregroundStyle(Theme.Palette.textSecondary)
             .padding(.bottom, Theme.Spacing.xxs)
+    }
+}
+
+/// Short settings lists size to their content; long lists keep remote scrolling within the panel.
+struct PlayerPanelScroll<Content: View>: View {
+    var maximumHeight: CGFloat = 320
+    @ViewBuilder var content: () -> Content
+    @State private var contentHeight: CGFloat = 120
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content()
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(8)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    if abs(contentHeight - height) > 0.5 { contentHeight = height }
+                }
+        }
+        .frame(height: min(max(contentHeight, 1), maximumHeight))
+        .scrollBounceBehavior(.basedOnSize)
     }
 }

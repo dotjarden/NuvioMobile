@@ -10,7 +10,7 @@ struct PlayerAudioTab: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.screen) {
-            ScrollView(.vertical, showsIndicators: false) {
+            PlayerPanelScroll {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     PlayerPanelSectionCaption(text: String(localized: "Language"))
                     ForEach(model.audio) { option in
@@ -55,10 +55,10 @@ struct PlayerAudioTab: View {
                         .padding(.top, Theme.Spacing.sm)
                 }
             }
-            .frame(width: 520, alignment: .leading)
+            .frame(width: 420, alignment: .leading)
             .focusSection()
         }
-        .frame(maxWidth: .infinity, maxHeight: 520, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 

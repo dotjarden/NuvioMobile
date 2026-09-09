@@ -6,6 +6,7 @@ import SwiftUI
 /// Sections are labelled only when both embedded and addon rows exist.
 struct PlayerSubtitlesTab: View {
     @ObservedObject var model: PlayerTopPanelModel
+    @FocusState private var delayIncreaseFocused: Bool
 
     var body: some View {
         let options = model.subtitles
@@ -16,7 +17,7 @@ struct PlayerSubtitlesTab: View {
 
         // Scrolls with focus (addon lists can run to a dozen+ rows); we own the container now, so
         // lazy/scrolling content no longer breaks the panel's height measurement.
-        ScrollView(.vertical, showsIndicators: false) {
+        PlayerPanelScroll {
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 if let off { row(off) }
                 if labelled { PlayerPanelSectionCaption(text: String(localized: "Embedded")).padding(.top, Theme.Spacing.sm) }
@@ -42,7 +43,6 @@ struct PlayerSubtitlesTab: View {
             .frame(maxWidth: 1100, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxHeight: 520, alignment: .top)
     }
 
     private func row(_ option: PlayerPanelOption) -> some View {
@@ -76,11 +76,17 @@ struct PlayerSubtitlesTab: View {
                 .frame(width: 120)
                 .accessibilityIdentifier("player.panel.subtitleDelay.value")
             delayButton(String(localized: "+0.1 s")) { applyDelay(delayMs + 100) }
+                .focused($delayIncreaseFocused)
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus")
             delayButton(String(localized: "+1 s")) { applyDelay(delayMs + 1000) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus1")
             if delayMs != 0 {
-                Button(String(localized: "Reset")) { applyDelay(0) }
+                Button(String(localized: "Reset")) {
+                    // Reset disappears at zero. Move focus to a surviving control so the
+                    // compact scroll view does not jump away from the timing row.
+                    delayIncreaseFocused = true
+                    applyDelay(0)
+                }
                     .font(Theme.Font.meta)
                     .accessibilityIdentifier("player.panel.subtitleDelay.reset")
             }

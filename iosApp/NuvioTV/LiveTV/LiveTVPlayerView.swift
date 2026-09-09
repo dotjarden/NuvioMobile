@@ -158,7 +158,7 @@ private struct NativeLiveTVPlayer: UIViewControllerRepresentable {
         host.onOpenPanel = { [weak host] tab in
             guard let host else { return }
             let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model,
-                extraTab: PlayerPanelExtraTab { actions }, initialTab: tab))
+                extraTab: PlayerPanelExtraTab(maximumWidth: 1100) { actions }, initialTab: tab))
             model.onClose = { [weak panel] in panel?.close(animated: true) }
             host.present(panel: panel)
         }

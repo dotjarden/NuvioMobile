@@ -31,13 +31,13 @@ struct PlayerPlaybackTab: View {
                     .focusSection()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: 520, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Speed · timing · diagnostics
 
     private var settingsColumn: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        PlayerPanelScroll {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 Menu {
                     ForEach(Self.speeds, id: \.self) { speed in
@@ -93,7 +93,7 @@ struct PlayerPlaybackTab: View {
         let watched = watchedEpisodeKeys
         return VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             PlayerPanelSectionCaption(text: String(localized: "Episodes"))
-            ScrollView(.vertical, showsIndicators: false) {
+            PlayerPanelScroll {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
                         let isCurrent = isCurrentEpisode(episode)
@@ -174,7 +174,7 @@ struct PlayerPlaybackTab: View {
                 PlayerPanelSectionCaption(text: String(localized: "Sources"))
                 if engine.sourcesLoading { ProgressView().scaleEffect(0.6) }
             }
-            ScrollView(.vertical, showsIndicators: false) {
+            PlayerPanelScroll {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     if engine.sources.isEmpty && !engine.sourcesLoading {
                         Text("No alternate sources found yet.")

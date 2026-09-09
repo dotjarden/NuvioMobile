@@ -1623,7 +1623,7 @@ struct MPVPlayerScreen: View {
             MPVPlayerRepresentable(
                 context: context, state: state, panelModel: panelModel,
                 makeExtraTab: { [state, upNext, onPlayNext, panelModel, liveActions] in
-                    PlayerPanelExtraTab {
+                    PlayerPanelExtraTab(maximumWidth: liveActions != nil ? 1100 : (onPlayNext == nil ? 1000 : 1640)) {
                         if let liveActions { liveActions }
                         else {
                             MPVPlaybackOptions(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
@@ -1661,15 +1661,21 @@ struct MPVPlayerScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            LinearGradient(colors: [.clear, .black.opacity(0.65), .black.opacity(0.82)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 320)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea()
+                .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
+
             PlayerControlsOverlay(state: state)
                 .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
                 .allowsHitTesting(state.controlsVisible && !state.panelOpen)
                 .disabled(!state.controlsVisible || state.panelOpen)
                 .accessibilityHidden(!state.controlsVisible || state.panelOpen)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
-                .onMoveCommand { direction in
-                    if direction == .down { state.performDownAction?() }
-                }
 
             // Transient prompts, bottom-trailing — same chip family as the native screen's
             // contextual actions (PlayerChipStyle). libmpv owns the remote, so these are drawn
@@ -1753,30 +1759,45 @@ private struct PlayerControlsOverlay: View {
     @FocusState private var timelineFocused: Bool
 
     var body: some View {
-        // Floating glass transport bar (HIG revamp): mirrors the native AVPlayerViewController
-        // tvOS 26 chrome — an inset Liquid Glass panel over the video instead of the old
-        // full-width black gradient.
-        VStack(alignment: .leading, spacing: 16) {
-            Text(state.title)
-                .font(Theme.Font.screenTitle)
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 18) {
+                Text(state.title)
+                    .font(Theme.Font.body.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 24)
+                Button { state.togglePlayback?() } label: {
+                    Label(state.isPaused ? "Play" : "Pause", systemImage: state.isPaused ? "play.fill" : "pause.fill")
+                }.accessibilityIdentifier("player.playPause")
+                Menu {
+                    ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
+                        Button(tab.title) { state.openPanel?(tab) }
+                    }
+                } label: { Label("Settings", systemImage: "slider.horizontal.3") }
+                .accessibilityIdentifier("player.settings")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .onMoveCommand { direction in
+                if direction == .down {
+                    if state.durationSec > 0 { timelineFocused = true }
+                    else { state.performDownAction?() }
+                }
+            }
 
             HStack(spacing: 20) {
-                Image(systemName: state.isPaused ? "pause.fill" : "play.fill")
-                    .font(Theme.Font.screenTitle.weight(.regular))
-
                 Text(timeString(state.positionSec))
-                    .font(Theme.Font.body).monospacedDigit()
+                    .font(Theme.Font.caption).monospacedDigit()
 
                 ProgressBar(fraction: state.fraction)
-                    .frame(height: 10)
+                    .frame(height: timelineFocused ? 8 : 6)
 
                 Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
-                    .font(Theme.Font.body).monospacedDigit()
+                    .font(Theme.Font.caption).monospacedDigit()
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 8)
             .padding(.vertical, 12)
-            .background(.white.opacity(timelineFocused ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 12))
+            .background(.white.opacity(timelineFocused ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 12))
             .contentShape(Rectangle())
             .focusable(state.durationSec > 0)
             .focused($timelineFocused)
@@ -1789,25 +1810,13 @@ private struct PlayerControlsOverlay: View {
             .onMoveCommand { direction in
                 if direction == .left { state.seekRelative?(-10) }
                 if direction == .right { state.seekRelative?(10) }
+                if direction == .down { state.performDownAction?() }
             }
 
-            HStack(spacing: 24) {
-                Button { state.togglePlayback?() } label: {
-                    Label(state.isPaused ? "Play" : "Pause", systemImage: state.isPaused ? "play.fill" : "pause.fill")
-                }.accessibilityIdentifier("player.playPause")
-                Menu {
-                    ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
-                        Button(tab.title) { state.openPanel?(tab) }
-                    }
-                } label: { Label("Settings", systemImage: "slider.horizontal.3") }
-                .accessibilityIdentifier("player.settings")
-                Spacer()
-            }.buttonStyle(.glass)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.35)), in: RoundedRectangle(cornerRadius: 24))
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        .padding(.horizontal, 24)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
         .padding(.horizontal, Theme.Spacing.screen)
         .padding(.bottom, Theme.Spacing.xl)
     }
@@ -1888,4 +1897,3 @@ private struct PostPlayView: View {
         }
     }
 }
-

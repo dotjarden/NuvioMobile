@@ -70,7 +70,7 @@ struct NativePlayerScreen: View {
                         allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
                             ? coordinator.languagePlan.subtitleFilterLanguages : nil,
                         panelModel: panelModel,
-                        makePlaybackTab: { PlayerPanelExtraTab {
+                        makePlaybackTab: { PlayerPanelExtraTab(maximumWidth: onPlayNext == nil ? 1000 : 1640) {
                             NativePlaybackOptions(player: player, engine: upNext, canSwitchStreams: onPlayNext != nil,
                                                   onClose: { panelModel.onClose?() })
                         } },

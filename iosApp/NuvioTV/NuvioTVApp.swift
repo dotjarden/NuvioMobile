@@ -150,6 +150,8 @@ struct NuvioTVApp: App {
             NativePlayerScreen(context: Self.playerTestContext)
         } else if ProcessInfo.processInfo.arguments.contains("--mpv-player-ui-test") {
             MPVPlayerScreen(context: Self.playerTestContext)
+        } else if ProcessInfo.processInfo.arguments.contains("--player-panel-ui-test") {
+            PlayerPanelUITestRoot(context: Self.playerTestContext)
         } else if ProcessInfo.processInfo.arguments.contains("--home-ui-test") {
             HomeUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--addons-ui-test") {
@@ -190,6 +192,31 @@ struct NuvioTVApp: App {
 }
 
 #if DEBUG
+private struct PlayerPanelUITestRoot: View {
+    @StateObject private var model: PlayerTopPanelModel
+
+    init(context: PlaybackContext) {
+        let model = PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: context)))
+        model.audio = (1...20).map { PlayerPanelOption(id: "\($0)", title: "Audio track \($0)", group: .audio, isSelected: $0 == 1) }
+        model.subtitles = [PlayerPanelOption(id: "off", title: "Off", group: .off, isSelected: true)] +
+            (1...20).map { PlayerPanelOption(id: "\($0)", title: "Subtitle track \($0)", group: .embedded, isSelected: false) }
+        model.subtitlesSearching = false
+        model.supportsSubtitleDelay = true
+        model.onSelectAudio = { [weak model] selected in
+            model?.audio = model?.audio.map { var option = $0; option.isSelected = option.id == selected.id; return option } ?? []
+        }
+        model.onSelectSubtitle = { [weak model] selected in
+            model?.subtitles = model?.subtitles.map { var option = $0; option.isSelected = option.id == (selected?.id ?? "off"); return option } ?? []
+        }
+        model.onSubtitleDelayChange = { [weak model] in model?.subtitleDelayMs = $0 }
+        _model = StateObject(wrappedValue: model)
+    }
+
+    var body: some View {
+        PlayerTopPanel(model: model, initialTab: .audio)
+    }
+}
+
 private struct SettingsUITestRoot: View {
     @StateObject private var auth = AuthViewModel()
     @State private var category: SettingsCategory = .playback
