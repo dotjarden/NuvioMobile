@@ -214,19 +214,20 @@ final class LiveTVExperienceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--mpv-player-ui-test"]
         app.launch()
-        let playPause = app.buttons["player.playPause"]
-        XCTAssertTrue(playPause.waitForExistence(timeout: 20))
-        let transportHeight = app.descendants(matching: .any)["player.timeline"].frame.maxY - playPause.frame.minY
+        let timeline = app.descendants(matching: .any)["player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["player.playPause"].exists, "Use native-style timeline/remote playback control without a duplicate Play/Pause button")
+        let transportHeight = timeline.frame.maxY - app.buttons["player.settings"].frame.minY
         XCTAssertGreaterThan(transportHeight, 60, "The timeline belongs beneath the transport buttons")
-        XCTAssertLessThan(transportHeight, 160, "Transport should remain a compact bottom control area")
+        XCTAssertLessThan(transportHeight, 180, "Native-size actions and timeline should remain a compact bottom control area")
         let compact = XCTAttachment(screenshot: app.screenshot())
         compact.name = "Compact MPV transport"; compact.lifetime = .keepAlways; add(compact)
         XCUIRemote.shared.press(.playPause)
-        XCTAssertEqual(playPause.label, "Play", "The remote Play/Pause button must pause exactly once")
-        select(playPause, in: app)
-        XCTAssertEqual(playPause.label, "Pause", "Select on Play must resume")
+        XCTAssertEqual(timeline.label, "Paused, playback position", "The remote Play/Pause button must pause exactly once")
+        select(timeline, in: app)
+        XCTAssertEqual(timeline.label, "Playing, playback position", "Select on the timeline must resume")
         XCUIRemote.shared.press(.playPause)
-        XCTAssertEqual(playPause.label, "Play")
+        XCTAssertEqual(timeline.label, "Paused, playback position")
         select(app.buttons["player.settings"], in: app)
         let playback = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch
         XCTAssertTrue(playback.waitForExistence(timeout: 5))
@@ -235,18 +236,24 @@ final class LiveTVExperienceTests: XCTestCase {
         XCUIRemote.shared.press(.menu)
         XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
         XCUIRemote.shared.press(.playPause)
-        XCTAssertEqual(playPause.label, "Pause", "Play/Pause must work after closing Settings")
+        XCTAssertEqual(timeline.label, "Playing, playback position", "Play/Pause must work after closing Settings")
         let elapsed = app.descendants(matching: .any)["player.timeline"]
         let previous = elapsed.value as? String ?? ""
         let advances = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", previous), object: elapsed)
         XCTAssertEqual(XCTWaiter.wait(for: [advances], timeout: 4), .completed, "Playback time must continue updating after the drawer closes")
         XCUIRemote.shared.press(.playPause)
-        XCTAssertEqual(playPause.label, "Play")
-        let timeline = app.descendants(matching: .any)["player.timeline"]
+        XCTAssertEqual(timeline.label, "Paused, playback position")
         XCTAssertTrue(timeline.exists, "The visible timeline must be focusable for seeking")
         // Move focus without selecting: Select on the timeline intentionally toggles playback.
         for _ in 0..<3 where !timeline.hasFocus { XCUIRemote.shared.press(.down) }
         XCTAssertTrue(timeline.hasFocus, app.debugDescription)
+        let pausedAt = timeline.value as? String ?? ""
+        Thread.sleep(forTimeInterval: 4.5)
+        XCTAssertTrue(app.staticTexts["player.transport.title"].isHittable, "Pause keeps the title visible past the normal hide timeout")
+        XCTAssertTrue(timeline.isHittable, "Pause keeps the timeline visible")
+        XCTAssertEqual(timeline.value as? String, pausedAt, "The film must actually remain paused")
+        let pauseShot = XCTAttachment(screenshot: app.screenshot())
+        pauseShot.name = "MPV native-style paused transport"; pauseShot.lifetime = .keepAlways; add(pauseShot)
         let beforeSeek = timeline.value as? String ?? ""
         XCUIRemote.shared.press(.right)
         let seeks = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", beforeSeek), object: timeline)
@@ -256,7 +263,7 @@ final class LiveTVExperienceTests: XCTestCase {
         let seeksBack = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", forward), object: timeline)
         XCTAssertEqual(XCTWaiter.wait(for: [seeksBack], timeout: 5), .completed)
         XCUIRemote.shared.press(.select)
-        XCTAssertEqual(playPause.label, "Pause", "Select on the timeline must resume exactly once")
+        XCTAssertEqual(timeline.label, "Playing, playback position", "Select on the timeline must resume exactly once")
         let beforeHide = playbackSeconds(timeline.value as? String ?? "")
         let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == false"), object: timeline)
         XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 6), .completed)
@@ -294,6 +301,9 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertNotEqual(elapsed.label != second, initiallyPlaying, "Play/Pause must change the actual playback state after closing the drawer")
         // Pause before seeking. Down enters the native scrubber from the transport action row.
         if !initiallyPlaying { XCUIRemote.shared.press(.playPause) }
+        XCTAssertTrue(app.staticTexts["Player test film"].waitForExistence(timeout: 5))
+        let nativePause = XCTAttachment(screenshot: app.screenshot())
+        nativePause.name = "Native paused transport reference"; nativePause.lifetime = .keepAlways; add(nativePause)
         XCUIRemote.shared.press(.down)
         let beforeSeek = playbackSeconds(elapsed.label)
         XCUIRemote.shared.press(.right)

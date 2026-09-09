@@ -1772,12 +1772,14 @@ struct MPVPlayerScreen: View {
             // Paused → let the idle timer run again (a long-paused frame should be allowed to
             // hand off to the screensaver, same as the native player); playing → hold it.
             UIApplication.shared.isIdleTimerDisabled = !paused
-
+            // A pause can originate in the engine or system controls, not only our button
+            // callback. Keep the title and transport visible for every pause transition.
+            state.revealControls?()
         }
     }
 }
 
-private enum MPVTransportFocus: Hashable { case timeline, playPause, settings, subtitles, audio }
+private enum MPVTransportFocus: Hashable { case timeline, settings, subtitles, audio }
 
 /// Native-style action row above the scrubber; elapsed and remaining time sit below it.
 private struct PlayerControlsOverlay: View {
@@ -1786,20 +1788,14 @@ private struct PlayerControlsOverlay: View {
     var focus: FocusState<MPVTransportFocus?>.Binding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: 36) {
             HStack(alignment: .bottom, spacing: 24) {
                 VStack(alignment: .leading, spacing: 4) {
                     if let subtitle { Text(subtitle).font(.system(size: 26)).foregroundStyle(.secondary).lineLimit(1) }
                     Text(state.title).font(.system(size: 52, weight: .semibold)).lineLimit(1)
+                        .accessibilityIdentifier("player.transport.title")
                 }
                 Spacer(minLength: 24)
-                Button { state.togglePlayback?() } label: {
-                    transportIcon(state.isPaused ? "play.fill" : "pause.fill")
-                }
-                .accessibilityLabel(state.isPaused ? "Play" : "Pause")
-                .accessibilityIdentifier("player.playPause")
-                .focused(focus, equals: .playPause)
-                .onMoveCommand { move(from: .playPause, direction: $0) }
                 Menu {
                     ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
                         Button(tab.title) { state.openPanel?(tab) }
@@ -1841,7 +1837,7 @@ private struct PlayerControlsOverlay: View {
             .focused(focus, equals: .timeline)
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier("player.timeline")
-            .accessibilityLabel("Playback position")
+            .accessibilityLabel(state.isPaused ? "Paused, playback position" : "Playing, playback position")
             .accessibilityValue(timeString(state.positionSec))
             .accessibilityHint("Press Left or Right to seek ten seconds. Press Up for controls. Press Select to play or pause.")
             .onTapGesture { state.togglePlayback?() }
@@ -1859,12 +1855,12 @@ private struct PlayerControlsOverlay: View {
     }
 
     private func transportIcon(_ name: String) -> some View {
-        Image(systemName: name).font(.system(size: 26)).frame(width: 34, height: 34)
+        Image(systemName: name).font(.system(size: 26)).frame(width: 46, height: 46)
     }
 
     private func move(from current: MPVTransportFocus, direction: MoveCommandDirection) {
         state.revealControls?()
-        let actions: [MPVTransportFocus] = [.playPause, .settings, .subtitles, .audio]
+        let actions: [MPVTransportFocus] = [.settings, .subtitles, .audio]
         guard let index = actions.firstIndex(of: current) else { return }
         switch direction {
         case .left: focus.wrappedValue = actions[max(0, index - 1)]
