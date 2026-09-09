@@ -17,7 +17,7 @@ final class LiveTVExperienceTests: XCTestCase {
         }
         XCTFail("Could not focus \(target.label) using the remote\n\(app.debugDescription)")
     }
-    @MainActor private func openNativeDrawer(_ app: XCUIApplication) {
+    @MainActor private func openNativeDrawer(_ app: XCUIApplication, details: Bool = false) {
         XCUIRemote.shared.press(.select)
         let settings = app.cells["Settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 20), app.debugDescription)
@@ -25,10 +25,12 @@ final class LiveTVExperienceTests: XCTestCase {
         // Up enters its custom transport action, then Select opens the Settings menu.
         XCUIRemote.shared.press(.up)
         XCUIRemote.shared.press(.select)
-        let playback = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch
-        XCTAssertTrue(playback.waitForExistence(timeout: 5), app.debugDescription)
-        select(playback, in: app)
-        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForExistence(timeout: 10), app.debugDescription)
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", details ? "Details" : "Playback")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), app.debugDescription)
+        select(item, in: app)
+        let tab = app.buttons[details ? "player.panel.tab.info" : "player.panel.tab.playback"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertEqual(tab.value as? String, "selected")
     }
 
     @MainActor private func verifyDrawer(_ app: XCUIApplication) {
@@ -101,6 +103,60 @@ final class LiveTVExperienceTests: XCTestCase {
         XCUIRemote.shared.press(.menu)
         XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.otherElements["player.native"].exists)
+    }
+
+    @MainActor func testNativeNestedPlayerSettings() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--nested-native-player-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Continue Watching"].waitForExistence(timeout: 20))
+        select(app.buttons["Continue Watching"], in: app)
+        XCTAssertTrue(app.buttons["First stream"].waitForExistence(timeout: 5))
+        select(app.buttons["First stream"], in: app)
+        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60))
+        Thread.sleep(forTimeInterval: 3)
+        for details in [true, false] {
+            openNativeDrawer(app, details: details)
+            verifyDrawer(app)
+            XCUIRemote.shared.press(.menu)
+            XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
+            XCTAssertTrue(app.otherElements["player.native"].exists)
+        }
+    }
+
+    @MainActor func testMPVDirectTrackControls() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--mpv-player-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.buttons["player.audio"].waitForExistence(timeout: 20))
+        XCUIRemote.shared.press(.playPause)
+        // Exercise the user-facing remote sequence. tvOS 27 can omit hasFocus on a glass
+        // Button after modal dismissal; assert the resulting panel instead of that AX flag.
+        XCUIRemote.shared.press(.up)
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.buttons["player.panel.tab.audio"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["player.panel.tab.audio"].value as? String, "selected")
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.audio"].waitForNonExistence(timeout: 5))
+        XCUIRemote.shared.press(.up)
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.buttons["player.panel.tab.subtitles"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["player.panel.tab.subtitles"].value as? String, "selected")
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.buttons["player.panel.tab.subtitles"].waitForNonExistence(timeout: 5))
+        XCUIRemote.shared.press(.menu)
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == false"), object: app.buttons["player.audio"])
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+        XCTAssertTrue(app.otherElements["player.mpv"].exists, "First Back hides controls without exiting the film")
+        XCUIRemote.shared.press(.up)
+        XCTAssertTrue(app.buttons["player.settings"].waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Playback")).firstMatch.waitForExistence(timeout: 5))
     }
 
     @MainActor func testMPVMovieBottomDrawer() throws {

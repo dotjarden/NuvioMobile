@@ -164,3 +164,13 @@ struct PlayerInfoTab: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+// Keep release filenames in Details. Both transports identify the actual title and episode.
+extension PlaybackContext {
+    var transportSubtitle: String? {
+        guard let season, let episode else { return nil }
+        let number = String(localized: "S\(season) · E\(episode)")
+        let name = episodes.first { $0.season?.value == season && $0.episode?.value == episode }?.title
+        return name.flatMap { $0.isEmpty ? nil : "\(number) · \($0)" } ?? number
+    }
+}

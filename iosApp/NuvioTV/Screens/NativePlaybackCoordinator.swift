@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import Combine
 import Foundation
 import SharedCore
@@ -532,6 +533,17 @@ final class NativePlaybackCoordinator: ObservableObject {
             print("[NativePlayer] serving \(url.absoluteString)")
             self.servedURL = url
             let item = AVPlayerItem(url: url)
+            var metadata: [AVMetadataItem] = []
+            func addMetadata(_ identifier: AVMetadataIdentifier, _ value: String) {
+                let entry = AVMutableMetadataItem()
+                entry.identifier = identifier
+                entry.value = value as NSString
+                entry.extendedLanguageTag = "und"
+                metadata.append(entry)
+            }
+            addMetadata(.commonIdentifierTitle, self.context.title)
+            if let subtitle = self.context.transportSubtitle { addMetadata(.iTunesMetadataTrackSubTitle, subtitle) }
+            item.externalMetadata = metadata
             // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
             // would otherwise race minutes past the ~realtime remux frontier and block on segments that
             // don't exist yet, tripping CFNetwork's request timeout.

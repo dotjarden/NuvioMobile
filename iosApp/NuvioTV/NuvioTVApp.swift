@@ -146,6 +146,8 @@ struct NuvioTVApp: App {
             LiveTVView(profile: "live-tv-ui-test")
         } else if ProcessInfo.processInfo.arguments.contains("--live-player-ui-test") {
             LiveTVView(profile: "live-player-ui-test")
+        } else if ProcessInfo.processInfo.arguments.contains("--nested-native-player-ui-test") {
+            NestedPlayerUITestRoot(context: Self.playerTestContext)
         } else if ProcessInfo.processInfo.arguments.contains("--native-player-ui-test") {
             NativePlayerScreen(context: Self.playerTestContext)
         } else if ProcessInfo.processInfo.arguments.contains("--mpv-player-ui-test") {
@@ -192,6 +194,24 @@ struct NuvioTVApp: App {
 }
 
 #if DEBUG
+// Mirrors Home → Continue Watching source picker → player, including both presentation owners.
+private struct NestedPlayerUITestRoot: View {
+    let context: PlaybackContext
+    @State private var sourcesOpen = false
+    var body: some View {
+        Button("Continue Watching") { sourcesOpen = true }
+            .fullScreenCover(isPresented: $sourcesOpen) { NestedSourceUITestRoot(context: context) }
+    }
+}
+private struct NestedSourceUITestRoot: View {
+    let context: PlaybackContext
+    @State private var playerOpen = false
+    var body: some View {
+        Button("First stream") { playerOpen = true }
+            .fullScreenCover(isPresented: $playerOpen) { NativePlayerScreen(context: context) }
+    }
+}
+
 private struct PlayerPanelUITestRoot: View {
     @StateObject private var model: PlayerTopPanelModel
 

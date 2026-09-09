@@ -43,6 +43,7 @@ final class MPVPlaybackState: ObservableObject {
     var togglePlayback: (() -> Void)?
     var seekRelative: ((Double) -> Void)?
     var revealControls: (() -> Void)?
+    var hideControls: (() -> Void)?
     var performDownAction: (() -> Void)?
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
@@ -211,6 +212,10 @@ final class MPVTVPlayerViewController: UIViewController {
 
         state.requestDetails = { [weak self] in self?.refreshStreamInfoAsync() }
         state.revealControls = { [weak self] in self?.flashControls() }
+        state.hideControls = { [weak self] in
+            self?.hideWork?.cancel()
+            self?.state.controlsVisible = false
+        }
         state.performDownAction = { [weak self] in self?.performDownAction() }
         state.togglePlayback = { [weak self] in self?.togglePause(); self?.flashControls() }
         state.seekRelative = { [weak self] delta in
@@ -229,7 +234,7 @@ final class MPVTVPlayerViewController: UIViewController {
         state.reclaimFocus = { [weak self] in self?.becomeFirstResponder() }
         view.accessibilityIdentifier = "player.mpv"
 
-        // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
+        // Touch-surface swipes follow the same contextual action as a Down press.
         let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
         swipeDown.direction = .down
         view.addGestureRecognizer(swipeDown)
@@ -239,7 +244,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     @objc private func handleSwipeDown() {
         guard presentedViewController == nil else { return }
-        onOpenPanel?(.playback)
+        performDownAction()
     }
 
     override func viewDidLayoutSubviews() {
@@ -1300,8 +1305,7 @@ final class MPVTVPlayerViewController: UIViewController {
             state.skipPrompt = nil
             flashControls()
         } else {
-            refreshTracksAsync()
-            onOpenPanel?(.playback)
+            flashControls()
         }
     }
 
@@ -1562,7 +1566,6 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             model.onClose = { [weak panel] in panel?.close(animated: true) }
             panel.onClosed = { [weak state] in
                 state?.panelOpen = false
-                state?.reclaimFocus?()     // libmpv's controller must be first responder again
             }
             state.panelOpen = true
             controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
@@ -1594,6 +1597,8 @@ struct MPVPlayerScreen: View {
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
     @FocusState private var videoFocused: Bool
+    @FocusState private var transportFocus: MPVTransportFocus?
+    @State private var revealFocus: MPVTransportFocus = .timeline
 
     /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
     private var upNextChipAction: String? {
@@ -1648,8 +1653,13 @@ struct MPVPlayerScreen: View {
                     switch direction {
                     case .left: state.seekRelative?(-10)
                     case .right: state.seekRelative?(10)
-                    case .up: state.revealControls?()
-                    case .down: state.performDownAction?()
+                    case .up:
+                        revealFocus = .settings
+                        state.revealControls?()
+                        transportFocus = .settings
+                    case .down:
+                        state.performDownAction?()
+                        transportFocus = .timeline
                     default: break
                     }
                 }
@@ -1670,7 +1680,7 @@ struct MPVPlayerScreen: View {
                 .allowsHitTesting(false)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
 
-            PlayerControlsOverlay(state: state)
+            PlayerControlsOverlay(state: state, subtitle: context.transportSubtitle, focus: $transportFocus)
                 .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
                 .allowsHitTesting(state.controlsVisible && !state.panelOpen)
                 .disabled(!state.controlsVisible || state.panelOpen)
@@ -1699,9 +1709,23 @@ struct MPVPlayerScreen: View {
         }
         .onChange(of: state.controlsVisible) { _, visible in
             videoFocused = !visible && !state.panelOpen
+            if visible {
+                let target = revealFocus
+                revealFocus = .timeline
+                // Re-enable the controls before moving focus from the hidden-video surface.
+                DispatchQueue.main.async {
+                    if state.controlsVisible && !state.panelOpen { transportFocus = target }
+                }
+            }
+            if !visible { transportFocus = nil }
         }
         .onChange(of: state.panelOpen) { _, open in
             videoFocused = !open && !state.controlsVisible
+            transportFocus = !open && state.controlsVisible ? .timeline : nil
+        }
+        .onExitCommand {
+            if state.controlsVisible { state.hideControls?() }
+            else if state.upNextDismiss?() != true { dismiss() }
         }
         .onPlayPauseCommand { state.togglePlayback?() }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
@@ -1753,72 +1777,101 @@ struct MPVPlayerScreen: View {
     }
 }
 
-/// Bottom transport bar: title, scrubber, elapsed/remaining time, play/pause indicator.
+private enum MPVTransportFocus: Hashable { case timeline, playPause, settings, subtitles, audio }
+
+/// Native-style action row above the scrubber; elapsed and remaining time sit below it.
 private struct PlayerControlsOverlay: View {
     @ObservedObject var state: MPVPlaybackState
-    @FocusState private var timelineFocused: Bool
+    let subtitle: String?
+    var focus: FocusState<MPVTransportFocus?>.Binding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 18) {
-                Text(state.title)
-                    .font(Theme.Font.body.weight(.semibold))
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 28) {
+            HStack(alignment: .bottom, spacing: 24) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let subtitle { Text(subtitle).font(.system(size: 26)).foregroundStyle(.secondary).lineLimit(1) }
+                    Text(state.title).font(.system(size: 52, weight: .semibold)).lineLimit(1)
+                }
                 Spacer(minLength: 24)
                 Button { state.togglePlayback?() } label: {
-                    Label(state.isPaused ? "Play" : "Pause", systemImage: state.isPaused ? "play.fill" : "pause.fill")
-                }.accessibilityIdentifier("player.playPause")
+                    transportIcon(state.isPaused ? "play.fill" : "pause.fill")
+                }
+                .accessibilityLabel(state.isPaused ? "Play" : "Pause")
+                .accessibilityIdentifier("player.playPause")
+                .focused(focus, equals: .playPause)
+                .onMoveCommand { move(from: .playPause, direction: $0) }
                 Menu {
                     ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
                         Button(tab.title) { state.openPanel?(tab) }
                     }
-                } label: { Label("Settings", systemImage: "slider.horizontal.3") }
+                } label: { transportIcon("slider.horizontal.3") }
+                .accessibilityLabel("Settings")
                 .accessibilityIdentifier("player.settings")
+                .focused(focus, equals: .settings)
+                .onMoveCommand { move(from: .settings, direction: $0) }
+                Button { state.openPanel?(.subtitles) } label: { transportIcon("captions.bubble") }
+                    .accessibilityLabel("Subtitles")
+                    .accessibilityIdentifier("player.subtitles")
+                    .focused(focus, equals: .subtitles)
+                    .onMoveCommand { move(from: .subtitles, direction: $0) }
+                Button { state.openPanel?(.audio) } label: { transportIcon("waveform") }
+                    .accessibilityLabel("Audio")
+                    .accessibilityIdentifier("player.audio")
+                    .focused(focus, equals: .audio)
+                    .onMoveCommand { move(from: .audio, direction: $0) }
             }
-            .labelStyle(.iconOnly)
             .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .controlSize(.small)
-            .onMoveCommand { direction in
-                if direction == .down {
-                    if state.durationSec > 0 { timelineFocused = true }
-                    else { state.performDownAction?() }
-                }
-            }
 
-            HStack(spacing: 20) {
-                Text(timeString(state.positionSec))
-                    .font(Theme.Font.caption).monospacedDigit()
-
+            VStack(spacing: 8) {
                 ProgressBar(fraction: state.fraction)
-                    .frame(height: timelineFocused ? 8 : 6)
-
-                Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
-                    .font(Theme.Font.caption).monospacedDigit()
+                    .frame(height: focus.wrappedValue == .timeline ? 12 : 8)
+                HStack {
+                    Text(timeString(state.positionSec))
+                    Image(systemName: state.isPaused ? "pause.circle" : "play.circle")
+                    Spacer()
+                    Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
+                }
+                .font(Theme.Font.caption).monospacedDigit()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 12)
-            .background(.white.opacity(timelineFocused ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
-            .focusable(state.durationSec > 0)
-            .focused($timelineFocused)
+            .focusable()
+            .focused(focus, equals: .timeline)
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier("player.timeline")
             .accessibilityLabel("Playback position")
             .accessibilityValue(timeString(state.positionSec))
-            .accessibilityHint("Press Left or Right to seek ten seconds. Press Select to play or pause.")
+            .accessibilityHint("Press Left or Right to seek ten seconds. Press Up for controls. Press Select to play or pause.")
             .onTapGesture { state.togglePlayback?() }
             .onMoveCommand { direction in
                 if direction == .left { state.seekRelative?(-10) }
                 if direction == .right { state.seekRelative?(10) }
+                if direction == .up { state.revealControls?(); focus.wrappedValue = .settings }
                 if direction == .down { state.performDownAction?() }
             }
-
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 28)
-        .padding(.bottom, 20)
-        .padding(.horizontal, Theme.Spacing.screen)
-        .padding(.bottom, Theme.Spacing.xl)
+        .padding(.horizontal, 80)
+        .padding(.bottom, 118)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .ignoresSafeArea()
+    }
+
+    private func transportIcon(_ name: String) -> some View {
+        Image(systemName: name).font(.system(size: 26)).frame(width: 34, height: 34)
+    }
+
+    private func move(from current: MPVTransportFocus, direction: MoveCommandDirection) {
+        state.revealControls?()
+        let actions: [MPVTransportFocus] = [.playPause, .settings, .subtitles, .audio]
+        guard let index = actions.firstIndex(of: current) else { return }
+        switch direction {
+        case .left: focus.wrappedValue = actions[max(0, index - 1)]
+        case .right: focus.wrappedValue = actions[min(actions.count - 1, index + 1)]
+        case .down: focus.wrappedValue = .timeline
+        default: break
+        }
     }
 
     private func timeString(_ seconds: Double) -> String {

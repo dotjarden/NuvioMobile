@@ -15,6 +15,8 @@ final class NativePlayerHostController: UIViewController {
     /// was dismissed — or false to let the press continue up to SwiftUI, whose `fullScreenCover`
     /// pops the player exactly as today.
     var onMenuPress: (() -> Bool)?
+    private var pendingPanelTab: PlayerPanelTab?
+    private var panelMenuWait: DispatchWorkItem?
     private var swallowMenuRelease = false
     private(set) var panelHost: PlayerPanelPresenting?
 
@@ -43,26 +45,27 @@ final class NativePlayerHostController: UIViewController {
     }
 
     private func openPanelAfterMenuDismissal(_ tab: PlayerPanelTab) {
-        // AVKit invokes UIAction before its menu finishes dismissing. Presenting here directly
-        // loses the drawer to that transition. Wait for the actual presentation to finish.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.panelHost == nil else { return }
-            let open = { [weak self] in
-                guard let self, self.view.window != nil, self.panelHost == nil else { return }
-                self.onOpenPanel?(tab)
-            }
+        pendingPanelTab = tab
+        panelMenuWait?.cancel()
+        // A transition coordinator may be inherited from either enclosing SwiftUI cover and
+        // may no longer accept completion handlers. Wait on the actual menu's dismissal instead.
+        finishPendingPanelPresentation()
+    }
+
+    private func finishPendingPanelPresentation() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.view.window != nil, self.panelHost == nil,
+                  let tab = self.pendingPanelTab else { return }
             if let menu = self.playerVC.presentedViewController ?? self.presentedViewController {
-                if menu.isBeingDismissed, let transition = menu.transitionCoordinator {
-                    transition.animate(alongsideTransition: nil) { _ in open() }
-                } else {
-                    menu.dismiss(animated: true, completion: open)
-                }
-            } else if let transition = self.playerVC.transitionCoordinator {
-                transition.animate(alongsideTransition: nil) { _ in open() }
-            } else {
-                open()
+                if !menu.isBeingDismissed { menu.dismiss(animated: true) }
+                self.finishPendingPanelPresentation()
+                return
             }
+            self.pendingPanelTab = nil
+            self.onOpenPanel?(tab)
         }
+        panelMenuWait = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
     // This controller sits between AVPlayerViewController and the SwiftUI host in the focused
@@ -108,6 +111,8 @@ final class NativePlayerHostController: UIViewController {
     }
 
     func closePanel(animated: Bool) {
+        panelMenuWait?.cancel()
+        pendingPanelTab = nil
         panelHost?.close(animated: animated)
     }
 }
