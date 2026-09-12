@@ -1750,13 +1750,18 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///     brake the consecutive-failure counter could not be: the loop's corrections all succeed.
 ///     `standDown(reason: "budget")`, `budget=1`. `consecutiveNudges` survives only as the `n=`
 ///     field and nothing branches on it.
-///  5. **A PULL-BACK detector.** Each correction records the margin it was fired FROM. If the next
-///     settle for the same row lands within `pullBackTolerance` of that margin inside two seconds,
-///     the correction achieved nothing and repeating it would achieve nothing either: log
-///     `PULLBACK`, `standDown(reason: "pullback")` so the belt hides the title within ~0.25s, and
-///     report `pullback=1` (the running total is the line's own `pull=` field). Two pull-backs in
-///     a session set `pullBackDisarmed` with a loud `DISARMED-PULLBACK` line and the corrector is
-///     off for good, belt only. The ACTION sits after the in-band branch, so a rest that landed
+///  5. **A PULL-BACK detector, scoped per WALK DIRECTION (BUG-112 Item B).** Each correction
+///     records the margin it was fired FROM. If the next settle for the same row lands within
+///     `pullBackTolerance` of that margin inside two seconds, the correction achieved nothing and
+///     repeating it would achieve nothing either: log `PULLBACK`, `standDown(reason: "pullback")`
+///     so the belt hides the title within ~0.25s, and report `pullback=1` (the running total is
+///     the line's own `pull=` field, `pullBack.total` across every direction). Two pull-backs in
+///     one WALK DIRECTION disarm that direction, with a loud `DISARMED-PULLBACK` line, and the
+///     corrector falls back to the belt for it — but a settle that then reverses direction
+///     RE-ARMS: the brake belongs to the direction that fought the corrections, not to the
+///     session, because BUG-112's rest asymmetry (rows parked ~100pt deeper walking UP than DOWN
+///     on hardware) means the down-walk's pull-backs say nothing about the up-walk's corrections.
+///     See `PullBackLedger`. The ACTION sits after the in-band branch, so a rest that landed
 ///     inside the band is never scored as a fight.
 ///
 ///     Worst case on a device that fights: one 0.5s nudge-and-return per row for two rows, then
@@ -1842,11 +1847,15 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// rest can cost; and a motionless pass no longer arms anything at all.
 ///
 /// **The settle line** (`[HomeScrollProbe] settle …`, mirrored into the DEBUG `debug_pinned` AX
-/// probe the UI tests read). Append-only by contract — test47/test48 parse it — and every field is
-/// `key=value`, order not significant:
+/// probe the UI tests read). Append-only by contract — test47/test48/test58/test61/test63 parse
+/// it — and every field is `key=value`, order not significant to any of those parsers (they all
+/// scan for an exact key; none reads this line positionally). That said, the order below is the
+/// ACTUAL order the code emits, kept accurate deliberately (see the placement rule after the
+/// block) so this comment can be trusted as a map of the real line rather than an aspirational one:
 ///
 ///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
 ///     rowH= last= lastRowShaped= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
+///     dir= rearm=
 ///     clearance= clearanceLift= clearanceLiftRaw= lift= intr= intrLifted= err= deficit=
 ///     bandLo= bandHi= inBand=
 ///     [ nudge= bound= roomUp= n= | nudge=0 <outcome> ]
@@ -1855,7 +1864,7 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// `knobDisarm=1`, `inflight=1`, `pullback=1`, `endOfContent=1 room=`, `bound=`, `room=`, or
 /// nothing at all for a rest that is in band. `seq` is a monotonic settle counter (an idle sample whose `seq` climbs
 /// with nobody touching the remote is BUG-87 reproducing); `armSrc ∈ scroll|epoch|clearance|belt|
-/// retry` names what armed it; `corrN` is this row's corrections inside the window. The
+/// retry|external` names what armed it; `corrN` is this row's corrections inside the window. The
 /// clearance-dependent trio (`bandLo`/`bandHi`/`inBand`) is absent on a `clearance=?` line for the
 /// same reason `deficit=` is — the band cannot be computed before the row's title has measured
 /// itself.
@@ -1866,6 +1875,19 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// `UNEXPECTED-WITH-FIT` and writes a loud line of its own — with a fitting frame both band edges
 /// are satisfiable by construction, so a correction there is a device-anchoring surprise rather
 /// than routine work.
+///
+/// **Where a new field goes.** BUG-112 (Item B) appended `dir=` and `rearm=` right after `fits=` —
+/// not at the very end of the line, and that placement is deliberate, not a shortcut. A NEW field
+/// describing this rest's WALK (which row, what offset, what geometry regime, and now which
+/// direction) belongs with that group, inserted right after `fits=`, before the clearance block;
+/// nothing existing moves. The clearance/band fields and the bracketed `<outcome>` tail stay LAST
+/// on purpose and are never where a new field lands: they are the branch-specific fields that
+/// identify what THIS PARTICULAR settle's plan resolved to — whether a correction fired, why one
+/// didn't, how far short it landed (`disarmed=1`, `lastRowShaped=1 room=`, `pullback=1`, …) — and
+/// several call sites and every UI test that reads this line treat it as a suffix (tailing the
+/// fields after `inBand=`, reading whichever `<outcome>` token is present last). Splitting that
+/// tail with an unrelated field would make "the last thing on the line" stop meaning "how this
+/// settle resolved."
 ///
 /// Storage is plain static rather than `@State` for the same reason `HomeScrollProbeRest`'s is:
 /// every writer is a SwiftUI geometry callback on the main thread, and a state write here would
@@ -1989,6 +2011,23 @@ enum PinnedRowSettle {
         linkFrameFloor > 0 && lockupExtent <= Theme.Spacing.lg + linkFrameFloor + 0.5
     }
 
+    /// The correction `settlePlan` applies, as a pure function of the four quantities that bound
+    /// it. Extracted so the bound cases are unit-testable (BUG-112: on the tester's up-walk the
+    /// deficit EXCEEDS `bottomRoom`, and what matters is that the shortened correction still
+    /// FIRES — a correction cut by `bound` is still a correction, is still recorded in
+    /// `correctionsFired`/`lastCorrection`, and is still what the pull-back detector judges).
+    ///
+    /// `bounded` is diagnostic only: the caller reports `bound=`/`roomUp=` exactly as before.
+    nonisolated static func plannedCorrection(error: CGFloat,
+                                              deficit: CGFloat,
+                                              bottomRoom: CGFloat,
+                                              scrollRoomUp: CGFloat)
+    -> (magnitude: CGFloat, correction: CGFloat, bounded: Bool) {
+        let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
+        let magnitude = min(deficit, headroom, Theme.Size.heroPinnedRowSettleMaxNudge)
+        return (magnitude, error < 0 ? magnitude : -magnitude, magnitude < deficit)
+    }
+
     /// What one pinned row's settle tracker saw this geometry pass (Wave 9(a)).
     ///
     /// `unmeasured` exists because collapsing it into `inactive` cost the belt its whole reason to
@@ -2034,6 +2073,120 @@ enum PinnedRowSettle {
         /// another one. Bounded by the caller's hop budget
         /// (`PinnedRowSettleRevealModifier.maxSettleHops`).
         var retryAfter: TimeInterval? = nil
+    }
+
+    /// BUG-112 (Item B) — the pull-back brake, per WALK DIRECTION.
+    ///
+    /// The brake this replaces (`pullBacks` / `pullBackDisarmed`) was SESSION-wide: two pull-backs
+    /// anywhere and corrections were off until the next regime change. That is right about the
+    /// DEVICE ("an engine that fights corrections fights all of them") and wrong about this defect.
+    /// BUG-112's rest asymmetry is direction-bound — the tester's Row Settle pane shows the same
+    /// rows resting `margin≈-8` walking DOWN and `-102…-108` walking back UP, and the FA87
+    /// simulator shows the same shape at 22pt — so the corrections the up-walk needs are spent, and
+    /// disarmed, by the down-walk that precedes them (`pull=2 pbDisarm=1` by row 3 on the sim).
+    ///
+    /// Direction comes from the only signal the corrector has: the sign of the scroll offset delta
+    /// between two settles on DIFFERENT rows. `Measurement` carries no index (see its `rowKey`
+    /// doc), but a row hop moves the offset by a row height — hundreds of points — while a
+    /// correction is bounded by `bottomRoom` (≈93 at the tester's regime) and drift by
+    /// `driftTolerance`. `minHopDelta` sits well above both and well below any real hop.
+    ///
+    /// A value type on purpose: every branch here is unit-testable without a hosting controller,
+    /// which is what `settlePlan`'s own `nonisolated(unsafe) private static` state has never been
+    /// (see `PinnedRowSettleDirectionTests`).
+    nonisolated struct PullBackLedger: Equatable, Sendable {
+        /// +1 walking DOWN the page (offset increasing), −1 UP, 0 not yet known.
+        private(set) var direction = 0
+        private(set) var down = 0
+        private(set) var up = 0
+        /// Pull-backs recorded before any direction was known. They still count toward the hard
+        /// stop, but the first KNOWN direction starts with a clean per-direction count — an early
+        /// pull-back with no direction attached must not silently kill the session.
+        private(set) var unknown = 0
+        /// How many times a direction change has RELEASED the brake. Reported as `rearm=`.
+        private(set) var rearms = 0
+        private(set) var lastRowKey: String?
+        private(set) var lastOffsetY: CGFloat = 0
+
+        /// Below this, an offset change between two rows is not a walk step (a correction is
+        /// bounded by `bottomRoom`; drift by `driftTolerance` = 4).
+        static let minHopDelta: CGFloat = 24
+
+        /// `noteSettle`'s outcome. Two independent facts, not one — see the Codex finding this
+        /// type closes: a walk can reverse (`changed`) while the LEDGER itself was never disarmed
+        /// (`released == false`, e.g. an early pull-back split across `unknown` and one known
+        /// direction, neither of which alone reaches `maxPullBacksPerSession`). Collapsing both
+        /// into one Bool made `changed`-without-`released` invisible to every caller, including the
+        /// settle-line's verify-miss latch, which needs `changed` alone: on hardware a pull-back and
+        /// a verification MISS are the same event seen twice (see `settlePlan`'s call site), so the
+        /// latch has evidence of a genuine reversal even when the ledger's OWN count never crossed
+        /// its budget.
+        nonisolated struct SettleResult: Equatable, Sendable {
+            /// The walk changed direction to a new KNOWN direction (a real hop, not a re-settle on
+            /// the same row and not a sub-`minHopDelta` step). True whether or not the ledger was
+            /// disarmed before this settle.
+            var changed: Bool
+            /// `changed` was true AND it released a disarmed ledger — i.e. `rearms` was
+            /// incremented. Only ever true when `changed` is; the ledger's own `disarmed` flag went
+            /// from true to false as a direct result of this settle.
+            var released: Bool
+
+            static let none = SettleResult(changed: false, released: false)
+        }
+
+        var total: Int { down + up + unknown }
+
+        /// Pull-backs recorded for the CURRENT direction.
+        var count: Int {
+            switch direction {
+            case 1: return down
+            case -1: return up
+            default: return unknown
+            }
+        }
+
+        /// The oscillation bound a plain reset would lose: a user who reverses repeatedly
+        /// accumulates in both ledgers, and at twice the per-direction budget the corrector is off
+        /// for the session whatever the direction does.
+        var hardDisarmed: Bool { total >= 2 * PinnedRowSettle.maxPullBacksPerSession }
+
+        var disarmed: Bool { hardDisarmed || count >= PinnedRowSettle.maxPullBacksPerSession }
+
+        /// Records this settle's row and offset. `changed` is true whenever the walk turned to a
+        /// new KNOWN direction — regardless of whether the ledger itself was disarmed — because that
+        /// alone is evidence the caller can act on (see `SettleResult`). `released` is the narrower,
+        /// original signal: a flip that also took the ledger from disarmed to armed, which is what
+        /// `rearms` counts.
+        mutating func noteSettle(rowKey: String, offsetY: CGFloat) -> SettleResult {
+            defer { lastRowKey = rowKey; lastOffsetY = offsetY }
+            guard let lastRowKey, lastRowKey != rowKey else { return .none }
+            let delta = offsetY - lastOffsetY
+            guard abs(delta) >= Self.minHopDelta else { return .none }
+            let newDirection = delta > 0 ? 1 : -1
+            guard newDirection != direction else { return .none }
+            let wasDisarmed = disarmed
+            direction = newDirection
+            let released = wasDisarmed && !disarmed
+            if released { rearms += 1 }
+            return SettleResult(changed: true, released: released)
+        }
+
+        mutating func notePullBack() {
+            switch direction {
+            case 1: down += 1
+            case -1: up += 1
+            default: unknown += 1
+            }
+        }
+
+        /// A regime change invalidates every measurement the counts were gathered under, including
+        /// the hop the direction was derived from.
+        mutating func resetAll() { self = PullBackLedger() }
+
+        /// A host teardown invalidates the HOP (a new host's first offset is not comparable with
+        /// the old one's) but not the device evidence — same reasoning `resetHostScopedState`
+        /// already applies to `pullBacks`/`disarmed`.
+        mutating func forgetHop() { lastRowKey = nil; lastOffsetY = 0 }
     }
 
     /// What one fired correction promised, so the next settle can check it landed.
@@ -2124,16 +2277,16 @@ enum PinnedRowSettle {
     /// pull-back paragraph in the header. Cleared by `invalidateEpoch` (a different row's rest can
     /// never be evidence about this one) but NOT by a good rest, which is the whole point.
     nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date)?
-    /// Session totals, deliberately not host- or epoch-scoped: a device that pulls corrections
-    /// back does it everywhere, and the `disarmed` flag next to them has always been session-wide
-    /// for the same reason.
+    /// Session totals, not host-scoped: a device that pulls corrections back does it everywhere.
+    /// BUG-112 (Item B) scopes the brake itself per WALK DIRECTION rather than dropping the
+    /// session-wide framing entirely — see `PullBackLedger`.
     /// The margin the pull-back currently being reported was measured against — carried between
     /// the detection (which runs with the verification, so the settle line can report accurate
     /// counters) and the action below the in-band branch. Scratch storage, valid only within one
     /// `settlePlan` call.
     nonisolated(unsafe) private static var pullBackFrom: CGFloat = 0
-    nonisolated(unsafe) private static var pullBacks = 0
-    nonisolated(unsafe) private static var pullBackDisarmed = false
+    /// BUG-112 (Item B): the pull-back brake, now per WALK DIRECTION — see `PullBackLedger`.
+    nonisolated(unsafe) private static var pullBack = PullBackLedger()
     /// Monotonic settle counter, reported as `seq=` so a harness sampling `debug_pinned` over an
     /// idle window can tell "the same settle line, still the last word" from "the corrector keeps
     /// resolving settles" without inferring it from timing. Never reset.
@@ -2366,8 +2519,7 @@ enum PinnedRowSettle {
         // The brakes, released — every one of them is evidence gathered under `previous`.
         disarmed = false
         verifyFailures = 0
-        pullBacks = 0
-        pullBackDisarmed = false
+        pullBack.resetAll()
         pullBackFrom = 0
         correctionsFired.removeAll()
         lastCorrection = nil
@@ -2397,6 +2549,30 @@ enum PinnedRowSettle {
         // 0, not `settleDelay` — see the doc above. Already on the main actor here (this is called
         // from a SwiftUI `onChange`), so no `assumeIsolated` is needed.
         scheduler(token, 0)
+    }
+
+    /// BUG-112 (Item A): Home moved the rows scroll itself — the Up-fallback reveal — so everything
+    /// the corrector is holding about the CURRENT rest describes a position that no longer exists.
+    ///
+    /// Three pieces have to go, each for a reason this file already documents elsewhere:
+    /// an outstanding VERIFICATION would be judged against an offset WE moved (a false MISS, and
+    /// two of those set the session-wide disarm); `lastCorrection` would let the pull-back
+    /// detector read our own scroll as the engine fighting a correction; and the in-flight NUDGE
+    /// window belongs to a correction this scroll has already invalidated. The hop is forgotten
+    /// too — a programmatic jump is not a walk step and must not be read as a direction.
+    ///
+    /// Then one fresh settle, `settleDelay` out, so the new rest is judged on its own interval.
+    /// `@MainActor` for the same reason `noteRegimeChange` is: the only caller is a SwiftUI handler.
+    @MainActor static func noteExternalScroll(reason: String) {
+        pendingVerification = nil
+        nudgeDeadline = nil
+        lastCorrection = nil
+        pullBack.forgetHop()
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "external-scroll reason=\(reason)")
+        }
+        guard let scheduler else { return }
+        scheduler(rearm(source: "external"), settleDelay)
     }
 
     /// Ends the current correction epoch: a different row has focus, so neither the oscillation
@@ -2585,8 +2761,12 @@ enum PinnedRowSettle {
         standDownRow = nil
         lastCorrection = nil
         // Host-scoped, unlike the epoch case: every row key belonged to the outgoing host's rows
-        // and each of them is being torn down. The session-wide `pullBacks`/`pullBackDisarmed`
-        // stay, for the same reason `disarmed` does — they describe the DEVICE, not the host.
+        // and each of them is being torn down. The session-wide `pullBack` ledger's per-direction
+        // COUNTS stay, for the same reason `disarmed` does — they describe the DEVICE, not the
+        // host. But its HOP (`lastRowKey`/`lastOffsetY`) must go: a recreated host's first offset
+        // is not comparable with the outgoing host's, so a surviving hop would misread the new
+        // host's first sample as a real (or spuriously absent) direction change.
+        pullBack.forgetHop()
         correctionsFired.removeAll()
         beltFadeReasons.removeAll()
         // Belt state is host-scoped diagnostic state like everything else here: it describes titles
@@ -2769,6 +2949,49 @@ enum PinnedRowSettle {
         armed = false
         settleSeq &+= 1
 
+        // BUG-112 (Item B): which way the walk is going, and whether that just released the
+        // pull-back brake. Derived from the offset delta across a ROW HOP — see `PullBackLedger`.
+        // Placed before the verification block so a release can also clear the verify-miss latch
+        // the OTHER direction's corrections produced (see below).
+        //
+        // Codex P2: gating the verify-miss release on `released` (the LEDGER's own disarm→armed
+        // transition) left it unreachable for a split pull-back — one recorded while direction was
+        // still `unknown` plus one recorded walking down gives `unknown=1 down=1 total=2`, so
+        // neither per-direction count ever reaches `maxPullBacksPerSession` and the ledger itself
+        // is never `disarmed` — while the two verification MISSes those same pull-backs produced on
+        // hardware DID set the (separate, static) verify-miss latch. `released` stays false in that
+        // case, `noteSettle` never fires, and the latch is stuck for the rest of the session. The
+        // fix reads `changed` instead: any settle that turns the walk to a new KNOWN direction is
+        // evidence a reversal happened, whether or not the ledger's own count crossed its budget.
+        let directionResult: PullBackLedger.SettleResult
+        if let rowKey = latest?.rowKey {
+            directionResult = pullBack.noteSettle(rowKey: rowKey, offsetY: sample.offsetY)
+        } else {
+            directionResult = .none
+        }
+        if directionResult.changed {
+            // The verify-miss latch is released too, and ONLY because the pull-back ledger has
+            // evidence (`pullBack.total > 0`): on hardware a pull-back and a MISS are the SAME
+            // event seen twice — the engine returns the row to its own rest, so the landed offset
+            // differs from the requested one by the whole correction (well past `verifyTolerance`),
+            // and the next settle both counts a MISS and detects the pull-back. That is therefore
+            // the evidence that the latch is the engine fighting a direction rather than the scroll
+            // API being broken; a session that disarmed with NO pull-backs is a genuine
+            // coordinate-space failure and stays off. Independent of `directionResult.released` —
+            // the ledger's own count can still be under budget (the split-pull-back case above) while
+            // this evidence holds. Cost of a wrong release is bounded: two more MISSes re-latch it,
+            // i.e. at most two extra ≤`bound` nudges per reversal, each visible as a `MISS` line.
+            if pullBack.total > 0 {
+                disarmed = false
+                verifyFailures = 0
+            }
+            NSLog("[HomeScrollProbe] settle REARM-DIRECTION dir=\(pullBack.direction)"
+                    + " row=\(latest?.rowKey ?? "-") pull=\(pullBack.total)"
+                    + " rearm=\(pullBack.rearms) released=\(directionResult.released ? 1 : 0)"
+                    + " y=\(Int(sample.offsetY.rounded()))"
+                    + " — the walk reversed; the pull-back brake belongs to the other direction")
+        }
+
         // Verify the PREVIOUS correction before planning another one.
         if let verification = pendingVerification {
             pendingVerification = nil
@@ -2798,9 +3021,14 @@ enum PinnedRowSettle {
         }
 
         guard let m = latest else {
+            // BUG-112 (Item B), Codex P3: `dir=`/`rearm=` belong on every settle line, this one
+            // included — a reader tailing the probe across a focus-loss gap (a pop, a covered
+            // Home) should not see the walk-direction fields vanish and reappear. Same placement
+            // rule as the focused BASE line: right after `fits=`.
             return Plan(report: "row=- state=nofocus y=\(Int(sample.offsetY.rounded()))"
                             + " seq=\(settleSeq) armSrc=\(armSource)"
-                            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)",
+                            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)"
+                            + " dir=\(pullBack.direction) rearm=\(pullBack.rearms)",
                         targetY: nil)
         }
 
@@ -2830,8 +3058,7 @@ enum PinnedRowSettle {
             pulledBack = true
             pullBackFrom = last.fromMargin
             lastCorrection = nil
-            pullBacks += 1
-            if pullBacks >= maxPullBacksPerSession { pullBackDisarmed = true }
+            pullBack.notePullBack()
         }
 
         let cap = maxSlideCapForReport
@@ -2862,8 +3089,8 @@ enum PinnedRowSettle {
             + " lastRowShaped=\(m.lastRowShaped ? 1 : 0)"
             + " prevHidden=\(m.rowTop <= 2 ? 1 : 0)"
             + " corrN=\(correctionsInWindow(m.rowKey))"
-            + " pull=\(pullBacks)"
-            + " pbDisarm=\(pullBackDisarmed ? 1 : 0)"
+            + " pull=\(pullBack.total)"
+            + " pbDisarm=\(pullBack.disarmed ? 1 : 0)"
             + " seq=\(settleSeq) armSrc=\(armSource)"
             // Wave W5 (BUG-89): which GEOMETRY REGIME this rest was measured under, and whether
             // that regime's frame fits the rows viewport — see `noteRegimeChange`. Appended at the
@@ -2871,6 +3098,12 @@ enum PinnedRowSettle {
             // `regime=-` means no host has published one: a non-Home `CatalogRowView`, or a build
             // whose HomeView predates the call site.
             + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)"
+            // BUG-112 (Item B), appended at the END of the field list (the append-only contract in
+            // this type's header — test47/48/58/61/63 parse `key=value`, order not significant):
+            // which direction the walk is going in (+1 down, −1 up, 0 not yet known) and how many
+            // times a reversal has released the pull-back brake this session.
+            + " dir=\(pullBack.direction)"
+            + " rearm=\(pullBack.rearms)"
 
         // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
         // real constraints that the row's own geometry supplies, and every margin between them is
@@ -3038,9 +3271,9 @@ enum PinnedRowSettle {
         if pulledBack {
             NSLog("[HomeScrollProbe] settle %@",
                   "PULLBACK row=\(m.rowKey) from=\(Int(pullBackFrom.rounded()))"
-                    + " landed=\(Int(m.margin.rounded())) count=\(pullBacks)")
+                    + " landed=\(Int(m.margin.rounded())) count=\(pullBack.total)")
             standDown(rowKey: m.rowKey, reason: "pullback")
-            if pullBackDisarmed {
+            if pullBack.disarmed {
                 NSLog("[HomeScrollProbe] settle DISARMED-PULLBACK — the focus engine returns rows to its own rest after every correction; corrections are off for this session, belt only")
             }
             return Plan(report: line + " nudge=0 pullback=1", targetY: nil)
@@ -3048,7 +3281,7 @@ enum PinnedRowSettle {
         guard !disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
         // Same terminal outcome as `disarmed`, different cause — `pbDisarm=1` on the line is what
         // tells the two apart, so the existing `disarmed=1` spelling is kept for both.
-        guard !pullBackDisarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        guard !pullBack.disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
         // Wave 10 gate knob: with the hero compression in place an unsatisfiable rest is no longer
         // reachable at Large by walking, so test48's premise needs a way to put one back. Disarming
         // the corrector leaves a deep park uncorrected, which is exactly the geometry the belt's
@@ -3173,14 +3406,17 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 lastRowShaped=1 room=\(Int(scrollRoomUp.rounded()))",
                         targetY: nil)
         }
-        let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
         // Magnitude first, then the sign of the correction we actually apply. Unbounded, this is
         // the FULL distance to the target, so a correction lands ON it; `min` can only ever
         // SHORTEN that, never invert or extend it — which is what makes this a contraction (see
-        // the anti-oscillation contract in the header).
-        let magnitude = min(deficit, headroom, Theme.Size.heroPinnedRowSettleMaxNudge)
+        // the anti-oscillation contract in the header). Extracted to `plannedCorrection` (BUG-112
+        // Item B) so the bound cases are unit-testable; behaviour here is unchanged.
+        let planned = PinnedRowSettle.plannedCorrection(error: error, deficit: deficit,
+                                                        bottomRoom: bottomRoom,
+                                                        scrollRoomUp: scrollRoomUp)
+        let magnitude = planned.magnitude
         // Positive = move content DOWN (raise `margin`); negative = move content UP (lower it).
-        let correction = error < 0 ? magnitude : -magnitude
+        let correction = planned.correction
         guard magnitude >= 2 else {
             // Reachable in BOTH directions now that the upward branch is bounded too, and the two
             // mean opposite things, so they must not share an outcome:
@@ -3975,6 +4211,11 @@ struct CatalogRowView: View {
         // `focusedItemId != nil` covers the trailing See All tile too, via `seeAllFocusKey` —
         // that tile is part of this row and its rests need the same correction (Codex r3 P2-1).
         .pinnedRowSettleTracking(rowKey: section.key, isFocused: focusedItemId != nil)
+        // BUG-112 (Item A): Home's Up fallback may ask this row to take focus. Inert in Search /
+        // Library / the catalog grid — only HomeView publishes `pinnedRowFocusRequest`.
+        .pinnedRowUpFallbackTarget(rowKey: section.key,
+                                   firstId: section.items.first?.id,
+                                   focus: $focusedItemId)
         .onChange(of: focusedItemId) { _, newId in
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
