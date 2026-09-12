@@ -37,11 +37,14 @@ final class TitleLogoStore: ObservableObject {
     /// request id lets a late completion recognize it has been superseded — by a fresh
     /// `lookupIfNeeded` call for the same key, or by the whole cache being dropped in
     /// `evictIfAtCapacity()` — before it can latch a stale `.pending` in place forever (see
-    /// `shouldCommit`). `.resolved(nil)` is a completed lookup that found no logo (no
-    /// match/network failure) — remembered exactly like a real URL so it is never retried on every
-    /// scroll. A lookup skipped because settings gate it off is NEVER written here at all (see
-    /// `lookupIfNeeded`), so it is not covered by this case. Internal, not private, so
-    /// `TitleLogoStoreTests` can exercise `shouldCommit` with `@testable import`.
+    /// `shouldCommit`). `.resolved(nil)` is a completed lookup that found no logo (no match) —
+    /// remembered exactly like a real URL so it is never retried on every scroll. A lookup that
+    /// FAILED (network error, timeout, HTTP 429, decode failure, ...) is NOT latched as
+    /// `.resolved(nil)` — see `LookupOutcome.failed` — so it is not covered by this case either; a
+    /// failed key instead has no entry at all here, gated from immediate retry by `lastFailureAt`
+    /// (see `shouldSkipRetry`). A lookup skipped because settings gate it off is also NEVER written
+    /// here at all (see `lookupIfNeeded`), so it is not covered by this case. Internal, not
+    /// private, so `TitleLogoStoreTests` can exercise `shouldCommit` with `@testable import`.
     enum LookupState: Equatable {
         case pending(requestId: UInt64)
         case resolved(String?)
@@ -58,13 +61,14 @@ final class TitleLogoStore: ObservableObject {
 
     @Published private var results: [String: LookupState] = [:]
 
-    /// FEAT-42: parked `awaitLogoURL(for:)` callers, keyed the same way `results` is. Resumed
-    /// exactly twice: when the matching `.pending` entry resolves (answered with the URL, or nil
-    /// for "resolved but found nothing"), or when that entry is removed because the scope moved
-    /// on before the lookup finished (answered with nil rather than left to hang forever — the
-    /// anti-hang invariant `waitDecision` encodes). A `.pending` entry dropped by
-    /// `evictIfAtCapacity()` never happens — that function only ever drops `.resolved` entries —
-    /// so eviction alone never needs to resume a waiter.
+    /// FEAT-42: parked `awaitLogoURL(for:)` callers, keyed the same way `results` is. Resumed from
+    /// one of three places, all reachable only while the entry was `.pending`: the matching entry
+    /// resolves (answered with the URL, or nil for "resolved but found nothing"), it is removed
+    /// because the scope moved on before the lookup finished, or it is removed because the lookup
+    /// itself failed (2026-09-12, `LookupOutcome.failed`) — the last two both answer nil rather
+    /// than leaving the waiter to hang forever, the anti-hang invariant `waitDecision` encodes. A
+    /// `.pending` entry dropped by `evictIfAtCapacity()` never happens — that function only ever
+    /// drops `.resolved` entries — so eviction alone never needs to resume a waiter.
     private var waiters: [String: [CheckedContinuation<String?, Never>]] = [:]
 
     /// Monotonically increasing id handed to each lookup attempt so its completion can tell, via
@@ -108,6 +112,26 @@ final class TitleLogoStore: ObservableObject {
             return false
         }
         generation += 1
+    }
+
+    /// FEAT-42 (2026-09-12, P3): last-failure timestamp per key, keyed the same way `results` is.
+    /// A `.failed` lookup (see `LookupOutcome.failed`) removes its `results` entry so the key looks
+    /// "never looked up" again — without this, a persistently failing lookup (offline addon,
+    /// TMDB rate limit, ...) would be re-issued on every single focus/scroll that re-mounts the
+    /// card, hammering the same failing request. `lookupOne` consults this via `shouldSkipRetry`
+    /// before starting a new attempt; a successful resolve clears the key's entry here so a later
+    /// genuine failure gets its own fresh cooldown window.
+    private var lastFailureAt: [String: Date] = [:]
+
+    /// Minimum time a key must wait after a failed lookup before `lookupOne` will retry it.
+    private static let retryCooldown: TimeInterval = 30
+
+    /// Pure decision behind the cooldown: true when `lastFailure` is set and less than `cooldown`
+    /// seconds before `now` (no recorded failure never skips). `nonisolated static`, no
+    /// store/dictionary access, so `TitleLogoStoreTests` can cover every case directly.
+    nonisolated static func shouldSkipRetry(lastFailure: Date?, now: Date, cooldown: TimeInterval) -> Bool {
+        guard let lastFailure else { return false }
+        return now.timeIntervalSince(lastFailure) < cooldown
     }
 
     /// Pure decision for whether a completed lookup's result should be written into `results`:
@@ -223,6 +247,14 @@ final class TitleLogoStore: ObservableObject {
         let key = Self.scopedKey(for: item, scope: scope)
         guard results[key] == nil else { return }
 
+        // FEAT-42 (2026-09-12, P3): a key that failed recently is left with no `results` entry
+        // (see the `.failed` branch below), which would otherwise look identical to "never looked
+        // up" and get re-issued on every focus/scroll that re-mounts the card. Skip re-issuing
+        // until the cooldown elapses; `awaitLogoURL` still answers nil for a key with no entry.
+        guard !Self.shouldSkipRetry(lastFailure: lastFailureAt[key], now: Date(), cooldown: Self.retryCooldown) else {
+            return
+        }
+
         guard settings.enabled, settings.hasApiKey, settings.useArtwork else {
             // Deliberately NOT cached: writing `.resolved(nil)` here would latch a permanent "no
             // logo" for this scope even though no lookup was ever attempted. Leaving no entry
@@ -280,7 +312,21 @@ final class TitleLogoStore: ObservableObject {
                     // retries from scratch, same as the off-scope branch above.
                     self.results.removeValue(forKey: key)
                     self.resumeWaiters(for: key, with: nil)
-                    NSLog("[TitleLogoStore] lookup failed key=%@ error=%@", key, String(describing: error))
+                    self.lastFailureAt[key] = Date()
+                    // FEAT-42 (2026-09-12): the bare error description is usually just
+                    // "Kotlin bridge error" — the ORIGINAL throwable (its class, e.g.
+                    // `SocketTimeoutException`/`JsonDecodingException`) rides along on the bridged
+                    // `NSError` under `userInfo["KotlinException"]`/`["KotlinExceptionOrigin"]`; log
+                    // both so a future SIGABRT-shaped report can be pinned to a Kotlin cause without
+                    // reproducing under a debugger.
+                    let nsError = error as NSError?
+                    NSLog(
+                        "[TitleLogoStore] lookup failed key=%@ error=%@ kotlinException=%@ kotlinExceptionOrigin=%@",
+                        key,
+                        String(describing: error),
+                        String(describing: nsError?.userInfo["KotlinException"]),
+                        String(describing: nsError?.userInfo["KotlinExceptionOrigin"])
+                    )
                 case .resolved(let url):
                     // Codex r3 (Finding P2): no `evictIfAtCapacity()` call here — this write
                     // replaces an existing `.pending` key with `.resolved`, so it can never itself
@@ -292,6 +338,7 @@ final class TitleLogoStore: ObservableObject {
                     // touches `.resolved` entries.
                     self.results[key] = .resolved(url)
                     self.resumeWaiters(for: key, with: url)
+                    self.lastFailureAt.removeValue(forKey: key)
                     // FEAT-42: warm `ArtworkStore` the moment a real URL resolves, so the NEXT
                     // time this item is presented (a saga card scrolled back into view, a Home
                     // row item refocused) the bitmap is already cached — `HeroArtResolver.present`
@@ -302,6 +349,7 @@ final class TitleLogoStore: ObservableObject {
                 case .resolvedNone:
                     self.results[key] = .resolved(nil)
                     self.resumeWaiters(for: key, with: nil)
+                    self.lastFailureAt.removeValue(forKey: key)
                 }
             }
         }

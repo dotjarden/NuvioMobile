@@ -67,16 +67,22 @@ final class EntityBrowseViewModel: ObservableObject {
         language = TmdbMetadataServiceKt.normalizeTmdbLanguage(
             language: TmdbSettingsRepository.shared.snapshot().language
         )
-        // suspend fun → Swift completion; may complete off-main, hop back.
-        TmdbMetadataService.shared.fetchEntityBrowse(
+        // suspend fun → Swift completion; may complete off-main, hop back. Uses the
+        // `@Throws`-checked twin: an unchecked suspend function crossing to Swift SIGABRTs the
+        // whole app on any non-cancellation failure instead of surfacing it here (see
+        // `TmdbMetadataService.fetchPreviewEnrichmentChecked`'s KDoc, 2026-09-12).
+        TmdbMetadataService.shared.fetchEntityBrowseChecked(
             entityKind: entityKind,
             entityId: entityId,
             sourceType: sourceType,
             fallbackName: fallbackName
-        ) { [weak self] data, _ in
+        ) { [weak self] data, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoading = false
+                if let error {
+                    NSLog("[EntityBrowseView] fetchEntityBrowseChecked failed: %@", String(describing: error))
+                }
                 guard let data else {
                     self.failed = true
                     return
@@ -105,19 +111,23 @@ final class EntityBrowseViewModel: ObservableObject {
         rails[railIndex].isLoadingMore = true
 
         let nextPage = rail.page + 1
-        TmdbMetadataService.shared.fetchEntityRailPage(
+        // Uses the `@Throws`-checked twin — see the `start()` comment above.
+        TmdbMetadataService.shared.fetchEntityRailPageChecked(
             entityKind: entityKind,
             entityId: entityId,
             mediaType: rail.mediaType,
             railType: rail.railType,
             language: language,
             page: nextPage
-        ) { [weak self] result, _ in
+        ) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self,
                       let railIndex = self.rails.firstIndex(where: { $0.id == railId })
                 else { return }
                 self.rails[railIndex].isLoadingMore = false
+                if let error {
+                    NSLog("[EntityBrowseView] fetchEntityRailPageChecked failed: %@", String(describing: error))
+                }
                 guard let result else {
                     self.rails[railIndex].hasMore = false
                     return

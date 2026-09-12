@@ -133,11 +133,57 @@ final class TitleLogoStoreTests: XCTestCase {
         XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: enrichment, error: nil), .resolvedNone)
     }
 
+    func testCompletionOutcomeResolvedNoneForAnEmptyStringLogo() {
+        // `isLookupCandidate` treats an empty string the same as nil ("no logo yet") — the
+        // completion side must be equally forgiving so an empty-but-non-nil `logo` field never
+        // gets treated as a real URL.
+        let enrichment = TmdbPreviewEnrichment(
+            localizedTitle: nil, description: nil, genres: [],
+            logo: "", backdrop: nil
+        )
+        XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: enrichment, error: nil), .resolvedNone)
+    }
+
     func testCompletionOutcomeFailedOnAnyError() {
         // A network error, timeout, HTTP 429, or JSON decode failure inside the lookup — any
-        // non-nil error, regardless of what enrichment (if anything) also came back — must never
-        // latch a permanent "no logo" answer.
+        // non-nil error takes precedence, even over an enrichment payload that itself carries a
+        // perfectly good logo URL, and must never latch a permanent "no logo" (or a stale "found
+        // it") answer.
+        let enrichment = TmdbPreviewEnrichment(
+            localizedTitle: nil, description: nil, genres: [],
+            logo: "https://example.com/logo.png", backdrop: nil
+        )
         let error = NSError(domain: "TitleLogoStoreTests", code: 1)
-        XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: nil, error: error), .failed)
+        XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: enrichment, error: error), .failed)
+    }
+
+    // MARK: - shouldSkipRetry (FEAT-42 crash-fix follow-up, 2026-09-12, P3)
+    //
+    // The pure decision behind `lookupOne`'s retry cooldown: a key that failed recently has no
+    // `results` entry (indistinguishable from "never looked up") without this extra check, so a
+    // persistently failing lookup would otherwise be re-issued on every focus/scroll.
+
+    func testShouldSkipRetryFalseWhenNeverFailed() {
+        XCTAssertFalse(TitleLogoStore.shouldSkipRetry(lastFailure: nil, now: Date(), cooldown: 30))
+    }
+
+    func testShouldSkipRetryTrueWithinTheCooldownWindow() {
+        let now = Date()
+        let lastFailure = now.addingTimeInterval(-10)
+        XCTAssertTrue(TitleLogoStore.shouldSkipRetry(lastFailure: lastFailure, now: now, cooldown: 30))
+    }
+
+    func testShouldSkipRetryFalseOnceTheCooldownHasElapsed() {
+        let now = Date()
+        let lastFailure = now.addingTimeInterval(-31)
+        XCTAssertFalse(TitleLogoStore.shouldSkipRetry(lastFailure: lastFailure, now: now, cooldown: 30))
+    }
+
+    func testShouldSkipRetryFalseExactlyAtTheCooldownBoundary() {
+        // `timeIntervalSince(lastFailure) < cooldown` — exactly `cooldown` seconds elapsed is NOT
+        // "within" the window.
+        let now = Date()
+        let lastFailure = now.addingTimeInterval(-30)
+        XCTAssertFalse(TitleLogoStore.shouldSkipRetry(lastFailure: lastFailure, now: now, cooldown: 30))
     }
 }

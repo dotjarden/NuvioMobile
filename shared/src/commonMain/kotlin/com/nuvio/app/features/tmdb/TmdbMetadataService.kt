@@ -16,6 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -27,6 +29,16 @@ object TmdbMetadataService {
     private val log = Logger.withTag("TmdbMetadata")
     private val json = Json { ignoreUnknownKeys = true }
 
+    // 2026-09-12 SIGABRT (FEAT-42): `TitleLogoStore.lookupIfNeeded` fires a whole row's batch (up
+    // to 18 items) concurrently on Kotlin/Native's multithreaded runtime, all landing on
+    // `fetchPreviewEnrichmentChecked` → [fetchPreviewEnrichment]/[fetchEnrichment] at once. Every
+    // cache below is a plain `mutableMapOf` (a `LinkedHashMap`) read on the caller's thread and
+    // written from both the caller's thread and inside `withContext(Dispatchers.Default)` — with
+    // no external synchronization that is a concurrent-mutation hazard (`ConcurrentModificationException`
+    // or map corruption), not just a lost-cache-entry one. Guarded with [cacheMutex] the same way
+    // [TmdbService] guards its own two caches with a single `Mutex`; every read and write below
+    // takes the lock, and the lock is never held across a `fetch()`/network call.
+    private val cacheMutex = Mutex()
     private val enrichmentCache = mutableMapOf<String, TmdbEnrichment>()
     private val episodeCache = mutableMapOf<String, Map<Pair<Int, Int>, TmdbEpisodeEnrichment>>()
     private val moreLikeThisCache = mutableMapOf<String, List<MetaPreview>>()
@@ -46,7 +58,7 @@ object TmdbMetadataService {
         if (!settings.enabled || !settings.hasApiKey) return@withContext null
         val language = normalizeTmdbLanguage(settings.language)
         val cacheKey = "$personId:${preferCrewCredits?.toString() ?: "auto"}:$language"
-        personCache[cacheKey]?.let { return@withContext it }
+        cacheMutex.withLock { personCache[cacheKey] }?.let { return@withContext it }
 
         try {
             val (person, credits) = coroutineScope {
@@ -187,13 +199,28 @@ object TmdbMetadataService {
                     crewCredits = crewTvCredits,
                 ),
             )
-            personCache[cacheKey] = detail
+            cacheMutex.withLock { personCache[cacheKey] = detail }
             detail
         } catch (e: Exception) {
             log.w(e) { "Failed to fetch person detail for $personId" }
             null
         }
     }
+
+    /**
+     * Swift-facing twin of [fetchPersonDetail] for `PersonDetailViewModel` — same
+     * `@Throws(Throwable::class)` treatment as [fetchPreviewEnrichmentChecked] (see that KDoc for
+     * why an unchecked suspend function crossing to Swift SIGABRTs instead of surfacing an error).
+     * These twins live in `commonMain` rather than `appleMain` because they are members of a
+     * `commonMain object` (`TmdbMetadataService` itself) — splitting the Apple-only annotated
+     * overload into `appleMain` would require an `expect`/`actual` declaration for the whole
+     * object, not just this function.
+     */
+    @Throws(Throwable::class)
+    suspend fun fetchPersonDetailChecked(
+        personId: Int,
+        preferCrewCredits: Boolean? = null,
+    ): PersonDetail? = fetchPersonDetail(personId, preferCrewCredits)
 
     private fun shouldPreferCrewCredits(knownForDepartment: String?): Boolean {
         val department = knownForDepartment?.trim()?.lowercase() ?: return false
@@ -368,7 +395,7 @@ object TmdbMetadataService {
         val language = normalizeTmdbLanguage(settings.language)
         val normalizedSourceType = normalizeEntitySourceType(sourceType)
         val cacheKey = "${entityKind.routeValue}:$entityId:$normalizedSourceType:$language"
-        entityBrowseCache[cacheKey]?.let { return@withContext it }
+        cacheMutex.withLock { entityBrowseCache[cacheKey] }?.let { return@withContext it }
 
         val (header, rails) = coroutineScope {
             val headerDeferred = async {
@@ -422,9 +449,18 @@ object TmdbMetadataService {
             ),
             rails = rails,
         )
-        entityBrowseCache[cacheKey] = data
+        cacheMutex.withLock { entityBrowseCache[cacheKey] = data }
         data
     }
+
+    /** Swift-facing twin of [fetchEntityBrowse] for `EntityBrowseView` — see [fetchPersonDetailChecked]. */
+    @Throws(Throwable::class)
+    suspend fun fetchEntityBrowseChecked(
+        entityKind: TmdbEntityKind,
+        entityId: Int,
+        sourceType: String,
+        fallbackName: String? = null,
+    ): TmdbEntityBrowseData? = fetchEntityBrowse(entityKind, entityId, sourceType, fallbackName)
 
     suspend fun fetchEntityRailPage(
         entityKind: TmdbEntityKind,
@@ -439,7 +475,7 @@ object TmdbMetadataService {
         }
 
         val cacheKey = "${entityKind.routeValue}:$entityId:${mediaType.value}:${railType.value}:$language:page:$page"
-        entityRailCache[cacheKey]?.let { cached ->
+        cacheMutex.withLock { entityRailCache[cacheKey] }?.let { cached ->
             return TmdbEntityRailPageResult(items = cached, hasMore = cached.isNotEmpty())
         }
 
@@ -522,10 +558,21 @@ object TmdbMetadataService {
         }
 
         if (result.items.isNotEmpty()) {
-            entityRailCache[cacheKey] = result.items
+            cacheMutex.withLock { entityRailCache[cacheKey] = result.items }
         }
         return result
     }
+
+    /** Swift-facing twin of [fetchEntityRailPage] for `EntityBrowseView` — see [fetchPersonDetailChecked]. */
+    @Throws(Throwable::class)
+    suspend fun fetchEntityRailPageChecked(
+        entityKind: TmdbEntityKind,
+        entityId: Int,
+        mediaType: TmdbEntityMediaType,
+        railType: TmdbEntityRailType,
+        language: String,
+        page: Int,
+    ): TmdbEntityRailPageResult = fetchEntityRailPage(entityKind, entityId, mediaType, railType, language, page)
 
     private suspend fun fetchEntityHeader(
         entityKind: TmdbEntityKind,
@@ -534,7 +581,7 @@ object TmdbMetadataService {
         language: String,
     ): TmdbEntityHeader? {
         val cacheKey = "${entityKind.routeValue}:$entityId:$language:header"
-        entityHeaderCache[cacheKey]?.let { return it }
+        cacheMutex.withLock { entityHeaderCache[cacheKey] }?.let { return it }
 
         val header = try {
             when (entityKind) {
@@ -587,7 +634,7 @@ object TmdbMetadataService {
         }
 
         if (header != null) {
-            entityHeaderCache[cacheKey] = header
+            cacheMutex.withLock { entityHeaderCache[cacheKey] = header }
         }
         return header
     }
@@ -902,10 +949,10 @@ object TmdbMetadataService {
         val normalizedLanguage = normalizeTmdbLanguage(settings.language)
         val cacheKey = "$tmdbId:$tmdbType:$normalizedLanguage"
 
-        previewCache[cacheKey]?.let { return it }
-        enrichmentCache[cacheKey]?.let { enrichment ->
+        cacheMutex.withLock { previewCache[cacheKey] }?.let { return it }
+        cacheMutex.withLock { enrichmentCache[cacheKey] }?.let { enrichment ->
             val preview = enrichment.toPreviewEnrichment()
-            previewCache[cacheKey] = preview
+            cacheMutex.withLock { previewCache[cacheKey] = preview }
             return preview
         }
 
@@ -944,7 +991,7 @@ object TmdbMetadataService {
                 logo = buildImageUrl(images?.logos.orEmpty().selectBestLocalizedImagePath(normalizedLanguage), "w500"),
                 backdrop = buildImageUrl(details.backdropPath, "w1280"),
             )
-            previewCache[cacheKey] = preview
+            cacheMutex.withLock { previewCache[cacheKey] = preview }
             preview.takeIf { it.hasContent() }
         }
     }
@@ -969,7 +1016,7 @@ object TmdbMetadataService {
     ): TmdbEnrichment? = withContext(Dispatchers.Default) {
         val normalizedLanguage = normalizeTmdbLanguage(language)
         val cacheKey = "$tmdbId:$mediaType:$normalizedLanguage"
-        enrichmentCache[cacheKey]?.let { return@withContext it }
+        cacheMutex.withLock { enrichmentCache[cacheKey] }?.let { return@withContext it }
 
         val numericId = tmdbId.toIntOrNull() ?: return@withContext null
         val includeImageLanguage = buildString {
@@ -1123,7 +1170,7 @@ object TmdbMetadataService {
         )
 
         if (!enrichment.hasContent()) return@withContext null
-        enrichmentCache[cacheKey] = enrichment
+        cacheMutex.withLock { enrichmentCache[cacheKey] = enrichment }
         enrichment
     }
 
@@ -1209,7 +1256,7 @@ object TmdbMetadataService {
         if (normalizedSeasons.isEmpty()) return@withContext emptyMap()
 
         val cacheKey = "$numericId:${normalizedSeasons.joinToString(",")}:$normalizedLanguage"
-        episodeCache[cacheKey]?.let { return@withContext it }
+        cacheMutex.withLock { episodeCache[cacheKey] }?.let { return@withContext it }
 
         val pairs = coroutineScope {
             normalizedSeasons.map { season ->
@@ -1238,7 +1285,7 @@ object TmdbMetadataService {
 
         val merged = pairs.fold(emptyMap<Pair<Int, Int>, TmdbEpisodeEnrichment>()) { acc, value -> acc + value }
         if (merged.isNotEmpty()) {
-            episodeCache[cacheKey] = merged
+            cacheMutex.withLock { episodeCache[cacheKey] = merged }
         }
         merged
     }
@@ -1262,7 +1309,7 @@ object TmdbMetadataService {
         language: String,
     ): List<MetaPreview> {
         val cacheKey = "$tmdbId:$mediaType:$language:recommendations"
-        moreLikeThisCache[cacheKey]?.let { return it }
+        cacheMutex.withLock { moreLikeThisCache[cacheKey] }?.let { return it }
 
         val response = fetch<TmdbRecommendationResponse>(
             endpoint = "$mediaType/$tmdbId/recommendations",
@@ -1301,7 +1348,7 @@ object TmdbMetadataService {
             }
             .take(12)
 
-        moreLikeThisCache[cacheKey] = items
+        cacheMutex.withLock { moreLikeThisCache[cacheKey] = items }
         return items
     }
 
@@ -1310,7 +1357,7 @@ object TmdbMetadataService {
         language: String,
     ): Pair<String?, List<MetaPreview>> {
         val cacheKey = "$collectionId:$language:collection"
-        collectionCache[cacheKey]?.let { return it }
+        cacheMutex.withLock { collectionCache[cacheKey] }?.let { return it }
 
         val response = fetch<TmdbCollectionResponse>(
             endpoint = "collection/$collectionId",
@@ -1337,7 +1384,7 @@ object TmdbMetadataService {
             }
 
         val result = response.name?.trim()?.takeIf(String::isNotBlank) to items
-        collectionCache[cacheKey] = result
+        cacheMutex.withLock { collectionCache[cacheKey] = result }
         return result
     }
 
@@ -1347,7 +1394,7 @@ object TmdbMetadataService {
         language: String,
     ): List<MetaTrailer> {
         val cacheKey = "$tmdbId:$mediaType:$language:trailers"
-        trailerCache[cacheKey]?.let { return it }
+        cacheMutex.withLock { trailerCache[cacheKey] }?.let { return it }
 
         val allVideos = mutableListOf<MetaTrailer>()
 
@@ -1440,7 +1487,7 @@ object TmdbMetadataService {
         )
 
         val result = sortedCategories.flatMap { byCategory[it].orEmpty() }
-        trailerCache[cacheKey] = result
+        cacheMutex.withLock { trailerCache[cacheKey] = result }
         return result
     }
 
