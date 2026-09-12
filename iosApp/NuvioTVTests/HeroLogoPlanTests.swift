@@ -1,13 +1,18 @@
 import XCTest
 @testable import NuvioTV
 
-/// FEAT-42: unit tests for `HeroArtResolver.logoPlan(addonLogo:id:isFolder:storeURL:storePending:)`
-/// — the pure priority decision behind the Home hero/focus panel's title-logo resolution. No view
-/// host, no `TitleLogoStore`, no network: every row of the priority table (own logo → folder stops
-/// → `TitleLogoStore`'s resolved URL → a synchronous metahub guess for IMDb ids → a
-/// `TitleLogoStore` lookup already in flight → nothing) is driven directly through the function's
-/// four parameters. See `logoPlan`'s own doc comment in `HomeView.swift` for the full rationale
-/// behind the ordering asserted here.
+/// FEAT-42: unit tests for
+/// `HeroArtResolver.logoPlan(addonLogo:id:isFolder:storeURL:storePending:allowMetahub:)` — the pure
+/// priority decision behind the Home hero/focus panel's title-logo resolution. No view host, no
+/// `TitleLogoStore`, no network: every row of the priority table (own logo → folder stops →
+/// `TitleLogoStore`'s resolved URL → a synchronous metahub guess for IMDb ids → a `TitleLogoStore`
+/// lookup already in flight → nothing) is driven directly through the function's parameters. See
+/// `logoPlan`'s own doc comment in `HomeView.swift` for the full rationale behind the ordering
+/// asserted here.
+///
+/// `allowMetahub` defaults to `true` and every case above omits it. The two `allowMetahub: false`
+/// cases at the bottom cover `present`'s `debug.heroLogoStoreOnly` knob path — step 4 (metahub) is
+/// skipped entirely and the plan falls straight to step 5/6.
 final class HeroLogoPlanTests: XCTestCase {
 
     private let metahubURL = URL(string: "https://images.metahub.space/logo/medium/tt1234567/img")!
@@ -131,5 +136,25 @@ final class HeroLogoPlanTests: XCTestCase {
         )
         XCTAssertEqual(plan, .none,
                        "this is also the shape a TMDB-disabled session presents in — TitleLogoStore never writes .pending with the gate off")
+    }
+
+    // MARK: - 12/13. `allowMetahub: false` (the `debug.heroLogoStoreOnly` knob path)
+
+    func testAllowMetahubFalseWithNoStoreResolvesToNone() {
+        let plan = HeroArtResolver.logoPlan(
+            addonLogo: nil, id: "tt1234567", isFolder: false,
+            storeURL: nil, storePending: false, allowMetahub: false
+        )
+        XCTAssertEqual(plan, .none,
+                       "an IMDb id would normally hit the synchronous metahub guess (step 4) — with allowMetahub false there is nothing left to fall through to but .none")
+    }
+
+    func testAllowMetahubFalseWithPendingStoreResolvesToPending() {
+        let plan = HeroArtResolver.logoPlan(
+            addonLogo: nil, id: "tt1234567", isFolder: false,
+            storeURL: nil, storePending: true, allowMetahub: false
+        )
+        XCTAssertEqual(plan, .pending,
+                       "with the metahub guess disallowed, an IMDb id with a lookup in flight must fall through to .pending instead of the synchronous guess winning first")
     }
 }

@@ -5903,6 +5903,116 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - BUG-111: the detail-page studio/network chip joins the plain-label ring architecture
 
+    /// One title's outcome from `openDetailPageAndWalkToLogosRow`, kept so a final skip/return can
+    /// report what happened on EVERY title tried, not just the last one.
+    private struct DetailPageAttemptOutcome {
+        let identifier: String
+        let detail: String
+    }
+
+    /// BUG-111 review finding (fixture instability): the down×4 walk from Home lands on whatever
+    /// title happens to sit in that row slot on THIS run — the fixture's Home rows reorder between
+    /// runs — and occasionally that title has no company-logo art, or its `debug_ux6` probe is
+    /// still mid-load past the fixed press budget; both used to read identically as "anchor never
+    /// reached logos", with no way to tell a fixture limitation from a real load stall. This tries
+    /// up to `maxTitles` titles in the SAME row — `.menu` backs out to Home, `.right` moves to the
+    /// next poster, `.select` re-opens — before giving up, so one bad title doesn't sink the run.
+    ///
+    /// Precondition: focus already rests on the FIRST candidate poster (the caller does the
+    /// down×N walk to the row before calling this) and no page is open yet — the first attempt
+    /// does not press `.menu`/`.right`, only `.select`.
+    private func openDetailPageAndWalkToLogosRow(
+        _ app: XCUIApplication,
+        maxTitles: Int = 4
+    ) -> (success: Bool, lastAnchor: String, outcomes: [DetailPageAttemptOutcome]) {
+        var outcomes: [DetailPageAttemptOutcome] = []
+        for attempt in 1...maxTitles {
+            if attempt > 1 {
+                remote.press(.menu)
+                pause(2)
+                press(.right, times: 1)
+            }
+            remote.press(.select)
+            pause(8)
+            // Bumped from the old fixed 6s: a still-loading page (not just an absent one) is
+            // exactly the failure mode this retry exists to tell apart from "no page opened".
+            guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 15) else {
+                outcomes.append(.init(identifier: "attempt \(attempt)",
+                                       detail: "no detail page opened (debug_ux6 probe absent within 15s)"))
+                continue
+            }
+            // FEAT-32: the page can still auto-enter the full-screen trailer cover a few seconds
+            // in — `-debug.trailerForceNoTrailer` stops the auto-play TIMER, not necessarily the
+            // cover's own entry check on every build. Back out once and settle before walking,
+            // same guard DetailRowAnchorTests uses.
+            pause(6)
+            if app.staticTexts["Press Back to exit the trailer"].exists {
+                remote.press(.menu)
+                pause(3)
+            }
+            let identifier = pageIdentifier(app)
+            // `dimModel.anchorNote` starts empty and is only set once `anchorPass` first runs —
+            // an empty read here means the page is still settling, not a failed Down press, so
+            // wait for it to seed BEFORE spending any of the 12-press Down budget below (today an
+            // empty read counted as a failed press and just burned one of the 12).
+            var anchorSeeded = false
+            for _ in 1...15 {
+                let label = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
+                if let seeded = Self.probeToken(label, key: "anchor"), !seeded.isEmpty {
+                    anchorSeeded = true
+                    break
+                }
+                pause(1)
+            }
+            guard anchorSeeded else {
+                outcomes.append(.init(identifier: identifier,
+                                       detail: "debug_ux6 appeared but its anchor= field stayed empty for 15s — page likely still loading"))
+                continue
+            }
+            var reachedLogosRow = false
+            var lastAnchor = ""
+            for _ in 1...12 {
+                let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
+                lastAnchor = Self.probeToken(probeLabel, key: "anchor") ?? ""
+                if lastAnchor == "logos" {
+                    reachedLogosRow = true
+                    break
+                }
+                press(.down, times: 1, gap: 1.2)
+            }
+            if reachedLogosRow {
+                return (true, lastAnchor, outcomes)
+            }
+            outcomes.append(.init(identifier: identifier,
+                                   detail: "never reached the logos row within 12 Downs (last anchor read \"\(lastAnchor)\")"))
+        }
+        return (false, "", outcomes)
+    }
+
+    /// Best-effort identifying text for a skip/failure message. The detail header's `Text(title)`
+    /// (`DetailView.header`) only renders when the title has no logo art — a title WITH logo art
+    /// shows a `CachedAsyncImage` there instead, no title `staticText` at all — so this can't
+    /// assume that specific node. It takes the first non-empty, non-probe `staticText` label found
+    /// in the page instead: the title text when there's no logo, otherwise the next descriptive
+    /// line (genres, overview, …), which still tells two runs' titles apart in a message.
+    private func pageIdentifier(_ app: XCUIApplication) -> String {
+        guard let root = try? app.snapshot() else { return "unknown" }
+        var result: String?
+        func walk(_ node: XCUIElementSnapshot) {
+            if result != nil { return }
+            if node.elementType == .staticText {
+                let label = node.label
+                if !label.isEmpty, !label.hasPrefix("debug_") {
+                    result = label
+                    return
+                }
+            }
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        return result ?? "unknown"
+    }
+
     /// BUG-111 (rc12, u/mrStevenx3: focusing a STUDIO tile "zooms in on the poster instead of the
     /// description" — the cast row was fixed in rc10/BUG-108 and he confirmed it, but
     /// `CompanyChip` was the one card-like site left on a bare `.buttonStyle(.borderless)`).
@@ -5936,19 +6046,10 @@ final class NuvioTVUITests: XCTestCase {
         // → NavigationLink); `-home_upcoming_row_enabled NO` keeps the down×4 walk deterministic.
         press(.down, times: 4)
         pause(0.5)
-        remote.press(.select)
-        pause(8)
-        guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
-            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — the down×4 walk did not land on a movies row on this fixture; nothing to measure")
-        }
-        // FEAT-32: the page can still auto-enter the full-screen trailer cover a few seconds in —
-        // `-debug.trailerForceNoTrailer` stops the auto-play TIMER, not necessarily the cover's
-        // own entry check on every build. Back out once and settle before walking, same guard
-        // DetailRowAnchorTests uses.
-        pause(6)
-        if app.staticTexts["Press Back to exit the trailer"].exists {
-            remote.press(.menu)
-            pause(3)
+        let opened = openDetailPageAndWalkToLogosRow(app)
+        guard opened.success else {
+            let details = opened.outcomes.map { "\($0.identifier): \($0.detail)" }.joined(separator: "; ")
+            throw XCTSkip("tried \(opened.outcomes.count) title(s) across the row, none reached the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) — \(details)")
         }
 
         func namedFrames(_ identifier: String) -> [CGRect] {
@@ -6004,32 +6105,18 @@ final class NuvioTVUITests: XCTestCase {
         // `companyLogosRow` is the FIRST anchored row below the top block (`DetailRowAnchor.Row
         // .logos`), so a handful of Down presses should reach it on any fixture that has one —
         // but not every title carries TMDB logo art, so this is a bounded search with a skip, not
-        // a fixed press count.
-        //
-        // The exit condition is `anchor=logos` ONLY. A prior version also accepted
-        // `namedFrames("company_artwork").count >= 2` as an early-out — that turned out to be
-        // true BEFORE the very first Down press: `DebugAXIdentifier` probes sit in the AX tree
-        // whether or not their row is on screen or focused, so that condition matched the detail
-        // page's TOP BLOCK immediately and the walk never moved — the first fixture run's 59a/59b
-        // photographed "Play S1E1" then "Watch Trailer" focused, never a studio chip.
-        // `anchor=logos` is the only signal that the FOCUSED row is actually the logos row:
-        // `anchorPass` sets `dimModel.anchorNote` to `"\(String(describing: row)) top=… y=… note"`
-        // (`DetailView.swift`), and `DetailRowID.logos`'s `String(describing:)` is the literal
-        // "logos" (`DetailRowAnchor.swift`'s `enum DetailRowID { case logos, … }`).
-        var reachedLogosRow = false
-        var lastAnchor = ""
-        for _ in 1...12 {
-            let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
-            lastAnchor = Self.probeToken(probeLabel, key: "anchor") ?? ""
-            if lastAnchor == "logos" {
-                reachedLogosRow = true
-                break
-            }
-            press(.down, times: 1, gap: 1.2)
-        }
-        guard reachedLogosRow else {
-            throw XCTSkip("the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) never came into focus within 12 Down presses — last anchor read \"\(lastAnchor)\"; this fixture's title likely has no company logos to test BUG-111 against")
-        }
+        // a fixed press count. That walk (and its retry across up to 4 titles when a fixture's
+        // pick has no logo art or is still loading) already ran inside
+        // `openDetailPageAndWalkToLogosRow` above — `opened.success` guarantees focus already
+        // rests on the logos row (`anchor=logos`, the only signal the FOCUSED row is actually the
+        // logos row — `anchorPass` sets `dimModel.anchorNote` to
+        // `"\(String(describing: row)) top=… y=… note"` in `DetailView.swift`, and
+        // `DetailRowID.logos`'s `String(describing:)` is the literal "logos" in
+        // `DetailRowAnchor.swift`'s `enum DetailRowID { case logos, … }`). A prior version of this
+        // walk also accepted `namedFrames("company_artwork").count >= 2` as an early-out — that
+        // turned out to be true BEFORE the very first Down press (`DebugAXIdentifier` probes sit
+        // in the AX tree whether or not their row is on screen or focused), so `anchor=logos`
+        // stays the only exit condition.
 
         // BUG-111 review finding 1 (continued): require at least two FOCUSABLE chips before a
         // "nothing changed" reading counts as a regression — with a single focusable chip
@@ -6179,14 +6266,11 @@ final class NuvioTVUITests: XCTestCase {
         ], forceFreshLaunch: true)
         press(.down, times: 4)
         pause(0.5)
-        remote.press(.select)
-        pause(8)
-        guard stillApp.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else { return }
-        pause(6)
-        if stillApp.staticTexts["Press Back to exit the trailer"].exists {
-            remote.press(.menu)
-            pause(3)
-        }
+        // Same multi-title retry as the ring-mode leg above (same fixture-reorder risk, same
+        // "still loading vs. no logo art" ambiguity) — leg B stays OPTIONAL, so a failure across
+        // all titles is a silent `return`, not a skip.
+        let stillOpened = openDetailPageAndWalkToLogosRow(stillApp)
+        guard stillOpened.success else { return }
         func stillNamedFrames(_ identifier: String) -> [CGRect] {
             guard let root = try? stillApp.snapshot() else { return [] }
             var out: [CGRect] = []
@@ -6197,19 +6281,6 @@ final class NuvioTVUITests: XCTestCase {
             walk(root)
             return out
         }
-        // Same walk-defect fix as the ring-mode leg above: `anchor=logos` only, never the
-        // `company_artwork` presence check (true before the first Down press regardless of
-        // focus).
-        var reachedStillLogosRow = false
-        for _ in 1...12 {
-            let probeLabel = stillApp.staticTexts["debug_ux6"].exists ? stillApp.staticTexts["debug_ux6"].label : ""
-            if Self.probeToken(probeLabel, key: "anchor") == "logos" {
-                reachedStillLogosRow = true
-                break
-            }
-            press(.down, times: 1, gap: 1.2)
-        }
-        guard reachedStillLogosRow else { return }
         let stillBefore = stillNamedFrames("company_artwork")
         press(.right, times: 1, gap: 0.6)
         pause(1)

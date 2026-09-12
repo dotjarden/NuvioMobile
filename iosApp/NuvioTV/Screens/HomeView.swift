@@ -2506,6 +2506,33 @@ final class HeroArtResolver: ObservableObject {
     static let folderDeadline: UInt64 = 1_500_000_000
     #endif
 
+    /// `defaults write com.nuvio.media.NuvioTV debug.heroLogoStoreOnly -bool YES`, or as a launch
+    /// argument on device/CI/UI tests. When set, `present` calls `logoPlan` with `addonLogo: nil`
+    /// and `allowMetahub: false`, so a logo can only ever come from `TitleLogoStore` (steps 3/5 of
+    /// `logoPlan`'s doc comment) — never the item's own logo (step 1) or the synchronous metahub
+    /// guess (step 4).
+    ///
+    /// Exists so `test62HeroLogoOnRowFocus` can prove the store path deterministically. In
+    /// production, and on the fixture `test62` walks, a row's own logo (filled in by the Kotlin row
+    /// overlay for its leading items) or the metahub guess almost always resolves before the store
+    /// does, so `plgs=tmdb` on any given card was only ever provable by timing luck, not by
+    /// contract. This knob removes both faster candidates so every read that produces a logo at all
+    /// is forced through the store, without changing `logoPlan`'s priority order for anyone who
+    /// hasn't passed it.
+    ///
+    /// Production never sets this — an item's own logo and the metahub guess are both legitimate
+    /// candidates, and disabling them here would blank real heroes that have neither a resolved
+    /// store URL nor a pending lookup. `#if DEBUG` only, matching `debugFolderDeadlineOverrideMs`
+    /// immediately above: never read in a release build, where `heroLogoStoreOnly` is a compile-time
+    /// `false` and `present` always passes `allowMetahub: true` and the item's own logo unchanged.
+    #if DEBUG
+    private static let heroLogoStoreOnlyByKnob =
+        UserDefaults.standard.bool(forKey: "debug.heroLogoStoreOnly")
+    static var heroLogoStoreOnly: Bool { heroLogoStoreOnlyByKnob }
+    #else
+    static let heroLogoStoreOnly: Bool = false
+    #endif
+
     /// The in-flight resolve, if any. Also the whole of `isIdle` — the carousel's auto-advance tick
     /// must not page while a commit is pending, or the resolve it started is thrown away and the
     /// next page starts cold (the same reason the tick already holds for a trailer attempt).
@@ -2579,7 +2606,8 @@ final class HeroArtResolver: ObservableObject {
     ///    construction (no network round trip to decide this branch), so Cinemeta rows never pay
     ///    the `.pending` wait — and it is checked BEFORE `.pending` so an IMDb item with a lookup
     ///    still in flight uses the synchronous guess rather than waiting on the store (a lookup
-    ///    that finishes later still wins on this item's NEXT presentation via step 3).
+    ///    that finishes later still wins on this item's NEXT presentation via step 3). Skipped
+    ///    entirely when `allowMetahub` is `false` — the plan falls straight through to step 5.
     /// 5. `storePending` — a `TitleLogoStore` lookup is in flight and this item has no faster
     ///    candidate; `.pending` tells `present` to wait for it inside the existing
     ///    `laterSwapDeadline`, never a new budget.
@@ -2587,8 +2615,15 @@ final class HeroArtResolver: ObservableObject {
     ///    session lands by construction: with TMDB off `TitleLogoStore` never writes a `.pending`
     ///    entry (`lookupIfNeeded`'s own settings guard), so `storeURL` is always nil and
     ///    `storePending` is always false here — no separate "is TMDB on" parameter is needed.
+    ///
+    /// `allowMetahub` defaults to `true` for every existing caller and test. `present` passes
+    /// `false` only under the `debug.heroLogoStoreOnly` `#if DEBUG` launch knob (see
+    /// `HeroArtResolver.heroLogoStoreOnly`'s doc comment) — a UI-test-only way to prove the store
+    /// path deterministically on a fixture whose faster candidates (an item's own logo, or the
+    /// metahub guess) would otherwise almost always win first. Production never passes `false`.
     nonisolated static func logoPlan(addonLogo: String?, id: String, isFolder: Bool,
-                                     storeURL: String?, storePending: Bool) -> HeroLogoPlan {
+                                     storeURL: String?, storePending: Bool,
+                                     allowMetahub: Bool = true) -> HeroLogoPlan {
         if let addonLogo, !addonLogo.isEmpty, let url = URL(string: addonLogo) {
             return .url(url, .addon)
         }
@@ -2596,10 +2631,12 @@ final class HeroArtResolver: ObservableObject {
         if let storeURL, !storeURL.isEmpty, let url = URL(string: storeURL) {
             return .url(url, .tmdb)
         }
-        let imdbId = id.split(separator: ":").first.map(String.init) ?? id
-        if imdbId.hasPrefix("tt"),
-           let url = URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img") {
-            return .url(url, .metahub)
+        if allowMetahub {
+            let imdbId = id.split(separator: ":").first.map(String.init) ?? id
+            if imdbId.hasPrefix("tt"),
+               let url = URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img") {
+                return .url(url, .metahub)
+            }
         }
         if storePending { return .pending }
         return .none
@@ -2691,10 +2728,17 @@ final class HeroArtResolver: ObservableObject {
         // synchronous metahub guess for IMDb ids → a `TitleLogoStore` lookup already in flight →
         // nothing) — see that function's own doc comment. The URL never enters `MetaPreview`, so
         // `heroPayloadSignature`/`isVisibleRepaint`/`headHashHex` are untouched by construction.
+        //
+        // Under the `debug.heroLogoStoreOnly` knob (`#if DEBUG` only, see `heroLogoStoreOnly`'s doc
+        // comment) the item's own logo is withheld and the metahub guess is disallowed, so the
+        // plan can only resolve through the store — a UI-test-only override, never live in a
+        // release build.
+        let storeOnly = HeroArtResolver.heroLogoStoreOnly
         let plan = HeroArtResolver.logoPlan(
-            addonLogo: target.logo, id: target.id, isFolder: isFolder,
+            addonLogo: storeOnly ? nil : target.logo, id: target.id, isFolder: isFolder,
             storeURL: TitleLogoStore.shared.logoURL(for: target),
-            storePending: TitleLogoStore.shared.isLookupPending(for: target)
+            storePending: TitleLogoStore.shared.isLookupPending(for: target),
+            allowMetahub: !storeOnly
         )
         // The origin this presentation will log/commit IF a logo bitmap actually ends up
         // resolved — `.pending` always implies a `TitleLogoStore`/TMDB answer by construction (see
