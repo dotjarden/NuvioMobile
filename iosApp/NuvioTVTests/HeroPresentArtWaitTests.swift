@@ -337,4 +337,102 @@ final class HeroPresentArtWaitTests: XCTestCase {
         XCTAssertNil(wait.backdrop)
         XCTAssertFalse(wait.usedPosterFallback)
     }
+
+    // MARK: - resolveDeadline (rc12, Codex Finding A)
+    //
+    // The budget belongs to the TARGET, not to a resolve. `present` is driven from two `.onChange`s
+    // and a same-identity payload update (a synopsis landing from TMDB) cancels the resolve in
+    // flight and starts another; the same-identity short-circuit further up only protects a title
+    // that is already PRESENTED, so before this each such update handed the new resolve a whole
+    // fresh `laterSwapDeadline`. Codex measured an update at 300 ms holding the PREVIOUS title on
+    // screen to 496 ms, where the pre-rc12 warm-backdrop case committed at once. `resolveDeadline`
+    // is the pure remainder: nonisolated and store-free, so the rule can be pinned with no view,
+    // no network and no clock of its own.
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAFirstPresentForATargetGetsTheWholeBudget() {
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: nil, now: Date(),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, HeroArtResolver.laterSwapDeadline,
+                       "a genuinely new target has no clock to inherit — it must get the full 400 ms")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testASameTargetUpdateInheritsTheRemainderOfTheOriginalBudget() {
+        let start = Date()
+        // The measured case: a metadata update 300 ms into a 400 ms budget.
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.3),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        // 100 ms left, ±1 ms for the Double round trip through TimeInterval.
+        XCTAssertEqual(Double(deadline), 100_000_000, accuracy: 1_000_000,
+                       "the restarted resolve must finish the ORIGINAL window, not open a second one")
+        XCTAssertLessThan(deadline, HeroArtResolver.laterSwapDeadline,
+                          "two stacked budgets is exactly the 496 ms hold this rule removes")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAnUpdateAfterTheBudgetIsSpentCommitsImmediately() {
+        let start = Date()
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.6),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, 0,
+                       "past the absolute deadline the wait must fire on the next turn and commit whatever is ready")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testTheFolderBudgetIsInheritedTheSameWay() {
+        let start = Date()
+        let budget: UInt64 = 1_500_000_000
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.5),
+                                                      budget: budget)
+        XCTAssertEqual(Double(deadline), 1_000_000_000, accuracy: 1_000_000,
+                       "a collection folder's longer budget is absolute in the same way — the rule is the caller's constant, not a second constant of its own")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAClockThatMovedBackwardsFallsBackToTheWholeBudget() {
+        let start = Date()
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(-5),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, HeroArtResolver.laterSwapDeadline,
+                       "a negative elapsed must never become a longer-than-budget wait (or an overflowing UInt64)")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testTheInheritedDeadlineIsMonotonicInElapsedTime() {
+        let start = Date()
+        var previous = HeroArtResolver.laterSwapDeadline + 1
+        for ms in [0, 50, 100, 200, 399, 400, 401, 10_000] {
+            let deadline = HeroArtResolver.resolveDeadline(
+                previousStart: start, now: start.addingTimeInterval(Double(ms) / 1000),
+                budget: HeroArtResolver.laterSwapDeadline
+            )
+            XCTAssertLessThanOrEqual(deadline, previous, "the remainder must never grow as time passes (at \(ms) ms)")
+            XCTAssertLessThanOrEqual(deadline, HeroArtResolver.laterSwapDeadline, "and never exceed the budget (at \(ms) ms)")
+            previous = deadline
+        }
+        XCTAssertEqual(previous, 0, "well past the window the remainder is spent")
+    }
 }

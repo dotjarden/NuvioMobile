@@ -2517,7 +2517,47 @@ final class HeroArtResolver: ObservableObject {
     /// byte-identical target can be recognised as the no-op it is — see the guard in `present`.
     private var lastTarget: MetaPreview?
 
+    /// rc12 (Codex Finding A): when the FIRST `present` for the CURRENT `targetIdentity` started
+    /// resolving, so a later `present` for that same identity inherits the original budget instead
+    /// of restarting it (see `resolveDeadline` and the wiring in `present`). nil whenever no resolve
+    /// is outstanding for the current target: cleared with the target itself, reset to nil the
+    /// moment the identity changes, and cleared again on the cache-warm path that commits without
+    /// starting a resolve at all.
+    private var targetResolveStartedAt: Date?
+
     var isIdle: Bool { resolveTask == nil }
+
+    /// rc12 (Codex Finding A): the ABSOLUTE deadline rule for a resolve that is restarted for the
+    /// SAME target identity.
+    ///
+    /// `present` is driven from two `.onChange`s and a same-identity payload update (a synopsis or
+    /// a genre list landing from TMDB, `heroPayloadSignature` moving) cancels the resolve in flight
+    /// and starts a new one. The same-identity branch further up only short-circuits an
+    /// already-PRESENTED title, so while the FIRST resolve is still running each such update used
+    /// to hand the new resolve a fresh `laterSwapDeadline` — Codex measured an update at 300 ms
+    /// holding the PREVIOUS title on screen until 496 ms, where the pre-rc12 warm-backdrop case
+    /// committed immediately. Budgets must not be stackable: the viewer is looking at a stale hero
+    /// for the sum, not for one 400 ms window.
+    ///
+    /// So the wait inherits the first present's clock. `previousStart` is when this identity first
+    /// began resolving (nil for a genuinely new target, which gets the whole `budget`); the answer
+    /// is whatever is LEFT of `budget`, and 0 once it is spent — a zero-nanosecond sleep, which
+    /// fires the deadline on the next turn and commits whatever is ready (the existing
+    /// deadline-commit path, unchanged). A non-positive `elapsed` (a clock that moved backwards)
+    /// answers the full budget rather than a negative remainder.
+    ///
+    /// BUG-90 is untouched: this only ever SHORTENS how long the previous hero is held, and a logo
+    /// or backdrop that lands after the deadline is still dropped by `HeroPresentArtWait`, never
+    /// swapped in behind the reader's eyes.
+    nonisolated static func resolveDeadline(previousStart: Date?, now: Date, budget: UInt64) -> UInt64 {
+        guard let previousStart else { return budget }
+        let elapsed = now.timeIntervalSince(previousStart)
+        guard elapsed > 0 else { return budget }
+        let elapsedNanos = elapsed * 1_000_000_000
+        let budgetNanos = Double(budget)
+        guard elapsedNanos < budgetNanos else { return 0 }
+        return UInt64((budgetNanos - elapsedNanos).rounded())
+    }
 
     /// FEAT-42: decides where (if anywhere) a target's presented logo should come from, in
     /// priority order, BEFORE any fetch runs. Pure and `nonisolated static` so
@@ -2582,6 +2622,7 @@ final class HeroArtResolver: ObservableObject {
 
         guard let target else {
             targetIdentity = nil
+            targetResolveStartedAt = nil
             guard presented != nil else { return }
             // FEAT-42: reset together with `presented`, in the same transaction — see
             // `presentedLogoSource`'s doc comment on why the two may never disagree.
@@ -2593,7 +2634,13 @@ final class HeroArtResolver: ObservableObject {
         }
 
         let identity = "\(target.type):\(target.id)"
+        // rc12 (Codex Finding A): read the OUTGOING target before overwriting it. A present for the
+        // identity that is already the target inherits that target's resolve clock (see
+        // `resolveDeadline`); any other present is a genuinely new swap and starts a fresh budget,
+        // which is what a nil inheritance means.
+        let inheritedResolveStart = targetIdentity == identity ? targetResolveStartedAt : nil
         targetIdentity = identity
+        targetResolveStartedAt = inheritedResolveStart
 
         // Same item, new payload: the ONE change allowed after a commit (Wave H invariant 2) is a
         // silent gap-fill of text the item did not carry when it was committed — a synopsis landing
@@ -2697,6 +2744,11 @@ final class HeroArtResolver: ObservableObject {
         let needsPosterFallback = posterFallbackURL != nil && cachedPosterFallback == nil
 
         guard needsBackdrop || needsLogo else {
+            // Nothing to wait for, so there is no clock to carry: a same-identity payload update
+            // after this point is handled by the gap-fill branch above (this commit makes
+            // `presented.identity` match), and should the hero ever be re-resolved for this
+            // identity later it deserves the whole budget (rc12, Codex Finding A).
+            targetResolveStartedAt = nil
             commit(item: target, backdrop: cachedBackdrop, logo: cachedLogo, identity: identity,
                    backdropSource: cachedBackdrop != nil ? "cached" : "none",
                    logoSource: cachedLogo != nil ? "cached" : "text",
@@ -2706,7 +2758,15 @@ final class HeroArtResolver: ObservableObject {
         }
 
         let started = Date()
-        let deadline = isFolder ? Self.folderDeadline : Self.laterSwapDeadline
+        // rc12 (Codex Finding A): the budget is absolute per TARGET, not per resolve. A resolve
+        // restarted for the identity that is already resolving keeps the first present's clock, so
+        // the previous hero is held for at most one `laterSwapDeadline` no matter how many
+        // same-identity payload updates land inside it. `started` itself stays "now" on purpose:
+        // `waited=` on the probe line measures THIS resolve's own segment, the way every existing
+        // oracle reads it.
+        targetResolveStartedAt = inheritedResolveStart ?? started
+        let deadline = Self.resolveDeadline(previousStart: inheritedResolveStart, now: started,
+                                            budget: isFolder ? Self.folderDeadline : Self.laterSwapDeadline)
         let wait = HeroPresentArtWait(backdrop: cachedBackdrop, logo: cachedLogo,
                                       needsBackdrop: needsBackdrop, needsLogo: needsLogo,
                                       posterFallback: cachedPosterFallback,
