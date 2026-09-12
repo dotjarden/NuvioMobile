@@ -461,7 +461,14 @@ private struct CardDepthControls: View {
     let onSurface: (CardDepthSurface, Bool) -> Void
     let onReset: () -> Void
 
+    // BUG-110 (rc12): "Off" leads the list so the strength picker itself can switch the rail off
+    // without touching the master "Card Depth" toggle (which also silences the sheen). `0` was
+    // already a legal synced value — the picker just never offered it — so this is additive: no
+    // reset-default or storage-contract change (`CardDepthStyle.edgeStrength` still defaults to 28).
+    // Reuses the "Off" string `sheenOptions` below already carries; xcstrings has one shared entry
+    // for both (confirmed translated in all 5 locales), so no new key was needed.
     private let edgeOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Off"), 0),
         (String(localized: "Subtle"), 28), (String(localized: "Balanced"), 42), (String(localized: "Bold"), 56)
     ]
     private let sheenOptions: [(name: String, value: Int32)] = [

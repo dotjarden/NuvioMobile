@@ -586,7 +586,7 @@ struct HomeView: View {
                 // the hero's yield, `topR`/`botR` the reaches the rows actually render with,
                 // `fits` whether the focus engine's link frame is inside the rows viewport (the
                 // whole point of the fix), and `slack` the width of the legal-rest set.
-                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength) comp=\(Int(pinnedPlan.compression.rounded())) topR=\(Int(pinnedPlan.topReach.rounded())) botR=\(Int(pinnedPlan.bottomReach.rounded())) fits=\(pinnedPlan.fits ? 1 : 0) slack=\(Int(pinnedPlan.restRange.rounded()))")
+                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength) comp=\(Int(pinnedPlan.compression.rounded())) topR=\(Int(pinnedPlan.topReach.rounded())) botR=\(Int(pinnedPlan.bottomReach.rounded())) fits=\(pinnedPlan.fits ? 1 : 0) slack=\(Int(pinnedPlan.restRange.rounded())) railW=\(Int(CardDepthStyle.railWidth(edgeStrength: debugCardDepth.edgeStrength))) railA=\(Int((CardDepthStyle.railTopAlpha(edge: min(max(Double(debugCardDepth.edgeStrength), 0), 100) / 100) * 100).rounded()))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_env")

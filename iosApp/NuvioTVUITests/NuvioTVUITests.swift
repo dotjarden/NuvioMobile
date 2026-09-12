@@ -6080,6 +6080,95 @@ final class NuvioTVUITests: XCTestCase {
         }
         shot(stillApp, "59c_studio_chip_no_zoom_indicator")
     }
+
+    // MARK: - BUG-110 (rc12): Card Depth strength presets read as visibly different
+
+    /// Tester report (rc11): "the three strength levels look identical on my TV." `CardDepthStyle`'s
+    /// `railWidth`/`railTopAlpha` now give Subtle/Balanced/Bold their own rail width AND top-stop
+    /// alpha at EVERY coverage (Full included, for the first time since BUG-31) — see
+    /// `CardDepthRailStyleTests` for the pure-function coverage of the actual formulas. This test
+    /// walks the RENDERED rail through all three presets and checks the two numbers the `debug_env`
+    /// probe now reports (`railW=`, the rail's line width; `railA=`, its top-stop alpha ×100) increase
+    /// strictly across the triptych, alongside a screenshot of each for the manual/device read.
+    ///
+    /// `-debug.cardDepthOn YES` (DEBUG-only, `CardDepthStyle.applyingDebugOverrides()`) forces the
+    /// master toggle AND all five per-surface flags on, so this doesn't depend on the synced fixture
+    /// profile having Card Depth (or the Posters surface specifically) enabled — the same fixture
+    /// assumption `test50DepthRailHugsArtworkInStillMode` has to skip on when it isn't met.
+    func test60DepthEdgeLevelsAreDistinguishable() throws {
+        func namedFrames(_ app: XCUIApplication, _ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // (name, edge strength, expected railW, expected railA) — the BUG-110 preset table.
+        let presets: [(name: String, edge: Int, expectedWidth: Int, expectedAlpha: Int)] = [
+            ("subtle", 28, 1, 35),
+            ("balanced", 42, 2, 60),
+            ("bold", 56, 3, 90),
+        ]
+
+        // test56's rule: restore the untouched default configuration on every exit (including a
+        // skip), so a later `launchToHome()` never inherits a debug-forced Card Depth override.
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        var railWidths: [Int] = []
+        for preset in presets {
+            let app = launchToHome(
+                extraArguments: ["-debug.cardDepthOn", "YES",
+                                 "-debug.cardDepthEdge", "\(preset.edge)",
+                                 "-debug.cardGeometryProbe", "YES"],
+                forceFreshLaunch: true
+            )
+            openTab(app, named: "Home")
+            press(.down, times: 4, gap: 0.4)
+            pause(1.5)
+
+            let env = app.staticTexts["debug_env"]
+            guard env.waitForExistence(timeout: 15) else {
+                XCTFail("[\(preset.name)] debug_env probe missing — it is DEBUG-only (HomeView.swift); is this a Release build, or did Home never mount?")
+                throw XCTSkip("[\(preset.name)] no debug_env")
+            }
+            let label = env.label
+            guard let depth = Self.probeValue(label, key: "depth"),
+                  let edge = Self.probeValue(label, key: "edge"),
+                  let railW = Self.probeValue(label, key: "railW"),
+                  let railA = Self.probeValue(label, key: "railA") else {
+                XCTFail("[\(preset.name)] could not parse depth=/edge=/railW=/railA= out of debug_env ('\(label)') — the probe's spelling changed; it is append-only by contract")
+                throw XCTSkip("[\(preset.name)] unparseable debug_env")
+            }
+            XCTAssertEqual(depth, 1, "[\(preset.name)] -debug.cardDepthOn YES did not force Card Depth on (\(label))")
+            XCTAssertEqual(edge, preset.edge, "[\(preset.name)] -debug.cardDepthEdge \(preset.edge) did not land (\(label))")
+            XCTAssertEqual(railW, preset.expectedWidth, "[\(preset.name)] railW mismatch (\(label))")
+            XCTAssertLessThanOrEqual(
+                abs(railA - preset.expectedAlpha), 2,
+                "[\(preset.name)] railA mismatch — expected \(preset.expectedAlpha)±2, got \(railA) (\(label))"
+            )
+
+            let rails = namedFrames(app, "card_depth_rail")
+            XCTAssertFalse(
+                rails.isEmpty,
+                "[\(preset.name)] no `card_depth_rail` element in the tree — `-debug.cardGeometryProbe YES` did not arm `DebugAXIdentifier` (it is read once from NSArgumentDomain at first use), or this is a Release build."
+            )
+
+            shot(app, "60x_depth_edge_\(preset.name)")
+            railWidths.append(railW)
+        }
+
+        XCTAssertTrue(
+            railWidths.count == 3 && railWidths[0] < railWidths[1] && railWidths[1] < railWidths[2],
+            "railW did not increase strictly across Subtle/Balanced/Bold (\(railWidths)) — BUG-110's whole point is that the three presets differ"
+        )
+    }
     // MARK: - FEAT-32: description → full-screen trailer bridge
 
     /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same
