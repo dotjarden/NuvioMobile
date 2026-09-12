@@ -5901,6 +5901,185 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "58c_last_row")
     }
 
+    // MARK: - BUG-111: the detail-page studio/network chip joins the plain-label ring architecture
+
+    /// BUG-111 (rc12, u/mrStevenx3: focusing a STUDIO tile "zooms in on the poster instead of the
+    /// description" — the cast row was fixed in rc10/BUG-108 and he confirmed it, but
+    /// `CompanyChip` was the one card-like site left on a bare `.buttonStyle(.borderless)`).
+    ///
+    /// What the SIMULATOR can prove — same framing as test56's BUG-108 gate: not the hardware
+    /// compositor bug itself (the FEAT-14 graveyard in `PosterCard.swift` says the sim never
+    /// reproduces that), but the GEOMETRIC claim underneath the fix, that the ring and the chip's
+    /// artwork are one scaled SwiftUI layer and the rise costs the row no reflow.
+    ///
+    /// Oracle shape differs from test56's on purpose: every studio chip shares the same capsule
+    /// aspect ratio (no square/landscape/poster mix to group by), so instead of comparing a
+    /// lifted rect against a resting SIBLING in one snapshot, this compares the SAME chip index
+    /// across two snapshots — focused, then not (`Right` moves focus off it) — which needs no
+    /// aspect-ratio grouping at all.
+    func test59StudioChipRingWithZoomOn() throws {
+        let app = launchToHome(extraArguments: [
+            "-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES", "-debug.cardGeometryProbe", "YES",
+            "-home_upcoming_row_enabled", "NO", "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES", "-debug.detailScrollProbe", "YES",
+        ], forceFreshLaunch: true)
+        // test56's rule: restore the default settings on EVERY exit, the skips included — a
+        // skipped run otherwise leaves the app running with the forced ring-on/zoom-on overrides,
+        // and a later `launchToHome()` without arguments can attach to that process and inherit
+        // them (order-dependent results in the rest of the suite).
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        // DetailRowAnchorTests' route to a real DetailView: a movies catalog row (portrait cards
+        // → NavigationLink); `-home_upcoming_row_enabled NO` keeps the down×4 walk deterministic.
+        press(.down, times: 4)
+        pause(0.5)
+        remote.press(.select)
+        pause(8)
+        guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
+            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — the down×4 walk did not land on a movies row on this fixture; nothing to measure")
+        }
+        // FEAT-32: the page can still auto-enter the full-screen trailer cover a few seconds in —
+        // `-debug.trailerForceNoTrailer` stops the auto-play TIMER, not necessarily the cover's
+        // own entry check on every build. Back out once and settle before walking, same guard
+        // DetailRowAnchorTests uses.
+        pause(6)
+        if app.staticTexts["Press Back to exit the trailer"].exists {
+            remote.press(.menu)
+            pause(3)
+        }
+
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // `companyLogosRow` is the FIRST anchored row below the top block (`DetailRowAnchor.Row
+        // .logos`), so a handful of Down presses should reach it on any fixture that has one —
+        // but not every title carries TMDB logo art, so this is a bounded search with a skip, not
+        // a fixed press count. `anchor=logos` is the row-anchor probe's own confirmation; the
+        // `company_artwork` count is the fallback for a build where the anchor note hasn't
+        // updated yet on this exact frame.
+        var reachedLogosRow = false
+        for _ in 1...10 {
+            let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
+            if Self.probeToken(probeLabel, key: "anchor") == "logos" || namedFrames("company_artwork").count >= 2 {
+                reachedLogosRow = true
+                break
+            }
+            press(.down, times: 1, gap: 1.2)
+        }
+        guard reachedLogosRow else {
+            throw XCTSkip("the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) never came into focus within 10 Down presses — this fixture's title has no company logos to test BUG-111 against")
+        }
+        pause(1)
+        shot(app, "59a_studio_chip_first")
+
+        let firstArtwork = namedFrames("company_artwork")
+        let firstCards = namedFrames("company_card")
+        guard firstArtwork.count >= 2 else {
+            throw XCTSkip("only \(firstArtwork.count) company_artwork rect(s) on screen — need at least two chips (one focused, one resting) to compare")
+        }
+
+        press(.right, times: 1, gap: 0.6)
+        pause(1)
+        shot(app, "59b_studio_chip_second")
+        let secondArtwork = namedFrames("company_artwork")
+        let secondCards = namedFrames("company_card")
+        guard secondArtwork.count == firstArtwork.count else {
+            throw XCTSkip("company_artwork count changed after Right (\(firstArtwork.count) → \(secondArtwork.count)) — the row's chip count is not stable enough to pair rects by index")
+        }
+
+        // The chip that was focused in the FIRST snapshot and lost focus in the SECOND is the one
+        // whose height shrank back to rest — i.e. the index whose height differs the most.
+        var liftedIndex: Int?
+        for i in firstArtwork.indices where abs(firstArtwork[i].height - secondArtwork[i].height) >= 1 {
+            liftedIndex = i
+            break
+        }
+        guard let index = liftedIndex else {
+            throw XCTSkip("no company_artwork rect changed height by ≥1pt between the two snapshots — the geometry probe saw no lift on this run, or Right did not move focus off the first chip (e.g. only one chip on this fixture carries a TMDB id and is focusable)")
+        }
+        let focused = firstArtwork[index]
+        let rest = secondArtwork[index]
+
+        // Hand-mirrored from `CompanyChipMetrics.focusRise` (`PlainLabelRingTests` asserts the
+        // real value against this same figure) — KEEP IN SYNC: if `PlainLabelRing.smallLabelRise`
+        // or `CompanyChipMetrics.capsuleHeight` ever change, update this constant to match.
+        let chipRisePt: CGFloat = 3.12
+
+        let rise = rest.minY - focused.minY
+        XCTAssertEqual(rise, chipRisePt, accuracy: 1,
+                       "focused studio chip rose \(rise)pt, expected ~\(chipRisePt)pt; focused=\(focused) rest=\(rest)")
+        XCTAssertEqual(focused.maxY - rest.maxY, rise, accuracy: 1,
+                       "growth must be symmetric — the chip lifts about its own centre, same as every other PlainLabelRing card")
+        XCTAssertEqual((focused.width - rest.width) / 2,
+                       rise * (rest.width / rest.height), accuracy: 1.5,
+                       "width growth must be the same uniform scale as the height growth")
+
+        // The tile's LAYOUT box must not move — `.scaleEffect` is render-only, so this is the
+        // negative control proving the rise costs the row no reflow (test56's `folder_card`
+        // check, mirrored for `company_card`).
+        if firstCards.count == secondCards.count, index < firstCards.count {
+            XCTAssertEqual(firstCards[index].minY, secondCards[index].minY, accuracy: 1,
+                           "the chip's LAYOUT box moved — the lift is not render-only")
+        }
+
+        // Optional leg B: still mode (No Zoom on, accent ring off) must draw no lift at all —
+        // BUG-111's second half of the report ("No Zoom does not reach it either").
+        let stillApp = launchToHome(extraArguments: [
+            "-no_zoom_on_focus", "YES", "-accent_focus_ring", "NO", "-debug.cardGeometryProbe", "YES",
+            "-home_upcoming_row_enabled", "NO", "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES", "-debug.detailScrollProbe", "YES",
+        ], forceFreshLaunch: true)
+        press(.down, times: 4)
+        pause(0.5)
+        remote.press(.select)
+        pause(8)
+        guard stillApp.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else { return }
+        pause(6)
+        if stillApp.staticTexts["Press Back to exit the trailer"].exists {
+            remote.press(.menu)
+            pause(3)
+        }
+        func stillNamedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? stillApp.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+        var reachedStillLogosRow = false
+        for _ in 1...10 {
+            let probeLabel = stillApp.staticTexts["debug_ux6"].exists ? stillApp.staticTexts["debug_ux6"].label : ""
+            if Self.probeToken(probeLabel, key: "anchor") == "logos" || stillNamedFrames("company_artwork").count >= 2 {
+                reachedStillLogosRow = true
+                break
+            }
+            press(.down, times: 1, gap: 1.2)
+        }
+        guard reachedStillLogosRow else { return }
+        let stillBefore = stillNamedFrames("company_artwork")
+        press(.right, times: 1, gap: 0.6)
+        pause(1)
+        let stillAfter = stillNamedFrames("company_artwork")
+        if stillBefore.count == stillAfter.count {
+            let grew = zip(stillBefore, stillAfter).contains { abs($0.height - $1.height) >= 1 }
+            XCTAssertFalse(grew, "a company_artwork rect grew in still mode (No Zoom on, accent ring off) — BUG-111's second half: the chip must draw no lift at all here")
+        }
+        shot(stillApp, "59c_studio_chip_no_zoom_indicator")
+    }
     // MARK: - FEAT-32: description → full-screen trailer bridge
 
     /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same

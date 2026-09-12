@@ -378,6 +378,35 @@ enum PlainLabelRing: Equatable {
         (accentFocusRing && !noZoomOnFocus) ? .manualScale : .still(ringed: accentFocusRing)
     }
 
+    /// BUG-111 (rc12, u/mrStevenx3: the detail page's STUDIO chip "zooms in on the poster instead
+    /// of the description" — `CompanyChip` was the only card-like site left on a bare
+    /// `.buttonStyle(.borderless)`, so ring mode never reached it and No Zoom didn't either). The
+    /// chip joins this same architecture, but it is far shorter than `FolderTile`'s tile or
+    /// `CastCard`'s 140pt avatar — a 52pt capsule — and `cardLiftScale` derives its scale from the
+    /// flat `cardFocusLiftRise` (20pt) every OTHER card class shares. Applying that unmodified to
+    /// a 52pt capsule would grow it to `1 + 2×20/52 ≈ 1.77`, more than doubling its footprint in a
+    /// 16pt row gap. So a small label gets its OWN, height-PROPORTIONAL rise instead of the flat
+    /// constant: `height × 0.12 / 2`. That proportionality is exactly what makes the DERIVED scale
+    /// (fed back through `cardLiftScale`) a CONSTANT `1.12` for every height below the point where
+    /// this formula would itself exceed 20pt — the "ceiling" `smallLabelScaleCeiling` names.
+    /// `smallLabelRise` is the value actually threaded through `CardArtworkFocusLift.rise`;
+    /// `smallLabelScaleCeiling` documents what that rise resolves to as a scale and is what the
+    /// unit tests assert against directly. This is a DIFFERENT number from BUG-64's abandoned
+    /// "hold the scale at 1.12 for every card" attempt above (`cardFocusLiftRise`'s doc comment) —
+    /// that one was wrong precisely because it clamped the CARD constant globally; this one is
+    /// scoped to labels short enough that the proportional rise never reaches the card rise at all.
+    static let smallLabelScaleCeiling: CGFloat = 1.12
+
+    /// See `smallLabelScaleCeiling`. Saturates at `cardFocusLiftRise` (the flat 20pt rise every
+    /// other card class uses) once a label is tall enough that the proportional formula would
+    /// exceed it — at that point the small-label treatment IS the ordinary card treatment, so
+    /// there is no discontinuity, only the ceiling the sibling constant names above. Returns 0 for
+    /// a degenerate (zero or negative) height, matching `cardLiftScale`'s own guard.
+    static func smallLabelRise(height: CGFloat) -> CGFloat {
+        guard height > 0 else { return 0 }
+        return min(cardFocusLiftRise, height * (smallLabelScaleCeiling - 1) / 2)
+    }
+
     var color: Color {
         switch self {
         case .accent: return Theme.Palette.focusRingColor
@@ -410,13 +439,19 @@ enum PlainLabelRing: Equatable {
 /// Sim-derived; a device pass should confirm it before it is treated as settled.
 private let cardFocusLiftRise: CGFloat = Theme.Size.heroPinnedRowFocusLiftAllowance
 
-/// The uniform scale that raises an `artworkHeight`-tall artwork's top edge by exactly
-/// `cardFocusLiftRise` when applied about its centre (the bottom edge drops by the same amount,
-/// which is what `CardCaptionFocusDrop` pays out to the caption). Large 403.3pt → 1.0992,
-/// Medium 330 → 1.1212, Small 274.5 → 1.1457.
-private func cardLiftScale(artworkHeight: CGFloat) -> CGFloat {
+/// The uniform scale that raises an `artworkHeight`-tall artwork's top edge by exactly `rise`
+/// when applied about its centre (the bottom edge drops by the same amount, which is what
+/// `CardCaptionFocusDrop` pays out to the caption). Large 403.3pt → 1.0992, Medium 330 → 1.1212,
+/// Small 274.5 → 1.1457, all at the default `rise`.
+///
+/// BUG-111: `rise` used to be hardcoded to `cardFocusLiftRise` — every card class rises the same
+/// flat 20pt. It is now a parameter, defaulted to that same constant so every existing call site
+/// (poster/landscape/saga cards, `FolderTile`, `CastCard`) is unaffected, so `CompanyChip` can
+/// pass `PlainLabelRing.smallLabelRise(height:)` instead — see that function for why a 52pt
+/// capsule cannot share the flat rise every taller card class uses.
+private func cardLiftScale(artworkHeight: CGFloat, rise: CGFloat = cardFocusLiftRise) -> CGFloat {
     guard artworkHeight > 0 else { return 1 }
-    return 1 + 2 * cardFocusLiftRise / artworkHeight
+    return 1 + 2 * rise / artworkHeight
 }
 
 /// BUG-36: the ARTWORK's rounded rect, expressed in the WHOLE CARD's coordinate space.
@@ -705,6 +740,16 @@ struct CardArtworkFocusLift: ViewModifier {
     /// `.frame(height:)` uses.
     let artworkHeight: CGFloat
     let cornerRadius: CGFloat
+    /// BUG-111: the rise `.manualScale` derives its scale from, defaulted to nil so the five
+    /// existing memberwise call sites (poster/landscape/saga cards, `FolderTile`, `CastCard`, all
+    /// of which end their initializer at `cornerRadius:`) stay byte-identical and keep getting the
+    /// flat `cardFocusLiftRise` every one of them was built around. Appended LAST, as a defaulted
+    /// `var` rather than inserted before `cornerRadius:`, for exactly that reason — a required or
+    /// reordered parameter would force every one of those five call sites to change for a rise
+    /// only `CompanyChip` needs. Only `CompanyChip` passes a value
+    /// (`PlainLabelRing.smallLabelRise(height:)`) — see that function for why a 52pt capsule
+    /// cannot share the 20pt flat rise every taller card class uses.
+    var rise: CGFloat? = nil
 
     func body(content: Content) -> some View {
         switch mode {
@@ -730,7 +775,10 @@ struct CardArtworkFocusLift: ViewModifier {
                             .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
                     }
                 }
-                .scaleEffect(isFocused ? cardLiftScale(artworkHeight: artworkHeight) : 1)
+                // BUG-111: `rise ?? cardFocusLiftRise` — nil (every pre-existing call site) keeps
+                // the flat 20pt every other card class always rose by; `CompanyChip` is the first
+                // caller to supply its own.
+                .scaleEffect(isFocused ? cardLiftScale(artworkHeight: artworkHeight, rise: rise ?? cardFocusLiftRise) : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
         case .still:
             content

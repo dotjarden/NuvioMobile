@@ -390,6 +390,12 @@ struct DetailView: View {
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
     @FocusState private var focusedCastIndex: Int?
+    /// BUG-111: which company/studio chip holds focus — mirrors `focusedCastIndex` exactly.
+    /// `CompanyChip` has no border treatment of its own either, so it reads this same row-owned
+    /// `FocusState` for its `stillFocused`/ring/lift truth instead of installing a second
+    /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
+    /// `cardFocusButtonStyle`'s doc comment).
+    @FocusState private var focusedCompanyIndex: Int?
     /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
     /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
@@ -401,6 +407,12 @@ struct DetailView: View {
         let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
                                            noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
         return raises && focusedCastIndex == index ? 1 : 0
+    }
+    /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row.
+    private func liftedCompanyZIndex(_ index: Int) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedCompanyIndex == index ? 1 : 0
     }
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
     /// Codex P2 review finding (BUG-99 follow-up, round 2): `.comments` is now a TRACKED row
@@ -1732,8 +1744,13 @@ struct DetailView: View {
     private var companyLogosRow: some View {
         let companies = companyLogos
         if !companies.isEmpty {
+            // BUG-111: row spacing stays `Spacing.md` (16pt), unchanged — the widest chip is 180pt
+            // of content plus `Spacing.md` (16pt) padding on each side (`CompanyChip`'s own
+            // `.frame(maxWidth: 180)` + `.padding(.horizontal, Spacing.md)`) = 212pt, and its
+            // ring-mode growth per side is `212 × 0.12 / 2 = 12.7pt` — inside the 16pt gap with
+            // room to spare, so a lifted widest chip never touches its row neighbour.
             HStack(spacing: Theme.Spacing.md) {
-                ForEach(Array(companies.enumerated()), id: \.offset) { _, entry in
+                ForEach(Array(companies.enumerated()), id: \.offset) { index, entry in
                     if let tmdbId = entry.company.tmdbId?.value {
                         NavigationLink(value: EntityRoute(
                             id: tmdbId,
@@ -1741,15 +1758,23 @@ struct DetailView: View {
                             isNetwork: entry.isNetwork,
                             sourceType: model.meta?.type ?? preview.type
                         )) {
-                            companyChip(entry.company)
+                            // stillFocused: CompanyChip draws its own ring/lift off the row's
+                            // FocusState, same rule as CastCard above (Codex 2026-08-29
+                            // rounds 3-5) — focus truth from the row, not a second binding.
+                            companyChip(entry.company, stillFocused: focusedCompanyIndex == index)
                         }
-                        // Deliberately NOT cardFocusButtonStyle() (Codex 2026-08-29 P1): unlike
-                        // CastCard, the chip has no isFocused-dependent treatment of its own, so
-                        // disabling the system effect in no-zoom mode would leave remote focus on
-                        // this link with NO visible indication at all. The system lift on a small
-                        // chip is a wiggle, not a zoom; a still-mode chip treatment can join a
-                        // future pass if a no-zoom user reports it.
-                        .buttonStyle(.borderless)
+                        // BUG-111: this used to be deliberately NOT cardFocusButtonStyle() (Codex
+                        // 2026-08-29 P1) — the chip had no isFocused-dependent treatment of its
+                        // own, so disabling the system effect in no-zoom mode would have left
+                        // remote focus on this link with NO visible indication at all. The chip
+                        // now owns a treatment in every non-default mode (`CompanyChip`'s ring +
+                        // `.manualScale` lift), so it joins the same sweep `CastCard`/`FolderTile`
+                        // already made — No Zoom now reaches this row too, and ring mode's manual
+                        // lift replaces the native `.borderless` lift here exactly as it does for
+                        // those two (the default `lift: .card`; see `CardButtonLift`).
+                        .cardFocusButtonStyle()
+                        .focused($focusedCompanyIndex, equals: index)
+                        .zIndex(liftedCompanyZIndex(index))
                     } else {
                         companyChip(entry.company)
                     }
@@ -1759,8 +1784,8 @@ struct DetailView: View {
         }
     }
 
-    private func companyChip(_ company: MetaCompany) -> some View {
-        CompanyChip(company: company)
+    private func companyChip(_ company: MetaCompany, stillFocused: Bool = false) -> some View {
+        CompanyChip(company: company, stillFocused: stillFocused)
     }
 
     private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] {
@@ -2146,12 +2171,60 @@ private struct CastCard: View {
     }
 }
 
+/// BUG-111: geometry constants `CompanyChip` derives its ring/lift geometry from, pulled out so
+/// `PlainLabelRingTests` can assert the derived numbers directly against a named source of truth
+/// instead of hand-deriving them from literals buried inside the view. `internal` (not `private`)
+/// for exactly that reason — `@testable import` needs to reach it — but the values remain one
+/// view's own implementation detail; nothing else in the app should reference these.
+enum CompanyChipMetrics {
+    /// The logo/name content's fixed height — `CompanyChip`'s pre-existing `.frame(height:)`.
+    static let logoHeight: CGFloat = 36
+    /// The capsule's true rendered height: the logo height plus the vertical padding on both
+    /// edges (`Theme.Spacing.xs`, 8pt) `CompanyChip` already applies outside that frame. This, not
+    /// `logoHeight`, is the artwork height the ring/lift geometry must key off — the ring traces
+    /// the CAPSULE `CompanyChip.body` backgrounds itself with, not the logo image inside it.
+    /// 36 + 2×8 = 52.
+    static let capsuleHeight: CGFloat = logoHeight + 2 * Theme.Spacing.xs
+    /// The chip's platter is a `Capsule()` — a rounded rect whose corner radius is exactly half
+    /// its own height. 52 / 2 = 26.
+    static let platterCornerRadius: CGFloat = capsuleHeight / 2
+    /// BUG-111: this chip's own small-label rise — see `PlainLabelRing.smallLabelRise`, whose
+    /// existence this chip is the reason for. ≈3.12pt at this capsule's 52pt height, which is
+    /// exactly the height at which the derived scale (`cardLiftScale`) equals
+    /// `PlainLabelRing.smallLabelScaleCeiling` (1.12).
+    static let focusRise: CGFloat = PlainLabelRing.smallLabelRise(height: capsuleHeight)
+}
+
 /// Studio/network logo chip. Keeps the intentional white capsule (logo legibility); focus reads as
 /// scale + the brand focus ring, platter-free like every other tile.
+///
+/// BUG-111 (rc12, u/mrStevenx3: focusing a studio chip "zooms in on the poster instead of the
+/// description"): until this fix the chip was the ONLY card-like site left on a bare
+/// `.buttonStyle(.borderless)` (see the 2026-08-29 comment this replaced at the row's call site) —
+/// it drew no ring and no lift of its own, so `.borderless`'s system treatment always won, and
+/// turning No Zoom on reached every other card on the page except this one. It now joins the same
+/// `PlainLabelRing` architecture `FolderTile`/`CastCard` got in BUG-102/BUG-108, scaled down to
+/// its own much shorter capsule via `CompanyChipMetrics`/`PlainLabelRing.smallLabelRise`.
 private struct CompanyChip: View {
     let company: MetaCompany
+    /// Caller-supplied focus truth — same rule as `CastCard.stillFocused` (Codex 2026-08-29
+    /// rounds 3-5): the row owns one `FocusState` (`focusedCompanyIndex`), and this label draws
+    /// its ring/lift off that instead of installing a second `.focused` binding that would
+    /// collide with it.
+    var stillFocused: Bool = false
 
-    @Environment(\.isFocused) private var isFocused
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-111: same gap BUG-102 closed for `FolderTile`/`CastCard` — resolved through
+    /// `PlainLabelRing`, shared precedence.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// BUG-111: same architecture as `FolderTile`/`CastCard` — ring mode takes the native
+    /// `.borderless` lift away from this label (`cardFocusButtonStyle`'s default `lift: .card`),
+    /// so the chip must draw its own in that mode and stay a no-op in the other two.
+    private var artworkLift: CardFocusMode {
+        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         // BUG-41: CachedAsyncImage over the raw AsyncImage (company logos re-decoded on every
@@ -2164,11 +2237,52 @@ private struct CompanyChip: View {
                 CompanyChip.nameFallback(company.name)
             }
         }
-        .frame(height: 36)
+        .frame(height: CompanyChipMetrics.logoHeight)
         .frame(minWidth: 60, maxWidth: 180)
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
         .background(Color.white.opacity(0.92), in: Capsule())
+        // BUG-111: deliberately NO band inset here, unlike `FolderTile`/`CastCard`'s `ringInset`
+        // shrink. This chip's outer band is already white PADDING, not artwork: the vertical
+        // margin is `Theme.Spacing.xs` (8pt) and the horizontal is `Theme.Spacing.md` (16pt),
+        // both ≥ `ringWidth` (4pt), so the ring lands inside the capsule's own filler and never
+        // overpaints the logo — the BUG-64 overpaint `ringInset` exists to avoid never had a
+        // chance to happen here in the first place. Reserving a second band on top of that would
+        // ALSO break capsule/ring concentricity: unlike the avatar's perfect circle, this capsule
+        // is not square, so a per-axis shrink (the mechanism `FolderTile`/`CastCard` use) would
+        // turn the shrunk capsule into a different aspect ratio than the platter it sits inside.
+        .overlay {
+            if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                 noZoomOnFocus: noZoomOnFocus,
+                                                 focused: stillFocused) {
+                Capsule().strokeBorder(ring.color, lineWidth: ringWidth)
+            }
+        }
+        .modifier(DebugAXIdentifier("company_artwork"))
+        .modifier(CardArtworkFocusLift(
+            mode: artworkLift,
+            isFocused: stillFocused,
+            // `CompanyChipMetrics.capsuleHeight`/`.platterCornerRadius`: the CAPSULE's true
+            // rendered box, not the 36pt logo frame inside it — the same "measure the box the
+            // ring traces" convention `FolderTile`/`CastCard` follow.
+            artworkHeight: CompanyChipMetrics.capsuleHeight,
+            cornerRadius: CompanyChipMetrics.platterCornerRadius,
+            // BUG-111: the whole reason `CardArtworkFocusLift.rise` and
+            // `PlainLabelRing.smallLabelRise` exist — the flat 20pt every other card class rises
+            // by would more than double this 52pt capsule (`1 + 2×20/52 ≈ 1.77`) inside a 16pt
+            // row gap; see `PlainLabelRing.smallLabelScaleCeiling`'s doc comment for the math.
+            rise: CompanyChipMetrics.focusRise
+        ))
+        .modifier(DebugAXIdentifier("company_card"))
+        // No `CardCaptionFocusDrop` — the chip has no caption slot below it to drop. No
+        // `.posterButtonShape()` — that sets a rounded-RECT border shape only a system button
+        // style consumes, and ring mode installs `RingCardButtonStyle`, a custom style that
+        // receives no system treatment at all (same reasoning `CastCard`'s circular avatar rests
+        // on, just applied to this capsule instead). No `.nuvioCardDepth` — the shared Kotlin
+        // `NuvioCardDepthSurface` enum (mirrored here as `CardDepthSurface`) has no `.companies`
+        // case, so there is nothing for this chip to opt into; the depth-rail contract is
+        // untouched by this fix.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: stillFocused)
     }
 
     @ViewBuilder
