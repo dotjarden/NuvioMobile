@@ -105,4 +105,39 @@ final class TitleLogoStoreTests: XCTestCase {
         let series = makeItem(id: "42", type: "series")
         XCTAssertNotEqual(TitleLogoStore.key(for: movie), TitleLogoStore.key(for: series))
     }
+
+    // MARK: - completionOutcome (FEAT-42 crash fix, 2026-09-12)
+    //
+    // The pure decision behind `lookupOne`'s post-guard branching, once `shouldCommit`/scope have
+    // already passed. A failed lookup (an `NSError` surfaced through `fetchPreviewEnrichmentChecked`'s
+    // `@Throws` bridge instead of aborting the process) must never be written as `.resolved(nil)` —
+    // only a completed lookup that found a real logo, or one that completed and found nothing, is
+    // recorded that way.
+
+    func testCompletionOutcomeResolvedForANonBlankLogo() {
+        let enrichment = TmdbPreviewEnrichment(
+            localizedTitle: nil, description: nil, genres: [],
+            logo: "https://example.com/logo.png", backdrop: nil
+        )
+        XCTAssertEqual(
+            TitleLogoStore.completionOutcome(enrichment: enrichment, error: nil),
+            .resolved("https://example.com/logo.png")
+        )
+    }
+
+    func testCompletionOutcomeResolvedNoneForAMissingLogo() {
+        let enrichment = TmdbPreviewEnrichment(
+            localizedTitle: nil, description: nil, genres: [],
+            logo: nil, backdrop: nil
+        )
+        XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: enrichment, error: nil), .resolvedNone)
+    }
+
+    func testCompletionOutcomeFailedOnAnyError() {
+        // A network error, timeout, HTTP 429, or JSON decode failure inside the lookup — any
+        // non-nil error, regardless of what enrichment (if anything) also came back — must never
+        // latch a permanent "no logo" answer.
+        let error = NSError(domain: "TitleLogoStoreTests", code: 1)
+        XCTAssertEqual(TitleLogoStore.completionOutcome(enrichment: nil, error: error), .failed)
+    }
 }

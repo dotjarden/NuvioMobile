@@ -150,6 +150,28 @@ final class TitleLogoStore: ObservableObject {
         logo?.isEmpty ?? true
     }
 
+    /// FEAT-42 crash fix (2026-09-12): pure decision for what `lookupOne`'s completion should do
+    /// with a `fetchPreviewEnrichmentChecked` result, once the `shouldCommit`/scope guards have
+    /// already passed. `.failed` means the lookup itself failed (a Ktor network error, a timeout,
+    /// HTTP 429, a JSON decode failure, ...) — the caller must NOT latch `.resolved(nil)` for
+    /// that, since that would permanently remember "no logo" for what was really a transient
+    /// failure; `.resolvedNone`/`.resolved(url)` are the two real "looked, and here's what we
+    /// found" answers, matching today's `.resolved(nil)`/`.resolved(url)` writes. `nonisolated
+    /// static`, no store/dictionary access, so `TitleLogoStoreTests` can cover every branch
+    /// directly.
+    enum LookupOutcome: Equatable {
+        case resolved(String)
+        case resolvedNone
+        case failed
+    }
+
+    nonisolated static func completionOutcome(enrichment: TmdbPreviewEnrichment?, error: Error?) -> LookupOutcome {
+        guard error == nil else { return .failed }
+        let logo = enrichment?.logo
+        guard let logo, !logo.isEmpty else { return .resolvedNone }
+        return .resolved(logo)
+    }
+
     nonisolated static func key(for item: MetaPreview) -> String { "\(item.type)|\(item.id)" }
 
     /// The settings that change what a logo lookup returns or whether it even runs — folded into
@@ -215,9 +237,19 @@ final class TitleLogoStore: ObservableObject {
 
         // suspend fun → Swift completion; result may arrive off the main thread (same convention
         // as `HomeView.enrichIfNeeded`), so hop back before touching `@Published` state.
-        TmdbMetadataService.shared.fetchPreviewEnrichment(
+        //
+        // FEAT-42 crash fix (2026-09-12): calls `fetchPreviewEnrichmentChecked`, NOT
+        // `fetchPreviewEnrichment`, and reads the completion's `error`. A suspend function
+        // exported to Swift without `@Throws` treats ANY non-cancellation exception thrown
+        // inside it as unhandled and ABORTS THE PROCESS — that is exactly what happened here
+        // (SIGABRT via `Kotlin_ObjCExport_ExceptionAsNSError` → `terminateWithUnhandledException`
+        // under `-debug.heroLogoStoreOnly`, one lookup among a store-driven batch throwing a
+        // network/timeout/decode error). `fetchPreviewEnrichmentChecked` is `@Throws(Throwable::
+        // class)`, so Kotlin/Native hands that same failure to this completion as an `NSError`
+        // instead. See `completionOutcome` for what each outcome means.
+        TmdbMetadataService.shared.fetchPreviewEnrichmentChecked(
             type: item.type, id: item.id, settings: settings
-        ) { [weak self] enrichment, _ in
+        ) { [weak self] enrichment, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 // Not the live attempt for this key anymore — either a newer `lookupIfNeeded` call
@@ -240,23 +272,36 @@ final class TitleLogoStore: ObservableObject {
                     self.resumeWaiters(for: key, with: nil)
                     return
                 }
-                let logo: String? = enrichment?.logo
-                let resolved = (logo?.isEmpty ?? true) ? nil : logo
-                // Codex r3 (Finding P2): no `evictIfAtCapacity()` call here — this write replaces
-                // an existing `.pending` key with `.resolved`, so it can never itself grow
-                // `results` past the cap; there was previously a "defensive" eviction call on this
-                // path, but `evictIfAtCapacity()` used to drop the whole cache wholesale, which
-                // could wipe out the very entry this line just wrote (plus every other in-flight
-                // `.pending` lookup) with no mounted card ever re-requesting it — see that
-                // function's own doc for why eviction now only touches `.resolved` entries.
-                self.results[key] = .resolved(resolved)
-                self.resumeWaiters(for: key, with: resolved)
-                // FEAT-42: warm `ArtworkStore` the moment a real URL resolves, so the NEXT time
-                // this item is presented (a saga card scrolled back into view, a Home row item
-                // refocused) the bitmap is already cached — `HeroArtResolver.present` never waits
-                // out a fetch it could have started here.
-                if let resolved, let url = URL(string: resolved) {
-                    ArtworkStore.prefetch([url])
+                switch Self.completionOutcome(enrichment: enrichment, error: error) {
+                case .failed:
+                    // A failed or cancelled lookup — do NOT latch `.resolved(nil)`, that would
+                    // permanently remember "no logo" for what was really a transient failure.
+                    // Drop the `.pending` entry instead so the next `lookupIfNeeded` for this key
+                    // retries from scratch, same as the off-scope branch above.
+                    self.results.removeValue(forKey: key)
+                    self.resumeWaiters(for: key, with: nil)
+                    NSLog("[TitleLogoStore] lookup failed key=%@ error=%@", key, String(describing: error))
+                case .resolved(let url):
+                    // Codex r3 (Finding P2): no `evictIfAtCapacity()` call here — this write
+                    // replaces an existing `.pending` key with `.resolved`, so it can never itself
+                    // grow `results` past the cap; there was previously a "defensive" eviction
+                    // call on this path, but `evictIfAtCapacity()` used to drop the whole cache
+                    // wholesale, which could wipe out the very entry this line just wrote (plus
+                    // every other in-flight `.pending` lookup) with no mounted card ever
+                    // re-requesting it — see that function's own doc for why eviction now only
+                    // touches `.resolved` entries.
+                    self.results[key] = .resolved(url)
+                    self.resumeWaiters(for: key, with: url)
+                    // FEAT-42: warm `ArtworkStore` the moment a real URL resolves, so the NEXT
+                    // time this item is presented (a saga card scrolled back into view, a Home
+                    // row item refocused) the bitmap is already cached — `HeroArtResolver.present`
+                    // never waits out a fetch it could have started here.
+                    if let parsedURL = URL(string: url) {
+                        ArtworkStore.prefetch([parsedURL])
+                    }
+                case .resolvedNone:
+                    self.results[key] = .resolved(nil)
+                    self.resumeWaiters(for: key, with: nil)
                 }
             }
         }

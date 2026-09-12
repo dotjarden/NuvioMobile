@@ -949,6 +949,18 @@ object TmdbMetadataService {
         }
     }
 
+    /**
+     * Swift-facing twin of [fetchPreviewEnrichment] for `TitleLogoStore` (FEAT-42 / SagaCard).
+     * `@Throws(Throwable::class)` makes Kotlin/Native hand ANY failure inside the lookup to the
+     * caller's completion as an `NSError` instead of aborting the process: a suspend function
+     * exported without `@Throws` treats every non-cancellation exception as unhandled and
+     * terminates — the 2026-09-12 SIGABRT under `-debug.heroLogoStoreOnly` was exactly that.
+     * Kotlin callers keep using [fetchPreviewEnrichment] unchanged.
+     */
+    @Throws(Throwable::class)
+    suspend fun fetchPreviewEnrichmentChecked(type: String, id: String, settings: TmdbSettings): TmdbPreviewEnrichment? =
+        fetchPreviewEnrichment(type, id, settings)
+
     private suspend fun fetchEnrichment(
         tmdbId: String,
         mediaType: String,

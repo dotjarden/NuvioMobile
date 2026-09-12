@@ -2300,10 +2300,18 @@ final class HomeHeroFocusModel: ObservableObject {
               settings.useArtwork || settings.useBasicInfo else { return }
         // suspend fun → Swift completion; result may arrive off the main thread, so hop back
         // (same convention as PersonDetailViewModel.start()).
-        TmdbMetadataService.shared.fetchPreviewEnrichment(
+        // FEAT-42 crash fix (2026-09-12): calls `fetchPreviewEnrichmentChecked`, not the
+        // unchecked `fetchPreviewEnrichment` — a suspend function exported without `@Throws`
+        // treats any non-cancellation exception as unhandled and aborts the process, which is
+        // what `TitleLogoStore.lookupOne` hit under `-debug.heroLogoStoreOnly` (see its doc).
+        TmdbMetadataService.shared.fetchPreviewEnrichmentChecked(
             type: item.type, id: item.id, settings: settings
-        ) { [weak self] enrichment, _ in
+        ) { [weak self] enrichment, error in
             DispatchQueue.main.async {
+                guard error == nil else {
+                    NSLog("[HomeHeroFocusModel] enrichIfNeeded failed item=%@ error=%@", item.id, String(describing: error))
+                    return
+                }
                 // Merge whenever THIS title still (or again) owns the hero — identity, not
                 // generation: a same-item refocus inside the grace window bumps the generation
                 // without recommitting, and a generation gate here silently threw away the
