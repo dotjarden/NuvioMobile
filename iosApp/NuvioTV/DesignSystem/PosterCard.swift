@@ -413,6 +413,25 @@ enum PlainLabelRing: Equatable {
         case .still: return stillHighlight
         }
     }
+
+    /// BUG-111 review finding 1 (P2, rc12): `stillHighlight` is an 85%-opacity WHITE ring — the
+    /// right neutral cue on every OTHER plain-label card, because those sit on dark artwork
+    /// (`FolderTile`'s backdrop, `CastCard`'s photo). `CompanyChip`'s "artwork" is itself a
+    /// `Color.white.opacity(0.92)` capsule, so stroking `stillHighlight` there goes from 92%
+    /// white to 98.8% white — no lift in that mode, nothing else changes, and the chip's only
+    /// still-mode focus cue is functionally invisible. Contrast, not stroke width, is the
+    /// still-mode cue everywhere this pattern is used, so a WHITE-surfaced label needs the
+    /// OPPOSITE neutral instead.
+    ///
+    /// A parameter on a static color lookup rather than a third `PlainLabelRing` case (which
+    /// would ripple through `resolve`/`lift`/`reservesBand`'s precedence tables for a value
+    /// that's purely cosmetic) or an `onLightSurface` field on `resolve` (which would force
+    /// `FolderTile`/`CastCard`'s call sites to pass a value they don't need). Defaults to
+    /// `false` so every existing call site is untouched; `CompanyChip` is the only caller that
+    /// passes `true`. The accent ring (`ring.color` in ring mode) is unaffected either way.
+    static func stillColor(onLightSurface: Bool = false) -> Color {
+        onLightSurface ? Color.black.opacity(0.75) : stillHighlight
+    }
 }
 
 /// How far a focused card's artwork TOP edge rises, in points, in either zoom-on mode.

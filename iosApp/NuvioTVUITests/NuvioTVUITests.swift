@@ -5965,21 +5965,56 @@ final class NuvioTVUITests: XCTestCase {
         // `companyLogosRow` is the FIRST anchored row below the top block (`DetailRowAnchor.Row
         // .logos`), so a handful of Down presses should reach it on any fixture that has one —
         // but not every title carries TMDB logo art, so this is a bounded search with a skip, not
-        // a fixed press count. `anchor=logos` is the row-anchor probe's own confirmation; the
-        // `company_artwork` count is the fallback for a build where the anchor note hasn't
-        // updated yet on this exact frame.
+        // a fixed press count.
+        //
+        // The exit condition is `anchor=logos` ONLY. A prior version also accepted
+        // `namedFrames("company_artwork").count >= 2` as an early-out — that turned out to be
+        // true BEFORE the very first Down press: `DebugAXIdentifier` probes sit in the AX tree
+        // whether or not their row is on screen or focused, so that condition matched the detail
+        // page's TOP BLOCK immediately and the walk never moved — the first fixture run's 59a/59b
+        // photographed "Play S1E1" then "Watch Trailer" focused, never a studio chip.
+        // `anchor=logos` is the only signal that the FOCUSED row is actually the logos row:
+        // `anchorPass` sets `dimModel.anchorNote` to `"\(String(describing: row)) top=… y=… note"`
+        // (`DetailView.swift`), and `DetailRowID.logos`'s `String(describing:)` is the literal
+        // "logos" (`DetailRowAnchor.swift`'s `enum DetailRowID { case logos, … }`).
         var reachedLogosRow = false
-        for _ in 1...10 {
+        var lastAnchor = ""
+        for _ in 1...12 {
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
-            if Self.probeToken(probeLabel, key: "anchor") == "logos" || namedFrames("company_artwork").count >= 2 {
+            lastAnchor = Self.probeToken(probeLabel, key: "anchor") ?? ""
+            if lastAnchor == "logos" {
                 reachedLogosRow = true
                 break
             }
             press(.down, times: 1, gap: 1.2)
         }
         guard reachedLogosRow else {
-            throw XCTSkip("the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) never came into focus within 10 Down presses — this fixture's title has no company logos to test BUG-111 against")
+            throw XCTSkip("the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) never came into focus within 12 Down presses — last anchor read \"\(lastAnchor)\"; this fixture's title likely has no company logos to test BUG-111 against")
         }
+
+        // BUG-111 review finding (walk defect): `anchor=logos` only proves the ROW is anchored,
+        // not that D-pad focus has already landed on one of ITS chips rather than still settling.
+        // The just-landed chip should already read taller than its neighbours (the resting-height
+        // baseline every assertion below depends on); if the probe instead catches every chip at
+        // the same height, spend one Right press to force focus onto a specific chip and require
+        // exactly one of them to grow — anything else means focus never reached a chip at all.
+        let confirmHeights = namedFrames("company_artwork").map(\.height)
+        guard confirmHeights.count >= 2 else {
+            throw XCTSkip("only \(confirmHeights.count) company_artwork rect(s) on the logos row — need at least two chips (one focused, one resting) to compare")
+        }
+        if let maxHeight = confirmHeights.max(), let minHeight = confirmHeights.min(), maxHeight - minHeight < 1 {
+            press(.right, times: 1, gap: 0.6)
+            pause(0.5)
+            let afterConfirmHeights = namedFrames("company_artwork").map(\.height)
+            let grown = confirmHeights.count == afterConfirmHeights.count
+                ? zip(confirmHeights, afterConfirmHeights).filter { $1 - $0 >= 1 }.count
+                : -1
+            guard grown == 1 else {
+                XCTFail("could not confirm D-pad focus landed on a chip: every company_artwork rect read the same resting height on the logos row, and a confirmation Right press grew \(grown) of them (expected exactly 1) — before=\(confirmHeights) after=\(afterConfirmHeights)")
+                return
+            }
+        }
+
         pause(1)
         shot(app, "59a_studio_chip_first")
 
@@ -5998,15 +6033,31 @@ final class NuvioTVUITests: XCTestCase {
             throw XCTSkip("company_artwork count changed after Right (\(firstArtwork.count) → \(secondArtwork.count)) — the row's chip count is not stable enough to pair rects by index")
         }
 
-        // The chip that was focused in the FIRST snapshot and lost focus in the SECOND is the one
-        // whose height shrank back to rest — i.e. the index whose height differs the most.
-        var liftedIndex: Int?
-        for i in firstArtwork.indices where abs(firstArtwork[i].height - secondArtwork[i].height) >= 1 {
-            liftedIndex = i
-            break
+        // BUG-111 review finding 2: a stable `company_artwork` COUNT (checked above) only proves
+        // the same number of chips render in both snapshots — it says nothing about whether
+        // focus actually moved between two of them. tvOS 27.0's sim runtime never reports
+        // `hasFocus` on these buttons (see the tvos-ui-sim-verification memory), so the frame
+        // delta itself is the only signal available: with the lift working, the chip that HAD
+        // focus in the first snapshot SHRINKS back to rest, and the chip that gains it GROWS —
+        // exactly one of each. The chip that was focused in the FIRST snapshot and lost focus in
+        // the SECOND is the one whose height shrank — i.e. the index whose height differs the most.
+        let deltas = firstArtwork.indices.map { secondArtwork[$0].height - firstArtwork[$0].height }
+        let grownIndices = deltas.indices.filter { deltas[$0] >= 1 }
+        let shrunkIndices = deltas.indices.filter { deltas[$0] <= -1 }
+        guard !grownIndices.isEmpty || !shrunkIndices.isEmpty else {
+            // Both snapshots already agree on ≥2 rendered chips (checked above), and a Right
+            // press produced NO height change anywhere — that is the BUG-111 regression itself
+            // (the focus lift never reached this row), not a fixture limitation, so this fails
+            // loudly instead of skipping quietly.
+            XCTFail("BUG-111 regression: \(firstArtwork.count) company_artwork chips rendered before and after Right, but none changed height — the focus lift is not reaching the studio chip row. first=\(firstArtwork) second=\(secondArtwork)")
+            return
         }
-        guard let index = liftedIndex else {
-            throw XCTSkip("no company_artwork rect changed height by ≥1pt between the two snapshots — the geometry probe saw no lift on this run, or Right did not move focus off the first chip (e.g. only one chip on this fixture carries a TMDB id and is focusable)")
+        guard let index = shrunkIndices.first else {
+            // A chip grew but none shrank: Right did not move focus OFF the first chip (e.g.
+            // only one chip on this fixture carries a TMDB id and is focusable), so there is no
+            // "rest" baseline for that chip to measure the rise against — an honest fixture
+            // limitation, not a regression.
+            throw XCTSkip("a company_artwork rect grew (indices \(grownIndices)) but none shrank between the two snapshots — fewer than two focusable chips on this fixture's page")
         }
         let focused = firstArtwork[index]
         let rest = secondArtwork[index]
@@ -6060,10 +6111,13 @@ final class NuvioTVUITests: XCTestCase {
             walk(root)
             return out
         }
+        // Same walk-defect fix as the ring-mode leg above: `anchor=logos` only, never the
+        // `company_artwork` presence check (true before the first Down press regardless of
+        // focus).
         var reachedStillLogosRow = false
-        for _ in 1...10 {
+        for _ in 1...12 {
             let probeLabel = stillApp.staticTexts["debug_ux6"].exists ? stillApp.staticTexts["debug_ux6"].label : ""
-            if Self.probeToken(probeLabel, key: "anchor") == "logos" || stillNamedFrames("company_artwork").count >= 2 {
+            if Self.probeToken(probeLabel, key: "anchor") == "logos" {
                 reachedStillLogosRow = true
                 break
             }

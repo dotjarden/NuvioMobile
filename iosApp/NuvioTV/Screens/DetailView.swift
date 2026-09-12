@@ -2255,7 +2255,15 @@ private struct CompanyChip: View {
             if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
                                                  noZoomOnFocus: noZoomOnFocus,
                                                  focused: stillFocused) {
-                Capsule().strokeBorder(ring.color, lineWidth: ringWidth)
+                // BUG-111 review finding 1: this capsule is a WHITE surface
+                // (`Color.white.opacity(0.92)` above) — the only one among the plain-label ring
+                // sites (`FolderTile`, `CastCard` both sit on dark artwork), so the still-mode
+                // ring needs the light-surface neutral, not `stillHighlight`'s near-white. The
+                // accent ring is unaffected — `ring.color` still drives it.
+                Capsule().strokeBorder(
+                    ring == .accent ? ring.color : PlainLabelRing.stillColor(onLightSurface: true),
+                    lineWidth: ringWidth
+                )
             }
         }
         .modifier(DebugAXIdentifier("company_artwork"))

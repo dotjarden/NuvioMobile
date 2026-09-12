@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import NuvioTV
 
 /// BUG-102 (rc9, 2026-09-10): the ring verdict for labels that draw their own ring inside the
@@ -157,5 +158,31 @@ final class PlainLabelRingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(min(Theme.Spacing.xs, Theme.Spacing.md), ringWidth)
         XCTAssertEqual(CompanyChipMetrics.capsuleHeight, 52)
         XCTAssertEqual(CompanyChipMetrics.platterCornerRadius, 26)
+    }
+
+    // MARK: - BUG-111 review finding 1: still-mode ring contrast on a white-surfaced label
+
+    /// Default surface (`FolderTile`'s backdrop, `CastCard`'s photo — both dark): unchanged from
+    /// `stillHighlight`, both with the parameter omitted and passed explicitly `false`.
+    func testStillColorDefaultsToStillHighlightOnDarkSurfaces() {
+        XCTAssertEqual(PlainLabelRing.stillColor(), stillHighlight)
+        XCTAssertEqual(PlainLabelRing.stillColor(onLightSurface: false), stillHighlight)
+    }
+
+    /// `CompanyChip`'s capsule is a `Color.white.opacity(0.92)` fill — `stillHighlight`'s 85%
+    /// white would go unnoticed on top of it (92% → 98.8% white, no other change). The
+    /// light-surface branch must be a genuinely different, dark colour so contrast — not stroke
+    /// width — still reads as the focus cue in still mode on this one label.
+    func testStillColorIsADarkNeutralOnALightSurface() {
+        let lightColor = PlainLabelRing.stillColor(onLightSurface: true)
+        XCTAssertNotEqual(lightColor, stillHighlight)
+        XCTAssertEqual(lightColor, Color.black.opacity(0.75))
+    }
+
+    /// The accent ring is untouched by the surface flag — `stillColor` only ever governs the
+    /// neutral `.still` case; `PlainLabelRing.accent.color` still resolves to the theme's focus
+    /// ring colour regardless of what surface a caller says it's drawing on.
+    func testRingModeIsUnaffectedByTheSurfaceFlag() {
+        XCTAssertEqual(PlainLabelRing.accent.color, Theme.Palette.focusRingColor)
     }
 }
