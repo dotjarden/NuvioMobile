@@ -102,6 +102,10 @@ struct HomeView: View {
     /// Paired with `noZoomOnFocus` above — `FocusModeFlags` carries both, and the ring branch is the
     /// one that could make the lift height-dependent again (BUG-93 made the two zoom modes equal).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// rc12 BUG-87 follow-up: the default-OFF No Zoom reach-hold A/B (`AboutSettingsPane`'s "No Zoom
+    /// Row Reach (A/B)" row). OR'd with `PinnedRowTitle.reachHoldsLiftKnob` at the `pinnedPlan` call
+    /// site below — same launch-argument precedent as the other two flags here.
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -1740,7 +1744,8 @@ struct HomeView: View {
                                showsCTA: heroCarouselActive,
                                landscapeRows: posterStyle.landscapeCatalogRows,
                                mode: PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
-                                                                   accentRing: accentFocusRing))
+                                                                   accentRing: accentFocusRing,
+                                                                   reachHoldsLift: noZoomReachHoldsLift || PinnedRowTitle.reachHoldsLiftKnob))
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact

@@ -6169,6 +6169,142 @@ final class NuvioTVUITests: XCTestCase {
             "railW did not increase strictly across Subtle/Balanced/Bold (\(railWidths)) — BUG-110's whole point is that the three presets differ"
         )
     }
+
+    // MARK: - BUG-87 rc12 follow-up: the No Zoom reach-hold A/B
+
+    /// BUG-87 follow-up (rc12): today's sim walks in No Zoom (`L403c0p0r0z1t37`) park every row at
+    /// `margin=-22` against `bandLo=-4` — 2pt outside the belt's arm — the corrector nudges, two
+    /// pullbacks disarm it, and titles fade (see `walkToLastRow`'s doc comment above for the exact
+    /// numbers in both zoom modes). `PinnedRowTitle.FocusModeFlags.reachHoldsLift`
+    /// (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, default OFF) spends the SAME 86
+    /// floor zoom-on already uses, which should put that same `-22` margin INSIDE a widened band
+    /// (`bandLo` `-24` instead of `-4`) — see `PinnedRowGeometryTests.testTheReachHoldWidensTheBandInsteadOfChargingLift`
+    /// for the arithmetic this test is the device-adjacent half of.
+    ///
+    /// `-no_zoom_on_focus` is deliberately NOT passed as a launch argument here, unlike
+    /// `-debug.pinnedNoZoomReachHoldsLift`: the argument-domain String form flips the two
+    /// `@AppStorage` readers (`HomeView`, `PinnedRowTitleTracking`) but not
+    /// `FocusModeFlags.current`'s bare `UserDefaults.standard.bool(forKey:)` default read, so a run
+    /// that relied on the argument to also mean "No Zoom" would measure an incoherent mix of the
+    /// two readers. The fixture already persists No Zoom (Settings › Appearance), so this asserts
+    /// `z1` in the regime key instead of re-asserting the setting itself.
+    ///
+    /// Fixture precondition, same model as `test58LastRowFrameFloor` (not set up by this test):
+    /// Poster Size Large + Hide Titles ON + No Zoom on Focus ON
+    /// (`FixtureSetupTests.testSetHideLabelsOn` then `testSetPosterSizeLarge`; restore with the
+    /// mirror pair after). Skips by name, naming the knob, if that precondition or the reach-hold
+    /// argument itself did not take.
+    func test61NoZoomReachHold() throws {
+        let app = launchToHome(
+            extraArguments: ["-debug.pinnedNoZoomReachHoldsLift", "YES", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        guard let firstLine = readSettleLine(app, "61a_first_rest") else { return }
+
+        let regimeToken = Self.probeToken(firstLine, key: "regime") ?? "-"
+        guard regimeToken.contains("z1"), regimeToken.hasSuffix("h1") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — regime='\(regimeToken)' does not show No Zoom with the reach-hold A/B active (want a key containing 'z1' and ending 'h1'). Either the fixture is not persisted as No Zoom + Large + Hide Titles ON (FixtureSetupTests.testSetHideLabelsOn then testSetPosterSizeLarge), or -debug.pinnedNoZoomReachHoldsLift did not reach PinnedRowTitle.reachHoldsLiftKnob. Full settle line: \(firstLine)")
+        }
+
+        // ── The plan line itself: the floor moved (66 → 85/86), not just the band it feeds ──────
+        let env = app.staticTexts["debug_env"]
+        guard env.waitForExistence(timeout: 15) else {
+            XCTFail("debug_env probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let envLabel = env.label
+        guard let topR = Self.probeValue(envLabel, key: "topR"),
+              let slack = Self.probeValue(envLabel, key: "slack") else {
+            XCTFail("could not parse topR=/slack= out of debug_env ('\(envLabel)') — the probe's spelling changed; it is append-only by contract")
+            return
+        }
+        XCTAssertTrue(
+            [85, 86].contains(topR),
+            "topR=\(topR) — the reach-hold should take the same 85/86 floor zoom-on uses (\(envLabel))"
+        )
+        XCTAssertLessThanOrEqual(
+            abs(slack - 12), 2,
+            "slack (rest range)=\(slack) — expected ≈12 at the held floor, the same as zoom-on's Large carousel (\(envLabel))"
+        )
+
+        // ── Middle-row walk: the band/clearance math has to hold on every row visited, not just
+        //    the entry rest ───────────────────────────────────────────────────────────────────
+        var lines = [firstLine]
+        for step in 0..<4 {
+            press(.down, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "61b\(step)_walk") else { break }
+            if Self.probeValue(line, key: "last") == 1 { break }
+            lines.append(line)
+        }
+
+        var unexpectedWithFitSeen = false
+        for line in lines {
+            guard let bandLo = Self.probeValue(line, key: "bandLo"),
+                  let clearanceLift = Self.probeValue(line, key: "clearanceLift"),
+                  let clearanceLiftRaw = Self.probeValue(line, key: "clearanceLiftRaw") else {
+                XCTFail("settle line missing bandLo=/clearanceLift=/clearanceLiftRaw= — the settle line is append-only by contract. Full settle line: \(line)")
+                continue
+            }
+            XCTAssertTrue(
+                bandLo >= -25 && bandLo <= -23,
+                "bandLo=\(bandLo) — the hold should widen the band to ≈-24 (it reads -4 with the flag off). Full settle line: \(line)"
+            )
+            XCTAssertEqual(clearanceLift, 24, "clearanceLift=\(clearanceLift) — expected 24 at the held floor. Full settle line: \(line)")
+            XCTAssertEqual(clearanceLiftRaw, 24, "clearanceLiftRaw=\(clearanceLiftRaw) — expected 24, unclamped and equal to clearanceLift here. Full settle line: \(line)")
+            if line.contains("UNEXPECTED-WITH-FIT") { unexpectedWithFitSeen = true }
+        }
+        XCTAssertFalse(
+            unexpectedWithFitSeen,
+            "at least one middle-row line reported UNEXPECTED-WITH-FIT — a fitting regime still needed a correction, exactly what the reach-hold is meant to prevent"
+        )
+
+        // ── Gated on the sim engine actually parking these rows in band (test58's precedent: FA87
+        //    parks the middle rows out of band today regardless of mode, so this is attached
+        //    evidence rather than a hard assertion unless a future engine change puts them inside)
+        let allInBand = !lines.isEmpty && lines.allSatisfy { line in
+            guard let margin = Self.probeValue(line, key: "margin"),
+                  let bandLo = Self.probeValue(line, key: "bandLo") else { return false }
+            return margin >= bandLo
+        }
+        if allInBand {
+            for line in lines {
+                XCTAssertEqual(Self.probeValue(line, key: "inBand"), 1, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "corrN"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "pull"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "pbDisarm"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "beltFaded"), 0, "Full settle line: \(line)")
+            }
+        } else {
+            let report = XCTAttachment(string: lines.joined(separator: "\n"))
+            report.name = "61_sim_engine_parks_out_of_band"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[WAVE9] 61 simulator engine still parks at least one row out of band with the hold on — the in-band/no-nudge/no-fade contract is a DEVICE check (the tester's Row Settle pane); band width and clearance are asserted unconditionally above regardless")
+        }
+
+        // ── Optional control leg: relaunch WITHOUT the reach-hold argument (still No Zoom, via the
+        //    persisted fixture) and attach one settle line for comparison — informational only,
+        //    not asserted, since the flag's OFF numbers are already covered by
+        //    testTheReachHoldWidensTheBandInsteadOfChargingLift's unit-level twin ───────────────
+        let controlApp = launchToHome(extraArguments: ["-debug.homeScrollProbe", "YES"], forceFreshLaunch: true)
+        openTab(controlApp, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        if let controlLine = readSettleLine(controlApp, "61c_control_leg_off") {
+            let report = XCTAttachment(string: controlLine)
+            report.name = "61_control_leg_off"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[WAVE9] 61 control leg (reach-hold OFF, bandLo expected ≈-4): %@", controlLine)
+        }
+    }
+
     // MARK: - FEAT-32: description → full-screen trailer bridge
 
     /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same

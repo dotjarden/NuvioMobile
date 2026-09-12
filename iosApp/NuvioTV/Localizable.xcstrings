@@ -28557,6 +28557,108 @@
           }
         }
       }
+    },
+    "No Zoom Row Reach (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeilenreichweite ohne Zoom (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alcance de filas sin zoom (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Portée des rangées sans zoom (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estensione righe senza zoom (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tầm hàng khi không thu phóng (A/B)"
+          }
+        }
+      }
+    },
+    "BUG-87: try if row titles fade or bounce with No Zoom on Focus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-87: Ausprobieren, wenn Zeilentitel bei „Kein Zoom bei Fokus“ verblassen oder springen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-87: pruébalo si los títulos de las filas se desvanecen o saltan con «Sin zoom al enfocar»"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-87 : à essayer si les titres des rangées disparaissent ou bougent avec « Pas de zoom au focus »"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-87: prova se i titoli delle righe svaniscono o saltano con «Nessuno zoom al focus»"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-87: thử nếu tiêu đề hàng mờ dần hoặc nhảy khi bật «Không thu phóng khi chọn»"
+          }
+        }
+      }
+    },
+    "Rows reserve the zoom-mode band; the hero-off description loses a line at Large": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeilen reservieren das Band des Zoom-Modus; die Beschreibung ohne Held verliert bei „Groß“ eine Zeile"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las filas reservan la banda del modo zoom; la descripción sin héroe pierde una línea en Grande"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les rangées réservent la bande du mode zoom ; la description sans héros perd une ligne en Grand"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le righe riservano la banda della modalità zoom; la descrizione senza hero perde una riga in Grande"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hàng dành sẵn dải của chế độ thu phóng; phần mô tả khi tắt hero mất một dòng ở cỡ Lớn"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

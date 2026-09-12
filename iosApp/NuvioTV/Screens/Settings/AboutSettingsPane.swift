@@ -32,6 +32,15 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.tabBarStateProbe") private var tabBarStateDiagnostics = false
     @State private var tabBarStateProbeLines: [String] = []
 
+    /// BUG-87 rc12 follow-up: the No Zoom reach-hold A/B (`PinnedRowTitle.FocusModeFlags
+    /// .reachHoldsLift`, `PinnedRowGeometry.plan`'s `floorLift`). Default OFF — this row exists so
+    /// Christian can flip it live on his own Apple TV and A/B the Row Settle Diagnostics pane
+    /// above, not for testers: it costs the Large hero-off panel a synopsis line when on, which is
+    /// exactly why it ships defaulted off rather than as the No Zoom behavior outright. Live, no
+    /// relaunch — `HomeView`'s `@AppStorage` and `PinnedRowTitleTracking`'s both react immediately,
+    /// same as the two Appearance focus flags they sit beside.
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
+
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
     /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's
     /// doc comment for why.
@@ -552,6 +561,18 @@ struct AboutSettingsPane: View {
                             }
                         }
                     }
+
+                    // BUG-87 rc12 follow-up: fifth child of this Group (Row Settle toggle + its
+                    // conditional readout, Tab Bar Geometry toggle + its conditional readout, now
+                    // this) — the outer `SettingsSection` and this Group's own parent `Group` stay
+                    // untouched; only this innermost Group gains a sibling.
+                    SettingsToggleRow(
+                        title: String(localized: "No Zoom Row Reach (A/B)"),
+                        subtitle: noZoomReachHoldsLift
+                            ? String(localized: "Rows reserve the zoom-mode band; the hero-off description loses a line at Large")
+                            : String(localized: "BUG-87: try if row titles fade or bounce with No Zoom on Focus"),
+                        isOn: $noZoomReachHoldsLift
+                    )
                 }
             }
         }

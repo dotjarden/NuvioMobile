@@ -221,8 +221,25 @@ enum PinnedRowGeometry {
     /// `fadeIntrusionArm` (4) is the belt's own arm edge, so a settled focused title sits OUTSIDE
     /// the arm band by construction rather than one rounding error inside it:
     ///
-    ///     No Zoom on   62 + 0  + 4 = 66   (22 of the reach's 24pt of give still spent)
-    ///     zoom on      62 + 20 + 4 = 86   (2pt of give; the remaining 22 goes to compression)
+    ///     No Zoom on             62 + 0  + 4 = 66   (22 of the reach's 24pt of give still spent)
+    ///     zoom on                62 + 20 + 4 = 86   (2pt of give; the remaining 22 goes to compression)
+    ///     No Zoom + hold (rc12)  62 + 20 + 4 = 86   (default-OFF A/B — see below)
+    ///
+    /// ### rc12: the No Zoom reach-hold A/B (BUG-87 follow-up)
+    ///
+    /// Steven's rc10/rc11 sim walks in No Zoom park every row's rest 2pt outside the belt's arm band
+    /// (`margin=-22` against `bandLo=-4`), the corrector nudges, two pullbacks disarm it, and the
+    /// title fades — the exact symptom the zoom-on floor above was built to remove, just 2pt short of
+    /// the band rather than 18. There is no hardware evidence either way: the tester runs zoom on, so
+    /// no device walk has ever exercised No Zoom's reach. Rather than change the No Zoom default on
+    /// simulator-only evidence, `PinnedRowTitle.FocusModeFlags.reachHoldsLift` (default OFF,
+    /// `AboutSettingsPane`'s "No Zoom Row Reach (A/B)" row) lets `PinnedRowGeometry.plan` spend the
+    /// SAME 86 floor in No Zoom as zoom-on — widening the band rather than charging a lift nothing
+    /// produces (see `floorLift` in `plan` and `FocusModeFlags.reachHoldsLiftEffective`'s doc for why
+    /// this is not routed through `focusLiftAllowance`). OFF is byte-identical to today; ON costs the
+    /// Large hero-off panel one synopsis line, same as zoom-on already does (see the next section).
+    /// Christian A/Bs it on hardware with the Row Settle pane; rc13 either promotes it to the No Zoom
+    /// default or deletes it.
     ///
     /// ### What this costs the panel's synopsis — read before re-tuning
     ///
@@ -232,11 +249,14 @@ enum PinnedRowGeometry {
     /// 2, and the 0.33 left over opens tier 3 — synopsis slot 144 − 36.33 = 107.67, and
     /// `floor(107.67 / 36)` is **2**. That is exactly the boundary
     /// `testPanelAtStevensCompressionKeepsThreeSynopsisLines` was written to guard, crossed by a
-    /// third of a point. Zoom on spends 22 more and lands at 2 lines outright (slot 87.67). So both
-    /// modes now show a 2-line description where rc4 showed 3. Christian's decision was to take the
-    /// clearance knowing the hero pays for it; if the third line has to come back, the dial to move
-    /// is `heroPinnedFrameSlack` or the tier-3 gate in `HeroSlotGive`, NOT this floor — lowering the
-    /// floor again reinstates the permanent title-on-artwork overlap this whole change removes.
+    /// third of a point. Zoom on spends 22 more and lands at 2 lines outright (slot 87.67), and the
+    /// rc12 reach-hold costs No Zoom the identical 2 lines when it is switched on. So both zoom
+    /// modes, and No Zoom with the hold ON, now show a 2-line description where rc4 showed 3; plain
+    /// No Zoom (hold OFF, the shipping default) is unaffected — Medium and below never reach this
+    /// floor at all. Christian's decision was to take the clearance knowing the hero pays for it; if
+    /// the third line has to come back, the dial to move is `heroPinnedFrameSlack` or the tier-3 gate
+    /// in `HeroSlotGive`, NOT this floor — lowering the floor again reinstates the permanent
+    /// title-on-artwork overlap this whole change removes.
     ///
     /// Capped at `heroPinnedRowTopPad`: this dial only ever moves DOWN (reach 100 kills focus
     /// resolution outright). 86 also lands INSIDE the proven 72-88 corridor, so the rc4 header's
@@ -441,7 +461,17 @@ enum PinnedRowGeometry {
                                                     captionVisible: captionVisible,
                                                     treatment: .cardTreatment,
                                                     mode: mode)
-        let topFloor = topReachFloor(lift: lift, titleHeight: titleHeight)
+        // rc12 BUG-87 follow-up: the reach-hold A/B spends the SAME floor No Zoom would have if
+        // zoom were on (`Theme.Size.heroPinnedRowFocusLiftAllowance`, the one clamp shared with
+        // `focusLiftAllowance`'s zoom-on branches), never routed through `lift` itself — `lift` stays
+        // 0 in No Zoom (nothing scales) and only the FLOOR widens to reserve the band that would
+        // otherwise be missing. See `FocusModeFlags.reachHoldsLiftEffective` and the rc12 note on
+        // `topReachFloor` above for why charging both would fabricate zero band instead of a wider
+        // one.
+        let floorLift = mode.reachHoldsLiftEffective
+            ? max(lift, Theme.Size.heroPinnedRowFocusLiftAllowance)
+            : lift
+        let topFloor = topReachFloor(lift: floorLift, titleHeight: titleHeight)
 
         // Wave 10's number for this artwork, and the scope gate in one read: it is 0 at exactly the
         // Poster Sizes whose rows already fit the pre-BUG-87 extent rule, and 0 everywhere when
@@ -541,6 +571,15 @@ enum PinnedRowGeometry {
     /// artwork by the same `heroPinnedRowFocusLiftAllowance`, so a ring flip produces an IDENTICAL
     /// plan and keying on it would churn the `onChange` re-reveal for nothing. If a future treatment
     /// makes the ring's rise differ again, this key gains an `a` component in the same breath.
+    ///
+    /// `h1` (rc12, BUG-87 follow-up) is appended ONLY when `mode.reachHoldsLiftEffective` is true —
+    /// i.e. only in No Zoom, and only with the About pane's reach-hold A/B switched on — for the
+    /// same reason `z` and `t` are encoded: the flag changes `plan`'s floor (see `floorLift` above),
+    /// so a key that did not distinguish the two would hand the corrector a `fits`/regime-scoped
+    /// disarm state computed for the OTHER floor. Conditional rather than an always-present `h0`/`h1`
+    /// pair so that with the flag OFF (the shipping default) every key, test literal, fixture parser
+    /// and photo contract already written against this string stays byte-for-byte unchanged — `h`
+    /// only ever appears when it means something, and `a` stays reserved for `accentRing` above.
     nonisolated static func regimeKey(posterHeight: CGFloat,
                                       captionVisible: Bool,
                                       showsCTA: Bool,
@@ -569,6 +608,7 @@ enum PinnedRowGeometry {
         }
         return "\(tag)\(rounded)c\(captionVisible ? 1 : 0)p\(showsCTA ? 0 : 1)r\(landscapeRows ? 1 : 0)"
             + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
+            + (mode.reachHoldsLiftEffective ? "h1" : "")
     }
 
     /// The four synced Poster Size presets, as RATIOS of the Medium default rather than as pixel

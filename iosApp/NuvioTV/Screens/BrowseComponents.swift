@@ -335,6 +335,17 @@ enum PinnedRowTitle {
     nonisolated struct FocusModeFlags: Equatable, Sendable {
         var noZoom: Bool
         var accentRing: Bool
+        /// BUG-87 rc12 follow-up: a default-OFF Christian-side A/B (`AboutSettingsPane`'s "No Zoom
+        /// Row Reach (A/B)" row, backing key `PinnedRowTitle.noZoomReachHoldsLiftKey`). Defaulted so
+        /// every existing memberwise call site keeps compiling unchanged. See
+        /// `reachHoldsLiftEffective` for the gate and `PinnedRowGeometry.plan`'s `floorLift` for
+        /// where this actually spends — never through `focusLiftAllowance` below.
+        var reachHoldsLift: Bool = false
+
+        /// Inert unless `noZoom` is also true, exactly like `accentRing`'s inertness with zoom on:
+        /// the hold only means something when No Zoom's own treatment is the reason the reach floor
+        /// would otherwise reserve zero room for a lift.
+        nonisolated var reachHoldsLiftEffective: Bool { reachHoldsLift && noZoom }
 
         /// Live snapshot for call sites with no SwiftUI context to observe from. This is the
         /// DEFAULT, not the primary path: every call that matters — `reading` from the tracking
@@ -342,8 +353,24 @@ enum PinnedRowTitle {
         /// modifier-side republish that keeps `PinnedRowSettle.clearances` coherent with them.
         nonisolated static var current: FocusModeFlags {
             FocusModeFlags(noZoom: UserDefaults.standard.bool(forKey: "no_zoom_on_focus"),
-                           accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"))
+                           accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"),
+                           reachHoldsLift: UserDefaults.standard.bool(forKey: noZoomReachHoldsLiftKey))
         }
+    }
+
+    /// Backing key for the rc12 No Zoom reach-hold A/B (`FocusModeFlags.reachHoldsLift`,
+    /// `AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, `PinnedRowTitleTracking`'s
+    /// `@AppStorage`).
+    nonisolated static let noZoomReachHoldsLiftKey = "debug.pinnedNoZoomReachHoldsLift"
+
+    /// Launch-latched twin of the `@AppStorage` reads, resolved via `bool(forKey:)` rather than
+    /// `@AppStorage<Bool>` because the latter does not coerce a UI test's argument-domain "YES" the
+    /// way `bool(forKey:)` does — same precedent as `AboutSettingsPane`'s
+    /// `collectionFrameProbe || CollectionFocusFrameProbe.enabled`. Every SwiftUI reader ORs this in
+    /// alongside its own `@AppStorage` read so a UI test's launch argument and a live Settings flip
+    /// both work.
+    nonisolated static var reachHoldsLiftKnob: Bool {
+        UserDefaults.standard.bool(forKey: noZoomReachHoldsLiftKey)
     }
 
     /// How far the ACTIVE focus treatment raises a focused card's artwork.
@@ -380,6 +407,14 @@ enum PinnedRowTitle {
     /// the same values `maxSlide` and `clearances` need), the ring's rise was height-dependent as
     /// recently as beta.17, and a future treatment that is height-dependent again should not have
     /// to be re-threaded through four call sites to say so.
+    ///
+    /// `mode.reachHoldsLift` (BUG-87 rc12 follow-up) never reaches this function, on purpose: this
+    /// still returns 0 in No Zoom whether or not the hold is on. The hold's job is to reserve ROOM
+    /// in the reach for a lift that still-mode genuinely never produces — charging that lift here
+    /// too would raise `lift` AND the reach floor for the same 20pt, leaving `bandLow` at −4
+    /// (`focused = atRest − lift`) exactly as before the hold existed: the Wave 7 / BUG-93
+    /// fabricated-intrusion bug, reintroduced. `PinnedRowGeometry.plan`'s `floorLift` is the one and
+    /// only place `reachHoldsLiftEffective` is read.
     nonisolated static func focusLiftAllowance(artworkHeight: CGFloat?,
                                                captionVisible: Bool,
                                                treatment: RowCardTreatment,
@@ -998,6 +1033,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// not guaranteed to re-run the geometry transform.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// BUG-87 rc12 follow-up A/B (`AboutSettingsPane`'s "No Zoom Row Reach" toggle). OR'd with
+    /// `PinnedRowTitle.reachHoldsLiftKnob` in `focusMode` below — see that static's doc for why the
+    /// bare `@AppStorage` read alone would miss a UI test's launch argument.
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
 
     /// Last geometry this title measured plus its live focus state, so an out-of-band trigger — a
     /// focus-mode change, or the corrector's stand-down — can re-derive a full `Reading` with no
@@ -1007,7 +1046,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
     @State private var tracking = TitleTrackingCache()
 
     private var focusMode: PinnedRowTitle.FocusModeFlags {
-        PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus, accentRing: accentFocusRing)
+        PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
+                                      accentRing: accentFocusRing,
+                                      reachHoldsLift: noZoomReachHoldsLift || PinnedRowTitle.reachHoldsLiftKnob)
     }
 
     func body(content: Content) -> some View {

@@ -670,7 +670,9 @@ enum Theme {
         /// (BrowseComponents) returns this in both zoom modes and 0 under "No Zoom on Focus"
         /// (Wave 7 made that genuinely zero-lift). Nothing lays out against it — it feeds the
         /// settle re-reveal's correction band, the visibility belt's threshold, and the
-        /// `intrLifted=` probe field.
+        /// `intrLifted=` probe field. rc12: also the floor `PinnedRowGeometry.plan`'s `floorLift`
+        /// borrows in No Zoom when the reach-hold A/B is on, reserving the same band width even
+        /// though nothing actually scales in that mode.
         static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
         /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
         ///

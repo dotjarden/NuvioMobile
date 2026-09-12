@@ -52,6 +52,12 @@ final class PinnedRowGeometryTests: XCTestCase {
     private static let noZoom = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false)
     /// The DEFAULT Appearance state, and the one the defect was filmed in: lift 20 ⇒ floor 86.
     private static let zoomOn = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false)
+    /// rc12 BUG-87 follow-up: No Zoom with the default-OFF reach-hold A/B switched ON
+    /// (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)" row). `reachHoldsLiftEffective` is true here
+    /// (both `reachHoldsLift` and `noZoom` are true), so `plan`'s `floorLift` spends the SAME 86
+    /// floor `zoomOn` does — see `testNoZoomWithTheReachHoldTakesTheZoomOnFloor`.
+    private static let noZoomHolding = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
+                                                                     reachHoldsLift: true)
 
     // MARK: - Title metrics
 
@@ -69,18 +75,24 @@ final class PinnedRowGeometryTests: XCTestCase {
     private static let openSansTitle: CGFloat = 42.2
 
     /// Every flag combination, as the app can actually produce them, in No Zoom.
-    private static func crossProduct() -> [(name: String, plan: PinnedRowGeometry.Plan)] {
+    ///
+    /// `mode` defaults to plain `noZoom` so every pre-rc12 call site is unchanged; rc12 callers pass
+    /// `noZoomHolding` to run the identical cross product through the reach-hold A/B. The label gets
+    /// an appended `" hold=1"` only when the mode is holding, so a failure message says which of the
+    /// two regimes it came from without changing any pre-existing label string.
+    private static func crossProduct(mode: PinnedRowTitle.FocusModeFlags = noZoom) -> [(name: String, plan: PinnedRowGeometry.Plan)] {
         var out: [(name: String, plan: PinnedRowGeometry.Plan)] = []
         for (name, height) in allSizes {
             for captions in [false, true] {
                 for cta in [false, true] {
                     for landscape in [false, true] {
                         let label = "\(name) captions=\(captions) showsCTA=\(cta) landscape=\(landscape)"
+                            + (mode.reachHoldsLift ? " hold=1" : "")
                         let plan = PinnedRowGeometry.plan(posterHeight: height,
                                                           captionVisible: captions,
                                                           showsCTA: cta,
                                                           landscapeRows: landscape,
-                                                          mode: noZoom,
+                                                          mode: mode,
                                                           titleHeight: systemTitle)
                         out.append((name: label, plan: plan))
                     }
@@ -104,26 +116,35 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// captions ON, its recorded band table shows zero corrections, and keying its compression to
     /// the link frame would compress the default configuration's hero by ~82pt to fix a rest nobody
     /// has reported. The fix applies to the sizes that were already compressing.
+    /// rc12: run against both No Zoom regimes (`noZoom` and the reach-hold A/B's `noZoomHolding`) —
+    /// Small/Medium never spend a compression at all (`legacyCompression` gates before the floor is
+    /// ever read), so the hold changes nothing here and the loop is a parity check, not new
+    /// coverage.
     func testSmallAndMediumSpendNothingAtEveryFlagCombination() {
-        // FEAT-39: "Medium " (with the trailing space from the label's own " captions=..." suffix)
-        // deliberately excludes "Medium+" — that size is above the hero-compression gate and takes
-        // the Large dial, so it is NOT bit-identical to what shipped.
-        for (label, plan) in Self.crossProduct() where label.hasPrefix("Small") || label.hasPrefix("Medium ") {
-            XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
-            XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
-            XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
-            XCTAssertEqual(plan.viewport, Theme.Size.heroPinnedRowsViewportBudget, accuracy: epsilon, label)
+        for mode in [Self.noZoom, Self.noZoomHolding] {
+            // FEAT-39: "Medium " (with the trailing space from the label's own " captions=..."
+            // suffix) deliberately excludes "Medium+" — that size is above the hero-compression gate
+            // and takes the Large dial, so it is NOT bit-identical to what shipped.
+            for (label, plan) in Self.crossProduct(mode: mode) where label.hasPrefix("Small") || label.hasPrefix("Medium ") {
+                XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
+                XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
+                XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
+                XCTAssertEqual(plan.viewport, Theme.Size.heroPinnedRowsViewportBudget, accuracy: epsilon, label)
+            }
         }
     }
 
     /// Landscape catalog rows are 203pt tall (`Theme.Size.landscapeHeight`) — 323 against the 455
-    /// budget with the band and cushion — so nothing is ever spent for them, at any Poster Size.
+    /// budget with the band and cushion — so nothing is ever spent for them, at any Poster Size, in
+    /// either No Zoom regime (rc12).
     func testLandscapeRowsSpendNothingAtEverySize() {
-        for (label, plan) in Self.crossProduct() where label.contains("landscape=true") {
-            XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
-            XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
-            XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
-            XCTAssertTrue(plan.fits, label)
+        for mode in [Self.noZoom, Self.noZoomHolding] {
+            for (label, plan) in Self.crossProduct(mode: mode) where label.contains("landscape=true") {
+                XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
+                XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
+                XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
+                XCTAssertTrue(plan.fits, label)
+            }
         }
     }
 
@@ -132,48 +153,55 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// No dial may leave its legal range, ever — including for a synced `widthDp` past Large, which
     /// `PosterStyle.init(from:)` accepts without clamping and is therefore an ordinary payload here.
     /// The top reach in particular is only ever LOWERED (reach 100 kills focus resolution outright).
+    /// rc12: run against both No Zoom regimes — the reach-hold A/B only ever RAISES the floor, so the
+    /// `topReachFloor(lift: 0, …)` lower bound below stays a valid (looser) bound for `noZoomHolding`
+    /// too; it is not re-derived per mode.
     func testFloorsAreNeverBreached() {
-        var cases = Self.crossProduct()
-        for captions in [false, true] {
-            for cta in [false, true] {
-                let oversized = PinnedRowGeometry.plan(posterHeight: Self.posterHeight(dp: 200),
-                                                       captionVisible: captions,
-                                                       showsCTA: cta,
-                                                       landscapeRows: false,
-                                                       mode: Self.noZoom,
-                                                       titleHeight: Self.systemTitle)
-                cases.append((name: "Oversized captions=\(captions) showsCTA=\(cta)", plan: oversized))
+        for mode in [Self.noZoom, Self.noZoomHolding] {
+            var cases = Self.crossProduct(mode: mode)
+            for captions in [false, true] {
+                for cta in [false, true] {
+                    let oversized = PinnedRowGeometry.plan(posterHeight: Self.posterHeight(dp: 200),
+                                                           captionVisible: captions,
+                                                           showsCTA: cta,
+                                                           landscapeRows: false,
+                                                           mode: mode,
+                                                           titleHeight: Self.systemTitle)
+                    cases.append((name: "Oversized captions=\(captions) showsCTA=\(cta)", plan: oversized))
+                }
             }
-        }
-        for (label, plan) in cases {
-            XCTAssertLessThanOrEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad + epsilon, label)
-            XCTAssertGreaterThanOrEqual(plan.topReach,
-                                        PinnedRowGeometry.topReachFloor(lift: 0,
-                                                                        titleHeight: Self.systemTitle)
-                                            - epsilon, label)
-            XCTAssertLessThanOrEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach + epsilon, label)
-            XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor - epsilon, label)
-            XCTAssertGreaterThanOrEqual(plan.compression, 0, label)
-            XCTAssertLessThanOrEqual(plan.compression,
-                                     PinnedRowGeometry.elasticGive(showsCTA: label.contains("showsCTA=true")) + epsilon,
-                                     label)
+            for (label, plan) in cases {
+                XCTAssertLessThanOrEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad + epsilon, label)
+                XCTAssertGreaterThanOrEqual(plan.topReach,
+                                            PinnedRowGeometry.topReachFloor(lift: 0,
+                                                                            titleHeight: Self.systemTitle)
+                                                - epsilon, label)
+                XCTAssertLessThanOrEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach + epsilon, label)
+                XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor - epsilon, label)
+                XCTAssertGreaterThanOrEqual(plan.compression, 0, label)
+                XCTAssertLessThanOrEqual(plan.compression,
+                                         PinnedRowGeometry.elasticGive(showsCTA: label.contains("showsCTA=true")) + epsilon,
+                                         label)
+            }
         }
     }
 
     /// The invariant the whole fix exists for: wherever the plan claims a fit, the frame the focus
     /// engine reveals really is inside the viewport it has to rest in — and `restRange` is exactly
-    /// the room left over, i.e. the width of the set of legal rests.
+    /// the room left over, i.e. the width of the set of legal rests. rc12: both No Zoom regimes.
     func testFitsMeansTheLinkFrameIsInsideTheViewport() {
-        for (label, plan) in Self.crossProduct() {
-            XCTAssertEqual(plan.viewport,
-                           Theme.Size.heroPinnedRowsViewportBudget + plan.compression,
-                           accuracy: epsilon, label)
-            if plan.fits {
-                XCTAssertLessThanOrEqual(plan.linkFrame, plan.viewport + epsilon, label)
-                XCTAssertEqual(plan.restRange, plan.viewport - plan.linkFrame, accuracy: epsilon, label)
-            } else {
-                XCTAssertGreaterThan(plan.linkFrame, plan.viewport, label)
-                XCTAssertEqual(plan.restRange, 0, accuracy: epsilon, label)
+        for mode in [Self.noZoom, Self.noZoomHolding] {
+            for (label, plan) in Self.crossProduct(mode: mode) {
+                XCTAssertEqual(plan.viewport,
+                               Theme.Size.heroPinnedRowsViewportBudget + plan.compression,
+                               accuracy: epsilon, label)
+                if plan.fits {
+                    XCTAssertLessThanOrEqual(plan.linkFrame, plan.viewport + epsilon, label)
+                    XCTAssertEqual(plan.restRange, plan.viewport - plan.linkFrame, accuracy: epsilon, label)
+                } else {
+                    XCTAssertGreaterThan(plan.linkFrame, plan.viewport, label)
+                    XCTAssertEqual(plan.restRange, 0, accuracy: epsilon, label)
+                }
             }
         }
     }
@@ -644,14 +672,16 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// per-row or per-focus state). This is what lets `onChange(of: pinnedPlan.regimeKey)` be the
     /// only re-reveal trigger.
     func testPlanIsPure() {
-        for (label, plan) in Self.crossProduct() {
-            let again = PinnedRowGeometry.plan(posterHeight: planHeight(for: label),
-                                               captionVisible: label.contains("captions=true"),
-                                               showsCTA: label.contains("showsCTA=true"),
-                                               landscapeRows: label.contains("landscape=true"),
-                                               mode: Self.noZoom,
-                                               titleHeight: Self.systemTitle)
-            XCTAssertEqual(plan, again, label)
+        for mode in [Self.noZoom, Self.noZoomHolding] {
+            for (label, plan) in Self.crossProduct(mode: mode) {
+                let again = PinnedRowGeometry.plan(posterHeight: planHeight(for: label),
+                                                   captionVisible: label.contains("captions=true"),
+                                                   showsCTA: label.contains("showsCTA=true"),
+                                                   landscapeRows: label.contains("landscape=true"),
+                                                   mode: mode,
+                                                   titleHeight: Self.systemTitle)
+                XCTAssertEqual(plan, again, label)
+            }
         }
     }
 
@@ -662,9 +692,15 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// modes, so they must not share a key (`PinnedRowSettle.regimeFits` and its log-once sets are
     /// keyed on this string). `accentRing` is deliberately NOT encoded — since BUG-93 both zoom-on
     /// treatments lift by the same amount, so a ring flip produces an identical plan.
+    /// rc12: the reach-hold A/B's `noZoomHolding` regime must not collide with plain `noZoom`
+    /// either — combined, the two 32-entry cross products (`allSizes` × captions × CTA × landscape)
+    /// must yield 64 distinct keys, and the holding regime's Medium key must be the plain key with
+    /// `h1` appended (see `regimeKey`'s doc for why `h1` is conditional).
     func testRegimeKeysAreDistinctAcrossTheCrossProduct() {
         let keys = Self.crossProduct().map { $0.plan.regimeKey }
+            + Self.crossProduct(mode: Self.noZoomHolding).map { $0.plan.regimeKey }
         XCTAssertEqual(Set(keys).count, keys.count)
+        XCTAssertEqual(Set(keys).count, 64)
         XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
                                               captionVisible: true,
                                               showsCTA: true,
@@ -679,6 +715,13 @@ final class PinnedRowGeometryTests: XCTestCase {
                                               mode: Self.zoomOn,
                                               titleHeight: Self.systemTitle).regimeKey,
                        "M330c1p0r0z0t38")
+        XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
+                                              captionVisible: true,
+                                              showsCTA: true,
+                                              landscapeRows: false,
+                                              mode: Self.noZoomHolding,
+                                              titleHeight: Self.systemTitle).regimeKey,
+                       "M330c1p0r0z1t38h1")
         // The ring is not part of the key, because it is not part of the plan.
         XCTAssertEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
                                                    captionVisible: true,
@@ -702,6 +745,101 @@ final class PinnedRowGeometryTests: XCTestCase {
                                                       landscapeRows: false,
                                                       mode: Self.noZoom,
                                                       titleHeight: Self.openSansTitle))
+    }
+
+    // MARK: - rc12: the No Zoom reach-hold A/B (BUG-87 follow-up)
+
+    /// The headline claim: with the hold ON, No Zoom's Large carousel spends EXACTLY the zoom-on
+    /// floor (86, not 66) — compare against
+    /// `testLargeHideLabelsWithCarouselHeroSpendsBothReachesThenTheRemainder`'s plain-`noZoom`
+    /// numbers (topReach 66, same compression/viewport because the carousel's 70pt cap binds
+    /// either way — only `linkFrame`/`restRange` move, by exactly the 20pt the floor gained).
+    func testNoZoomWithTheReachHoldTakesTheZoomOnFloor() {
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                          captionVisible: false,
+                                          showsCTA: true,
+                                          landscapeRows: false,
+                                          mode: Self.noZoomHolding,
+                                          titleHeight: Self.systemTitle)
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 70, accuracy: 0.01)
+        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 525, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, 11.667, accuracy: 0.01)
+        XCTAssertEqual(plan.regimeKey, "L403c0p0r0z1t38h1")
+    }
+
+    /// THE rationale pin for why the flag is routed through the reach floor and never through
+    /// `focusLiftAllowance`: at the same Large carousel shape as the test above, the hold leaves
+    /// `PinnedRowTitle.clearances`' `lift` at 0 (nothing scales in No Zoom, hold or not) and instead
+    /// widens the band by raising `atRest`/`focused`/`focusedRaw` together — the exact opposite of
+    /// charging a lift, which would have moved `focused` DOWN and left `bandLow` unchanged at −4.
+    ///
+    ///     hold ON   cardTopReach 86 → atRest = focused = focusedRaw = 24 → bandLow = −24
+    ///     hold OFF  cardTopReach 66 → atRest = focused = focusedRaw = 4  → bandLow = −4
+    ///
+    /// Steven's sim reading (`margin=-22`) sits OUTSIDE the OFF band (−22 < −4, the belt's fade
+    /// condition, matching the reported bounce) and INSIDE the ON band (−24 ≤ −22 ≤ 48, `bandHigh`
+    /// unchanged because the carousel cap already binds `viewport` the same way in both regimes —
+    /// see the test above).
+    func testTheReachHoldWidensTheBandInsteadOfChargingLift() {
+        let steadyMargin: CGFloat = -22
+        let bandHigh: CGFloat = 48
+
+        for (mode, expectedClearance, expectedBandLow, marginInBand) in [
+            (Self.noZoomHolding, CGFloat(24), CGFloat(-24), true),
+            (Self.noZoom, CGFloat(4), CGFloat(-4), false),
+        ] {
+            let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                              captionVisible: false,
+                                              showsCTA: true,
+                                              landscapeRows: false,
+                                              mode: mode,
+                                              titleHeight: Self.systemTitle)
+            let clearance = PinnedRowTitle.clearances(titleHeight: Self.systemTitle,
+                                                      cardTopReach: plan.topReach,
+                                                      artworkHeight: Self.large,
+                                                      captionVisible: false,
+                                                      treatment: .cardTreatment,
+                                                      mode: mode)
+            let label = "hold=\(mode.reachHoldsLift)"
+            XCTAssertEqual(clearance.lift, 0, accuracy: epsilon, label)
+            XCTAssertEqual(clearance.atRest, expectedClearance, accuracy: epsilon, label)
+            XCTAssertEqual(clearance.focused, expectedClearance, accuracy: epsilon, label)
+            XCTAssertEqual(clearance.focusedRaw, expectedClearance, accuracy: epsilon, label)
+
+            let bandLow = -clearance.focused
+            XCTAssertEqual(bandLow, expectedBandLow, accuracy: epsilon, label)
+            let inBand = steadyMargin >= bandLow && steadyMargin <= bandHigh
+            XCTAssertEqual(inBand, marginInBand, label)
+        }
+    }
+
+    /// The hold is inert with zoom on — `reachHoldsLiftEffective` requires `noZoom` too, so a
+    /// `FocusModeFlags` that somehow carried both `reachHoldsLift: true` and `noZoom: false` (never
+    /// produced by any shipping reader — both `@AppStorage` sites AND `PinnedRowTitle.current` gate
+    /// on the same two keys) must plan identically to plain `zoomOn`.
+    func testTheReachHoldIsInertWithZoomOn() {
+        let zoomOnHolding = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false,
+                                                          reachHoldsLift: true)
+        XCTAssertFalse(zoomOnHolding.reachHoldsLiftEffective)
+        for (name, height) in Self.allSizes {
+            for captions in [false, true] {
+                for cta in [false, true] {
+                    let label = "\(name) captions=\(captions) showsCTA=\(cta)"
+                    let plan = PinnedRowGeometry.plan(posterHeight: height, captionVisible: captions,
+                                                      showsCTA: cta, landscapeRows: false,
+                                                      mode: zoomOnHolding, titleHeight: Self.systemTitle)
+                    let plainZoomOn = PinnedRowGeometry.plan(posterHeight: height, captionVisible: captions,
+                                                             showsCTA: cta, landscapeRows: false,
+                                                             mode: Self.zoomOn, titleHeight: Self.systemTitle)
+                    XCTAssertEqual(plan, plainZoomOn, label)
+                    XCTAssertEqual(plan.regimeKey, plainZoomOn.regimeKey, label)
+                }
+            }
+        }
     }
 
     // MARK: - BUG-87/89 (rc11): the last-row link-frame floor
@@ -934,6 +1072,87 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         let lineTolerance: CGFloat = 1
         guard lineHeight > 0 else { return 1 }
         return max(1, Int(((slotHeight + lineTolerance) / lineHeight).rounded(.down)))
+    }
+
+    // MARK: - rc12: fixtures for the moved reach-hold synopsis tests below (private in
+    // `PinnedRowGeometryTests`, so restated here rather than reached across the type boundary).
+
+    private static func posterHeight(dp: CGFloat) -> CGFloat {
+        dp * (Theme.Size.posterWidth / 126.0) * 1.5
+    }
+    /// FEAT-39: 134dp, above the 335pt hero-compression gate, so it takes the Large dial.
+    private static let mediumPlus = posterHeight(dp: 134) // 350.95…
+    private static let large = posterHeight(dp: 154)    // 403.33…
+
+    private static let noZoom = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false)
+    private static let zoomOn = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false)
+    /// rc12 BUG-87 follow-up: No Zoom with the default-OFF reach-hold A/B switched ON.
+    private static let noZoomHolding = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
+                                                                     reachHoldsLift: true)
+
+    /// The SYSTEM font's number, which every expectation in this file was written against.
+    private static let systemTitle = PinnedRowGeometry.measuredTitleHeight   // 38
+
+    // MARK: - rc12: the No Zoom reach-hold A/B synopsis cost (BUG-87 follow-up)
+
+    /// What turning the hold on costs: the Large hero-off panel's synopsis drops from 3 lines to 2,
+    /// the SAME cost zoom-on already pays (`testPanelAtRc10NoZoomCompressionStillHasThreeLinesUnderTheSystemFont`
+    /// is the OFF twin at compression 70.333 → 3 lines). The 30–36pt guard pins the System body
+    /// metric's plausible range so a future font change fails loudly here instead of silently
+    /// flipping which side of the 36pt-per-line assumption this shape lands on.
+    func testNoZoomReachHoldCostsTheHeroOffPanelOneSynopsisLine() {
+        XCTAssertGreaterThan(Self.systemBodyLine, 30)
+        XCTAssertLessThan(Self.systemBodyLine, 36)
+
+        let holding = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                             captionVisible: false,
+                                             showsCTA: false,
+                                             landscapeRows: false,
+                                             mode: Self.noZoomHolding,
+                                             titleHeight: Self.systemTitle)
+        XCTAssertEqual(holding.compression, 90.333, accuracy: 0.01)
+        let holdingSplit = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
+                                                                showsCTA: false, folderHero: false)
+        let holdingSlot = slotHeight(showsCTA: false, synopsisGive: holdingSplit.synopsis)
+        XCTAssertEqual(holdingSlot, 87.667, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: holdingSlot, lineHeight: Self.systemBodyLine), 2)
+
+        let off = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                         captionVisible: false,
+                                         showsCTA: false,
+                                         landscapeRows: false,
+                                         mode: Self.noZoom,
+                                         titleHeight: Self.systemTitle)
+        XCTAssertEqual(off.compression, 70.333, accuracy: 0.01)
+        let offSplit = PinnedRowGeometry.HeroSlotGive.split(compression: off.compression,
+                                                            showsCTA: false, folderHero: false)
+        let offSlot = slotHeight(showsCTA: false, synopsisGive: offSplit.synopsis)
+        XCTAssertEqual(offSlot, 107.667, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: offSlot, lineHeight: Self.systemBodyLine), 3)
+    }
+
+    /// Medium+ is unaffected by the hold: it already takes the Large dial's floor with zoom on
+    /// (`testMediumPlusTakesTheLargeDialWithThreeSystemLines`), and the hold converges No Zoom to
+    /// EXACTLY that same floor/compression — not merely to the same line count. The panel's synopsis
+    /// stays at 3 lines under the System font (`testMediumPlusPanelKeepsThreeSynopsisLines` already
+    /// covers that compression value), so there is nothing new to cost here.
+    func testMediumPlusKeepsThreeSynopsisLinesWithTheReachHold() {
+        let holding = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
+                                             showsCTA: false, landscapeRows: false,
+                                             mode: Self.noZoomHolding, titleHeight: 38)
+        XCTAssertEqual(holding.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(holding.compression, 37.952, accuracy: 0.01)
+
+        let zoomOn = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
+                                            showsCTA: false, landscapeRows: false,
+                                            mode: Self.zoomOn, titleHeight: 38)
+        XCTAssertEqual(holding.compression, zoomOn.compression, accuracy: epsilon)
+        XCTAssertEqual(holding.regimeKey, zoomOn.regimeKey.replacingOccurrences(of: "z0", with: "z1") + "h1")
+
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
+                                                         showsCTA: false, folderHero: false)
+        let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
     }
 
     // MARK: - The three tiers
