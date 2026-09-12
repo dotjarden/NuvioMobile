@@ -5918,6 +5918,17 @@ final class NuvioTVUITests: XCTestCase {
     /// up to `maxTitles` titles in the SAME row — `.menu` backs out to Home, `.right` moves to the
     /// next poster, `.select` re-opens — before giving up, so one bad title doesn't sink the run.
     ///
+    /// Pre-walk gate, fixed after a prior round wedged every title: the ONLY thing worth waiting
+    /// on before the Down walk starts is that the `debug_ux6` probe itself exists (already gated
+    /// above by a 15s `waitForExistence`), plus a short settle for layout. `DetailView.anchorNote`
+    /// legitimately reads `"-"` the whole time focus sits in the page header — `anchorPass` only
+    /// writes a row id once focus moves INTO an anchored row, which only happens after the first
+    /// Down press in the walk loop below. A gate that waited for `anchor=` to leave `"-"` before
+    /// the walk could ever begin was unsatisfiable and skipped every title. During the walk itself,
+    /// an `anchor=-` (or empty) read just means "not on an anchored row yet" and presses more
+    /// Downs; only a genuine 12-press exhaustion without ever reading `"logos"` is a failure, and
+    /// that failure message quotes whatever `lastAnchor` last read, `"-"` included.
+    ///
     /// Precondition: focus already rests on the FIRST candidate poster (the caller does the
     /// down×N walk to the row before calling this) and no page is open yet — the first attempt
     /// does not press `.menu`/`.right`, only `.select`.
@@ -5968,27 +5979,19 @@ final class NuvioTVUITests: XCTestCase {
             if app.staticTexts["Press Back to exit the trailer"].exists {
                 remote.press(.menu)
                 pause(3)
+                // Re-confirm the detail page's own probe is back on screen before the Down walk
+                // starts — `trailer=1` on these pages means an auto-play cover may still be
+                // presented, and pressing Down into a still-playing cover (instead of the page
+                // underneath) would just be lost input, not a row move.
+                _ = app.staticTexts["debug_ux6"].waitForExistence(timeout: 5)
             }
             let identifier = pageIdentifier(app)
-            // `dimModel.anchorNote` starts as `"-"` (DetailView.swift) and only becomes
-            // meaningful once `anchorPass` first runs — a read of `"-"` here means the page is
-            // still settling, not a failed Down press, so wait for it to seed BEFORE spending any
-            // of the 12-press Down budget below (a `"-"` read used to count as already-seeded and
-            // skip the wait entirely, since `"-"` is non-empty).
-            var anchorSeeded = false
-            for _ in 1...15 {
-                let label = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
-                if let seeded = Self.probeToken(label, key: "anchor"), !seeded.isEmpty, seeded != "-" {
-                    anchorSeeded = true
-                    break
-                }
-                pause(1)
-            }
-            guard anchorSeeded else {
-                outcomes.append(.init(identifier: identifier,
-                                       detail: "debug_ux6 appeared but its anchor= field stayed \"-\" for 15s — page likely still loading"))
-                continue
-            }
+            // No anchor pre-wait here: `anchor=` on `debug_ux6` legitimately stays `"-"` while
+            // focus is still in the page header, and only seeds once the walk below moves focus
+            // into a row — waiting for it to change before the walk starts can never be satisfied.
+            // The pre-walk gate is just "the probe exists" (already true by this point) plus a
+            // short settle for the page to finish laying out.
+            pause(1.5)
             var reachedLogosRow = false
             var lastAnchor = ""
             for _ in 1...12 {
