@@ -5962,6 +5962,45 @@ final class NuvioTVUITests: XCTestCase {
             return out
         }
 
+        // BUG-111 review finding 1: `companyLogosRow` renders a bare, non-focusable chip for any
+        // studio/network without a TMDB id (`DetailView.swift`'s `companyLogosRow`, ~1750's
+        // `else { companyChip(entry.company) }` branch has no `NavigationLink`) — its
+        // `company_card`/`company_artwork` probes still land in the AX tree unconditionally
+        // (`DebugAXIdentifier`), so counting RENDERED rects over-counts what the remote can
+        // actually reach: a row with one focusable chip and one bare chip renders two artwork
+        // rects, and with the sole focusable one already focused, a Right press changes nothing
+        // — a false regression on healthy code. This walks the snapshot once for `button`-typed
+        // nodes (the AX role a focusable `NavigationLink` renders on tvOS — same convention as
+        // `buttonSnapshots` above) and keeps only the `company_card`/`company_artwork` rect found
+        // inside each button's own subtree, i.e. exactly the chips a Right press can reach.
+        func focusableChipProbes() -> [(card: CGRect?, artwork: CGRect?)] {
+            guard let root = try? app.snapshot() else { return [] }
+            var results: [(card: CGRect?, artwork: CGRect?)] = []
+            func firstProbes(under node: XCUIElementSnapshot) -> (card: CGRect?, artwork: CGRect?) {
+                var card: CGRect?
+                var artwork: CGRect?
+                func inner(_ n: XCUIElementSnapshot) {
+                    if card != nil && artwork != nil { return }
+                    if card == nil, n.identifier == "company_card" { card = n.frame }
+                    if artwork == nil, n.identifier == "company_artwork" { artwork = n.frame }
+                    for child in n.children { inner(child) }
+                }
+                inner(node)
+                return (card, artwork)
+            }
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.elementType == .button {
+                    let probes = firstProbes(under: node)
+                    if probes.card != nil || probes.artwork != nil {
+                        results.append(probes)
+                    }
+                }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return results
+        }
+
         // `companyLogosRow` is the FIRST anchored row below the top block (`DetailRowAnchor.Row
         // .logos`), so a handful of Down presses should reach it on any fixture that has one —
         // but not every title carries TMDB logo art, so this is a bounded search with a skip, not
@@ -5992,96 +6031,129 @@ final class NuvioTVUITests: XCTestCase {
             throw XCTSkip("the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) never came into focus within 12 Down presses — last anchor read \"\(lastAnchor)\"; this fixture's title likely has no company logos to test BUG-111 against")
         }
 
-        // BUG-111 review finding (walk defect): `anchor=logos` only proves the ROW is anchored,
-        // not that D-pad focus has already landed on one of ITS chips rather than still settling.
-        // The just-landed chip should already read taller than its neighbours (the resting-height
-        // baseline every assertion below depends on); if the probe instead catches every chip at
-        // the same height, spend one Right press to force focus onto a specific chip and require
-        // exactly one of them to grow — anything else means focus never reached a chip at all.
-        let confirmHeights = namedFrames("company_artwork").map(\.height)
-        guard confirmHeights.count >= 2 else {
-            throw XCTSkip("only \(confirmHeights.count) company_artwork rect(s) on the logos row — need at least two chips (one focused, one resting) to compare")
+        // BUG-111 review finding 1 (continued): require at least two FOCUSABLE chips before a
+        // "nothing changed" reading counts as a regression — with a single focusable chip
+        // already focused (the row anchored on `logos` above), a Right press has nowhere to move
+        // focus TO, so the old rendered-rect count could not tell that apart from a real lift
+        // failure.
+        let focusableChips = focusableChipProbes()
+        guard !focusableChips.isEmpty else {
+            throw XCTSkip("no focusable studio/network chip on the logos row — every company_card/company_artwork probe belongs to a bare, non-tmdbId chip (companyLogosRow's non-NavigationLink branch); nothing to measure")
         }
-        if let maxHeight = confirmHeights.max(), let minHeight = confirmHeights.min(), maxHeight - minHeight < 1 {
+
+        if focusableChips.count == 1 {
+            // Only one focusable chip on this fixture: there is no second chip for Right to move
+            // focus onto, so the two-snapshot delta below can never observe a change by design —
+            // assert the lift directly against this chip's own layout box instead. The `logos`
+            // anchor reached above already implies remote focus rests on this sole focusable
+            // chip.
+            guard let artwork = focusableChips[0].artwork, let card = focusableChips[0].card else {
+                throw XCTSkip("the sole focusable chip is missing a company_card or company_artwork probe rect — cannot measure its lift")
+            }
+            pause(1)
+            shot(app, "59a_studio_chip_single_focusable")
+            // Hand-mirrored from `CompanyChipMetrics.focusRise`, same figure the multi-chip path
+            // below uses — KEEP IN SYNC (see that path's comment).
+            let chipRisePt: CGFloat = 3.12
+            let expectedGrowth = 2 * chipRisePt
+            XCTAssertEqual(artwork.height - card.height, expectedGrowth, accuracy: 1.5,
+                           "the sole focusable studio chip's artwork should read ~\(expectedGrowth)pt taller than its own layout box while focused (2x the \(chipRisePt)pt rise); artwork=\(artwork) card=\(card)")
+        } else {
+            // BUG-111 review finding (walk defect): `anchor=logos` only proves the ROW is
+            // anchored, not that D-pad focus has already landed on one of ITS chips rather than
+            // still settling. The just-landed chip should already read taller than its
+            // neighbours (the resting-height baseline every assertion below depends on); if the
+            // probe instead catches every chip at the same height, spend one Right press to
+            // force focus onto a specific chip and require exactly one of them to grow —
+            // anything else means focus never reached a chip at all.
+            let confirmHeights = focusableChips.compactMap(\.artwork?.height)
+            guard confirmHeights.count == focusableChips.count else {
+                throw XCTSkip("a focusable chip is missing its company_artwork probe rect — cannot confirm focus landed on a chip")
+            }
+            if let maxHeight = confirmHeights.max(), let minHeight = confirmHeights.min(), maxHeight - minHeight < 1 {
+                press(.right, times: 1, gap: 0.6)
+                pause(0.5)
+                let afterConfirmHeights = focusableChipProbes().compactMap(\.artwork?.height)
+                let grown = confirmHeights.count == afterConfirmHeights.count
+                    ? zip(confirmHeights, afterConfirmHeights).filter { $1 - $0 >= 1 }.count
+                    : -1
+                guard grown == 1 else {
+                    XCTFail("could not confirm D-pad focus landed on a chip: every focusable company_artwork rect read the same resting height on the logos row, and a confirmation Right press grew \(grown) of them (expected exactly 1) — before=\(confirmHeights) after=\(afterConfirmHeights)")
+                    return
+                }
+            }
+
+            pause(1)
+            shot(app, "59a_studio_chip_first")
+
+            let firstProbes = focusableChips
+            let firstArtwork = firstProbes.compactMap(\.artwork)
+            let firstCards = firstProbes.compactMap(\.card)
+            guard firstArtwork.count == firstProbes.count, firstCards.count == firstProbes.count else {
+                throw XCTSkip("a focusable chip is missing a company_artwork or company_card probe rect — cannot pair rects by index")
+            }
+
             press(.right, times: 1, gap: 0.6)
-            pause(0.5)
-            let afterConfirmHeights = namedFrames("company_artwork").map(\.height)
-            let grown = confirmHeights.count == afterConfirmHeights.count
-                ? zip(confirmHeights, afterConfirmHeights).filter { $1 - $0 >= 1 }.count
-                : -1
-            guard grown == 1 else {
-                XCTFail("could not confirm D-pad focus landed on a chip: every company_artwork rect read the same resting height on the logos row, and a confirmation Right press grew \(grown) of them (expected exactly 1) — before=\(confirmHeights) after=\(afterConfirmHeights)")
+            pause(1)
+            shot(app, "59b_studio_chip_second")
+            let secondProbes = focusableChipProbes()
+            let secondArtwork = secondProbes.compactMap(\.artwork)
+            let secondCards = secondProbes.compactMap(\.card)
+            guard secondArtwork.count == firstArtwork.count, secondCards.count == firstCards.count else {
+                throw XCTSkip("focusable chip count changed after Right (\(firstArtwork.count) → \(secondArtwork.count)) — the row's chip count is not stable enough to pair rects by index")
+            }
+
+            // BUG-111 review finding 2: a stable focusable-chip COUNT (checked above) only
+            // proves the same number of focusable chips render in both snapshots — it says
+            // nothing about whether focus actually moved between two of them. tvOS 27.0's sim
+            // runtime never reports `hasFocus` on these buttons (see the
+            // tvos-ui-sim-verification memory), so the frame delta itself is the only signal
+            // available: with the lift working, the chip that HAD focus in the first snapshot
+            // SHRINKS back to rest, and the chip that gains it GROWS — exactly one of each. The
+            // chip that was focused in the FIRST snapshot and lost focus in the SECOND is the
+            // one whose height shrank — i.e. the index whose height differs the most.
+            let deltas = firstArtwork.indices.map { secondArtwork[$0].height - firstArtwork[$0].height }
+            let grownIndices = deltas.indices.filter { deltas[$0] >= 1 }
+            let shrunkIndices = deltas.indices.filter { deltas[$0] <= -1 }
+            guard !grownIndices.isEmpty || !shrunkIndices.isEmpty else {
+                // Both snapshots already agree on ≥2 focusable chips (checked above), and a
+                // Right press produced NO height change anywhere — that is the BUG-111
+                // regression itself (the focus lift never reached this row), not a fixture
+                // limitation, so this fails loudly instead of skipping quietly.
+                XCTFail("BUG-111 regression: \(firstArtwork.count) focusable company_artwork chips rendered before and after Right, but none changed height — the focus lift is not reaching the studio chip row. first=\(firstArtwork) second=\(secondArtwork)")
                 return
             }
-        }
+            guard let index = shrunkIndices.first else {
+                // A chip grew but none shrank: Right did not move focus OFF the first chip — an
+                // honest fixture limitation (already ruled out for count > 1 above, but kept as a
+                // defensive skip rather than assumed impossible), not a regression.
+                throw XCTSkip("a company_artwork rect grew (indices \(grownIndices)) but none shrank between the two snapshots on this fixture's page")
+            }
+            let focused = firstArtwork[index]
+            let rest = secondArtwork[index]
 
-        pause(1)
-        shot(app, "59a_studio_chip_first")
+            // Hand-mirrored from `CompanyChipMetrics.focusRise` (`PlainLabelRingTests` asserts
+            // the real value against this same figure) — KEEP IN SYNC: if
+            // `PlainLabelRing.smallLabelRise` or `CompanyChipMetrics.capsuleHeight` ever change,
+            // update this constant to match.
+            let chipRisePt: CGFloat = 3.12
 
-        let firstArtwork = namedFrames("company_artwork")
-        let firstCards = namedFrames("company_card")
-        guard firstArtwork.count >= 2 else {
-            throw XCTSkip("only \(firstArtwork.count) company_artwork rect(s) on screen — need at least two chips (one focused, one resting) to compare")
-        }
+            let rise = rest.minY - focused.minY
+            XCTAssertEqual(rise, chipRisePt, accuracy: 1,
+                           "focused studio chip rose \(rise)pt, expected ~\(chipRisePt)pt; focused=\(focused) rest=\(rest)")
+            XCTAssertEqual(focused.maxY - rest.maxY, rise, accuracy: 1,
+                           "growth must be symmetric — the chip lifts about its own centre, same as every other PlainLabelRing card")
+            XCTAssertEqual((focused.width - rest.width) / 2,
+                           rise * (rest.width / rest.height), accuracy: 1.5,
+                           "width growth must be the same uniform scale as the height growth")
 
-        press(.right, times: 1, gap: 0.6)
-        pause(1)
-        shot(app, "59b_studio_chip_second")
-        let secondArtwork = namedFrames("company_artwork")
-        let secondCards = namedFrames("company_card")
-        guard secondArtwork.count == firstArtwork.count else {
-            throw XCTSkip("company_artwork count changed after Right (\(firstArtwork.count) → \(secondArtwork.count)) — the row's chip count is not stable enough to pair rects by index")
-        }
-
-        // BUG-111 review finding 2: a stable `company_artwork` COUNT (checked above) only proves
-        // the same number of chips render in both snapshots — it says nothing about whether
-        // focus actually moved between two of them. tvOS 27.0's sim runtime never reports
-        // `hasFocus` on these buttons (see the tvos-ui-sim-verification memory), so the frame
-        // delta itself is the only signal available: with the lift working, the chip that HAD
-        // focus in the first snapshot SHRINKS back to rest, and the chip that gains it GROWS —
-        // exactly one of each. The chip that was focused in the FIRST snapshot and lost focus in
-        // the SECOND is the one whose height shrank — i.e. the index whose height differs the most.
-        let deltas = firstArtwork.indices.map { secondArtwork[$0].height - firstArtwork[$0].height }
-        let grownIndices = deltas.indices.filter { deltas[$0] >= 1 }
-        let shrunkIndices = deltas.indices.filter { deltas[$0] <= -1 }
-        guard !grownIndices.isEmpty || !shrunkIndices.isEmpty else {
-            // Both snapshots already agree on ≥2 rendered chips (checked above), and a Right
-            // press produced NO height change anywhere — that is the BUG-111 regression itself
-            // (the focus lift never reached this row), not a fixture limitation, so this fails
-            // loudly instead of skipping quietly.
-            XCTFail("BUG-111 regression: \(firstArtwork.count) company_artwork chips rendered before and after Right, but none changed height — the focus lift is not reaching the studio chip row. first=\(firstArtwork) second=\(secondArtwork)")
-            return
-        }
-        guard let index = shrunkIndices.first else {
-            // A chip grew but none shrank: Right did not move focus OFF the first chip (e.g.
-            // only one chip on this fixture carries a TMDB id and is focusable), so there is no
-            // "rest" baseline for that chip to measure the rise against — an honest fixture
-            // limitation, not a regression.
-            throw XCTSkip("a company_artwork rect grew (indices \(grownIndices)) but none shrank between the two snapshots — fewer than two focusable chips on this fixture's page")
-        }
-        let focused = firstArtwork[index]
-        let rest = secondArtwork[index]
-
-        // Hand-mirrored from `CompanyChipMetrics.focusRise` (`PlainLabelRingTests` asserts the
-        // real value against this same figure) — KEEP IN SYNC: if `PlainLabelRing.smallLabelRise`
-        // or `CompanyChipMetrics.capsuleHeight` ever change, update this constant to match.
-        let chipRisePt: CGFloat = 3.12
-
-        let rise = rest.minY - focused.minY
-        XCTAssertEqual(rise, chipRisePt, accuracy: 1,
-                       "focused studio chip rose \(rise)pt, expected ~\(chipRisePt)pt; focused=\(focused) rest=\(rest)")
-        XCTAssertEqual(focused.maxY - rest.maxY, rise, accuracy: 1,
-                       "growth must be symmetric — the chip lifts about its own centre, same as every other PlainLabelRing card")
-        XCTAssertEqual((focused.width - rest.width) / 2,
-                       rise * (rest.width / rest.height), accuracy: 1.5,
-                       "width growth must be the same uniform scale as the height growth")
-
-        // The tile's LAYOUT box must not move — `.scaleEffect` is render-only, so this is the
-        // negative control proving the rise costs the row no reflow (test56's `folder_card`
-        // check, mirrored for `company_card`).
-        if firstCards.count == secondCards.count, index < firstCards.count {
-            XCTAssertEqual(firstCards[index].minY, secondCards[index].minY, accuracy: 1,
-                           "the chip's LAYOUT box moved — the lift is not render-only")
+            // The tile's LAYOUT box must not move — `.scaleEffect` is render-only, so this is the
+            // negative control proving the rise costs the row no reflow (test56's `folder_card`
+            // check, mirrored for `company_card`).
+            if firstCards.count == secondCards.count, index < firstCards.count {
+                XCTAssertEqual(firstCards[index].minY, secondCards[index].minY, accuracy: 1,
+                               "the chip's LAYOUT box moved — the lift is not render-only")
+            }
         }
 
         // Optional leg B: still mode (No Zoom on, accent ring off) must draw no lift at all —

@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 /// FEAT-42 (2026-09-11): "add the movie logo to the feed selection" — the Home hero/focus panel's
@@ -195,20 +196,30 @@ final class HeroLogoFocusTests: XCTestCase {
     /// The FEAT-42 sources a card may legitimately present, in the order `logoPlan` tries them.
     private static let logoSources = ["addon", "tmdb", "metahub"]
 
+    /// Every value `plgs` may legitimately carry — the named sources above, plus `none` (text
+    /// wordmark, no bitmap). Review finding 4: `readLogo` fails any read whose `plgs` falls
+    /// outside this set instead of letting an unrecognized/missing value fall through silently.
+    private static let validLogoSourceValues: Set<String> = Set(logoSources + ["none"])
+
     /// How far along a row to walk. `HOME_ROW_ENRICHMENT_PREFIX` is 12 (the shared TMDB overlay's
     /// reach) and `CatalogRowView.homePreviewLimit` is 18 (what the row renders, and what the
     /// FEAT-42 first-focus prewarm batches a lookup for), so a 16-card walk covers the whole gap
     /// this task closes while staying inside the prewarmed prefix. KEEP IN SYNC with both.
     private static let cardsPerRow = 16
 
-    /// The ONE escape hatch. A fixture with TMDB genuinely switched off (no key, artwork off) can
-    /// never produce `plgs=tmdb`, and on such a run this test has nothing to prove rather than
-    /// something to report — but that has to be asserted from OUTSIDE, never inferred from the
-    /// absence of the very evidence the test exists to find (the mistake the first version of this
-    /// test made: it skipped on `plgs=none`, so a broken store/pending integration passed silently).
-    /// Set it on the RUNNER, not the app: `-debug.assumeTmdbOff` in the runner's own arguments, or
-    /// `TEST_RUNNER_NUVIO_ASSUME_TMDB_OFF=1` in the xcodebuild environment (the `TEST_RUNNER_`
-    /// prefix is stripped before it reaches the runner's environment). Defaults off.
+    /// The escape hatch for OFFLINE runs. A fixture with TMDB genuinely switched off (no key,
+    /// artwork off) can never produce `plgs=tmdb`, and on such a run this test has nothing to
+    /// prove rather than something to report — but that has to be asserted from OUTSIDE, never
+    /// inferred from the absence of the very evidence the test exists to find (the mistake the
+    /// first version of this test made: it skipped on `plgs=none`, so a broken store/pending
+    /// integration passed silently). Review finding 3 (rc12) added a second, in-test way to reach
+    /// the same honest conclusion — a live metahub lookup on the sampled ids, tried only when no
+    /// card proves the store path — so this flag now matters mainly for a runner with no network
+    /// access to make that lookup at all; pass it there instead of letting every metahub request
+    /// time out for no benefit. Set it on the RUNNER, not the app: `-debug.assumeTmdbOff` in the
+    /// runner's own arguments, or `TEST_RUNNER_NUVIO_ASSUME_TMDB_OFF=1` in the xcodebuild
+    /// environment (the `TEST_RUNNER_` prefix is stripped before it reaches the runner's
+    /// environment). Defaults off.
     private var assumeTmdbOff: Bool {
         if ProcessInfo.processInfo.arguments.contains("-debug.assumeTmdbOff") { return true }
         let environment = ProcessInfo.processInfo.environment
@@ -218,20 +229,72 @@ final class HeroLogoFocusTests: XCTestCase {
         return false
     }
 
+    /// Review finding 4: the source/bitmap invariant (`plgs`/`plg` must agree on whether a
+    /// bitmap is presented) used to be checked only in `test62`'s body, only over a filtered
+    /// subset of reads (`fitem != "-"`), which meant a missing/unknown `plgs` value fell through
+    /// with no assertion at all, and reads with no usable `fitem` — including the "leave" read at
+    /// the end of the function — were never checked. Enforcing it HERE instead, on every read
+    /// this file ever constructs (forward/back row walks via `walkRow`, the warm revisit, and the
+    /// leave read all funnel through this one function), closes that gap: there is no read site
+    /// left that can skip the check, and `fitem=-` reads are covered too even though they still
+    /// stay out of the PROOF table (a read with no item id proves nothing about the store path).
     private func readLogo(_ probe: XCUIElement, pass: String, step: Int) -> LogoRead {
         let label = probe.label
+        let plgs = probeField(label, "plgs") ?? "-"
+        let plg = probeField(label, "plg") ?? "-"
+        XCTAssertTrue(Self.validLogoSourceValues.contains(plgs),
+                      "\(pass)\(step): plgs=\(plgs) is not one of \(Array(Self.validLogoSourceValues).sorted()) — probe label: \(label)")
+        if plgs == "none" {
+            XCTAssertEqual(plg, "0",
+                           "\(pass)\(step): plgs=none but plg=\(plg) (expected 0 — no bitmap should be presented): \(label)")
+        } else if Self.validLogoSourceValues.contains(plgs) {
+            XCTAssertEqual(plg, "1",
+                           "\(pass)\(step): plgs=\(plgs) but plg=\(plg) (expected 1 — a named source means a bitmap is presented): \(label)")
+        }
         return LogoRead(pass: pass, step: step,
                         fitem: probeField(label, "fitem") ?? "-",
                         pitem: probeField(label, "pitem") ?? "-",
-                        plgs: probeField(label, "plgs") ?? "-",
-                        plg: probeField(label, "plg") ?? "-")
+                        plgs: plgs,
+                        plg: plg)
+    }
+
+    /// Review finding 3's online fallback: TMDB itself needs an API key this harness does not
+    /// have, so this stands in with the public logo CDN `logoPlan`'s own `metahub` source already
+    /// queries — "does ANY logo exist for this title" is close enough to "does TMDB have one" to
+    /// tell a fixture-insufficiency gap apart from a real resolution defect. Synchronous via a
+    /// semaphore (matching this file's synchronous-call convention throughout), HEAD (following
+    /// redirects, `URLSession`'s default), 10s timeout. A network failure reads as UNKNOWN
+    /// (`nil`), never as "no logo" — an unreachable host must not let a real regression pass as a
+    /// skip.
+    private func metahubHasLogo(imdbId: String) -> Bool? {
+        guard let url = URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Bool?
+        let task = URLSession.shared.dataTask(with: request) { _, response, error in
+            defer { semaphore.signal() }
+            guard error == nil, let http = response as? HTTPURLResponse else { return }
+            result = http.statusCode != 404
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 11)
+        return result
     }
 
     /// Walks `direction` across one row, one card at a time, reading `debug_hero` after each hop has
     /// had time to settle (the 0.2 s focus dwell plus the resolver's 400 ms `laterSwapDeadline`).
-    /// Stops early at the end of the row (two consecutive reads of the same item — a press into the
-    /// row's edge is a no-op) or as soon as one card proves the store path. Returns the reads it
-    /// collected.
+    /// Stops early ONLY at the end of the row (two consecutive reads of the same item — a press
+    /// into the row's edge is a no-op). Returns the reads it collected.
+    ///
+    /// Review finding 2: this used to also stop as soon as one card proved the store path — a hit
+    /// on card two ended the walk right there, so the boundary this test exists to exercise (past
+    /// the shared overlay's 12-item reach) and the back pass (where a repaired metahub miss shows
+    /// up as `tmdb`) could both go completely untested by a passing run. The traversal is now
+    /// unconditional: every card in the budget gets walked (or the row's real edge is hit) no
+    /// matter how early proof shows up, and `test62` evaluates the proof condition over the whole
+    /// collected table afterward instead of using it to cut the walk short.
     private func walkRow(_ probe: XCUIElement, direction: XCUIRemote.Button, pass: String,
                          steps: Int) -> [LogoRead] {
         var reads: [LogoRead] = []
@@ -239,7 +302,6 @@ final class HeroLogoFocusTests: XCTestCase {
             press(direction, times: 1, gap: 0.85)
             let read = readLogo(probe, pass: pass, step: step)
             reads.append(read)
-            if read.provesTheStorePath { break }
             if reads.count >= 2, reads[reads.count - 2].fitem == read.fitem {
                 // Row edge: the press moved nothing, so every further press in this direction is
                 // another no-op. (Two reads of one item is also the warm re-read, which is fine —
@@ -283,15 +345,29 @@ final class HeroLogoFocusTests: XCTestCase {
     /// item's own logo field), `metahub` predates it too (BUG-17's synthesized guess), and `none` is
     /// the absence of evidence — so `tmdb` is the only reading that can only happen because
     /// `logoPlan` consulted the store. The walk therefore does not settle for one card: it steps
-    /// along the row one card at a time, recording `(fitem, plgs, plg)` for each, and when the
-    /// forward pass finds nothing it walks back over the same cards, because a card whose first
-    /// visit read `none` has kicked `repairMetahubMiss` on the way (a metahub guess that 404s is
-    /// exactly what makes the store the better answer next time) and a second visit is where that
-    /// repair shows up as `tmdb`. If a whole row yields nothing it tries one more row before
-    /// failing, and it FAILS with the collected table rather than skipping — an empty walk is either
-    /// a broken store/pending integration or a row of titles TMDB has no logo for, and both of those
-    /// are findings, not reasons to pass quietly. The only skip is an explicit
-    /// `-debug.assumeTmdbOff` on the runner (see `assumeTmdbOff`).
+    /// along the row one card at a time, recording `(fitem, plgs, plg)` for each. The forward pass
+    /// always walks the full `cardsPerRow` budget (or to the row's real edge) and the back pass
+    /// always runs too, regardless of whether an early card already proves the store path —
+    /// stopping the walk at the first `tmdb` hit (rc12's bug, review finding 2) let a hit on card
+    /// two pass without ever reaching past the shared overlay's 12-item reach or revisiting, so a
+    /// separate assertion requires at least one read from card index ≥ 13 before the proof is
+    /// trusted. The back pass matters because a card whose first visit read `none` has kicked
+    /// `repairMetahubMiss` on the way (a metahub guess that 404s is exactly what makes the store
+    /// the better answer next time) and a second visit is where that repair shows up as `tmdb`. If
+    /// a whole row yields nothing it tries one more row before failing, and it FAILS with the
+    /// collected table rather than skipping — an empty walk is either a broken store/pending
+    /// integration or a row of titles TMDB has no logo for, and both of those are findings, not
+    /// reasons to pass quietly.
+    ///
+    /// This test has exactly three skip paths, named here so none is ever added silently: (1) an
+    /// explicit `-debug.assumeTmdbOff` on the runner (see `assumeTmdbOff`) — TMDB is deliberately
+    /// off, so `plgs=tmdb` is unreachable by construction; (2) no non-folder row focused within 20
+    /// Down presses on the first row attempt (`locateNonFolderRow`) — this profile's Home has
+    /// nothing walkable to begin with, not a code question; (3) review finding 3's online check —
+    /// when no card proves the store path, every sampled `tt`-prefixed id from the reads 404s
+    /// against metahub's public logo CDN, meaning this fixture's titles carry no logo art
+    /// anywhere (a fixture-insufficiency finding, distinct from a resolution defect). Anything
+    /// else is a failure, never a skip.
     ///
     /// Why the first version of this test did not do its job (Codex Finding B, rc12): it accepted an
     /// `addon`/`metahub` reading as success and SKIPPED on `plgs=none`, so nothing in the store,
@@ -336,17 +412,21 @@ final class HeroLogoFocusTests: XCTestCase {
                 XCTAssertEqual(pitemId, settled.fitem,
                                "the hero must have committed to the item focus landed on: \(settled)")
             }
+            // Review finding 2: no early `break rowSearch` here on `provesTheStorePath` — a hit on
+            // an early card used to end the whole walk right there, so the back pass below (and
+            // any row beyond it) never ran. The proof condition is now evaluated once, over the
+            // complete `reads` table, after both attempted rows have each run their full
+            // forward-and-back walk.
             if let hit = forward.first(where: { $0.provesTheStorePath }) {
-                proof = hit
-                break rowSearch
+                proof = proof ?? hit
             }
 
             // Back over the same cards: the revisit where a repaired metahub miss becomes `tmdb`.
+            // Always runs, even when the forward pass above already found proof — see above.
             let back = walkRow(probe, direction: .left, pass: "r\(rowAttempt)<", steps: forward.count)
             reads += back
             if let hit = back.first(where: { $0.provesTheStorePath }) {
-                proof = hit
-                break rowSearch
+                proof = proof ?? hit
             }
         }
 
@@ -357,16 +437,28 @@ final class HeroLogoFocusTests: XCTestCase {
         add(tableAttachment)
         print("[test62] \(reads.count) reads across \(rowsWalked) row(s):\n\(table)")
 
-        // `presentedLogoSource` and `presented.logo` are set in one transaction and may never
-        // disagree (see `presentedLogoSource`'s doc comment): a named source means a bitmap is on
-        // screen, and `none` means the text wordmark is.
-        for read in reads where read.fitem != "-" {
-            if Self.logoSources.contains(read.plgs) {
-                XCTAssertEqual(read.plg, "1", "plgs named \(read.plgs) but no logo bitmap is presented: \(read)")
-            } else if read.plgs == "none" {
-                XCTAssertEqual(read.plg, "0", "plgs=none but a logo bitmap is presented: \(read)")
-            }
+        // Review finding 2's other half: proving the store path is only meaningful if the walk
+        // actually reached past the shared TMDB overlay's 12-item reach — the FEAT-42 gap this
+        // test exists to cover. A row that hit its edge (or ran out of the `cardsPerRow` budget)
+        // before card 13 never exercised that gap, on EITHER sampled row, so this fails loudly
+        // rather than letting an early, in-overlay-range hit stand in for it.
+        let reachedBoundary = reads.contains { $0.pass.hasSuffix(">") && $0.step >= 13 }
+        guard reachedBoundary else {
+            XCTFail("""
+            FEAT-42 boundary check: no forward-pass read reached card index 13 — past the shared \
+            TMDB overlay's 12-item reach — across \(rowsWalked) row(s). Every sampled row is \
+            shorter than 13 cards (or hit its edge early), so the walk never exercised the gap \
+            this test exists to cover, regardless of whether a card already proved the store \
+            path. Reads:
+            \(table)
+            """)
+            return
         }
+
+        // Note: the source/bitmap invariant (`plgs`/`plg` must agree on whether a bitmap is
+        // presented) is enforced inside `readLogo` itself now (review finding 4) — on every read
+        // this file ever constructs, `fitem=-` reads included — rather than here over a filtered
+        // subset, so there is nothing left to re-check in this function's body.
 
         guard let proof else {
             if assumeTmdbOff {
@@ -376,14 +468,36 @@ final class HeroLogoFocusTests: XCTestCase {
                 \(reads.count) reads, none from the store.
                 """)
             }
+            // Review finding 3: before failing hard, check whether these sampled titles carry ANY
+            // logo art at all. TMDB itself needs an API key this harness does not have, so
+            // metahub's own public logo CDN — the same source `logoPlan` falls back to — stands
+            // in as "does logo art exist anywhere for this title". Only when EVERY sampled id
+            // comes back a confirmed 404 is this an honest fixture-insufficiency gap rather than
+            // a resolution defect; a network failure (`nil`) keeps the failure path, since an
+            // unreachable host must never let a real regression pass as a skip.
+            let sampledIds = Array(Set(reads.map(\.fitem)).filter { $0.hasPrefix("tt") }).prefix(3)
+            if !sampledIds.isEmpty {
+                let lookups = sampledIds.map { (id: $0, hasLogo: metahubHasLogo(imdbId: $0)) }
+                if lookups.allSatisfy({ $0.hasLogo == false }) {
+                    let lookupTable = lookups.map { "\($0.id): metahub 404 (no logo art found)" }.joined(separator: "\n")
+                    throw XCTSkip("""
+                    sampled rows carry no logo art anywhere — fixture insufficiency, not a \
+                    resolution defect. Checked against metahub's public logo CDN (TMDB itself \
+                    needs an API key this harness does not have):
+                    \(lookupTable)
+                    Reads:
+                    \(table)
+                    """)
+                }
+            }
             XCTFail("""
             FEAT-42: no card presented a logo from TitleLogoStore. \(reads.count) reads across \
             \(rowsWalked) row(s) and not one read plgs=tmdb — neither on a first visit (the row's \
             first-focus prewarm resolving before the card is reached) nor on a revisit (a metahub \
             miss repaired into a confirmed TMDB URL). Either the store/pending/prewarm path is not \
-            working, or TMDB genuinely has no logo for any of these titles — check a few ids \
-            against TMDB before concluding it is the fixture. Pass -debug.assumeTmdbOff on the \
-            runner only when TMDB really is off. Reads:
+            working, or TMDB genuinely has no logo for any of these titles — checked against \
+            metahub above (if any sampled id had one, this is not a fixture-insufficiency case).\
+             Pass -debug.assumeTmdbOff on the runner only when TMDB really is off. Reads:
             \(table)
             """)
             return
