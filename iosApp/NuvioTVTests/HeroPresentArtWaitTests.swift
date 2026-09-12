@@ -152,6 +152,46 @@ final class HeroPresentArtWaitTests: XCTestCase {
         XCTAssertNil(wait.logo)
     }
 
+    // MARK: - FEAT-42: a late logo is dropped exactly like a late backdrop's OWN wait is dropped
+    //
+    // (the `adoptLateBackdrop` retention on the resolver side is a backdrop-only concern, argued
+    // in that method's own doc comment; a logo gets no such retention on either side — see
+    // `HeroLogoPlanTests` and the FEAT-42 task doc for why a late-arriving logo for an
+    // already-presented item stays dropped, the same BUG-90 rule this class has always enforced
+    // for the backdrop's raw miss.)
+
+    @MainActor
+    func testLogoThatLandsAfterTheDeadlineIsDropped() async {
+        let cachedBackdrop = makeImage()
+        // The shape of a `.pending` FEAT-42 resolve gone cold: backdrop already resident, logo
+        // still waiting on `TitleLogoStore` when the budget expires.
+        let wait = HeroPresentArtWait(backdrop: cachedBackdrop, logo: nil,
+                                      needsBackdrop: false, needsLogo: true)
+
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            wait.deadlineElapsed()
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+        deadline.cancel()
+
+        XCTAssertTrue(wait.hitDeadline, "the budget, not the lookup/fetch, ended this wait")
+        XCTAssertNil(wait.logo, "nothing landed in time, so the commit paints the text wordmark")
+        XCTAssertTrue(wait.backdrop === cachedBackdrop, "the already-resident backdrop is untouched")
+
+        // The `TitleLogoStore.awaitLogoURL` → `ArtworkStore.fetch` chain is never cancelled by the
+        // deadline (same contract as the backdrop's own stalled fetch), so it still reports here.
+        // By then the item has been presented with the text wordmark; swapping a logo in behind
+        // the reader's eyes is exactly the Text→Image repaint BUG-90 removed.
+        let lateLogo = makeImage()
+        wait.resolveLogo(lateLogo)
+        XCTAssertNil(wait.logo, "a logo that lands after the deadline is dropped, not adopted")
+        XCTAssertTrue(wait.backdrop === cachedBackdrop)
+    }
+
     // MARK: - Poster fallback (Codex branch review)
     //
     // `heroBackdropURL(for:)` synthesizes a metahub background URL for any IMDb-backed item with no

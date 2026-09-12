@@ -608,7 +608,12 @@ struct HomeView: View {
                 // `present item=nuvio.folder:… backdrop=fetched logo=fetched waited=98 same=0` for
                 // the very focus the leg then failed to find a line for). Read live off the
                 // resolver, this is the same fact with no buffer in between.
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0)")
+                //
+                // FEAT-42: `plgs=<addon|tmdb|metahub|none>` (append-only, right after `plg=`) is
+                // WHERE the presented logo bitmap came from — `heroResolver.presentedLogoSource`,
+                // set in the same commit transaction as `presented` (see that property's own doc
+                // comment), so it can never disagree with what `plg=` just reported.
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0) plgs=\(heroResolver.presentedLogoSource.rawValue)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -1174,6 +1179,10 @@ struct HomeView: View {
                                 // UX-7 (see reportRowFocus for the gating rationale).
                                 onItemFocusChange: { item in
                                     reportRowFocus(item, source: section.key,
+                                                   logoCandidates: {
+                                                       section.items.prefix(CatalogRowView.homePreviewLimit)
+                                                           .filter { TitleLogoStore.isLookupCandidate($0.logo) }
+                                                   },
                                                    prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
                                 }
                             )
@@ -1809,15 +1818,29 @@ struct HomeView: View {
     ///    is the one place reports can still outrun a renderable hero, and it is deliberate.
     ///  - Backdrop prefetch warms once per row, on its first non-nil report, through the same
     ///    `heroBackdropURL` chain the hero renders. Unchanged, and now warm in both hero modes.
+    ///  - FEAT-42: the SAME first-focus gate additionally batches a `TitleLogoStore` lookup for
+    ///    the row's own logo candidates — `logoCandidates` defaults to an empty array (a plain
+    ///    no-op) so Continue Watching/Upcoming/collection rows stay byte-identical; only the
+    ///    catalog-row call site passes one. This is a row-scale PREWARM, not the thing that makes
+    ///    a focused item's logo appear — `HomeHeroFocusModel.requestLogoIfNeeded` (fired from
+    ///    `reportFocus`'s own dwell) is what a single focused card depends on; this just gives it
+    ///    a head start for items later in the row the shared TMDB overlay never reached (past
+    ///    `HOME_ROW_ENRICHMENT_PREFIX`, or a TMDB-id catalog it skips outright).
     ///
     /// Note the removed `cancelAndRevert()` had a second job — dropping a claim made while the
     /// hero was enabled so that re-enabling later could not resurrect a stale title. That job is
     /// obsolete for the same reason: the claim is never orphaned now, because both settings states
     /// display it. Toggling Show Hero mid-browse simply moves the committed title from the
     /// carousel's hero to the focus panel and back.
-    private func reportRowFocus(_ item: MetaPreview?, source: String, prefetch: () -> [String]) {
+    private func reportRowFocus(_ item: MetaPreview?, source: String,
+                                logoCandidates: () -> [MetaPreview] = { [] },
+                                prefetch: () -> [String]) {
         if item != nil, prefetchedBackdropRows.insert(source).inserted {
             ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
+            // Already filtered to lookup candidates by the caller (the catalog-row call site is
+            // the only one that passes a non-default closure) — no re-filtering here.
+            let candidates = logoCandidates()
+            if !candidates.isEmpty { TitleLogoStore.shared.lookupIfNeeded(candidates) }
         }
         focusModel.reportFocus(item, from: source)
     }
@@ -2187,6 +2210,7 @@ final class HomeHeroFocusModel: ObservableObject {
             // committed, so there's no dwell to honor — and leave a byte-identical re-report as
             // the pure no-op it should be (Codex review finding).
             if let item, focusedItem?.isEqual(item) != true {
+                requestLogoIfNeeded(item)
                 focusedItem = item
                 enrichIfNeeded(item)
             }
@@ -2201,6 +2225,7 @@ final class HomeHeroFocusModel: ObservableObject {
             pendingTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.commitDelay * 1_000_000_000))
                 guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
+                self.requestLogoIfNeeded(item)
                 self.focusedItem = item
                 self.enrichIfNeeded(item)
             }
@@ -2213,6 +2238,24 @@ final class HomeHeroFocusModel: ObservableObject {
                 self.onRevert?()
             }
         }
+    }
+
+    /// FEAT-42: kicks a `TitleLogoStore` lookup for a card that is ABOUT to take over the hero —
+    /// called immediately before both `focusedItem = item` publishes above (the same-title
+    /// fast-path and the dwell-committed path), never from the raw per-card focus report, so a
+    /// fast scrub across a row spends nothing: only the item the hand actually settles on (or
+    /// re-settles on) ever reaches this. `HeroArtResolver.present`'s own `logoPlan` reads whatever
+    /// this starts, so by the time `present` runs for this item a lookup already has a head start
+    /// on the resolve's `laterSwapDeadline` window.
+    ///
+    /// Two guards: a collection folder already carries its OWN logo (`titleLogoUrl`, via
+    /// `folderHeroPreview`) or none at all — either way it has no sensible TMDB id to look up
+    /// under, matching `logoPlan`'s own folder short-circuit. And `isLookupCandidate` skips an
+    /// item that already has a usable `logo` string — nothing to look up.
+    private func requestLogoIfNeeded(_ item: MetaPreview) {
+        guard !isCollectionHero(item) else { return }
+        guard TitleLogoStore.isLookupCandidate(item.logo) else { return }
+        TitleLogoStore.shared.lookupIfNeeded([item])
     }
 
     /// Addons frequently represent absent metadata as `""` rather than nil (HomeCatalogParser
@@ -2380,11 +2423,49 @@ struct HeroPresentation: Equatable {
 /// Late arrivals are dropped on purpose. A logo that resolves after its item was committed with the
 /// text wordmark would be exactly the Text→Image swap this class exists to remove (BUG-90); the item
 /// picks it up from cache the next time it is presented.
+///
+/// FEAT-42: which of four places the currently PRESENTED logo bitmap came from (or `.none` for no
+/// logo / the text wordmark) — see `presentedLogoSource` and `HeroLogoPlan`.
+enum HeroLogoSource: String {
+    /// The item's own `logo` field, already populated by the shared layer or a row's addon.
+    case addon
+    /// `TitleLogoStore`'s own TMDB preview-enrichment lookup — the FEAT-42 path that reaches
+    /// catalog items the shared enrichment overlay never touched (past `HOME_ROW_ENRICHMENT_PREFIX`,
+    /// or a TMDB-id catalog the overlay skips entirely).
+    case tmdb
+    /// The synthesized `images.metahub.space/logo/medium/<imdb id>/img` guess for IMDb-backed
+    /// items — synchronous by construction (no lookup to wait on), so Cinemeta rows never pay the
+    /// `.pending` cost.
+    case metahub
+    /// No logo bitmap is presented — no candidate resolved (a plain miss, or nothing to look up),
+    /// or the resolve hit its deadline before one arrived. `HeroLogo` draws the text wordmark.
+    case none
+}
+
+/// FEAT-42: what `HeroArtResolver.logoPlan` decided to do about a target's logo BEFORE any fetch
+/// runs. `.url` already carries the `HeroLogoSource` it will present if the fetch lands; `.pending`
+/// means a `TitleLogoStore` lookup is already in flight and worth waiting on (inside the existing
+/// `laterSwapDeadline` — no new budget); `.none` means there is nothing to look up or wait for.
+enum HeroLogoPlan: Equatable {
+    case url(URL, HeroLogoSource)
+    case pending
+    case none
+}
+
 @MainActor
 final class HeroArtResolver: ObservableObject {
     /// The hero that is actually painted. `nil` = no hero region at all (the same state
     /// `displayHero == nil` produced before this type existed).
     @Published private(set) var presented: HeroPresentation?
+
+    /// FEAT-42: where `presented`'s logo bitmap came from — `.none` when `presented` has no logo
+    /// (or `presented` itself is nil). Set inside the SAME animation transaction as `presented` in
+    /// every commit path (`commit`, the same-identity gap-fill branch, `adoptLateBackdrop`, and the
+    /// nil-target revert in `present`), so a viewer can never observe `presented` and
+    /// `presentedLogoSource` disagreeing about the same hero. Not part of `HeroPresentation`
+    /// itself/`HeroPresentation.==` — it is diagnostic (the `debug_hero` `plgs=` field, the
+    /// `hero_probe_blob` `logoSrc=` field), not something any renderer branches on.
+    @Published private(set) var presentedLogoSource: HeroLogoSource = .none
 
     /// How long a swap between two TITLES waits for cold artwork before committing with whatever
     /// landed. Titles always have a poster on their card, and the resolve now falls back to it
@@ -2433,6 +2514,52 @@ final class HeroArtResolver: ObservableObject {
 
     var isIdle: Bool { resolveTask == nil }
 
+    /// FEAT-42: decides where (if anywhere) a target's presented logo should come from, in
+    /// priority order, BEFORE any fetch runs. Pure and `nonisolated static` so
+    /// `HeroLogoPlanTests` can drive every combination directly.
+    ///
+    /// 1. `addonLogo` — the item's own `logo` field wins outright when it is non-blank and
+    ///    parses as a URL. A blank string or one that fails `URL(string:)` falls through to the
+    ///    next step rather than producing a broken `.url`.
+    /// 2. `isFolder` — a collection folder never gets a store/metahub lookup: it has no sensible
+    ///    TMDB id to look up under (`folderHeroPreview` already sets its OWN `logo` from
+    ///    `titleLogoUrl` when it has one, which step 1 already covers), so this stops here at
+    ///    `.none` rather than falling through to metahub with a folder's synthetic id.
+    /// 3. `storeURL` — `TitleLogoStore`'s own resolved TMDB lookup, when one already landed.
+    ///    Checked BEFORE metahub deliberately: metahub is a synthesized guess that often 404s,
+    ///    while a resolved TMDB URL is a confirmed hit — a stale metahub source must never win
+    ///    once the real answer is in hand.
+    /// 4. Metahub — synthesized only for IMDb-backed ids (`tt…`, and season/episode-suffixed ids
+    ///    like `tt…:1:1`, whose first `:`-separated component is checked). Synchronous by
+    ///    construction (no network round trip to decide this branch), so Cinemeta rows never pay
+    ///    the `.pending` wait — and it is checked BEFORE `.pending` so an IMDb item with a lookup
+    ///    still in flight uses the synchronous guess rather than waiting on the store (a lookup
+    ///    that finishes later still wins on this item's NEXT presentation via step 3).
+    /// 5. `storePending` — a `TitleLogoStore` lookup is in flight and this item has no faster
+    ///    candidate; `.pending` tells `present` to wait for it inside the existing
+    ///    `laterSwapDeadline`, never a new budget.
+    /// 6. `.none` — nothing to show and nothing to wait for. This is also where a TMDB-disabled
+    ///    session lands by construction: with TMDB off `TitleLogoStore` never writes a `.pending`
+    ///    entry (`lookupIfNeeded`'s own settings guard), so `storeURL` is always nil and
+    ///    `storePending` is always false here — no separate "is TMDB on" parameter is needed.
+    nonisolated static func logoPlan(addonLogo: String?, id: String, isFolder: Bool,
+                                     storeURL: String?, storePending: Bool) -> HeroLogoPlan {
+        if let addonLogo, !addonLogo.isEmpty, let url = URL(string: addonLogo) {
+            return .url(url, .addon)
+        }
+        if isFolder { return .none }
+        if let storeURL, !storeURL.isEmpty, let url = URL(string: storeURL) {
+            return .url(url, .tmdb)
+        }
+        let imdbId = id.split(separator: ":").first.map(String.init) ?? id
+        if imdbId.hasPrefix("tt"),
+           let url = URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img") {
+            return .url(url, .metahub)
+        }
+        if storePending { return .pending }
+        return .none
+    }
+
     /// Point the hero at `target`. Cancels any resolve in flight; the previous presentation stays on
     /// screen until this one can be committed whole.
     func present(_ target: MetaPreview?, isFolder: Bool) {
@@ -2451,7 +2578,12 @@ final class HeroArtResolver: ObservableObject {
         guard let target else {
             targetIdentity = nil
             guard presented != nil else { return }
-            withAnimation(.easeInOut(duration: 0.3)) { presented = nil }
+            // FEAT-42: reset together with `presented`, in the same transaction — see
+            // `presentedLogoSource`'s doc comment on why the two may never disagree.
+            withAnimation(.easeInOut(duration: 0.3)) {
+                presented = nil
+                presentedLogoSource = .none
+            }
             return
         }
 
@@ -2488,9 +2620,13 @@ final class HeroArtResolver: ObservableObject {
             // rather than a `same=0` line: Leg C counts one `paint` per `present` for the focused
             // folder and a present-with-no-paint would break that count.
             if HeroArtResolver.isVisibleRepaint(current: current.item, target: target) {
+                // FEAT-42: the logo bitmap is untouched here (built from `current.logo` above,
+                // same as the backdrop) — `presentedLogoSource` is passed through unchanged for
+                // the log line, never recomputed, since a gap-fill never re-resolves artwork.
                 logPresent(identity: identity,
                            backdrop: refreshed.backdrop != nil ? "cached" : "none",
                            logo: refreshed.logo != nil ? "cached" : "text",
+                           logoOrigin: presentedLogoSource,
                            waitedMs: 0, same: true)
             }
             presented = refreshed   // deliberately unanimated: a gap-fill must not move anything
@@ -2498,11 +2634,39 @@ final class HeroArtResolver: ObservableObject {
         }
 
         let backdropURL = heroBackdropURL(for: target).flatMap { URL(string: $0) }
-        let logoURL = heroLogoURL(for: target)
+        // FEAT-42 (decision b′): resolver-side lookup, no payload merge. `logoPlan` decides in
+        // priority order (own logo → folder stops → `TitleLogoStore`'s resolved URL → a
+        // synchronous metahub guess for IMDb ids → a `TitleLogoStore` lookup already in flight →
+        // nothing) — see that function's own doc comment. The URL never enters `MetaPreview`, so
+        // `heroPayloadSignature`/`isVisibleRepaint`/`headHashHex` are untouched by construction.
+        let plan = HeroArtResolver.logoPlan(
+            addonLogo: target.logo, id: target.id, isFolder: isFolder,
+            storeURL: TitleLogoStore.shared.logoURL(for: target),
+            storePending: TitleLogoStore.shared.isLookupPending(for: target)
+        )
+        // The origin this presentation will log/commit IF a logo bitmap actually ends up
+        // resolved — `.pending` always implies a `TitleLogoStore`/TMDB answer by construction (see
+        // `logoPlan`'s doc comment, step 5). Every commit site below still gates this on the final
+        // `logo != nil`: a plan that names a source whose fetch then misses presents no logo at
+        // all, and `presentedLogoSource` must read `.none` for that, not the source that failed.
+        let planLogoOrigin: HeroLogoSource = {
+            switch plan {
+            case .url(_, let source): return source
+            case .pending: return .tmdb
+            case .none: return .none
+            }
+        }()
+        let logoURL: URL? = {
+            if case .url(let url, _) = plan { return url }
+            return nil
+        }()
         let cachedBackdrop = ArtworkStore.cached(backdropURL)
         let cachedLogo = ArtworkStore.cached(logoURL)
         let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
-        let needsLogo = logoURL != nil && cachedLogo == nil
+        // `.pending` has no `logoURL` of its own yet (the fetch only starts once
+        // `TitleLogoStore.awaitLogoURL` answers), so it must opt into the wait independently of
+        // the `logoURL != nil` check below.
+        let needsLogo = (logoURL != nil && cachedLogo == nil) || plan == .pending
 
         // Codex branch review: the poster stand-in for a primary that never lands.
         //
@@ -2531,6 +2695,7 @@ final class HeroArtResolver: ObservableObject {
             commit(item: target, backdrop: cachedBackdrop, logo: cachedLogo, identity: identity,
                    backdropSource: cachedBackdrop != nil ? "cached" : "none",
                    logoSource: cachedLogo != nil ? "cached" : "text",
+                   logoOrigin: cachedLogo != nil ? planLogoOrigin : .none,
                    waitedMs: 0)
             return
         }
@@ -2573,8 +2738,32 @@ final class HeroArtResolver: ObservableObject {
             }
         }
         if needsLogo, let logoURL {
-            Task { @MainActor in
+            // `.url` case (the plan already names a concrete URL — addon, TMDB store, or
+            // metahub) and it wasn't cached.
+            Task { @MainActor [weak self] in
                 let image = try? await ArtworkStore.fetch(logoURL, admission: .head)
+                wait.resolveLogo(image)
+                // FEAT-42 repair: metahub is a synthesized GUESS (BUG-17) — a miss here does not
+                // mean the item has no logo, only that this guess was wrong. Kick a real
+                // `TitleLogoStore` lookup so the item's NEXT presentation can use step 3 of
+                // `logoPlan` (a confirmed TMDB URL) instead of repeating the same bad guess. Only
+                // for the metahub source: an addon-supplied or already-cached TMDB URL that 404s
+                // is a dead link, not a guess worth re-resolving.
+                guard image == nil, case .url(_, .metahub) = plan else { return }
+                self?.repairMetahubMiss(for: target)
+            }
+        } else if needsLogo, plan == .pending {
+            // `.pending` case — no URL to fetch yet; await the in-flight `TitleLogoStore` lookup
+            // first, then fetch whatever it resolves to. Past `deadline` this is a no-op the same
+            // way every other late arrival in this class is: `wait.resolveLogo` guards on
+            // `!finished` and drops it.
+            Task { @MainActor in
+                guard let resolvedURLString = await TitleLogoStore.shared.awaitLogoURL(for: target),
+                      let resolvedURL = URL(string: resolvedURLString) else {
+                    wait.resolveLogo(nil)
+                    return
+                }
+                let image = try? await ArtworkStore.fetch(resolvedURL, admission: .head)
                 wait.resolveLogo(image)
             }
         }
@@ -2617,6 +2806,7 @@ final class HeroArtResolver: ObservableObject {
             self.commit(item: target, backdrop: backdrop, logo: logo, identity: identity,
                         backdropSource: backdropSource,
                         logoSource: Self.source(cached: cachedLogo, resolved: logo, empty: "text"),
+                        logoOrigin: logo != nil ? planLogoOrigin : .none,
                         waitedMs: Int(Date().timeIntervalSince(started) * 1000))
             // 2026-09-08 finding: a backdrop that lands during the deadline hand-off ITSELF — after
             // `deadlineElapsed()` above already finished the wait, but before this task's `commit`
@@ -2672,12 +2862,18 @@ final class HeroArtResolver: ObservableObject {
     /// belt-and-braces) so even a future consumer of `presented` cannot reintroduce an implicit
     /// geometry animation there by accident.
     private func commit(item: MetaPreview, backdrop: UIImage?, logo: UIImage?, identity: String,
-                        backdropSource: String, logoSource: String, waitedMs: Int) {
+                        backdropSource: String, logoSource: String, logoOrigin: HeroLogoSource,
+                        waitedMs: Int) {
         logPresent(identity: identity, backdrop: backdropSource, logo: logoSource,
-                   waitedMs: waitedMs, same: false)
+                   logoOrigin: logoOrigin, waitedMs: waitedMs, same: false)
         let next = HeroPresentation(item: item, backdrop: backdrop, logo: logo, identity: identity)
         guard next != presented else { return }
-        withAnimation(.easeInOut(duration: 0.3)) { presented = next }
+        // FEAT-42: set in the SAME transaction as `presented` — see `presentedLogoSource`'s doc
+        // comment.
+        withAnimation(.easeInOut(duration: 0.3)) {
+            presented = next
+            presentedLogoSource = logoOrigin
+        }
     }
 
     /// 2026-09-08 finding (simulator rig, the tester's real collections): when Home focus lands on
@@ -2719,10 +2915,24 @@ final class HeroArtResolver: ObservableObject {
             presentedBackdrop: presented?.backdrop, resolveTaskIsNil: resolveTask == nil,
             identity: identity
         ), let presented else { return }
+        // FEAT-42: the logo (if any) is `presented.logo`, unchanged by this backdrop-only
+        // adoption — its origin is whatever is already recorded on `presentedLogoSource`, passed
+        // straight through rather than recomputed.
         commit(item: presented.item, backdrop: image, logo: presented.logo, identity: identity,
                backdropSource: "late",
                logoSource: presented.logo != nil ? "cached" : "text",
+               logoOrigin: presentedLogoSource,
                waitedMs: Int(Date().timeIntervalSince(startedAt) * 1000))
+    }
+
+    /// FEAT-42 repair path: `logoPlan`'s metahub guess (step 4) 404'd for `target`. Kicks a real
+    /// `TitleLogoStore` lookup, purely for the item's NEXT presentation (this one already
+    /// committed, or is about to, with no logo) — never bundled with the pending/`.url` fetch
+    /// itself, which must stay focused on THIS presentation's own budget. A no-op if a lookup for
+    /// this item/scope is already resolved or in flight (`TitleLogoStore.lookupIfNeeded`'s own
+    /// `results[key] == nil` guard).
+    private func repairMetahubMiss(for target: MetaPreview) {
+        TitleLogoStore.shared.lookupIfNeeded([target])
     }
 
     /// Pure predicate behind `adoptLateBackdrop` — see that method's doc comment for the finding
@@ -2789,14 +2999,20 @@ final class HeroArtResolver: ObservableObject {
     /// regardless, the same append-only discipline. `none` means no `HeroCrossfadeImage` has
     /// completed a layout pass yet this launch — expected on the very first `present` line, before
     /// SwiftUI's first layout.
+    ///
+    /// FEAT-42: `logoSrc=<addon|tmdb|metahub|none>` is appended AFTER `frame=` — the About pane's
+    /// probe blob truncates lines in the middle, not at the end, so a field appended last is the
+    /// one most likely to survive a photo of a long line. `none` covers both "no logo bitmap
+    /// resolved" and "the plan named a source but its fetch missed" — see `commit`'s callers,
+    /// which only ever pass a non-`.none` `logoOrigin` alongside a non-nil `logo` bitmap.
     private func logPresent(identity: String, backdrop: String, logo: String,
-                            waitedMs: Int, same: Bool) {
+                            logoOrigin: HeroLogoSource, waitedMs: Int, same: Bool) {
         guard HomeHeroProbe.enabled else { return }
         let frame: String = HeroCrossfadeImage.lastReportedSize.map {
             String(format: "%.0fx%.0f", $0.width, $0.height)
         } ?? "none"
-        HomeHeroProbe.log(String(format: "present item=%@ backdrop=%@ logo=%@ waited=%d same=%d frame=%@",
-                                 identity, backdrop, logo, waitedMs, same ? 1 : 0, frame))
+        HomeHeroProbe.log(String(format: "present item=%@ backdrop=%@ logo=%@ waited=%d same=%d frame=%@ logoSrc=%@",
+                                 identity, backdrop, logo, waitedMs, same ? 1 : 0, frame, logoOrigin.rawValue))
     }
 }
 
