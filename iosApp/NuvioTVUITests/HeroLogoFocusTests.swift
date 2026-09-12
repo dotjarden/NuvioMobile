@@ -33,6 +33,12 @@ import XCTest
 /// cross-row navigation. The proof is now a table-wide count (at least one card resolved through
 /// the store, and resolved cards are not a minority), not a single lucky hit.
 ///
+/// ⚠️ Pass `-debug.heroLogoStoreOnly YES` as a LAUNCH ARGUMENT only, the way this test does —
+/// never persist it on the fixture simulator with `defaults write`. It withholds a card's own
+/// logo and the metahub guess for every hero commit while it's set, folder heroes included, which
+/// would silently break the evidence every OTHER hero UI test relies on for as long as it stuck
+/// around outside this one launch.
+///
 /// This test has exactly two skip paths, both retained from before: (1) an explicit
 /// `-debug.assumeTmdbOff` on the runner — TMDB is deliberately off, so `plgs=tmdb` is unreachable
 /// by construction; (2) no non-folder row focused within 20 Down presses — this profile's Home has
@@ -206,10 +212,18 @@ final class HeroLogoFocusTests: XCTestCase {
         let pitem: String
         let plgs: String
         let plg: String
+        /// True only when `pitem` (the PRESENTED item, `"type:id"`) names the same item as
+        /// `fitem` (the FOCUSED item, bare id). During a cold hero commit the previous card's
+        /// `plgs`/`plg` can still be what is on screen for a read taken just after focus already
+        /// moved on — crediting that read to the newly focused card would misattribute a stale
+        /// source's resolution to it. Non-evidence reads still go through every invariant check
+        /// in `readLogo`; they are only excluded from the FEAT-42 per-card proof table
+        /// (`byItem`/`tmdbHits`).
+        let isEvidence: Bool
 
         /// The FEAT-42 store path — the one source `logoPlan` can still reach with the item's own
         /// logo withheld and the metahub guess disallowed.
-        var provesTheStorePath: Bool { plgs == "tmdb" && plg == "1" }
+        var provesTheStorePath: Bool { isEvidence && plgs == "tmdb" && plg == "1" }
         var description: String { "\(pass)\(step) \(fitem) plgs=\(plgs) plg=\(plg)" }
     }
 
@@ -269,11 +283,19 @@ final class HeroLogoFocusTests: XCTestCase {
             XCTAssertEqual(plg, "1",
                            "\(pass)\(step): plgs=\(plgs) but plg=\(plg) (expected 1 — a named source means a bitmap is presented): \(label)")
         }
+        let fitem = probeField(label, "fitem") ?? "-"
+        let pitem = probeField(label, "pitem") ?? "-"
+        // `pitem` is `"type:id"`; `fitem` is the bare id (same convention `test62` already uses
+        // at its own settled-commit check). A read is only evidence for `fitem`'s card when the
+        // two agree.
+        let pitemId = pitem.split(separator: ":").dropFirst().joined(separator: ":")
+        let isEvidence = fitem != "-" && !pitemId.isEmpty && pitemId == fitem
         return LogoRead(pass: pass, step: step,
-                        fitem: probeField(label, "fitem") ?? "-",
-                        pitem: probeField(label, "pitem") ?? "-",
+                        fitem: fitem,
+                        pitem: pitem,
                         plgs: plgs,
-                        plg: plg)
+                        plg: plg,
+                        isEvidence: isEvidence)
     }
 
     /// Walks `direction` across one row, one card at a time, reading `debug_hero` after each hop has
@@ -317,15 +339,15 @@ final class HeroLogoFocusTests: XCTestCase {
     /// evidence on its own, so unlike earlier versions there is no second-row fallback and no
     /// `avoiding` parameter to keep a cross-row search off the row it just left.
     private func locateNonFolderRow(_ probe: XCUIElement) -> Int? {
-        var lastLabel = ""
+        var lastRead: LogoRead?
         for attempt in 1...20 {
             press(.down, times: 1, gap: 0.9)
-            let label = probe.label
-            lastLabel = label
-            guard let fitem = probeField(label, "fitem"), fitem != "-", !fitem.isEmpty else { continue }
-            if !fitem.hasPrefix("nuvio-folder://") { return attempt }
+            let read = readLogo(probe, pass: "locate", step: attempt)
+            lastRead = read
+            guard read.fitem != "-", !read.fitem.isEmpty else { continue }
+            if !read.fitem.hasPrefix("nuvio-folder://") { return attempt }
         }
-        print("[test62] no non-folder row focused after 20 Down presses. Last probe: \(lastLabel)")
+        print("[test62] no non-folder row focused after 20 Down presses. Last probe: \(lastRead?.description ?? "none")")
         return nil
     }
 
@@ -401,12 +423,19 @@ final class HeroLogoFocusTests: XCTestCase {
         // its edge (or ran out of the `cardsPerRow` budget) before card 13 never exercised that
         // gap, so this fails loudly rather than letting an early, in-overlay-range hit stand in
         // for it.
+        // Both checks matter: `reachedBoundary` only counts PRESSES, which can pass over fewer
+        // than 13 distinct cards if focus oscillates (bounces back onto a card it already
+        // visited); `distinctForwardCards` catches that case directly off the forward pass's own
+        // set of focused items.
         let reachedBoundary = reads.contains { $0.pass.hasSuffix(">") && $0.step >= 13 }
-        guard reachedBoundary else {
+        let distinctForwardCards = Set(forward.map(\.fitem)).subtracting(["-"]).count
+        guard reachedBoundary, distinctForwardCards >= 13 else {
             XCTFail("""
-            FEAT-42 boundary check: no forward-pass read reached card index 13 — past the shared \
-            TMDB overlay's 12-item reach. The row is shorter than 13 cards (or hit its edge \
-            early), so the walk never exercised the gap this test exists to cover. Reads:
+            FEAT-42 boundary check: the forward pass never demonstrably reached card index 13 — \
+            past the shared TMDB overlay's 12-item reach (reachedBoundary=\(reachedBoundary) \
+            distinctForwardCards=\(distinctForwardCards)). The row is shorter than 13 cards (or \
+            hit its edge early, or oscillated over fewer than 13 distinct cards), so the walk \
+            never exercised the gap this test exists to cover. Reads:
             \(table)
             """)
             return
@@ -421,7 +450,7 @@ final class HeroLogoFocusTests: XCTestCase {
         // RESOLVED (at least one `tmdb plg=1` read anywhere in its history) or unresolved (every
         // read for that card was `none`). At least one card must resolve, and unresolved cards
         // must not be the majority.
-        let byItem = Dictionary(grouping: reads.filter { $0.fitem != "-" }, by: { $0.fitem })
+        let byItem = Dictionary(grouping: reads.filter { $0.fitem != "-" && $0.isEvidence }, by: { $0.fitem })
         let resolvedItems = byItem.filter { _, itemReads in itemReads.contains { $0.provesTheStorePath } }
         let unresolvedItems = byItem.filter { _, itemReads in itemReads.allSatisfy { $0.plgs == "none" } }
 
@@ -444,7 +473,7 @@ final class HeroLogoFocusTests: XCTestCase {
             """)
             return
         }
-        guard byItem.isEmpty || unresolvedItems.count * 2 <= byItem.count else {
+        guard unresolvedItems.count * 2 <= byItem.count else {
             XCTFail("""
             FEAT-42: \(unresolvedItems.count) of \(byItem.count) distinct card(s) never resolved a \
             logo (plgs=none on every read) — more than half. A row of real titles where TMDB \
@@ -459,40 +488,59 @@ final class HeroLogoFocusTests: XCTestCase {
         // Warm path: pick the FIRST chronological `tmdb` read whose card (`fitem`) has a LATER
         // read in the table — the back pass revisits every forward-pass card, so this is almost
         // always available without any navigation. Only the edge case where every `tmdb` hit is on
-        // a card with no later read (the very last card of the back pass, which nothing revisits)
-        // falls back to forcing a fresh read in place with Left then Right — focus is still
-        // sitting on that card at the end of the walk, so this never needs to navigate elsewhere.
+        // a card with no later read (every hit is from the back pass, which nothing further
+        // revisits) falls back to deriving the proof card from wherever focus actually rests at
+        // the end of the walk, then direction-probing a maneuver that leaves and returns to it —
+        // see the `else` branch below for why a fixed Left-then-Right cannot be assumed here.
         let indexedReads = Array(reads.enumerated())
-        let tmdbHits = indexedReads.filter { $0.element.provesTheStorePath }
+        let tmdbHits = indexedReads.filter { $0.element.provesTheStorePath && $0.element.fitem != "-" }
         let proofWithLater = tmdbHits.first { candidate in
             indexedReads[(candidate.offset + 1)...].contains { $0.element.fitem == candidate.element.fitem }
         }
 
-        let proof = (proofWithLater ?? tmdbHits.first!).element
+        let proof: LogoRead
         let warm: LogoRead
 
-        if proofWithLater != nil {
+        if let proofWithLater {
+            proof = proofWithLater.element
             // Table path: take the LAST chronological read of the proof card — the revisit.
             warm = reads.filter { $0.fitem == proof.fitem }.last!
         } else {
-            // Every `tmdb` hit's card has no later read — focus is still on the proof card from
-            // the end of the walk. Verify that before trusting the maneuver.
+            // Every `tmdb` hit's card has no later read — reached exactly when every hit is from
+            // the back pass. `tmdbHits.first!` would pick the EARLIEST chronological hit, which
+            // in this scenario is the row's DEEPEST card, while focus has since walked all the
+            // way back to the row's START by the end of the back pass — Left there is a no-op
+            // and Right just moves onto card two, so a fixed Left-then-Right maneuver could never
+            // land back on that deep card. Derive the proof card from where focus ACTUALLY rests
+            // instead of from table order.
             let stillFocused = readLogo(probe, pass: "warmcheck", step: 0)
-            guard stillFocused.fitem == proof.fitem else {
+            guard let resolvedProof = tmdbHits.last(where: { $0.element.fitem == stillFocused.fitem })?.element else {
                 XCTFail("""
-                warm path: expected focus still on the proof card \(proof.fitem) at the end of the \
-                walk (no read has a later revisit), found \(stillFocused.fitem) instead.
+                warm path: expected the currently focused card \(stillFocused.fitem) to have a \
+                recorded tmdb hit to revisit, found none among this table's hits. Reads:
+                \(table)
                 """)
                 return
             }
+            proof = resolvedProof
+            // Probe which direction actually moves focus before committing to a maneuver, rather
+            // than assuming Left is always a no-op at this point: press Left first; if that was a
+            // no-op (still the same card — a true row-start edge), move Right then back Left to
+            // leave and return; otherwise Left already moved focus away, so a single Right
+            // returns to the proof card.
             press(.left, times: 1, gap: 0.7)
-            press(.right, times: 1, gap: 0.7)
+            if readLogo(probe, pass: "warmprobe", step: 0).fitem == proof.fitem {
+                press(.right, times: 1, gap: 0.7)
+                press(.left, times: 1, gap: 0.7)
+            } else {
+                press(.right, times: 1, gap: 0.7)
+            }
             pause(1.0)
             let landed = readLogo(probe, pass: "warm", step: 0)
             guard landed.fitem == proof.fitem else {
                 XCTFail("""
-                warm path: the Left/Right maneuver landed on \(landed.fitem) instead of the proof \
-                card \(proof.fitem). Refusing to assert a mismatched pair.
+                warm path: the direction-probed maneuver landed on \(landed.fitem) instead of the \
+                proof card \(proof.fitem). Refusing to assert a mismatched pair.
                 """)
                 return
             }

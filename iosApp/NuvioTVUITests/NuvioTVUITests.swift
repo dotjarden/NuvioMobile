@@ -5926,10 +5926,27 @@ final class NuvioTVUITests: XCTestCase {
         maxTitles: Int = 4
     ) -> (success: Bool, lastAnchor: String, outcomes: [DetailPageAttemptOutcome]) {
         var outcomes: [DetailPageAttemptOutcome] = []
+        var previousAttemptOpenedPage = false
         for attempt in 1...maxTitles {
             if attempt > 1 {
-                remote.press(.menu)
-                pause(2)
+                if previousAttemptOpenedPage {
+                    // Only back out with Menu when the previous attempt actually opened a page —
+                    // pressing Menu while focus is still on Home would act on Home's own root
+                    // instead of closing anything, and the caller's next Right + Select would then
+                    // land inside whatever is still open.
+                    remote.press(.menu)
+                    pause(2)
+                    if app.staticTexts["Press Back to exit the trailer"].exists {
+                        // A trailer cover eats one Menu press dismissing itself; the detail page
+                        // underneath is still open and needs a second press to close.
+                        remote.press(.menu)
+                        pause(2)
+                    }
+                    XCTAssertTrue(
+                        app.staticTexts["debug_ux6"].waitForNonExistence(timeout: 5),
+                        "detail page should have closed after Menu before trying the next title (attempt \(attempt))"
+                    )
+                }
                 press(.right, times: 1)
             }
             remote.press(.select)
@@ -5937,10 +5954,12 @@ final class NuvioTVUITests: XCTestCase {
             // Bumped from the old fixed 6s: a still-loading page (not just an absent one) is
             // exactly the failure mode this retry exists to tell apart from "no page opened".
             guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 15) else {
+                previousAttemptOpenedPage = false
                 outcomes.append(.init(identifier: "attempt \(attempt)",
                                        detail: "no detail page opened (debug_ux6 probe absent within 15s)"))
                 continue
             }
+            previousAttemptOpenedPage = true
             // FEAT-32: the page can still auto-enter the full-screen trailer cover a few seconds
             // in — `-debug.trailerForceNoTrailer` stops the auto-play TIMER, not necessarily the
             // cover's own entry check on every build. Back out once and settle before walking,
@@ -5951,14 +5970,15 @@ final class NuvioTVUITests: XCTestCase {
                 pause(3)
             }
             let identifier = pageIdentifier(app)
-            // `dimModel.anchorNote` starts empty and is only set once `anchorPass` first runs —
-            // an empty read here means the page is still settling, not a failed Down press, so
-            // wait for it to seed BEFORE spending any of the 12-press Down budget below (today an
-            // empty read counted as a failed press and just burned one of the 12).
+            // `dimModel.anchorNote` starts as `"-"` (DetailView.swift) and only becomes
+            // meaningful once `anchorPass` first runs — a read of `"-"` here means the page is
+            // still settling, not a failed Down press, so wait for it to seed BEFORE spending any
+            // of the 12-press Down budget below (a `"-"` read used to count as already-seeded and
+            // skip the wait entirely, since `"-"` is non-empty).
             var anchorSeeded = false
             for _ in 1...15 {
                 let label = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
-                if let seeded = Self.probeToken(label, key: "anchor"), !seeded.isEmpty {
+                if let seeded = Self.probeToken(label, key: "anchor"), !seeded.isEmpty, seeded != "-" {
                     anchorSeeded = true
                     break
                 }
@@ -5966,7 +5986,7 @@ final class NuvioTVUITests: XCTestCase {
             }
             guard anchorSeeded else {
                 outcomes.append(.init(identifier: identifier,
-                                       detail: "debug_ux6 appeared but its anchor= field stayed empty for 15s — page likely still loading"))
+                                       detail: "debug_ux6 appeared but its anchor= field stayed \"-\" for 15s — page likely still loading"))
                 continue
             }
             var reachedLogosRow = false
@@ -5991,26 +6011,38 @@ final class NuvioTVUITests: XCTestCase {
 
     /// Best-effort identifying text for a skip/failure message. The detail header's `Text(title)`
     /// (`DetailView.header`) only renders when the title has no logo art — a title WITH logo art
-    /// shows a `CachedAsyncImage` there instead, no title `staticText` at all — so this can't
-    /// assume that specific node. It takes the first non-empty, non-probe `staticText` label found
-    /// in the page instead: the title text when there's no logo, otherwise the next descriptive
-    /// line (genres, overview, …), which still tells two runs' titles apart in a message.
+    /// shows a `CachedAsyncImage` there instead, no title `staticText` at all, and neither branch
+    /// carries a `DebugAXIdentifier`/accessibility identifier this can key off — so a plain "first
+    /// non-probe staticText anywhere" scan is not stable: it can return a generic line (genres,
+    /// overview, …) that two different titles share, and on a "no page opened" attempt it walks
+    /// Home's own tree and reports one of Home's labels instead of signaling nothing opened.
+    /// Instead this anchors on the `debug_ux6` probe node itself — present only while a detail
+    /// page is up — and pairs its own text with the first `staticText` that follows it in tree
+    /// order, which is page-specific content (not shared across titles) and only exists when a
+    /// page is actually open.
     private func pageIdentifier(_ app: XCUIApplication) -> String {
         guard let root = try? app.snapshot() else { return "unknown" }
-        var result: String?
+        var flattened: [XCUIElementSnapshot] = []
         func walk(_ node: XCUIElementSnapshot) {
-            if result != nil { return }
-            if node.elementType == .staticText {
-                let label = node.label
-                if !label.isEmpty, !label.hasPrefix("debug_") {
-                    result = label
-                    return
-                }
-            }
+            flattened.append(node)
             for child in node.children { walk(child) }
         }
         walk(root)
-        return result ?? "unknown"
+        guard let probeIndex = flattened.firstIndex(where: {
+            $0.elementType == .staticText && $0.label.hasPrefix("debug_ux6")
+        }) else {
+            // No page opened this attempt — nothing page-specific to report.
+            return "unknown"
+        }
+        let probeLabel = flattened[probeIndex].label
+        for node in flattened[(probeIndex + 1)...] {
+            guard node.elementType == .staticText else { continue }
+            let label = node.label
+            if !label.isEmpty, !label.hasPrefix("debug_") {
+                return "\(probeLabel) | \(label)"
+            }
+        }
+        return probeLabel
     }
 
     /// BUG-111 (rc12, u/mrStevenx3: focusing a STUDIO tile "zooms in on the poster instead of the
