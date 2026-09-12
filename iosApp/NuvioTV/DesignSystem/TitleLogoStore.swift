@@ -312,7 +312,14 @@ final class TitleLogoStore: ObservableObject {
                     // retries from scratch, same as the off-scope branch above.
                     self.results.removeValue(forKey: key)
                     self.resumeWaiters(for: key, with: nil)
-                    self.lastFailureAt[key] = Date()
+                    let now = Date()
+                    // Codex r6 P3: expiry only PERMITS a retry, it never removed the entry, so a
+                    // long browse of failing titles (or an abandoned language scope) grew this map
+                    // without bound. Prune everything past the cooldown on each insert — the
+                    // pruned keys read as "no failure" to `shouldSkipRetry`, which is exactly what
+                    // an expired cooldown means.
+                    self.lastFailureAt = self.lastFailureAt.filter { now.timeIntervalSince($0.value) < Self.retryCooldown }
+                    self.lastFailureAt[key] = now
                     // FEAT-42 (2026-09-12): the bare error description is usually just
                     // "Kotlin bridge error" — the ORIGINAL throwable (its class, e.g.
                     // `SocketTimeoutException`/`JsonDecodingException`) rides along on the bridged
