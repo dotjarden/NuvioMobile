@@ -11,9 +11,10 @@ import XCTest
 /// this task's plan owes. What this test DOES pin, off the release-safe `debug_hero`/`hero_probe_blob`
 /// probes, live on the fixture: at least one card in a row walk presents its logo FROM THE STORE
 /// (`plgs=tmdb plg=1`) — the one reading FEAT-42 alone can produce — the presented item and the
-/// focused item agree, `plgs` and `plg` never disagree about whether a bitmap is on screen, a quick
-/// leave-and-return still presents a logo, and the probe's `present` lines carry the `logoSrc=`
-/// field with no `same=1` repaint signature and no back-to-back commit of one item.
+/// focused item agree, `plgs` and `plg` never disagree about whether a bitmap is on screen, a warm
+/// revisit of the proof card still presents a logo (read straight from the walk's own back-pass
+/// table when it has one, else navigated to explicitly), and the probe's `present` lines carry the
+/// `logoSrc=` field with no `same=1` repaint signature and no back-to-back commit of one item.
 ///
 /// rc12 (Codex Finding B) rewrote the walk: the first version accepted a pre-existing
 /// addon/metahub logo as success and SKIPPED when a card presented none, so no failure of the
@@ -212,11 +213,11 @@ final class HeroLogoFocusTests: XCTestCase {
     /// prove rather than something to report — but that has to be asserted from OUTSIDE, never
     /// inferred from the absence of the very evidence the test exists to find (the mistake the
     /// first version of this test made: it skipped on `plgs=none`, so a broken store/pending
-    /// integration passed silently). Review finding 3 (rc12) added a second, in-test way to reach
-    /// the same honest conclusion — a live metahub lookup on the sampled ids, tried only when no
-    /// card proves the store path — so this flag now matters mainly for a runner with no network
-    /// access to make that lookup at all; pass it there instead of letting every metahub request
-    /// time out for no benefit. Set it on the RUNNER, not the app: `-debug.assumeTmdbOff` in the
+    /// integration passed silently). This is the ONLY way a missing `plgs=tmdb` reads as anything
+    /// but a failure — a fixture whose sampled rows carry no TMDB logo at all is a fixture
+    /// assumption to fix by re-pointing the fixture (a documented assumption, the same way
+    /// `FixtureSetupTests` documents its own Poster Size assumption), not something this test can
+    /// safely infer at runtime. Set it on the RUNNER, not the app: `-debug.assumeTmdbOff` in the
     /// runner's own arguments, or `TEST_RUNNER_NUVIO_ASSUME_TMDB_OFF=1` in the xcodebuild
     /// environment (the `TEST_RUNNER_` prefix is stripped before it reaches the runner's
     /// environment). Defaults off.
@@ -258,31 +259,6 @@ final class HeroLogoFocusTests: XCTestCase {
                         plg: plg)
     }
 
-    /// Review finding 3's online fallback: TMDB itself needs an API key this harness does not
-    /// have, so this stands in with the public logo CDN `logoPlan`'s own `metahub` source already
-    /// queries — "does ANY logo exist for this title" is close enough to "does TMDB have one" to
-    /// tell a fixture-insufficiency gap apart from a real resolution defect. Synchronous via a
-    /// semaphore (matching this file's synchronous-call convention throughout), HEAD (following
-    /// redirects, `URLSession`'s default), 10s timeout. A network failure reads as UNKNOWN
-    /// (`nil`), never as "no logo" — an unreachable host must not let a real regression pass as a
-    /// skip.
-    private func metahubHasLogo(imdbId: String) -> Bool? {
-        guard let url = URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img") else { return nil }
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 10
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: Bool?
-        let task = URLSession.shared.dataTask(with: request) { _, response, error in
-            defer { semaphore.signal() }
-            guard error == nil, let http = response as? HTTPURLResponse else { return }
-            result = http.statusCode != 404
-        }
-        task.resume()
-        _ = semaphore.wait(timeout: .now() + 11)
-        return result
-    }
-
     /// Walks `direction` across one row, one card at a time, reading `debug_hero` after each hop has
     /// had time to settle (the 0.2 s focus dwell plus the resolver's 400 ms `laterSwapDeadline`).
     /// Stops early ONLY at the end of the row (two consecutive reads of the same item — a press
@@ -310,6 +286,16 @@ final class HeroLogoFocusTests: XCTestCase {
             }
         }
         return reads
+    }
+
+    /// Parses a `walkRow` pass label (`"r1>"` = row 1 forward, `"r2<"` = row 2 back) into its row
+    /// number and direction. `nil` for a label that isn't in that shape (`"warm"`, `"leave"`,
+    /// `"warmcheck"`) — the warm-path navigation fallback uses this to work out which row the
+    /// proof card was read on and which way `step` counts from.
+    private static func parseRowPass(_ pass: String) -> (row: Int, forward: Bool)? {
+        guard pass.hasPrefix("r"), let last = pass.last, last == ">" || last == "<" else { return nil }
+        guard let row = Int(pass.dropFirst().dropLast()) else { return nil }
+        return (row, last == ">")
     }
 
     // MARK: - test62
@@ -359,15 +345,17 @@ final class HeroLogoFocusTests: XCTestCase {
     /// integration or a row of titles TMDB has no logo for, and both of those are findings, not
     /// reasons to pass quietly.
     ///
-    /// This test has exactly three skip paths, named here so none is ever added silently: (1) an
+    /// This test has exactly two skip paths, named here so none is ever added silently: (1) an
     /// explicit `-debug.assumeTmdbOff` on the runner (see `assumeTmdbOff`) — TMDB is deliberately
     /// off, so `plgs=tmdb` is unreachable by construction; (2) no non-folder row focused within 20
     /// Down presses on the first row attempt (`locateNonFolderRow`) — this profile's Home has
-    /// nothing walkable to begin with, not a code question; (3) review finding 3's online check —
-    /// when no card proves the store path, every sampled `tt`-prefixed id from the reads 404s
-    /// against metahub's public logo CDN, meaning this fixture's titles carry no logo art
-    /// anywhere (a fixture-insufficiency finding, distinct from a resolution defect). Anything
-    /// else is a failure, never a skip.
+    /// nothing walkable to begin with, not a code question. Anything else is a failure, never a
+    /// skip — including a walk that never reads `plgs=tmdb`: `repairMetahubMiss` exists precisely
+    /// to turn a metahub miss into a resolved TMDB URL, and this fixture has demonstrably
+    /// store-resolvable titles, so a logo-less walk here is a regression signal, not evidence the
+    /// fixture has nothing to show. A fixture that genuinely carries no TMDB logo for any sampled
+    /// title is a fixture assumption to fix by re-pointing it — the same way `FixtureSetupTests`
+    /// documents its own Poster Size assumption — not something this test infers at runtime.
     ///
     /// Why the first version of this test did not do its job (Codex Finding B, rc12): it accepted an
     /// `addon`/`metahub` reading as success and SKIPPED on `plgs=none`, so nothing in the store,
@@ -389,6 +377,11 @@ final class HeroLogoFocusTests: XCTestCase {
         var reads: [LogoRead] = []
         var proof: LogoRead?
         var rowsWalked = 0
+        // Records how many Down presses `locateNonFolderRow` took to land on each row attempt —
+        // the warm-path navigation fallback below uses this to move between row 1 and row 2
+        // precisely (a naive "press Down once" would land on an intervening folder row that got
+        // skipped over on the way there).
+        var rowDownPresses: [Int: Int] = [:]
 
         rowSearch: for rowAttempt in 1...2 {
             guard let downsPressed = locateNonFolderRow(probe, avoiding: reads.last?.fitem) else {
@@ -398,6 +391,7 @@ final class HeroLogoFocusTests: XCTestCase {
                 break rowSearch
             }
             rowsWalked += 1
+            rowDownPresses[rowAttempt] = downsPressed
             print("[test62] row \(rowAttempt): non-folder row focused after \(downsPressed) Down presses")
 
             // Out along the row, past the shared overlay's 12-item reach — the FEAT-42 gap.
@@ -468,66 +462,115 @@ final class HeroLogoFocusTests: XCTestCase {
                 \(reads.count) reads, none from the store.
                 """)
             }
-            // Review finding 3: before failing hard, check whether these sampled titles carry ANY
-            // logo art at all. TMDB itself needs an API key this harness does not have, so
-            // metahub's own public logo CDN — the same source `logoPlan` falls back to — stands
-            // in as "does logo art exist anywhere for this title". Only when EVERY sampled id
-            // comes back a confirmed 404 is this an honest fixture-insufficiency gap rather than
-            // a resolution defect; a network failure (`nil`) keeps the failure path, since an
-            // unreachable host must never let a real regression pass as a skip.
-            let sampledIds = Array(Set(reads.map(\.fitem)).filter { $0.hasPrefix("tt") }).prefix(3)
-            if !sampledIds.isEmpty {
-                let lookups = sampledIds.map { (id: $0, hasLogo: metahubHasLogo(imdbId: $0)) }
-                if lookups.allSatisfy({ $0.hasLogo == false }) {
-                    let lookupTable = lookups.map { "\($0.id): metahub 404 (no logo art found)" }.joined(separator: "\n")
-                    throw XCTSkip("""
-                    sampled rows carry no logo art anywhere — fixture insufficiency, not a \
-                    resolution defect. Checked against metahub's public logo CDN (TMDB itself \
-                    needs an API key this harness does not have):
-                    \(lookupTable)
-                    Reads:
-                    \(table)
-                    """)
-                }
-            }
             XCTFail("""
             FEAT-42: no card presented a logo from TitleLogoStore. \(reads.count) reads across \
             \(rowsWalked) row(s) and not one read plgs=tmdb — neither on a first visit (the row's \
             first-focus prewarm resolving before the card is reached) nor on a revisit (a metahub \
-            miss repaired into a confirmed TMDB URL). Either the store/pending/prewarm path is not \
-            working, or TMDB genuinely has no logo for any of these titles — checked against \
-            metahub above (if any sampled id had one, this is not a fixture-insufficiency case).\
-             Pass -debug.assumeTmdbOff on the runner only when TMDB really is off. Reads:
+            miss repaired into a confirmed TMDB URL). `repairMetahubMiss` exists precisely to turn \
+            a metahub miss into a resolved TMDB URL, and this fixture has demonstrably \
+            store-resolvable titles, so a logo-less walk here is a regression signal on its own — \
+            not evidence this fixture has nothing to show. Either the store/pending/prewarm path \
+            is not working, or this fixture needs to be re-pointed at titles TMDB actually carries \
+            logos for (a documented fixture assumption, like `FixtureSetupTests`' Poster Size — \
+            not something this test infers at runtime). Pass -debug.assumeTmdbOff on the runner \
+            only when TMDB really is off. Reads:
             \(table)
             """)
             return
         }
         print("[test62] store path proven by \(proof)")
 
-        // Warm path: leave the proof card and come straight back. The bitmap is cached and the
-        // store entry is resolved, so the hero must still present a logo — and the ORIGIN may
-        // legitimately move (a metahub guess giving way to the repaired TMDB URL is the whole point
-        // of step 3 beating step 4 in `logoPlan`), so what is pinned is "still a logo, still from a
-        // real source", not equality.
+        // Warm path: the bitmap is cached and the store entry is resolved, so the hero must still
+        // present a logo on a revisit of the proof card — and the ORIGIN may legitimately move (a
+        // metahub guess giving way to the repaired TMDB URL is the whole point of step 3 beating
+        // step 4 in `logoPlan`), so what is pinned is "still a logo, still from a real source",
+        // not equality.
         //
-        // Which way to leave is decided by looking, not by bookkeeping: at the row's leading edge a
-        // Left press moves nothing, so if focus is still on the proof card after it, leave to the
-        // RIGHT and come back instead.
-        press(.left, times: 1, gap: 0.7)
-        if readLogo(probe, pass: "leave", step: 0).fitem == proof.fitem {
-            press(.right, times: 1, gap: 0.7)
-            press(.left, times: 1, gap: 0.9)
+        // Round 2's hygiene change made the walk keep going (forward AND back over a row, then a
+        // second row) instead of stopping the moment the proof card is found, so a plain
+        // leave-and-return from "wherever focus currently sits" no longer reliably lands back on
+        // it — it now sits wherever the rest of the walk left off. Prefer the read TABLE instead:
+        // the back pass revisits every forward-pass card, so the proof card almost always has a
+        // second, later read sitting right there in `reads` — no navigation required. Only when
+        // the proof card has exactly one read (it was the very last card of the very last pass,
+        // which the back walk never gets to revisit) does this fall back to navigating, and even
+        // then only trusts the cheap leave-and-return when focus is already sitting on the proof
+        // card; otherwise it retraces the row/pass/step the proof was read at explicitly. Either
+        // way, a failure to land on the proof card fails LOUDLY with its pass label instead of
+        // asserting a mismatched (fitem, plgs, plg) pair.
+        let proofFitemReads = reads.filter { $0.fitem == proof.fitem }
+        let warm: LogoRead
+        let navigatedForWarm: Bool
+
+        if proofFitemReads.count >= 2 {
+            // Table path: take the LAST chronological read of the proof card — the revisit.
+            warm = proofFitemReads.last!
+            navigatedForWarm = false
         } else {
-            press(.right, times: 1, gap: 0.9)
+            navigatedForWarm = true
+            let currentFocus = readLogo(probe, pass: "warmcheck", step: 0)
+            if currentFocus.fitem == proof.fitem {
+                // Focus is still sitting on the proof card (true at a row's trailing edge, where
+                // the walk's last press was a no-op) — the original leave-and-return is safe.
+                press(.left, times: 1, gap: 0.7)
+                if readLogo(probe, pass: "leave", step: 0).fitem == proof.fitem {
+                    press(.right, times: 1, gap: 0.7)
+                    press(.left, times: 1, gap: 0.9)
+                } else {
+                    press(.right, times: 1, gap: 0.9)
+                }
+            } else {
+                // Focus has moved on — the normal post-hygiene-change case. Navigate back
+                // explicitly using the row/pass/step the proof was read at rather than assuming
+                // the current position bears any relation to it.
+                guard let (proofRow, proofForward) = Self.parseRowPass(proof.pass) else {
+                    XCTFail("warm path: cannot parse proof.pass \"\(proof.pass)\" to navigate back to it")
+                    return
+                }
+                let currentRow = Self.parseRowPass(reads.last!.pass)?.row ?? proofRow
+                if currentRow != proofRow {
+                    // Move between row 1 and row 2 using the exact Down-press count
+                    // `locateNonFolderRow` recorded for the higher-numbered row, not a naive
+                    // single press — an intervening folder row can sit between them.
+                    let steps = rowDownPresses[max(currentRow, proofRow)] ?? abs(currentRow - proofRow)
+                    press(proofRow > currentRow ? .down : .up, times: steps, gap: 0.7)
+                }
+                // Retrace from a known edge rather than tracking an unknown lateral offset: slam
+                // to the row's leading edge, then step to the proof's recorded position within
+                // the pass it was read on.
+                press(.left, times: Self.cardsPerRow + 2, gap: 0.4)
+                if proofForward {
+                    press(.right, times: proof.step, gap: 0.7)
+                } else {
+                    press(.right, times: Self.cardsPerRow + 2, gap: 0.4)
+                    press(.left, times: proof.step, gap: 0.7)
+                }
+            }
+            pause(1.0)
+            let landed = readLogo(probe, pass: "warm", step: 0)
+            guard landed.fitem == proof.fitem else {
+                XCTFail("""
+                warm path: navigation could not land back on the proof card (read at pass \
+                \(proof.pass) step \(proof.step)) — landed on \(landed.fitem) instead of \
+                \(proof.fitem). Refusing to assert a mismatched pair.
+                """)
+                return
+            }
+            warm = landed
         }
-        pause(1.0)
-        let warm = readLogo(probe, pass: "warm", step: 0)
-        XCTAssertEqual(warm.fitem, proof.fitem,
-                       "the leave-and-return must land back on the same card: \(warm) vs \(proof)")
+
         XCTAssertEqual(warm.plg, "1", "a cache-warm revisit must still present the logo, never flick back to text: \(warm)")
         XCTAssertTrue(Self.logoSources.contains(warm.plgs),
                       "a cache-warm revisit must still name a real source (tmdb/metahub/addon): \(warm)")
-        shot(app, "62b_warm_path_revisit")
+
+        if navigatedForWarm {
+            shot(app, "62b_warm_path_revisit")
+        } else {
+            let attachment = XCTAttachment(string: "proof: \(proof.description)\nwarm (table revisit): \(warm.description)")
+            attachment.name = "62b_warm_path_table_reads"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
 
         // Photo-contract invariants off the About pane's ring buffer.
         let lines = readHeroProbeAboutPane(app, shotPrefix: "62c")

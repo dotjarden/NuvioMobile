@@ -6036,7 +6036,7 @@ final class NuvioTVUITests: XCTestCase {
         // already focused (the row anchored on `logos` above), a Right press has nowhere to move
         // focus TO, so the old rendered-rect count could not tell that apart from a real lift
         // failure.
-        let focusableChips = focusableChipProbes()
+        var focusableChips = focusableChipProbes()
         guard !focusableChips.isEmpty else {
             throw XCTSkip("no focusable studio/network chip on the logos row — every company_card/company_artwork probe belongs to a bare, non-tmdbId chip (companyLogosRow's non-NavigationLink branch); nothing to measure")
         }
@@ -6047,10 +6047,15 @@ final class NuvioTVUITests: XCTestCase {
             // assert the lift directly against this chip's own layout box instead. The `logos`
             // anchor reached above already implies remote focus rests on this sole focusable
             // chip.
-            guard let artwork = focusableChips[0].artwork, let card = focusableChips[0].card else {
+            // BUG-111 review finding (measurement baseline): capture this chip's rectangles
+            // AFTER the settling pause, not before — the pre-pause snapshot (taken the instant
+            // `anchor=logos` landed) can still be mid-settle, same reasoning as the multi-chip
+            // branch's confirmation press below.
+            pause(1)
+            let settledSoloChip = focusableChipProbes().first
+            guard let artwork = settledSoloChip?.artwork, let card = settledSoloChip?.card else {
                 throw XCTSkip("the sole focusable chip is missing a company_card or company_artwork probe rect — cannot measure its lift")
             }
-            pause(1)
             shot(app, "59a_studio_chip_single_focusable")
             // Hand-mirrored from `CompanyChipMetrics.focusRise`, same figure the multi-chip path
             // below uses — KEEP IN SYNC (see that path's comment).
@@ -6072,8 +6077,9 @@ final class NuvioTVUITests: XCTestCase {
             }
             if let maxHeight = confirmHeights.max(), let minHeight = confirmHeights.min(), maxHeight - minHeight < 1 {
                 press(.right, times: 1, gap: 0.6)
-                pause(0.5)
-                let afterConfirmHeights = focusableChipProbes().compactMap(\.artwork?.height)
+                pause(1.0)
+                let afterConfirmProbes = focusableChipProbes()
+                let afterConfirmHeights = afterConfirmProbes.compactMap(\.artwork?.height)
                 let grown = confirmHeights.count == afterConfirmHeights.count
                     ? zip(confirmHeights, afterConfirmHeights).filter { $1 - $0 >= 1 }.count
                     : -1
@@ -6081,6 +6087,14 @@ final class NuvioTVUITests: XCTestCase {
                     XCTFail("could not confirm D-pad focus landed on a chip: every focusable company_artwork rect read the same resting height on the logos row, and a confirmation Right press grew \(grown) of them (expected exactly 1) — before=\(confirmHeights) after=\(afterConfirmHeights)")
                     return
                 }
+                // BUG-111 review finding (measurement baseline): the confirmation Right press
+                // just moved focus, so the baseline for the two-snapshot delta below must reflect
+                // where focus rests NOW — reusing the pre-confirmation snapshot as `firstProbes`
+                // (initial heights all equal, e.g. [52,52,52]) would compare against a baseline
+                // where nothing is focused rather than the confirmed one (e.g. [52,58.24,52]); the
+                // very next Right below would then read as pure growth ([52,52,58.24]) with
+                // nothing shrinking and incorrectly skip instead of measuring real data.
+                focusableChips = afterConfirmProbes
             }
 
             pause(1)
