@@ -6551,6 +6551,255 @@ final class NuvioTVUITests: XCTestCase {
         }
     }
 
+    // MARK: - BUG-112: Up does nothing after a down-then-up walk strands row 1 above the fold
+
+    /// One parsed `debug_pinned` settle line, kept per row for the BUG-112 down-vs-up comparison
+    /// (`runBug112UpWalk`). Every field but `row`/`raw` is optional because the `settlePlan`
+    /// terminal-outcome branches append different tails to the same base line — see
+    /// `BrowseComponents.swift`'s own `key=value` field-list doc comment — so a caller has to
+    /// decide row by row whether a missing key is fatal, the same discipline `test58`/`test61`
+    /// already use with bare `Self.probeValue` calls.
+    private struct Bug112Sample {
+        let row: String
+        let margin: Int?
+        let y: Int?
+        let rowH: Int?
+        let lastRowShaped: Int?
+        let seq: Int?
+        let nudge: Int?
+        let pull: Int?
+        let pbDisarm: Int?
+        let disarmed: Int?
+        let inBand: Int?
+        let raw: String
+    }
+
+    private static func parseBug112Sample(_ line: String) -> Bug112Sample {
+        Bug112Sample(
+            row: probeToken(line, key: "row") ?? "-",
+            margin: probeValue(line, key: "margin"),
+            y: probeValue(line, key: "y"),
+            rowH: probeValue(line, key: "rowH"),
+            lastRowShaped: probeValue(line, key: "lastRowShaped"),
+            seq: probeValue(line, key: "seq"),
+            nudge: probeValue(line, key: "nudge"),
+            pull: probeValue(line, key: "pull"),
+            pbDisarm: probeValue(line, key: "pbDisarm"),
+            disarmed: probeValue(line, key: "disarmed"),
+            inBand: probeValue(line, key: "inBand"),
+            raw: line
+        )
+    }
+
+    /// Shared body for `test63Bug112FirstRowReachableAfterUpWalk` / `test64Bug112UpWalkWithCompressionOff`
+    /// — the two tests differ only in `app`'s launch arguments and this helper's gate parameters.
+    ///
+    /// BUG-112 (reported on Apple TV hardware, beta.18-rc11, Medium+ poster size with Hide Titles
+    /// ON — regime key prefix `P351c0`, carousel hero, zoom on): walk Down to Home's last row,
+    /// walk back Up to row 2, then press Up again — nothing happens. Row 1 (a collection folder
+    /// row) sits scrolled entirely above the rows viewport, clipped, and tvOS will not focus a
+    /// clipped item. The tester's Row Settle probe shows rows 2–4 parking at `margin=-102…-108`
+    /// on the way up versus roughly `-8` on the way down.
+    ///
+    /// H1 (what the down-vs-up table is evidence for): rc11's `rowCardLinkFrameFloor`
+    /// (`PinnedRowGeometry.lastRowLinkFrameFloor` = max(linkFrame, viewport − 24)) grows the last
+    /// row's label/shelf, so the down-walk ends at a deeper content offset than before rc11, and
+    /// the up-walk only reveals the MINIMUM needed per row rather than unwinding that surplus —
+    /// so it never gets back to where row 1 is reachable. H2 (not directly probed here): a fixed
+    /// ~96pt device park slack rc11 merely stopped correcting. H4 (the per-row assertion below):
+    /// the floor leaking onto a row that isn't actually the last one (`lastRowShaped=1` reported
+    /// on a middle row).
+    ///
+    /// No band assertions — `test58LastRowFrameFloor`'s own notes establish the FA87 simulator's
+    /// focus engine parks every row out of band regardless of mode, so `inBand=`/`margin=` are
+    /// recorded for the human pass, not asserted. `test48`'s Leg A/B needs captions ON and
+    /// `test58` needs zoom on with Large; this test's own premise (Medium+, Hide Titles ON) is
+    /// disjoint from both, so it sets it up directly rather than reusing either fixture path.
+    private func runBug112UpWalk(app: XCUIApplication, prefix: String, expectFits: Int, requireRegimePrefix: String?) throws {
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(4.0)
+        guard let firstLine = readSettleLine(app, "\(prefix)a_row1") else { return }
+        guard let firstRowToken = Self.probeToken(firstLine, key: "row"), firstRowToken != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-); the PINNED (Nuvio-style) settle probe only reports rows in Home's pinned-hero carousel container, so this fixture is likely running the classic in-scroll hero BUG-112 does not reproduce under. Full settle line: \(firstLine)")
+        }
+        let firstRowKey = firstRowToken
+        let regimeToken = Self.probeToken(firstLine, key: "regime") ?? "-"
+
+        if let requireRegimePrefix {
+            guard regimeToken.hasPrefix(requireRegimePrefix),
+                  let fits = Self.probeValue(firstLine, key: "fits"), fits == expectFits else {
+                let fitsValue = Self.probeValue(firstLine, key: "fits")
+                throw XCTSkip("FIXTURE ASSUMPTION UNMET — regime='\(regimeToken)' fits=\(fitsValue.map(String.init) ?? "-") does not show the tester's BUG-112 regime (want a key with prefix '\(requireRegimePrefix)' and fits=\(expectFits)); run FixtureSetupTests/testSetHideLabelsOn then testSetPosterSizeMediumPlus and rerun. Full settle line: \(firstLine)")
+            }
+        } else {
+            guard let fits = Self.probeValue(firstLine, key: "fits") else {
+                XCTFail("settle line missing fits= — the settle line is append-only by contract. Full settle line: \(firstLine)")
+                return
+            }
+            guard fits == expectFits else {
+                throw XCTSkip("FIXTURE ASSUMPTION UNMET — fits=\(fits) (regime='\(regimeToken)'), expected \(expectFits) — the -debug.pinnedHeroCompressionOff knob did not take (the settle plan still fits). Full settle line: \(firstLine)")
+            }
+        }
+
+        // ── Down walk: dedup to the FIRST sample seen per row key, in row order ────────────────
+        var downSamples: [String: Bug112Sample] = [firstRowKey: Self.parseBug112Sample(firstLine)]
+        var orderedKeys = [firstRowKey]
+
+        guard let walk = try walkToLastRow(
+            app, baselineLine: firstLine, shotPrefix: "\(prefix)b", settleLine: readSettleLine
+        ) else { return }
+
+        for line in walk.walked + [walk.line] {
+            let sample = Self.parseBug112Sample(line)
+            if downSamples[sample.row] == nil {
+                downSamples[sample.row] = sample
+                orderedKeys.append(sample.row)
+            }
+        }
+
+        guard orderedKeys.count >= 3 else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the down walk only visited \(orderedKeys.count) distinct row(s) (\(orderedKeys)); BUG-112 needs at least 3 (row 1, row 2, and a last row) to reproduce the up-walk. Add more Home rows and rerun.")
+        }
+        let secondRowKey = orderedKeys[1]
+
+        // ── Up walk: press Up until focus reports back on row 2, dedup to the FIRST sample per
+        //    row key on the way up (mirrors the down walk above) ──────────────────────────────
+        var upSamples: [String: Bug112Sample] = [:]
+        var reachedRow2 = false
+        var lastThreeRaw: [String] = []
+        let upBudget = orderedKeys.count + 6
+        for step in 0..<upBudget {
+            press(.up, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "\(prefix)c\(step)_up_toward_row2") else { return }
+            lastThreeRaw.append(line)
+            if lastThreeRaw.count > 3 { lastThreeRaw.removeFirst() }
+            let sample = Self.parseBug112Sample(line)
+            if upSamples[sample.row] == nil {
+                upSamples[sample.row] = sample
+            }
+            if sample.row == secondRowKey {
+                reachedRow2 = true
+                break
+            }
+        }
+
+        guard reachedRow2 else {
+            let report = XCTAttachment(string: lastThreeRaw.joined(separator: "\n"))
+            report.name = "\(prefix)x_never_reached_row2"
+            report.lifetime = .keepAlways
+            add(report)
+            shot(app, "\(prefix)x_never_reached_row2")
+            XCTFail("BUG-112: the up walk never got back to row 2 ('\(secondRowKey)') within \(upBudget) presses. Last three settle lines: \(lastThreeRaw.joined(separator: " || "))")
+            return
+        }
+
+        shot(app, "\(prefix)c_row2_before_final_up")
+
+        // ── Final presses: the reported repro is Up doing nothing once row 2 has focus and row 1
+        //    (scrolled off the top) is unreachable ────────────────────────────────────────────
+        let row2Seq = upSamples[secondRowKey]?.seq
+        var finalSamples: [Bug112Sample] = []
+        for step in 0..<3 {
+            press(.up, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "\(prefix)d\(step)_final_up") else { return }
+            finalSamples.append(Self.parseBug112Sample(line))
+        }
+        let landedOnRow1 = finalSamples.contains { $0.row == firstRowKey }
+        let seqAnalysis = finalSamples.map { sample -> String in
+            guard let seq = sample.seq else { return "\(sample.row) seq=?" }
+            guard let row2Seq else { return "\(sample.row) seq=\(seq) (no row2 baseline)" }
+            return "\(sample.row) seq=\(seq) (\(seq == row2Seq ? "FROZEN — no settle fired" : "advanced") vs row2 seq=\(row2Seq))"
+        }.joined(separator: "; ")
+
+        // ── Attachments ─────────────────────────────────────────────────────────────────────
+        let keysReport = XCTAttachment(string: orderedKeys.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n"))
+        keysReport.name = "\(prefix)_row_keys"
+        keysReport.lifetime = .keepAlways
+        add(keysReport)
+
+        func fmt(_ v: Int?) -> String { v.map(String.init) ?? "-" }
+        var deltas: [Int] = []
+        var tableLines = ["row | margin_down | margin_up | delta | y_down | y_up | delta_y | rowH_down | lastRowShaped_down | lastRowShaped_up | inBand_up | nudge_up | pull_up | pbDisarm_up"]
+        for key in orderedKeys {
+            let down = downSamples[key]
+            let up = upSamples[key]
+            var delta: Int?
+            if let md = down?.margin, let mu = up?.margin { delta = md - mu }
+            if let delta { deltas.append(delta) }
+            var deltaY: Int?
+            if let yd = down?.y, let yu = up?.y { deltaY = yd - yu }
+            tableLines.append("\(key) | \(fmt(down?.margin)) | \(fmt(up?.margin)) | \(fmt(delta)) | \(fmt(down?.y)) | \(fmt(up?.y)) | \(fmt(deltaY)) | \(fmt(down?.rowH)) | \(fmt(down?.lastRowShaped)) | \(fmt(up?.lastRowShaped)) | \(fmt(up?.inBand)) | \(fmt(up?.nudge)) | \(fmt(up?.pull)) | \(fmt(up?.pbDisarm))")
+        }
+        if !deltas.isEmpty {
+            let sorted = deltas.sorted()
+            let median: Double = sorted.count % 2 == 0
+                ? Double(sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2.0
+                : Double(sorted[sorted.count / 2])
+            let lastKey = orderedKeys[orderedKeys.count - 1]
+            tableLines.append("")
+            tableLines.append("median(margin_down-margin_up)=\(String(format: "%.1f", median)) max=\(sorted.last ?? 0) over \(deltas.count) row(s) with both samples; last row '\(lastKey)' rowH_down=\(fmt(downSamples[lastKey]?.rowH)) lastRowShaped_down=\(fmt(downSamples[lastKey]?.lastRowShaped))")
+        }
+        let tableReport = XCTAttachment(string: tableLines.joined(separator: "\n"))
+        tableReport.name = "\(prefix)_down_vs_up"
+        tableReport.lifetime = .keepAlways
+        add(tableReport)
+
+        let finalReport = XCTAttachment(string: finalSamples.map(\.raw).joined(separator: "\n") + "\n\nseq analysis: \(seqAnalysis)")
+        finalReport.name = "\(prefix)_final_presses"
+        finalReport.lifetime = .keepAlways
+        add(finalReport)
+
+        // ── Assertions ──────────────────────────────────────────────────────────────────────
+        XCTAssertTrue(
+            landedOnRow1,
+            "BUG-112: Up from row 2 never reached row 1 ('\(firstRowKey)') in three presses — matches the reported repro (row 1 scrolled entirely above the rows viewport, clipped, unreachable by Up). Final settle lines: \(finalSamples.map(\.raw).joined(separator: " || "))"
+        )
+        let lastKey = orderedKeys[orderedKeys.count - 1]
+        for key in orderedKeys where key != lastKey {
+            if let shaped = downSamples[key]?.lastRowShaped {
+                XCTAssertNotEqual(shaped, 1, "H4: the last-row frame floor leaked to a non-last row ('\(key)') on the way down. Full settle line: \(downSamples[key]?.raw ?? "-")")
+            }
+            if let shaped = upSamples[key]?.lastRowShaped {
+                XCTAssertNotEqual(shaped, 1, "H4: the last-row frame floor leaked to a non-last row ('\(key)') on the way up. Full settle line: \(upSamples[key]?.raw ?? "-")")
+            }
+        }
+
+        shot(app, "\(prefix)d_after_up_from_row2")
+    }
+
+    /// BUG-112 at the tester's own regime (Medium+, Hide Titles ON, zoom on — see
+    /// `runBug112UpWalk`'s header comment for the full repro and hypotheses). Set the fixture
+    /// with `FixtureSetupTests.testSetHideLabelsOn` then `testSetPosterSizeMediumPlus`.
+    func test63Bug112FirstRowReachableAfterUpWalk() throws {
+        let app = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        try runBug112UpWalk(app: app, prefix: "63", expectFits: 1, requireRegimePrefix: "P351c0")
+    }
+
+    /// Same BUG-112 repro as `test63Bug112FirstRowReachableAfterUpWalk`, with rc11's suspected
+    /// cause (H1, the last-row frame floor) switched off via `-debug.pinnedHeroCompressionOff` —
+    /// the knob works by making the settle plan NOT fit (`fits=0`), which is why the gate checks
+    /// `fits` rather than the regime key here. If Up from row 2 reaches row 1 in THIS test but not
+    /// in test63, H1 is confirmed; if it fails here too, H1 is not the whole story and H2/H4 need
+    /// a harder look.
+    func test64Bug112UpWalkWithCompressionOff() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES",
+                "-debug.pinnedHeroCompressionOff", "YES"
+            ],
+            forceFreshLaunch: true
+        )
+        try runBug112UpWalk(app: app, prefix: "64", expectFits: 0, requireRegimePrefix: nil)
+    }
+
     // MARK: - FEAT-32: description → full-screen trailer bridge
 
     /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same
