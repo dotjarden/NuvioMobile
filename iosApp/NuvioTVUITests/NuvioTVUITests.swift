@@ -6800,6 +6800,76 @@ final class NuvioTVUITests: XCTestCase {
         try runBug112UpWalk(app: app, prefix: "64", expectFits: 0, requireRegimePrefix: nil)
     }
 
+    /// BUG-112 (Item A): the Up fallback. The SHIPPED trigger — an Up press the focus engine did
+    /// not consume — cannot be reproduced here: the FA87 simulator's engine resolves Up from row 2
+    /// into a fully off-screen row 1 every time (that is exactly what test63/test64 record). So
+    /// this gate arms `-debug.homeUpFallbackForce YES`, which binds the IDENTICAL fallback body to
+    /// Play/Pause, and proves the action ladder end to end: the request reaches the previous row,
+    /// that row takes focus, and the settle line's `row=` becomes the previous row's key.
+    ///
+    /// What it deliberately does NOT prove: that `onMoveCommand(.up)` is delivered on hardware when
+    /// the engine gives up. That is the device pass — Steven's Row Settle pane will show the
+    /// `upFallback row=… prev=… action=…` line the same fallback writes.
+    ///
+    /// Do not run this with Trailer Location = Hero and a playing hero trailer: the hero's player
+    /// owns Play/Pause in that state. The launch arguments below do not enable inline trailers.
+    func test65Bug112UpFallbackFocusesThePreviousRow() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES",
+                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpFallbackForce", "YES"
+            ],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let firstLine = readSettleLine(app, "65a_row1") else { return }
+        guard let rowOneKey = Self.probeToken(firstLine, key: "row"), rowOneKey != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-): this fixture is not in the PINNED (Nuvio-style) hero mode BUG-112 lives in. Full settle line: \(firstLine)")
+        }
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let secondLine = readSettleLine(app, "65b_row2") else { return }
+        guard let rowTwoKey = Self.probeToken(secondLine, key: "row"), rowTwoKey != rowOneKey else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the second Down did not reach a second row (row='\(Self.probeToken(secondLine, key: "row") ?? "-")'); BUG-112's fallback needs a row WITH a predecessor. Full settle line: \(secondLine)")
+        }
+
+        remote.press(.playPause)
+        pause(3.0)
+
+        let fallback = app.staticTexts["debug_upfallback"]
+        guard fallback.waitForExistence(timeout: 10) else {
+            XCTFail("debug_upfallback probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let fallbackLine = fallback.label
+        let fallbackReport = XCTAttachment(string: fallbackLine)
+        fallbackReport.name = "65c_upfallback_line"
+        fallbackReport.lifetime = .keepAlways
+        add(fallbackReport)
+        shot(app, "65c_after_fallback")
+
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "row"), rowTwoKey,
+                       "the fallback fired for the wrong row — it must act for the row that HAD focus. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "prev"), rowOneKey,
+                       "the fallback targeted the wrong predecessor. Full line: \(fallbackLine)")
+        XCTAssertNotEqual(Self.probeToken(fallbackLine, key: "action"), "giveup",
+                          "every rung of the hand-off ladder missed. Full line: \(fallbackLine)")
+
+        guard let landedLine = readSettleLine(app, "65d_landed") else { return }
+        XCTAssertEqual(Self.probeToken(landedLine, key: "row"), rowOneKey,
+                       "BUG-112 Item A: the fallback did not land focus on the previous row ('\(rowOneKey)'). Fallback line: \(fallbackLine) || settle line: \(landedLine)")
+
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "dir"),
+                        "the settle line lost `dir=` — it is append-only by contract. Full line: \(landedLine)")
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "rearm"),
+                        "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
+    }
+
     // MARK: - FEAT-32: description → full-screen trailer bridge
 
     /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same

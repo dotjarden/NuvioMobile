@@ -554,6 +554,41 @@ struct HomeView: View {
     @State private var debugPinnedSettle = "-"
     #endif
 
+    // MARK: - BUG-112 (Item A): the Up fallback
+
+    /// The row that currently owns focus — the same key `pinnedRowSettleTracking(rowKey:)` uses.
+    /// The fallback needs it twice: to find the row ABOVE the focused one, and to tell whether a
+    /// hand-off landed.
+    ///
+    /// Review fix (F3): the SOLE writer is `handleRowFocusOwnership`, fed by each row's own
+    /// `pinnedRowFocusOwnership` report (`PinnedRowUpFallback.swift`) — which fires straight off
+    /// the row's `@FocusState` binding. Earlier this was claimed inside `reportRowFocus`/the
+    /// collection-folder callback, gated on a non-nil hero preview; that went stale the moment
+    /// focus landed on a row's "See All" tile or an unconfigured folder, both of which report a
+    /// nil preview. `@FocusState` cannot disagree with itself the way a preview report could.
+    @State private var focusedRowKey: String?
+    /// The live focus request the rows observe (`PinnedRowUpFallback.swift`).
+    @State private var rowFocusRequest = PinnedRowFocusRequest.none
+    @State private var rowFocusRequestSeq = 0
+    /// Stales every scheduled rung of an older fallback — the same discipline
+    /// `SidebarOverlay.handOffFocusToContent` uses for its verified re-issues.
+    @State private var upFallbackGeneration = 0
+    /// Review fixes F1/F2: the row key the CURRENT attempt is trying to focus, or nil when no
+    /// attempt is live. The sole reader/writer outside `endUpFallback` is `beginUpFallback`
+    /// (sets it) and `handleRowFocusOwnership` (reads it to tell a landed claim from a
+    /// diversion) — every other transition retires through `endUpFallback`, which always
+    /// clears it back to nil.
+    @State private var activeUpFallbackTarget: String?
+    /// The row the live attempt started FROM, captured at `beginUpFallback` — the `landed`
+    /// probe line reads it rather than `focusedRowKey`, which can be nil for a beat while the
+    /// origin row has already released its claim and the target has not yet made its own.
+    @State private var activeUpFallbackOrigin: String?
+    #if DEBUG
+    /// Last fallback event, surfaced to the harness as `debug_upfallback`. One write per Up press
+    /// the engine could not resolve, so the churn is far below `debug_pinned`'s.
+    @State private var debugUpFallback = "-"
+    #endif
+
     /// DEBUG-only sink handed to `PinnedRowSettleRevealModifier`. nil in release: the corrector
     /// itself is release code (the bug is a release bug), but its readout is harness-only.
     private var settleProbeSink: ((String) -> Void)? {
@@ -632,6 +667,14 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_pinned")
+                // BUG-112 (invisible, harness-readable): the last Up-fallback event. Its own label
+                // rather than more fields on `debug_pinned` — the settle line is an append-only
+                // contract parsed by test47/test48/test58/test61/test63, and a fallback is not a
+                // settle. Append-only in its own right: `row= prev= action=` keep their spelling.
+                Text("debug_upfallback \(debugUpFallback)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_upfallback")
                 // FEAT-30 (invisible, harness-readable): which navigation chrome this build is
                 // rendering under, and the top compensation it applied. `comp` is what a device
                 // bisect of `debug.sidebarTopCompensation` reads back to confirm the launch
@@ -726,7 +769,7 @@ struct HomeView: View {
                                 if heroHeaderVisible {
                                     pinnedHeroHeader
                                 }
-                                rowsScroll(pinned: heroHeaderVisible, settleReveal: true)
+                                rowsScroll(pinned: heroHeaderVisible, settleReveal: true, proxy: scrollProxy)
                             }
                             // BUG-89 (beta.18): a Poster Size switch (Medium → Large) changes the
                             // hero's height, both card reaches and the rows' bottom inset AT ONCE.
@@ -793,7 +836,7 @@ struct HomeView: View {
                                 }
                             }
                         } else {
-                            rowsScroll(pinned: false, settleReveal: false)
+                            rowsScroll(pinned: false, settleReveal: false, proxy: scrollProxy)
                         }
                     }
                     // BUG-27: from down the page, Menu jumps back to the top and hands focus to
@@ -1105,7 +1148,7 @@ struct HomeView: View {
     /// pass falsified). The focus lift stays inside the clip because the content insets below
     /// keep every card away from the viewport edges.
     @ViewBuilder
-    private func rowsScroll(pinned: Bool, settleReveal: Bool) -> some View {
+    private func rowsScroll(pinned: Bool, settleReveal: Bool, proxy: ScrollViewProxy) -> some View {
         ScrollView(.vertical) {
             // Lazy so row construction (and each row's poster loads) is deferred to
             // scroll position — an eager VStack builds every catalog row up front,
@@ -1204,6 +1247,14 @@ struct HomeView: View {
                                 // off (the default) this `@State` is never written, so the folder
                                 // focus path schedules no extra Home update.
                                 if CollectionFocusAB.deferHeroCommit { folderFocusGeneration &+= 1 }
+                                // BUG-112 review fix (F3): row ownership used to be claimed here
+                                // (from the FOLDER event, since a folder with no configured
+                                // backdrop/logo reports `preview == nil` and `reportRowFocus`
+                                // never saw a claim to make). That claim now comes from the row's
+                                // own `@FocusState` via `pinnedRowFocusOwnership` — see
+                                // `handleRowFocusOwnership` — which cannot go stale the way a
+                                // preview-gated report could (landing on "See All" or an
+                                // unconfigured folder still owns the row).
                                 // BUG-38 round three: a focused folder tile hands its configured
                                 // backdrop + title logo to the hero, the Fusion behaviour the
                                 // reporter asked for on the HOME page. Folders with neither asset
@@ -1311,6 +1362,23 @@ struct HomeView: View {
         // never anchored to the ScrollView frame and blanked every row). The focus
         // lift stays inside the clip thanks to `rowsInsets`.
         .scrollClipDisabled(!pinned)
+        // BUG-112 (Item A): the Up the focus engine could not resolve. Attached UNCONDITIONALLY
+        // and guarded inside `handleRowsMove` rather than wrapped in an `if pinned` modifier —
+        // `pinned` is `heroHeaderVisible`, which flips at the fan-out LOAD boundary, and a
+        // conditional modifier there would re-identify (and remount) the whole rows ScrollView.
+        // A handler that early-returns is a value change, which is what this boundary is allowed
+        // to be (see the `scrollClipDisabled` / `.environment` neighbours).
+        .onMoveCommand { handleRowsMove($0, pinned: pinned, proxy: proxy) }
+        .modifier(forcedUpFallbackTrigger(pinned: pinned, proxy: proxy))
+        // BUG-112 (Item A): the rows' half of the fallback — each row watches this for a request
+        // naming its own key and writes its OWN `@FocusState`. Default `.none` matches no row.
+        .environment(\.pinnedRowFocusRequest, rowFocusRequest)
+        // BUG-112 review fix (F3): the rows' ownership report — each row calls this straight off
+        // its own `@FocusState` binding, so `focusedRowKey` can never go stale the way the old
+        // preview-gated claim in `reportRowFocus` could.
+        .environment(\.pinnedRowFocusOwnership, PinnedRowFocusOwnership(report: { key, owns in
+            handleRowFocusOwnership(key, owns: owns)
+        }))
         // BUG-37: names this exact view (the rows viewport, whose top edge is the pinned clip
         // edge) so a pinned row title can always resolve the rect it must stay inside, even if
         // `.scrollView(axis: .vertical)` doesn't resolve through the row's nested horizontal
@@ -1340,6 +1408,331 @@ struct HomeView: View {
         // The BUG-27 Menu handler is NOT here: it lives on the common ancestor in `body`,
         // because in pinned mode the hero CTA is a sibling of this ScrollView and a handler
         // attached here would not cover it (Menu on the CTA would suspend the app).
+    }
+
+    // MARK: - BUG-112 (Item A): the Up press the focus engine could not resolve
+
+    /// SwiftUI delivers `onMoveCommand` to the focused view chain ONLY for moves the focus engine
+    /// did not consume — the same property `HeroCarouselInteractionModifier` (and the BUG-23 hero
+    /// fix) relies on. On hardware, with rows resting ~100pt deeper on an up-walk than on the way
+    /// down, row 1 sits entirely above the rows viewport, the engine finds no legal Up candidate,
+    /// and the press does nothing at all: the reported BUG-112 wedge. So an Up that arrives HERE
+    /// is, by construction, an Up the engine gave up on, and Home reveals + focuses the previous
+    /// row itself.
+    ///
+    /// Guards, in order and each for its own reason:
+    ///  - `.up` only. Down/left/right arrive here too (the last row's Down, a row's leading/trailing
+    ///    edge), and every one of them is a legitimate "nothing there" the engine already decided.
+    ///  - PINNED only. In classic mode the rows are not clipped, nothing is ever hidden above the
+    ///    fold, and this screen's contract is that classic geometry is untouched.
+    ///  - Not while Home is COVERED (BUG-109). A folder page or Detail is pushed over the rows;
+    ///    scrolling or focusing underneath it is exactly what `PinnedRowSettle.hostCovered` exists
+    ///    to prevent, and native focus restoration on the pop would then resolve by geometry.
+    ///  - Never on the TOPMOST row. The hero (and above it the tab bar) is what Up means there, and
+    ///    the engine reaches both on its own — `previousRowTarget` returns nil and we decline.
+    private func handleRowsMove(_ direction: MoveCommandDirection,
+                                pinned: Bool,
+                                proxy: ScrollViewProxy) {
+        guard direction == .up, pinned else { return }
+        guard !PinnedRowSettle.hostCovered else { return }
+        guard let rowKey = focusedRowKey,
+              let target = previousRowTarget(for: rowKey) else { return }
+        beginUpFallback(from: rowKey, to: target, proxy: proxy)
+    }
+
+    /// BUG-112 review fix (F3): the single writer of `focusedRowKey`, fed by every row's
+    /// `pinnedRowFocusOwnership` report (`PinnedRowUpFallback.swift`) — which fires straight off
+    /// that row's own `@FocusState`, `owns == true` the instant it gains focus, `false` the
+    /// instant it loses it. Replaces the old preview-gated claims in `reportRowFocus` and the
+    /// collection-folder callback, which went stale on a row's "See All" tile or an unconfigured
+    /// folder (both report a nil hero preview and so never claimed the row).
+    ///
+    /// Review fix (F2a): a claim for a DIFFERENT row than the one `focusedRowKey` already names
+    /// retires whatever attempt is currently live via `endUpFallback` — the same discipline
+    /// `SidebarOverlay.handOffFocusToContent` uses for its own re-issues. This is what stops a
+    /// landed fallback from later pulling focus back: the moment the target row's own claim
+    /// lands, generation moves past every rung's captured value, so a rung that fires afterward
+    /// (whether because the user pressed Down immediately, or for any other reason) finds
+    /// `generation != upFallbackGeneration` and no-ops — silently, because this IS the normal
+    /// "already landed" case, not a cancellation.
+    ///
+    /// Review fix (F1): the claim change is the ONLY place that can tell a landed hand-off from
+    /// a diversion (the user moving on to some OTHER row before the requested target ever
+    /// mounts), so it is also the only place that can retire the request correctly for both —
+    /// `origin` is `focusedRowKey`'s value from just before this claim, which for a real
+    /// up-fallback is the row the Up press originated from. If the new owner is the row the
+    /// active attempt is aiming at, that is a landing; otherwise it is a diversion, and either
+    /// way `endUpFallback` clears `rowFocusRequest` UNCONDITIONALLY — not only when it happens
+    /// to name this row — because the request only ever belongs to the attempt that is ending.
+    /// The old conditional clear (`if rowFocusRequest.rowKey == rowKey`) left a request naming
+    /// some earlier, now-abandoned target row alive across a diversion, and that row's own
+    /// `.onAppear` re-apply (`PinnedRowUpFallbackTarget.applyIfMatching`) could steal focus back
+    /// onto it whenever it later mounted.
+    ///
+    /// The `owns == false` branch does NOT retire anything on its own — it only clears the key
+    /// when the row giving it up is the one currently on record (a stale `false` from a row that
+    /// already lost the claim to someone else must not blank a newer claim). A row that loses
+    /// focus with no other row yet claiming it (an in-flight hop, or focus leaving Home entirely)
+    /// leaves `focusedRowKey` nil for a beat; `shouldContinueUpFallback`'s own
+    /// `focusedRowKey == rowKey` re-check (F2b) is what catches a pending rung in exactly that
+    /// window, since nil can never equal the origin row's key.
+    private func handleRowFocusOwnership(_ rowKey: String, owns: Bool) {
+        if owns {
+            if focusedRowKey != rowKey {
+                let origin = focusedRowKey
+                focusedRowKey = rowKey
+                if rowKey == activeUpFallbackTarget {
+                    endUpFallback(reason: "row=\(activeUpFallbackOrigin ?? origin ?? "-") prev=\(rowKey) action=landed",
+                                  log: true)
+                } else {
+                    endUpFallback(reason: "superseded", log: false)
+                }
+            }
+            // F5: a completed request cannot be picked up again by a row that mounts later —
+            // clear it the moment the row it named actually takes the claim. (`endUpFallback`
+            // above already clears it unconditionally on a claim change; this covers the
+            // narrower case where `owns` fires again for the row that already owns focus.)
+            if rowFocusRequest.rowKey == rowKey {
+                rowFocusRequest = .none
+            }
+        } else if focusedRowKey == rowKey {
+            focusedRowKey = nil
+        }
+    }
+
+    /// The row ABOVE `rowKey` in `rowsScroll`'s actual render order — Continue Watching, then
+    /// Upcoming, then `ForEach(model.rows)` — together with the scroll anchor that reveals it.
+    /// `nil` when `rowKey` is the topmost row, or is not a row this screen renders.
+    ///
+    /// Only the `ForEach` publishes per-row scroll ids (SwiftUI derives them from `HomeRow.id`), so
+    /// CW/Upcoming — plain siblings above it — are revealed through "home_top", the BUG-27 anchor
+    /// on the `LazyVStack` itself. That is the top of the rows region in pinned mode, which reveals
+    /// both of them whole.
+    ///
+    /// `key` (what this returns, and what every caller compares against `focusedRowKey`) and
+    /// `anchor` (the id `proxy.scrollTo` needs) are NOT the same string for a collection row:
+    /// `HomeRow.id` namespaces collections as `"collection_\(collection.id)"` (see `HomeRow.id`,
+    /// HomeViewModel.swift) to avoid colliding with a catalog section's own `key`, but every
+    /// focus/settle call site (`reportRowFocus`'s `source`, `pinnedRowSettleTracking(rowKey:)`,
+    /// `pinnedRowUpFallbackTarget(rowKey:)`) uses the BARE `collection.id`. So `order` is built
+    /// from the bare key, with the ForEach's own `HomeRow.id` carried alongside it purely for the
+    /// scroll anchor — using `HomeRow.id` as the key here would silently never match
+    /// `focusedRowKey` for any collection row and the fallback would never fire past row 2.
+    private func previousRowTarget(for rowKey: String) -> (key: String, anchor: String)? {
+        var order: [(key: String, anchor: String)] = []
+        if !model.continueWatching.isEmpty { order.append((key: "continue-watching", anchor: "home_top")) }
+        if upcomingRowEnabled, !model.upcoming.isEmpty { order.append((key: "upcoming", anchor: "home_top")) }
+        for row in model.rows {
+            switch row {
+            case .catalog(let section):
+                // `HomeRow.id` for `.catalog` IS `section.key` (HomeViewModel.swift) — no
+                // divergence here, but named explicitly rather than reused so the collection
+                // branch's divergence below doesn't read as an inconsistency.
+                order.append((key: section.key, anchor: section.key))
+            case .collection(let collection):
+                order.append((key: collection.id, anchor: row.id))
+            }
+        }
+        guard let index = order.firstIndex(where: { $0.key == rowKey }), index > 0 else { return nil }
+        return order[index - 1]
+    }
+
+    /// The hand-off ladder. Each rung is cheaper-first and only runs if the one before it did not
+    /// land, verified against `focusedRowKey` — the pattern `SidebarOverlay.handOffFocusToContent`
+    /// established (a reset issued into a subtree that is still building lands nowhere, so it is
+    /// re-issued and finally escalated rather than assumed).
+    ///
+    ///  1. t=0    ASK. Write the row's own `@FocusState` through the environment request. When the
+    ///            previous row is still MOUNTED (the common case — it is one row above the fold),
+    ///            this alone moves focus and the engine performs its own scroll-to-reveal. No
+    ///            programmatic scroll at all, so there is nothing for the engine to pull back.
+    ///  2. t=0.3  REVEAL, then ask again. The row was culled by the `LazyVStack` (or refused the
+    ///            write), so the request was dropped. Scroll it into view first; mounting is what
+    ///            makes the second write land.
+    ///  3. t=0.9  TOP. Still nowhere: scroll to "home_top" and ask once more.
+    ///  4. t=1.5  HERO — only when the target is the topmost row. This is the proven Menu path
+    ///            (`heroFocused = true` first, synchronously, then the scroll; see `onExitCommand`).
+    ///            For a DEEPER target we deliberately stop instead (`giveup`): the page has already
+    ///            moved up, so the user's next Up press has a fully visible row to resolve against.
+    ///
+    /// Every programmatic scroll tells the corrector first (`PinnedRowSettle.noteExternalScroll`):
+    /// an outstanding verification measured against an offset WE moved is a false MISS, and two
+    /// false MISSes disarm the corrector for the session. Review fix (F4): this now includes the
+    /// hero rung — `heroFocused = true` moves the rows scroll to the true top exactly as the
+    /// scroll call right after it does, so it needs the same notice, and it is called first,
+    /// before the focus write, so the corrector never judges a stale outstanding verification
+    /// against the hero taking over.
+    ///
+    /// Review fix (F2b): every scheduled rung re-validates through `shouldContinueUpFallback`
+    /// instead of the old inline `generation == upFallbackGeneration, focusedRowKey != target.key`
+    /// pair — see that function's doc for what changed and why.
+    ///
+    /// Review fix (F1/F2): if an older attempt is still live (`activeUpFallbackTarget != nil`) —
+    /// a second Up press landing before the first attempt resolved — it is retired silently
+    /// through `endUpFallback` before this one starts, so its request and rungs cannot outlive
+    /// the attempt that superseded them. `activeUpFallbackTarget` is then set to this attempt's
+    /// target so `handleRowFocusOwnership` can recognise the landing when it happens.
+    private func beginUpFallback(from rowKey: String,
+                                 to target: (key: String, anchor: String),
+                                 proxy: ScrollViewProxy) {
+        if activeUpFallbackTarget != nil {
+            endUpFallback(reason: "restarted", log: false)
+        }
+        upFallbackGeneration &+= 1
+        let generation = upFallbackGeneration
+        activeUpFallbackTarget = target.key
+        activeUpFallbackOrigin = rowKey
+        let isTopTarget = previousRowTarget(for: target.key) == nil
+
+        logUpFallback("row=\(rowKey) prev=\(target.key) action=focus anchor=\(target.anchor)")
+        requestRowFocus(target.key)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=scroll anchor=\(target.anchor)")
+            PinnedRowSettle.noteExternalScroll(reason: "upfallback")
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo(target.anchor, anchor: .top)
+            }
+            requestRowFocus(target.key)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=top")
+            PinnedRowSettle.noteExternalScroll(reason: "upfallback-top")
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo("home_top", anchor: .top)
+            }
+            requestRowFocus(target.key)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
+            guard isTopTarget, !heroItems.isEmpty, heroNuvioStyle else {
+                logUpFallback("row=\(rowKey) prev=\(target.key) action=giveup")
+                endUpFallback(reason: "giveup", log: false)
+                return
+            }
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=hero")
+            // F1: the attempt is handing over to the hero rung — retire it (and drop the row
+            // request with it) BEFORE flipping focus, so nothing is left behind for a later-
+            // mounting row's `.onAppear` to pick back up.
+            endUpFallback(reason: "hero", log: false)
+            PinnedRowSettle.noteExternalScroll(reason: "upfallback-hero")
+            heroFocused = true
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo("home_top", anchor: .top)
+            }
+        }
+    }
+
+    /// BUG-112 review fix (F2b): the shared eligibility re-check every scheduled rung runs before
+    /// acting, replacing the old bare `generation == upFallbackGeneration, focusedRowKey !=
+    /// target.key` pair. `false` covers two outcomes callers must not conflate:
+    ///
+    ///  - LANDED, silent. `handleRowFocusOwnership` (F2a) bumps `upFallbackGeneration` the instant
+    ///    ANY row's claim changes `focusedRowKey` to a new value — including the target row's own
+    ///    landing. So by the time a later rung's closure runs, a landed attempt has already left
+    ///    `generation` behind `upFallbackGeneration`, and the very first guard below returns
+    ///    `false` before anything is logged. This is what stops a rung from firing again after a
+    ///    successful hand-off and pulling focus back (F2, the original finding): the prior
+    ///    inline check only asked "have we not yet reached the target", which stayed true even
+    ///    after landing if the user then moved on to a THIRD row — this asks "is this still the
+    ///    attempt in progress" instead.
+    ///  - CANCELLED, logged once. Home became covered (a Detail or folder page pushed over the
+    ///    rows — BUG-109's `PinnedRowSettle.hostCovered`), the page left pinned mode, or the
+    ///    origin row lost focus without the target ever claiming it (an in-flight hop, or focus
+    ///    leaving Home entirely — the `owns == false` branch of `handleRowFocusOwnership` does not
+    ///    bump generation on its own, so this is the guard that actually catches that window).
+    ///    Each of these logs `action=cancelled reason=…` exactly once, THEN retires the attempt
+    ///    through `endUpFallback` (bumping generation again and dropping any outstanding request
+    ///    naming the target, F5) — kept as a second, separate call rather than folded into
+    ///    `endUpFallback` itself because the `reason=…` suffix differs per guard and the
+    ///    generation guard above must stay the FIRST thing this function checks. Review fix (F2):
+    ///    retiring here (not just clearing the request) is what stops a rung SCHEDULED BEHIND
+    ///    this one from re-running the same cancellation check and re-logging — it dies silently
+    ///    on the generation guard instead, exactly like the landed case above.
+    ///
+    /// `heroHeaderVisible` is re-read live rather than captured at `beginUpFallback` time — a
+    /// snapshot would not notice the page leaving pinned mode mid-ladder.
+    private func shouldContinueUpFallback(generation: Int,
+                                          rowKey: String,
+                                          target: (key: String, anchor: String)) -> Bool {
+        guard generation == upFallbackGeneration else { return false }
+        guard !PinnedRowSettle.hostCovered else {
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=covered")
+            endUpFallback(reason: "cancelled", log: false)
+            return false
+        }
+        guard heroHeaderVisible else {
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=unpinned")
+            endUpFallback(reason: "cancelled", log: false)
+            return false
+        }
+        guard focusedRowKey == rowKey else {
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=refocused")
+            endUpFallback(reason: "cancelled", log: false)
+            return false
+        }
+        return true
+    }
+
+    private func requestRowFocus(_ key: String) {
+        rowFocusRequestSeq &+= 1
+        rowFocusRequest = PinnedRowFocusRequest(rowKey: key, generation: rowFocusRequestSeq)
+    }
+
+    /// BUG-112 review fixes F1/F2: the single place every attempt retires, however it ends —
+    /// landed, superseded by a diversion, cancelled, given up, handed to the hero, or restarted
+    /// by a second Up press. Bumping `upFallbackGeneration` here (not only in `beginUpFallback`)
+    /// is what makes F2's fix work: a cancellation branch in `shouldContinueUpFallback` calls
+    /// this once and every rung still scheduled behind it dies on THAT function's generation
+    /// guard (kept first) instead of re-running its own cancellation check. Clearing
+    /// `rowFocusRequest` UNCONDITIONALLY — not only when it happens to name the row that just
+    /// changed ownership — is what F1 needed: the request belongs to the attempt that is ending,
+    /// full stop, so a diversion to some OTHER row must not leave the OLD target's request alive
+    /// for that row's own `.onAppear` re-apply (`PinnedRowUpFallbackTarget.applyIfMatching`) to
+    /// pick up whenever it later mounts.
+    ///
+    /// `reason` is opaque here: every caller that already logged its own full
+    /// `row=…prev=…action=…` line (each rung in `beginUpFallback`, each guard in
+    /// `shouldContinueUpFallback`) passes `log: false` with a bare word, purely so the call site
+    /// reads clearly — nothing more is logged. The one caller with nothing already on the wire —
+    /// `handleRowFocusOwnership`'s landed case — passes the complete log line as `reason` with
+    /// `log: true`.
+    private func endUpFallback(reason: String, log: Bool) {
+        upFallbackGeneration &+= 1
+        rowFocusRequest = .none
+        activeUpFallbackTarget = nil
+        activeUpFallbackOrigin = nil
+        if log {
+            logUpFallback(reason)
+        }
+    }
+
+    /// One line per fallback rung, to the three readers a device pass and the harness have:
+    /// the console (`HomeGeometryProbe`-gated, same token grammar as the corrector's lines), the
+    /// photographable About pane (`PinnedRowSettleProbe`, where the settle lines already land), and
+    /// the DEBUG `debug_upfallback` AX label the UI tests read.
+    private func logUpFallback(_ text: String) {
+        if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] upFallback %@", text) }
+        if PinnedRowSettleProbe.enabled { PinnedRowSettleProbe.log("upFallback " + text) }
+        #if DEBUG
+        debugUpFallback = text
+        #endif
+    }
+
+    /// DEBUG-only proxy trigger for `-debug.homeUpFallbackForce YES` (see `HomeUpFallbackKnobs`).
+    /// The shipped trigger cannot be forced: `onMoveCommand` is only DELIVERED for moves the engine
+    /// did not consume, and the simulator's engine always consumes Up (test63/test64 both reach
+    /// row 1 from row 2 across a fully off-screen gap). So the knob binds the identical fallback
+    /// body to Play/Pause, which is free on Home's rows. `forced` is a launch-latched `static let`,
+    /// constant for the process, so the conditional branch can never re-identify the rows mid-session.
+    private func forcedUpFallbackTrigger(pinned: Bool, proxy: ScrollViewProxy) -> some ViewModifier {
+        ForcedUpFallbackTriggerModifier(enabled: HomeUpFallbackKnobs.forced) {
+            handleRowsMove(.up, pinned: pinned, proxy: proxy)
+        }
     }
 
     /// The hero region's foreground: the paged carousel plus its (static) page dots, or — with
@@ -1847,6 +2240,12 @@ struct HomeView: View {
             let candidates = logoCandidates()
             if !candidates.isEmpty { TitleLogoStore.shared.lookupIfNeeded(candidates) }
         }
+        // BUG-112 review fix (F3): row ownership (`focusedRowKey`) used to be claimed HERE, gated
+        // on `item != nil` — which meant landing on a row's "See All" tile or an unconfigured
+        // folder (both report `item == nil`) never claimed the row, so the Up-fallback's idea of
+        // "who has focus" went stale the moment a user stopped on one. Ownership now comes
+        // straight from the row's own `@FocusState` binding via `pinnedRowFocusOwnership` (see
+        // `handleRowFocusOwnership`), which cannot disagree with what is actually focused.
         focusModel.reportFocus(item, from: source)
     }
 
@@ -2063,6 +2462,32 @@ fileprivate struct HomeScrollEdgeStyleModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// BUG-112 (Item A), DEBUG-only: see `HomeView.forcedUpFallbackTrigger`. Disabled it applies
+/// nothing at all, so the shipped tree is byte-identical.
+///
+/// BUG-112 review fix (F6): the `#if DEBUG` here is load-bearing, not decorative. `enabled` is
+/// already always `false` in Release (`HomeUpFallbackKnobs.forced` is hardcoded there), so the
+/// `if enabled` branch below is unreachable in a Release build on its own — but the body is
+/// gated too, so Release never even builds an `onPlayPauseCommand` handler wired to this action,
+/// and a future edit to `forced` cannot silently reopen the proxy trigger without also touching
+/// this file.
+fileprivate struct ForcedUpFallbackTriggerModifier: ViewModifier {
+    let enabled: Bool
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if enabled {
+            content.onPlayPauseCommand(perform: action)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
 
@@ -3408,6 +3833,10 @@ struct ContinueWatchingRow: View {
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
         .pinnedRowSettleTracking(rowKey: "continue-watching", isFocused: focusedVideoId != nil)
+        // BUG-112 (Item A)
+        .pinnedRowUpFallbackTarget(rowKey: "continue-watching",
+                                   firstId: entries.first?.videoId,
+                                   focus: $focusedVideoId)
         .onChange(of: focusedVideoId) { _, newId in
             onItemFocusChange?(newId.flatMap { id in entries.first { $0.videoId == id } })
         }

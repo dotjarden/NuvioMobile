@@ -371,6 +371,10 @@ struct CollectionRowView: View {
         .pinnedRowSettleTracking(rowKey: collection.id,
                                  isFocused: focusedFolderId != nil,
                                  focusedLockupExtent: focusedTileLockupExtent)
+        // BUG-112 (Item A)
+        .pinnedRowUpFallbackTarget(rowKey: collection.id,
+                                   firstId: collection.folders.first?.id,
+                                   focus: $focusedFolderId)
         .onChange(of: focusedFolderId) { _, id in
             // FEAT-33 (Wave 1, agent C; Codex r1): armed BEFORE the callback below. The callback
             // is synchronous, so with the default leg its `reportRowFocus` hero work — and any

@@ -90,6 +90,10 @@ struct UpcomingRow: View {
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
         .pinnedRowSettleTracking(rowKey: "upcoming", isFocused: focusedKey != nil)
+        // BUG-112 (Item A)
+        .pinnedRowUpFallbackTarget(rowKey: "upcoming",
+                                   firstId: items.first?.showKey,
+                                   focus: $focusedKey)
         .onChange(of: focusedKey) { _, newKey in
             onItemFocusChange?(newKey.flatMap { key in items.first { $0.showKey == key } })
         }
