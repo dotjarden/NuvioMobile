@@ -10,8 +10,8 @@ DERIVED_DATA="$ROOT_DIR/iosApp/build/tvos-ipa"
 PRODUCTS_DIR="$DERIVED_DATA/Build/Products/Release-appletvos"
 APP_NAME="NuvioTV.app"
 IPA_NAME="NuvioTV.ipa"
-GH_REPO="youngchris29-art/NuvioMobile"
-MIRROR_REPO="youngchris29-art/NuvioTV"   # public-facing fork repo; its releases/latest is the published download link
+GH_REPO="dotjarden/NuvioMobile"
+MIRROR_REPO="dotjarden/NuvioTV"   # public-facing fork repo; its releases/latest is the published download link
 MIRROR_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 VERSION_XCCONFIG="$ROOT_DIR/iosApp/Configuration/Version.xcconfig"
 
@@ -21,13 +21,13 @@ Usage:
   ./scripts/release-beta.sh [options]
 
 Builds an unsigned tvOS IPA of NuvioTV and publishes it as a GitHub
-prerelease tagged tvos-v<version>-beta.<n> (n auto-increments) on BOTH
-youngchris29-art/NuvioMobile and youngchris29-art/NuvioTV (the public
+prerelease tagged dotjarden-tvos-v<version>-beta.<n> (n auto-increments) on BOTH
+dotjarden/NuvioMobile and dotjarden/NuvioTV (the public
 download link points at NuvioTV's releases/latest).
 
 The release notes always include a "What's new" changelog: commit subjects
 (first-parent, so an upstream catch-up merge shows as one line) since the
-previous tvos-v* tag, plus a compare link. Pass --changelog to prepend
+previous dotjarden-tvos-v* tag, plus a compare link. Pass --changelog to prepend
 hand-written highlights above the generated list.
 
 The generated list is sanitized for the public: internal tracker IDs
@@ -37,7 +37,7 @@ never appear in the published notes — testers only read what was added or
 fixed. Check the sanitized output with --dry-run before publishing.
 
 Before building, the script checks that the public repo's README.md (or
-design/screenshots/) has been touched since the previous tvos-v* release —
+design/screenshots/) has been touched since the previous dotjarden-tvos-v* release —
 every beta must update the README's feature list + screenshots for whatever
 it ships. Update the README first, or pass --skip-readme-check for a
 hotfix/rebuild that genuinely adds nothing user-facing.
@@ -138,7 +138,8 @@ HEAD_SHA="$(git rev-parse HEAD)"
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
 
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-  echo "warning: working tree has uncommitted changes; the release tag will point at $HEAD_SHA which may not match what you build." >&2
+  echo "error: tracked changes must be committed before releasing; the binary must match its published source." >&2
+  exit 1
 fi
 
 if ! git branch -r --contains "$HEAD_SHA" | grep -q 'origin/'; then
@@ -181,7 +182,8 @@ if git -C "$MIRROR_DIR" remote get-url origin 2>/dev/null | grep -q "NuvioTV"; t
     exit 1
   fi
 else
-  echo "warning: no NuvioTV checkout at $MIRROR_DIR — publishing to $GH_REPO only. The public releases/latest link on $MIRROR_REPO will go stale!" >&2
+  echo "error: release from the complete NuvioTV wrapper checkout so source/build links include pinned submodules." >&2
+  exit 1
 fi
 
 latest_beta_n() { # latest_beta_n <repo> <prefix>
@@ -191,7 +193,7 @@ latest_beta_n() { # latest_beta_n <repo> <prefix>
 }
 
 if [[ -z "$TAG" ]]; then
-  PREFIX="tvos-v${MARKETING_VERSION}-beta."
+  PREFIX="dotjarden-tvos-v${MARKETING_VERSION}-beta."
   LAST_N="$(latest_beta_n "$GH_REPO" "$PREFIX")"
   if [[ -n "$MIRROR_SHA" ]]; then
     MIRROR_LAST_N="$(latest_beta_n "$MIRROR_REPO" "$PREFIX")"
@@ -237,13 +239,13 @@ sanitize_changelog() {
   '
 }
 
-# Changelog: commit subjects since the previous tvos-v* tag. --first-parent so an
+# Changelog: commit subjects since the previous dotjarden-tvos-v* tag. --first-parent so an
 # upstream catch-up merge collapses to its single merge-commit line instead of
 # spraying hundreds of upstream subjects into the notes. gh-created tags only
 # exist on GitHub until fetched.
 git fetch --tags --quiet origin \
   || echo "warning: could not fetch tags from origin; changelog range may be stale." >&2
-PREV_TAG="$(git tag --list 'tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+PREV_TAG="$(git tag --list 'dotjarden-tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
 CHANGELOG_BODY=""
 if [[ -n "$PREV_TAG" ]]; then
   RAW_CHANGELOG="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
@@ -256,13 +258,13 @@ if [[ -n "$PREV_TAG" ]]; then
   fi
   echo "==> Changelog: $(printf '%s\n' "$CHANGELOG_BODY" | grep -c '^- ' || true) public line(s) from $(printf '%s\n' "${RAW_CHANGELOG:-}" | grep -c '^- ' || true) commit(s) since $PREV_TAG"
 else
-  echo "==> Changelog: no previous tvos-v* tag found — treating as first beta of v${MARKETING_VERSION}"
+  echo "==> Changelog: no previous dotjarden-tvos-v* tag found — treating as first beta of v${MARKETING_VERSION}"
 fi
 
 # Release step: every beta must refresh the public README's feature list and
 # screenshots for whatever it ships. Enforced cheaply by timestamp — README.md or
 # design/screenshots/ in the outer NuvioTV repo needs a commit newer than the
-# previous tvos-v* release's tagged commit. Runs before the build so a miss fails
+# previous dotjarden-tvos-v* release's tagged commit. Runs before the build so a miss fails
 # in seconds, not after a 10-minute xcodebuild.
 if [[ "$SKIP_README_CHECK" -eq 0 && -n "$PREV_TAG" && -n "$MIRROR_SHA" ]]; then
   PREV_TAG_TIME="$(git log -1 --format=%ct "$PREV_TAG" 2>/dev/null || echo 0)"
@@ -351,6 +353,14 @@ cat > "$NOTES_FILE" <<EOF
 # NuvioTV for Apple TV: Beta (v${MARKETING_VERSION})
 
 Unsigned tvOS IPA for beta testing. This is a **fresh build**, with no account and no addons. Sign in with your own Nuvio account and install your own addons after installing.
+
+Community fork maintained by **dotjarden**, based on [youngchris29-art/NuvioTV](https://github.com/youngchris29-art/NuvioTV) and [NuvioMedia/NuvioMobile](https://github.com/NuvioMedia/NuvioMobile). Original authorship and the inherited GNU GPLv3 license are preserved.
+
+App source: https://github.com/${GH_REPO}/tree/${HEAD_SHA}
+Wrapper and pinned submodules: https://github.com/${MIRROR_REPO}/tree/${MIRROR_SHA}
+Build instructions: https://github.com/${MIRROR_REPO}/blob/${MIRROR_SHA}/BUILDING.md
+
+Use a recursive checkout of the wrapper commit for complete submodule source.
 
 ## What's new in this build
 

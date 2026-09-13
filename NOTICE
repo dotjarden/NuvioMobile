@@ -1,0 +1,27 @@
+NuvioTV / NuvioMobile — dotjarden community fork
+Modification notice: September 13, 2026
+
+This distribution contains modifications maintained by dotjarden.
+Original source history, copyright notices, and license texts are preserved.
+The GPLv3 license inherited from upstream continues to apply; this notice does
+not replace that license or the individual licenses of third-party components.
+
+Native Apple TV port and integration foundation:
+  youngchris29-art and contributors
+  https://github.com/youngchris29-art/NuvioTV
+  https://github.com/youngchris29-art/NuvioMobile
+
+Original shared core and mobile application:
+  NuvioMedia and contributors
+  https://github.com/NuvioMedia/NuvioMobile
+
+Earlier React Native application:
+  tapframe and contributors
+  https://github.com/tapframe/NuvioTV
+
+Playback/runtime dependencies include MPVKit, libmpv, QuickJS and others.
+Keep their included licenses and notices when redistributing those components.
+
+Fork changes and dates are documented in FORK_CHANGES.md and Git history.
+This is an independently maintained community fork, not an official release
+or an endorsement by the original project maintainers.

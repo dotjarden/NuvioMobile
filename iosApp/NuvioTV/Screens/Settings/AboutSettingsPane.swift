@@ -107,6 +107,19 @@ struct AboutSettingsPane: View {
             )
 
         }
+        SettingsExpandableSection(String(localized: "Credits & Licenses"), id: "credits") {
+            SettingsValueRow(title: String(localized: "Community Fork"), value: "dotjarden",
+                             subtitle: "github.com/dotjarden/NuvioTV")
+            SettingsValueRow(title: String(localized: "Apple TV Port"), value: "youngchris29-art",
+                             subtitle: "github.com/youngchris29-art/NuvioTV")
+            SettingsValueRow(title: String(localized: "Shared Core"), value: "NuvioMedia & contributors",
+                             subtitle: "github.com/NuvioMedia/NuvioMobile")
+            SettingsValueRow(title: String(localized: "Original App"), value: "tapframe & contributors",
+                             subtitle: "github.com/tapframe/NuvioTV")
+            SettingsValueRow(title: String(localized: "Playback & Runtime"), value: "MPVKit · libmpv · QuickJS")
+            SettingsValueRow(title: String(localized: "License"), value: "GNU GPLv3",
+                             subtitle: "github.com/dotjarden/NuvioTV/blob/main/NOTICE")
+        }
         SettingsExpandableSection(String(localized: "Diagnostics"), id: "diagnostics") {
             SettingsToggleRow(
                 title: String(localized: "Hero Paint Diagnostics"),

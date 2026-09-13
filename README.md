@@ -1,101 +1,45 @@
-<div align="center">
+# NuvioMobile · dotjarden Apple TV fork
 
-  <img src="https://github.com/tapframe/NuvioTV/blob/main/assets/brand/app_logo_wordmark.png" alt="Nuvio" width="300" />
-  <br />
-  <br />
+**Independent community fork maintained by [dotjarden](https://github.com/dotjarden).** Based on [youngchris29-art/NuvioTV](https://github.com/youngchris29-art/NuvioTV) and its [NuvioMobile tvOS branch](https://github.com/youngchris29-art/NuvioMobile/tree/tvos-shared-extraction), built on [NuvioMedia/NuvioMobile](https://github.com/NuvioMedia/NuvioMobile). Original authorship and copyright notices are preserved. This fork is not an official Nuvio release and is not endorsed by the upstream maintainers.
 
-  [![Contributors][contributors-shield]][contributors-url]
-  [![Forks][forks-shield]][forks-url]
-  [![Stargazers][stars-shield]][stars-url]
-  [![Issues][issues-shield]][issues-url]
-  [![License][license-shield]][license-url]
+**Modification notice — September 13, 2026:** this distribution includes changes to the Apple TV interface, Live TV, playback controls, account flows, settings, and remote navigation. See [FORK_CHANGES.md](FORK_CHANGES.md), [NOTICE](NOTICE), and the Git history for dates, authors, and scope.
 
-  <p>
-    A modern media hub for Android and iOS built with Kotlin Multiplatform and Compose Multiplatform.
-    <br />
-    Stremio addon ecosystem • Cross-platform
-  </p>
+This repository contains the SwiftUI **NuvioTV** application and the shared Kotlin Multiplatform core used by [dotjarden/NuvioTV](https://github.com/dotjarden/NuvioTV). The inherited Android and iOS source remains in the repository; this fork's current development and validation focus on Apple TV.
 
-</div>
+## Build this version
 
-## About
+Start from the [NuvioTV wrapper repository](https://github.com/dotjarden/NuvioTV) so the QuickJS tvOS patch and all pinned submodules are included:
 
-Nuvio is the current Kotlin Multiplatform rewrite of the original React Native app. It delivers a shared Compose UI for Android and iOS while keeping the playback-focused experience, collection tools, watch progress flows, downloads, and Stremio addon ecosystem integration that shaped the earlier app.
-
-The mobile app is built from a single shared codebase in [composeApp](./composeApp), with native platform entry points for Android and iOS.
-
-## Installation
-
-### Android
-
-Download the latest Android build from [GitHub Releases](https://github.com/NuvioMedia/NuvioMobile/releases/latest).
-
-### iOS
-
-- [TestFlight](https://testflight.apple.com/join/u4y7MHK9)
-
-## Development
-
-```bash
-git clone https://github.com/NuvioMedia/NuvioMobile.git
-cd NuvioMobile
-./scripts/run-mobile.sh android
-# or
-./scripts/run-mobile.sh ios
+```sh
+git clone --recurse-submodules --branch main https://github.com/dotjarden/NuvioTV.git
+cd NuvioTV
 ```
 
-### Project Structure
+Follow its [build instructions](https://github.com/dotjarden/NuvioTV/blob/main/BUILDING.md). Build the **NuvioTV** Xcode scheme from `NuvioMobile/iosApp/iosApp.xcodeproj`. Downloadable fork builds, when published, belong to [dotjarden's releases](https://github.com/dotjarden/NuvioTV/releases).
 
-- `composeApp/` contains the shared Kotlin Multiplatform and Compose Multiplatform app code.
-- `composeApp/src/commonMain/` contains shared UI, features, repositories, and platform-agnostic logic.
-- `composeApp/src/androidMain/` contains Android-specific integrations.
-- `composeApp/src/iosMain/` contains iOS-specific integrations.
-- `iosApp/` contains the native Xcode project and iOS entry point.
+## Fork changes
 
-Useful commands:
+The maintained version adds Live TV, a revised Apple TV interface, combined Search/discovery filters, shared player controls, account/profile improvements, organized settings and Remote Setup, and navigation fixes. See [FORK_CHANGES.md](FORK_CHANGES.md) and the [project overview](https://github.com/dotjarden/NuvioTV#changes-in-this-fork).
 
-```bash
-./gradlew :composeApp:assembleDebug
-./gradlew :composeApp:compileKotlinIosSimulatorArm64
-./scripts/build-distribution.sh
-```
+`main` is this fork's maintained Apple TV version. `codex/native-tv-experience` is the ongoing development branch. The inherited `cmp-rewrite` and `tvos-shared-extraction` branches retain upstream context.
 
-Versioning is driven from `iosApp/Configuration/Version.xcconfig`, which is used as the shared source of truth for both iOS and Android builds.
+## Source layout
 
-## Legal & DMCA
+- `iosApp/NuvioTV/`: SwiftUI Apple TV screens and playback interface.
+- `iosApp/NuvioTopShelf/`: Apple TV Top Shelf extension.
+- `shared/`: UI-independent Kotlin `SharedCore` framework.
+- `composeApp/`: inherited Android/iOS Compose application.
+- `MPVKit/`: pinned playback dependency and its upstream licenses.
+- `iosApp/Configuration/Version.xcconfig`: app version/build configuration.
 
-Nuvio functions solely as a client-side interface for browsing metadata and playing media provided by user-installed extensions and/or user-provided sources. It is intended for content the user owns or is otherwise authorized to access.
+## Credits and licenses
 
-Nuvio is not affiliated with any third-party extensions, catalogs, sources, or content providers. It does not host, store, or distribute any media content.
+- **youngchris29-art**: [native Apple TV port](https://github.com/youngchris29-art/NuvioTV) and [tvOS shared-core extraction](https://github.com/youngchris29-art/NuvioMobile/tree/tvos-shared-extraction).
+- **NuvioMedia and contributors**: [original NuvioMobile application](https://github.com/NuvioMedia/NuvioMobile), shared business logic, and the broader Nuvio ecosystem.
+- **tapframe and contributors**: [earlier React Native NuvioTV](https://github.com/tapframe/NuvioTV).
+- **MPVKit, libmpv, QuickJS, and other dependency authors**: playback/runtime components under their respective licenses.
+- **dotjarden**: this community fork's maintenance and modifications, with individual authors preserved in Git history.
 
-For comprehensive legal information, including our full disclaimer, third-party extension policy, and DMCA/Copyright information, please visit our [Legal & Disclaimer Page](https://nuvioapp.space/legal).
+The inherited [GNU GPLv3 LICENSE](LICENSE) and copyright notices remain in place. [NOTICE](NOTICE) identifies the fork and upstream projects. Distributed builds must provide corresponding source, including the pinned submodules and required build scripts. This fork does not imply upstream endorsement.
 
-## Built With
-
-- Kotlin Multiplatform
-- Compose Multiplatform
-- Kotlin
-- AndroidX Media3
-- AVFoundation and native iOS integrations
-
-## Star History
-
-<a href="https://www.star-history.com/#NuvioMedia/NuvioMobile&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=NuvioMedia/NuvioMobile&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=NuvioMedia/NuvioMobile&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=NuvioMedia/NuvioMobile&type=date&legend=top-left" />
- </picture>
-</a>
-
-<!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/NuvioMedia/NuvioMobile.svg?style=for-the-badge
-[contributors-url]: https://github.com/NuvioMedia/NuvioMobile/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/NuvioMedia/NuvioMobile.svg?style=for-the-badge
-[forks-url]: https://github.com/NuvioMedia/NuvioMobile/network/members
-[stars-shield]: https://img.shields.io/github/stars/NuvioMedia/NuvioMobile.svg?style=for-the-badge
-[stars-url]: https://github.com/NuvioMedia/NuvioMobile/stargazers
-[issues-shield]: https://img.shields.io/github/issues/NuvioMedia/NuvioMobile.svg?style=for-the-badge
-[issues-url]: https://github.com/NuvioMedia/NuvioMobile/issues
-[license-shield]: https://img.shields.io/github/license/NuvioMedia/NuvioMobile.svg?style=for-the-badge
-[license-url]: https://github.com/NuvioMedia/NuvioMobile/blob/main/LICENSE
+For the official mobile project and its releases, visit [NuvioMedia/NuvioMobile](https://github.com/NuvioMedia/NuvioMobile).
