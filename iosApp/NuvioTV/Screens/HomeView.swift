@@ -800,6 +800,19 @@ struct HomeView: View {
                             rowsScroll(pinned: false, settleReveal: false)
                         }
                     }
+                    // The fixed hero is outside the shelves' scroll view. Focusing it does
+                    // not reset that scroll view, so tvOS can leave the native bar translated
+                    // above the screen by the old shelf offset (e.g. y=-445 after three Downs).
+                    // Settle the shelves once when focus returns to the hero. No delayed
+                    // retries: those would fight a subsequent Down back into the shelves.
+                    .onChange(of: heroFocused) { _, focused in
+                        guard focused, heroContainerPinned else { return }
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            scrollProxy.scrollTo("home_top", anchor: .top)
+                        }
+                    }
                     // BUG-27: from down the page, Menu jumps back to the top and hands focus to
                     // the hero CTA — one press instead of dozens of Ups, and from there a single
                     // Up reaches the (now visible again) tab bar. The handler is nil at the top

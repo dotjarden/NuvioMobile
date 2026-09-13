@@ -1,6 +1,50 @@
 import XCTest
 
 final class NavigationExperienceTests: XCTestCase {
+    @MainActor func testHomeNavigationReturnsAfterScrolling() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-sidebar_style", "tabs"]
+        app.launch()
+        let profiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'profiles.profile.'"))
+        XCTAssertTrue(profiles.firstMatch.waitForExistence(timeout: 25))
+        XCUIRemote.shared.press(.select)
+        let home = app.buttons["Home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 20))
+        Thread.sleep(forTimeInterval: 3)
+        for depth in [3, 5, 8] {
+            for _ in 0..<16 {
+                if home.hasFocus { break }
+                XCUIRemote.shared.press(.up)
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+            XCTAssertTrue(home.hasFocus, "Home navigation must be reachable before the scroll")
+            for _ in 0..<depth {
+                XCUIRemote.shared.press(.down)
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            XCTAssertFalse(home.hasFocus, "Down must leave the restored tab bar")
+            XCTAssertTrue(app.staticTexts["debug_hero"].label.contains("foc=0"),
+                          "Down must enter the shelves again, not remain stuck on the hero")
+            let down = XCTAttachment(screenshot: app.screenshot())
+            down.name = "Home down \(depth)"; down.lifetime = .keepAlways; add(down)
+            for _ in 0..<(depth + 4) {
+                if home.hasFocus { break }
+                XCUIRemote.shared.press(.up)
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            let up = XCTAttachment(screenshot: app.screenshot())
+            up.name = "Home back up \(depth)"; up.lifetime = .keepAlways; add(up)
+            XCTAssertTrue(home.hasFocus, "Up from Home's first shelf/hero must reach the tabs\n\(app.debugDescription)")
+            XCTAssertGreaterThanOrEqual(home.frame.minY, 0)
+        }
+        XCUIRemote.shared.press(.right)
+        XCTAssertTrue(app.buttons["Search"].hasFocus, "Restored tabs must allow switching destinations")
+        XCUIRemote.shared.press(.select)
+        XCUIRemote.shared.press(.down)
+        XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 15))
+    }
+
     @MainActor func testTabsRemainUsableAfterScrollingAndDetails() {
         continueAfterFailure = false
         let app = XCUIApplication()
