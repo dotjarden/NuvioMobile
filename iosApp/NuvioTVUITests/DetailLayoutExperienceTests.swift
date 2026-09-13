@@ -47,15 +47,12 @@ final class DetailLayoutExperienceTests: XCTestCase {
         focus(guide, in: app)
         focus(app.descendants(matching: .any)["detail.parental.2"], in: app)
         focus(guide, in: app)
-        let more = app.buttons["detail.synopsis.toggle"]
-        focus(more, in: app); XCUIRemote.shared.press(.select)
-        let paragraphs = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.synopsis.' AND identifier != 'detail.synopsis.toggle' AND identifier != 'detail.synopsis.preview'"))
+        XCTAssertFalse(app.buttons["detail.synopsis.toggle"].exists)
+        XCTAssertFalse(app.buttons["Read More"].exists)
+        let paragraphs = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.synopsis.'"))
         XCTAssertGreaterThanOrEqual(paragraphs.count, 2)
-        XCTAssertFalse(app.staticTexts["detail.synopsis.preview"].exists)
         focus(paragraphs.element(boundBy: paragraphs.count - 1), in: app)
         focus(app.descendants(matching: .any)["detail.synopsis.0"], in: app)
-        focus(more, in: app); XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.staticTexts["detail.synopsis.preview"].waitForExistence(timeout: 5))
 
     }
 }

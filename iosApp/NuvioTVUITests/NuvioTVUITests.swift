@@ -1273,6 +1273,16 @@ final class NuvioTVUITests: XCTestCase {
             pause(0.4)
         }
         XCTAssertTrue(searchTab.hasFocus, "Up from Search must reach navigation again")
+        for _ in 0..<2 {
+            press(.down, times: 6, gap: 0.3)
+            for _ in 0..<16 {
+                if searchTab.hasFocus { break }
+                remote.press(.up)
+                pause(0.3)
+            }
+            XCTAssertTrue(searchTab.hasFocus, "Repeated scrolling past the pinned filters must not strand navigation")
+            XCTAssertGreaterThanOrEqual(searchTab.frame.minY, 0)
+        }
     }
 
     // MARK: - UX-7: focus-follows-backdrop hero on Home

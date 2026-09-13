@@ -1,54 +1,24 @@
 import Combine
 import SwiftUI
 
-/// Shared visibility state for the floating glass tab bar's immersive-push signal, plus the
-/// FEAT-25 "is Home frontmost" signal below.
-///
-/// T2 (beta.14 regression fix — retired a signal this class used to combine): this class used to
-/// also own `scrolledAway`, a SINGLE shared slot fed by whichever tab root last called
-/// `setScrolled(_:)`, folded together with `detailDepth` into one `hidden` bit. That was wrong
-/// for two reasons: a single shared slot across four independently-scrolling tabs is
-/// last-writer-wins (tab B's scroll position could overwrite tab A's), and `ContentView`'s
-/// tab-switch reset (`setScrolled(false)`) could race under the latch and desync `hidden` from
-/// the actually-selected tab's real position. It was also long dead for the bar's OWN
-/// presentation — round 4 (below, `immersiveHidden`) already stopped the toolbar from reading
-/// `hidden` at all. The only real consumer was `isScrolledDown` (BUG-27's Menu-to-top signal),
-/// and that was already correctly served by `TabBarScrollAutoHide`'s own per-tab
-/// `@State private var hidesBar` — one latch per tab root, not one shared across all four.
-/// `scrolledAway`/`setScrolled(_:)`/`hidden` are gone; the per-tab `@State` latch is the real
-/// state and always was.
-///
-/// `detailDepth`: count of "immersive" pushed screens (currently just `DetailView`) stacked on
-/// top of the active tab's `NavigationStack`. A depth counter rather than a `Bool` because
-/// Detail → More Like This → Detail nests — the bar should only reappear once every pushed
-/// immersive screen has been popped, not after the first one.
-///
-/// Owned as a single instance in `MainTabView` (see that property's own doc comment for why T3
-/// made it `@State` rather than `@StateObject`) and read/written by descendants via
-/// `@Environment(\.tabBarVisibility)` — a custom environment key (not `@EnvironmentObject`) so
-/// views that can be presented *outside* the tab shell (e.g. `DetailView` reached through
-/// `DeepLinkTitleView`'s own standalone `NavigationStack`, pushed from a Top Shelf deep link with
-/// no tab bar in play at all) fall back to a harmless unconnected default instance instead of
-/// crashing for a missing environment object.
+/// Immersive content and trailer coverage for the tab shell. Only TabBarPresentation controls
+/// native tab visibility; individual tabs must not install competing toolbar preferences.
+/// An environment default keeps standalone detail/deep-link presentations independent.
 @MainActor
 final class TabBarVisibility: ObservableObject {
-    private var detailDepth = 0 {
-        didSet { recompute() }
+    private var immersiveOwners: Set<UUID> = []
+    private var detailDepth: Int { immersiveOwners.count }
+
+    /// View identity makes repeated lifecycle callbacks idempotent. Coalescing in the shell
+    /// also prevents a parent disappear/child appear from flashing the bar between details.
+    func pushImmersive(owner: UUID) {
+        guard immersiveOwners.insert(owner).inserted else { return }
+        recompute()
     }
 
-    /// Called from an immersive pushed screen's `.onAppear` (currently `DetailView`).
-    func pushImmersive() {
-        detailDepth += 1
-    }
-
-    /// Called from the same screen's `.onDisappear`. An unmatched call (shouldn't happen, but
-    /// SwiftUI view lifecycle edge cases are never fully guaranteed) is a full no-op: the early
-    /// return both keeps the depth from going negative (which would take two pops to recover) and
-    /// keeps the probe from logging a push/pop cycle that never occurred — the cycle counter
-    /// exists to diagnose BUG-66, so a phantom count is worse than none (Codex beta.14 r4).
-    func popImmersive() {
-        guard detailDepth > 0 else { return }
-        detailDepth -= 1
+    func popImmersive(owner: UUID) {
+        guard immersiveOwners.remove(owner) != nil else { return }
+        recompute()
         TabBarProbe.recordPop(depthAfter: detailDepth)
     }
 
@@ -119,31 +89,8 @@ final class TabBarVisibility: ObservableObject {
         recomputeHomeCovered()
     }
 
-    /// Device pass round 4 (2026-08-02): the toolbar drives off THIS, not the retired `hidden`.
-    /// Toggling `.toolbarVisibility(.hidden)` on scroll and re-showing it later left the system
-    /// bar frozen mid-slide on real hardware — clipped at the top until focus moved within it —
-    /// through three rounds of transition fixes (.automatic→.visible, dropping the custom
-    /// animation). The cure is structural: never toggle visibility for scrolling at all; the
-    /// tvOS 26 system bar already minimizes/expands natively as content scrolls (`.automatic`),
-    /// so there is no hidden→shown transition left to get stuck. Only the immersive detail push
-    /// still force-hides. T2: the retired `hidden`/`scrolledAway` were never read by bar
-    /// presentation anyway (that's what made them safe to retire) — `isScrolledDown`, computed
-    /// per-tab in `TabBarScrollAutoHide`, remains the BUG-27 Menu-to-top signal, unrelated to bar
-    /// presentation.
-    ///
-    /// T3 (beta.14 regression fix): `@Published`, not computed, and written from `recompute()`
-    /// ONLY on an actual 0↔>0 crossing — never reassigned to the same value it already held.
-    /// This is what makes `tabBarImmersiveHide()` below narrow: it subscribes to
-    /// `$immersiveHidden` specifically, so a redundant same-value write (which `@Published` would
-    /// still broadcast — it doesn't dedupe) would otherwise re-resolve `.toolbarVisibility` for
-    /// no reason. Before T3 this was a plain computed property read fresh by a modifier that took
-    /// the whole `TabBarVisibility` object as a parameter — which meant the modifier's owning
-    /// view (`MainTabView`, via `@StateObject`) re-evaluated on EVERY `@Published` change on the
-    /// object, including unrelated ones like `homeSurfaceCovered`, and `.toolbarVisibility` got
-    /// re-resolved along with it. That's the exact mechanism rounds 1–3 fought blind: the bar
-    /// froze mid-slide because its resolved preference kept changing identity underneath an
-    /// in-flight system transition, on every tab switch. See `tabBarImmersiveHide()` and
-    /// `MainTabView.tabBarVisibility` for the other two pieces of this fix.
+    /// Only publish actual visibility changes. The presentation coordinator coalesces lifecycle
+    /// updates and restores the bar after the navigation transition has completed.
     @Published private(set) var immersiveHidden: Bool = false
 }
 
@@ -155,69 +102,6 @@ extension EnvironmentValues {
     var tabBarVisibility: TabBarVisibility {
         get { self[TabBarVisibilityKey.self] }
         set { self[TabBarVisibilityKey.self] = newValue }
-    }
-}
-
-/// Applies the detail-push-driven tab-bar auto-hide to one tab's root content. Formerly
-/// `ContentView.tabBarAutoHide(_ vis: TabBarVisibility)`, a `private extension View` that took
-/// the shared instance as a parameter — T3 (beta.14 regression fix) moved it here as a
-/// no-argument modifier instead:
-///
-/// Reading `tabBarVisibility` via `@Environment` INSIDE this modifier (rather than as a
-/// parameter) is what makes each `Tab` closure in `MainTabView` a constant, prunable view value —
-/// a parameter of object identity forced the closure to be re-evaluated whenever the object's
-/// identity was seen as changing inputs upstream. Combined with `MainTabView` reading
-/// `$immersiveHidden` through a narrow `onReceive` rather than the whole object through
-/// `@StateObject`, `.toolbarVisibility` can now only re-resolve on an actual `immersiveHidden`
-/// publish — i.e. a Detail push/pop — never as a side effect of a tab switch. See
-/// `MainTabView.tabBarVisibility`'s own doc comment for the other half of this fix.
-private struct TabBarImmersiveHideModifier: ViewModifier {
-    @Environment(\.tabBarVisibility) private var vis
-    @State private var immersive = false
-
-    /// FEAT-30 Phase 0 spike knob (`-debug.sidebarSpike YES`): resolve the tab bar to a CONSTANT
-    /// `.hidden` for the whole session so the hardware can answer two questions the simulator
-    /// cannot — whether the hidden bar changes the Home rows viewport away from
-    /// `heroPinnedRowsViewportBudget`, and what Menu does at a tab root with no bar to receive
-    /// focus. Launch-latched like every other probe knob; release-inert unless passed.
-    nonisolated static let sidebarSpike = UserDefaults.standard.bool(forKey: "debug.sidebarSpike")
-
-    /// FEAT-30: the real, shipping term the spike knob above was standing in for — with the
-    /// Omni-style sidebar on, the system tab bar is gone for the whole session and the sidebar is
-    /// the only chrome. The knob stays as an alias (spike OR sidebar mode ⇒ hidden) so a Phase 0
-    /// hardware run can still force the hidden-bar geometry without switching the setting.
-    ///
-    /// A PLAIN INSTANCE READ evaluated in `body`, deliberately NOT a `nonisolated static let` like
-    /// the spike beside it. The mode may only change across `ContentView`'s
-    /// `.id(theme|sidebar|font)` remount — and a remount re-creates VIEWS, not type storage, so a
-    /// launch-latched static would keep resolving the old mode until the app was relaunched,
-    /// leaving the bar and the sidebar both on screen (or both off). One `UserDefaults` lookup per
-    /// body evaluation is the cost, and this body is already narrow by construction: it
-    /// re-evaluates on an `immersiveHidden` publish, i.e. a Detail push/pop, never on a tab switch
-    /// or a scroll (see the T3 archaeology on this type and on `TabBarVisibility.immersiveHidden`).
-    private var sidebarMode: Bool { SidebarChrome.isEnabled() }
-
-    func body(content: Content) -> some View {
-        content
-            // Keep root navigation available. Automatic minimization can strand remote
-            // focus below a pinned header on tvOS 27. All tab roots resolve the same value;
-            // immersive details and explicit sidebar mode still hide the system bar.
-            .toolbarVisibility((immersive || Self.sidebarSpike || sidebarMode) ? .hidden : .visible, for: .tabBar)
-            // T3: use the PAYLOAD from `onReceive`, not the property — `@Published` emits on
-            // willSet, same house rule as HomeView.swift's hero-trailer sync (~L1762-1768:
-            // "`@Published` emits on willSet, so use the payload, not the property"). A
-            // `@Published` publisher replays its current value to a new subscriber, so no
-            // `onAppear` seed is needed here.
-            .onReceive(vis.$immersiveHidden) { immersive = $0 }
-    }
-}
-
-extension View {
-    /// Attach to a tab root's content to drive the floating tab bar's immersive-push auto-hide.
-    /// No-argument by design (see `TabBarImmersiveHideModifier`'s doc comment) — reads the shared
-    /// instance from the environment rather than taking it as a parameter.
-    func tabBarImmersiveHide() -> some View {
-        modifier(TabBarImmersiveHideModifier())
     }
 }
 

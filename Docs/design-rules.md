@@ -88,8 +88,12 @@ Subtitle appearance must apply to native AVPlayer playback as well as MPV. Reapp
 
 Keep the cinematic artwork and prominent playback actions. Year/runtime/rating use a quiet inline facts row; only the age rating gets a small outline. All series use one native season menu beside Episodes, including Specials. Preserve episode artwork, watched state, stream routing, and the fixed-height focused episode synopsis.
 
-Each piece of information has one home. The title synopsis appears once near playback actions, with Read More expanding it in place and Show Less collapsing it. The lower two-column section contains Details (credits and other facts) beside the full Parental Guide; do not repeat the synopsis or place advisory categories in the hero. Omit company names already represented in the logo strip and IMDb ratings already shown in the primary facts row.
+Each piece of information has one home. The full title synopsis appears once near playback actions and is readable in the page scroll. Do not add Read More, Show Less, or another disclosure control. The lower two-column section contains Details (credits and other facts) beside the full Parental Guide; do not repeat the synopsis or place advisory categories in the hero. Omit company names already represented in the logo strip and IMDb ratings already shown in the primary facts row.
 
 Guide categories and labelled severities use plain rows and subtle separators. Both columns participate in the same page scroll. Long reading blocks take remote focus with a small leading line and no pill/scale treatment; they must not use section-top anchoring that prevents reading down and back up. Missing columns collapse naturally, and empty sections stay hidden. Test descriptions must use unique prose, never repeated placeholder paragraphs.
 
-Validation: the isolated content-page UI test passes on tvOS 27 for season selection, Specials, returning from episodes, expanding/collapsing the single synopsis, reading down/up, and crossing the Details/Parental Guide columns.
+Validation: the isolated content-page UI test passes on tvOS 27 for season selection, Specials, returning from episodes, reading the complete synopsis down/up, and crossing the Details/Parental Guide columns.
+
+## Native top navigation — September 13, 2026
+
+The top bar keeps native Apple appearance and interaction. A single TabBarPresentation at the shell owns native visibility and interaction; individual tab roots must not publish competing toolbar visibility preferences. Coalesce immersive lifecycle changes, wait for navigation transitions to finish, and apply visibility without a second animation. Hide the bar from focus as well as sight while immersive content is shown, and restore interaction when returning. Detail registrations use view identities so repeated callbacks cannot leave a phantom hidden depth. Sidebar mode remains an explicit alternative; scrolling alone must not toggle hidden/shown state.

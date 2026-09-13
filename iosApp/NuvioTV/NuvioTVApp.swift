@@ -142,7 +142,9 @@ struct NuvioTVApp: App {
 
     @ViewBuilder private var appContent: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--detail-layout-ui-test") {
+        if ProcessInfo.processInfo.arguments.contains("--navigation-layout-ui-test") {
+            NavigationLayoutUITestFixture()
+        } else if ProcessInfo.processInfo.arguments.contains("--detail-layout-ui-test") {
             DetailLayoutUITestFixture()
         } else if ProcessInfo.processInfo.arguments.contains("--live-tv-ui-test") {
             LiveTVView(profile: "live-tv-ui-test")

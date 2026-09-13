@@ -4,14 +4,14 @@ import SwiftUI
 
 /// Isolated content for focus/layout checks; never starts account or metadata repositories.
 struct DetailLayoutUITestFixture: View {
-    private let preview = MetaPreview(id: "detail-layout", type: "series", name: "North Coast",
+    static let preview = MetaPreview(id: "detail-layout", type: "series", name: "North Coast",
         poster: nil, banner: nil, logo: nil, posterShape: .poster,
         description: nil, releaseInfo: "2026", rawReleaseDate: nil, popularity: nil,
         voteCount: nil, imdbRating: "8.4", genres: ["Drama", "Mystery"])
 
     var body: some View {
         NavigationStack {
-            DetailView(preview: preview, fixture: Self.metadata)
+            DetailView(preview: Self.preview, fixture: Self.metadata)
         }
     }
 
@@ -32,6 +32,46 @@ struct DetailLayoutUITestFixture: View {
             ]
         ]]
         return MetaDetailsParser.shared.parse(payload: String(data: try! JSONSerialization.data(withJSONObject: data), encoding: .utf8)!)
+    }
+}
+/// Real native tabs, pinned controls and immersive DetailView without external catalog data.
+struct NavigationLayoutUITestFixture: View {
+    @State private var selectedTab = 0
+    @State private var visibility = TabBarVisibility()
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            Tab("Home", systemImage: "house", value: 0) { root("Home") }
+            Tab("Search", systemImage: "magnifyingglass", value: 1) { root("Search") }
+            Tab("Settings", systemImage: "gearshape", value: 2) { root("Settings") }
+        }
+        .background { TabBarPresentation(visibility: visibility).frame(width: 0, height: 0) }
+        .environment(\.tabBarVisibility, visibility)
+    }
+
+    private func root(_ name: String) -> some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 24) {
+                Menu("Genre") { Button("All genres") {} ; Button("Drama") {} }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("nav.filter.\(name)")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 35) {
+                        NavigationLink {
+                            DetailView(preview: DetailLayoutUITestFixture.preview, fixture: DetailLayoutUITestFixture.metadata)
+                        } label: { Text("North Coast") }
+                        .accessibilityIdentifier("nav.detail.\(name)")
+                        ForEach(0..<12) { index in
+                            Button("\(name) title \(index)") {}
+                                .accessibilityIdentifier("nav.row.\(name).\(index)")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 30)
+                }
+            }
+            .padding(60)
+        }
     }
 }
 #endif

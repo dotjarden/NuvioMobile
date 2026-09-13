@@ -281,6 +281,7 @@ struct DetailView: View {
     /// instance in that case — `pushImmersive`/`popImmersive` still balance correctly, they just
     /// don't affect anything since there's no tab bar to hide.
     @Environment(\.tabBarVisibility) private var tabBarVisibility
+    @State private var immersiveOwner = UUID()
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
@@ -805,9 +806,9 @@ struct DetailView: View {
         // Detail is an "immersive" screen: the floating tab bar hides for as long as one is on
         // screen, at any nesting depth (Detail → More Like This → Detail pushes are common, hence
         // a depth counter on the shared TabBarVisibility rather than a plain flag here).
-        .onAppear { tabBarVisibility.pushImmersive() }
+        .onAppear { tabBarVisibility.pushImmersive(owner: immersiveOwner) }
         .onDisappear {
-            tabBarVisibility.popImmersive()
+            tabBarVisibility.popImmersive(owner: immersiveOwner)
             bridgeTask?.cancel()
             bridgeTask = nil
         }

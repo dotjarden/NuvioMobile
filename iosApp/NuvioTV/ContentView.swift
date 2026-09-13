@@ -285,21 +285,8 @@ struct MainTabView: View {
         LiveTVIdentity.digest("\(activeProfile?.userId ?? "guest")|\(activeProfile?.id ?? String(ProfileRepository.shared.activeProfileId))")
     }
 
-    /// Single shared instance for the whole tab shell — provided to every tab root (and anything
-    /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. Declared here
-    /// (not further up in `ContentView`) so it lives and dies with the tab shell itself.
-    ///
-    /// T3 (beta.14 regression fix, load-bearing — do NOT revert to `@StateObject`): `@State` on a
-    /// reference type stores the SAME instance for the same lifetime `@StateObject` would, but
-    /// without subscribing this view to the object's `objectWillChange`. `@StateObject` was the
-    /// bug: it meant ANY `@Published` mutation on `tabBarVisibility` — including
-    /// `homeSurfaceCovered`, which has nothing to do with the tab bar — invalidated `MainTabView`
-    /// and re-evaluated every `Tab` closure's body, which is what re-resolved
-    /// `.toolbarVisibility` mid-transition on every tab switch (the rounds 1–3 latch class,
-    /// BUG-66). The tab bar's own presentation now flows through `tabBarImmersiveHide()`'s own
-    /// `@Environment` read plus a narrow `onReceive(vis.$immersiveHidden)` — a targeted
-    /// subscription to exactly the one publisher that should move it. A well-meaning revert to
-    /// `@StateObject` here would silently restore the every-tab-switch toolbar re-resolution.
+    /// Store the shared instance without observing unrelated hero/trailer updates in the shell.
+    /// TabBarPresentation alone subscribes to immersive visibility and owns the native bar.
     @State private var tabBarVisibility = TabBarVisibility()
 
     /// FEAT-30: the sidebar's shared state, provided to every tab root alongside
@@ -319,35 +306,33 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView(model: home)
-                    .tabBarImmersiveHide()
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
-                SearchView(home: home).tabBarImmersiveHide()
+                SearchView(home: home)
             }
             Tab("Live TV", systemImage: "tv", value: 6) {
                 LiveTVView(profile: liveProfileKey)
                     .id(liveProfileKey)
-                    .tabBarImmersiveHide()
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
-                    .tabBarImmersiveHide()
             }
-            // Every root uses the same navigation visibility declaration, including
-            // Settings and Profile. Switching tabs must not hide the bar or reset focus.
+            // Tab roots never change the native bar's visibility independently.
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView(
                     selectedCategory: $settingsCategory,
                     pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                     pendingAppearanceRowFocus: $pendingAppearanceRowFocus
                 )
-                    .tabBarImmersiveHide()
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {
                 ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile,
                                onAccountSettings: { settingsCategory = .accountServices; selectedTab = 4 })
-                    .tabBarImmersiveHide()
             }
+        }
+        .background {
+            TabBarPresentation(visibility: tabBarVisibility)
+                .frame(width: 0, height: 0)
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
         .environment(\.sidebarChrome, sidebarChrome)
