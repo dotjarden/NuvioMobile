@@ -36,18 +36,26 @@ final class DetailLayoutExperienceTests: XCTestCase {
         focus(specials, in: app); XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.buttons["detail.episode.special"].waitForExistence(timeout: 5))
 
-        let paragraphs = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.about.'"))
-        XCTAssertGreaterThanOrEqual(paragraphs.count, 2)
-        let lastParagraph = paragraphs.element(boundBy: paragraphs.count - 1)
-        focus(lastParagraph, in: app)
-        let firstParagraph = app.descendants(matching: .any)["detail.about.0"]
-        focus(firstParagraph, in: app)
+        let firstDetail = app.descendants(matching: .any)["detail.info.Director"]
+        XCTAssertTrue(firstDetail.waitForExistence(timeout: 5))
+        focus(firstDetail, in: app)
         let guide = app.descendants(matching: .any)["detail.parental.0"]
         XCTAssertTrue(guide.exists)
-        XCTAssertGreaterThan(guide.frame.minX, firstParagraph.frame.maxX, "About and parental information have separate columns")
-        let reading = XCTAttachment(screenshot: app.screenshot()); reading.name = "About and parental guide columns"; reading.lifetime = .keepAlways; add(reading)
+        XCTAssertGreaterThan(guide.frame.minX, firstDetail.frame.maxX)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH 'detail.about.'")).count, 0)
+        let reading = XCTAttachment(screenshot: app.screenshot()); reading.name = "Details and parental guide without repeated synopsis"; reading.lifetime = .keepAlways; add(reading)
         focus(guide, in: app)
         focus(app.descendants(matching: .any)["detail.parental.2"], in: app)
         focus(guide, in: app)
+        let more = app.buttons["detail.synopsis.toggle"]
+        focus(more, in: app); XCUIRemote.shared.press(.select)
+        let paragraphs = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.synopsis.' AND identifier != 'detail.synopsis.toggle' AND identifier != 'detail.synopsis.preview'"))
+        XCTAssertGreaterThanOrEqual(paragraphs.count, 2)
+        XCTAssertFalse(app.staticTexts["detail.synopsis.preview"].exists)
+        focus(paragraphs.element(boundBy: paragraphs.count - 1), in: app)
+        focus(app.descendants(matching: .any)["detail.synopsis.0"], in: app)
+        focus(more, in: app); XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.staticTexts["detail.synopsis.preview"].waitForExistence(timeout: 5))
+
     }
 }

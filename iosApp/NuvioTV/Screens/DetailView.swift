@@ -1038,11 +1038,7 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             if let overview, !overview.isEmpty {
-                Text(overview)
-                    .font(Theme.Font.body)
-                    .lineLimit(3)
-                    .frame(maxWidth: 1100, alignment: .leading)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                DetailSynopsisView(text: overview)
             }
         }
         .focusSection()
@@ -1092,11 +1088,6 @@ struct DetailView: View {
                     .font(Theme.Font.caption)
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.Palette.textSecondary, lineWidth: 1))
-            }
-            if !model.parentalWarnings.isEmpty {
-                Text(model.parentalWarnings.prefix(3).map(\.label).joined(separator: ", "))
-                    .font(Theme.Font.caption)
-                    .lineLimit(1)
             }
             if model.isLoading { ProgressView() }
         }
@@ -1356,21 +1347,16 @@ struct DetailView: View {
     /// fields that are populated are shown — director/writer/country come from the addon; studios,
     /// networks, awards, language, status and external ratings fill in when TMDB enrichment is on.
     /// Reading blocks share the page scroll. They deliberately avoid row-top anchoring so
-    /// moving down a long synopsis never snaps back to the beginning of the About column.
+    /// moving between credits never snaps back to the beginning of the Details column.
     @ViewBuilder
     private var supportingInformation: some View {
-        let hasAbout = !(overview ?? "").isEmpty || !infoRows.isEmpty
+        let hasDetails = !infoRows.isEmpty
         let hasGuide = !model.parentalWarnings.isEmpty
-        if hasAbout || hasGuide {
+        if hasDetails || hasGuide {
             HStack(alignment: .top, spacing: 72) {
-                if hasAbout {
+                if hasDetails {
                     VStack(alignment: .leading, spacing: 20) {
-                        Text("About").font(Theme.Font.sectionTitle)
-                        ForEach(Array(DetailReadingBlock.paragraphs(overview ?? "").enumerated()), id: \.offset) { index, paragraph in
-                            DetailReadingBlock(id: "detail.about.\(index)") {
-                                Text(paragraph).font(Theme.Font.body)
-                            }
-                        }
+                        Text("Details").font(Theme.Font.sectionTitle)
                         ForEach(infoRows) { row in
                             DetailReadingBlock(id: "detail.info.\(row.id)") {
                                 HStack(alignment: .top, spacing: 24) {
@@ -1386,8 +1372,8 @@ struct DetailView: View {
                 }
                 if hasGuide {
                     parentalGuideSection
-                        .frame(width: hasAbout ? 450 : nil, alignment: .leading)
-                        .frame(maxWidth: hasAbout ? nil : .infinity, alignment: .leading)
+                        .frame(width: hasDetails ? 450 : nil, alignment: .leading)
+                        .frame(maxWidth: hasDetails ? nil : .infinity, alignment: .leading)
                         .focusSection()
                 }
             }
@@ -1403,14 +1389,15 @@ struct DetailView: View {
         }
         add(String(localized: "Director"), meta.director.joined(separator: ", "))
         add(String(localized: "Writers"), meta.writer.joined(separator: ", "))
-        add(String(localized: "Studios"), meta.productionCompanies.map { $0.name }.joined(separator: ", "))
-        add(String(localized: "Network"), meta.networks.map { $0.name }.joined(separator: ", "))
+        add(String(localized: "Studios"), meta.productionCompanies.filter { company in !companyLogos.contains { $0.company.name == company.name } }.map { $0.name }.joined(separator: ", "))
+        add(String(localized: "Network"), meta.networks.filter { company in !companyLogos.contains { $0.company.name == company.name } }.map { $0.name }.joined(separator: ", "))
         // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
         let country: String? = meta.country;   add(String(localized: "Country"), country ?? "")
         let language: String? = meta.language;  add(String(localized: "Language"), language ?? "")
         let status: String? = meta.status;      add(String(localized: "Status"), status ?? "")
         let awards: String? = meta.awards;      add(String(localized: "Awards"), awards ?? "")
-        let ratings = meta.externalRatings
+        let hasPrimaryRating = !(model.meta?.imdbRating ?? preview.imdbRating ?? "").isEmpty
+        let ratings = meta.externalRatings.filter { !(hasPrimaryRating && $0.source.lowercased().contains("imdb")) }
         if !ratings.isEmpty {
             add(String(localized: "Ratings"), ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
         }
@@ -1473,7 +1460,7 @@ struct DetailView: View {
     // MARK: - Company logos (studios & networks with TMDB logo art)
 
     /// Logo strip for the production companies/networks that carry TMDB logo art (the info rows
-    /// above already list all of them by name). White chips keep the mostly-dark logos readable.
+    /// only list companies missing from this strip). White chips keep the mostly-dark logos readable.
     /// Chips with a TMDB id push the studio/network browse page (`EntityRoute`).
     @ViewBuilder
     private var companyLogosRow: some View {

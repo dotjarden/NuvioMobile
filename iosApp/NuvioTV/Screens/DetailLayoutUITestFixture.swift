@@ -16,7 +16,8 @@ struct DetailLayoutUITestFixture: View {
     }
 
     static var metadata: MetaDetails {
-        let synopsis = Array(repeating: "A coastal community is brought together when an unexpected discovery challenges everything its residents thought they knew. As the investigation unfolds, old friendships and new alliances reveal the town's hidden history.", count: 3).joined(separator: " ")
+        let synopsis = "A coastal community is brought together when an unexpected discovery challenges everything its residents thought they knew. As the investigation unfolds, old friendships and new alliances reveal the town's hidden history. A young journalist follows a trail of letters to a lighthouse that has stood empty for decades. Her search takes her beyond the harbor and into the lives of families who have kept their secrets for generations. With a storm approaching and the ferry service suspended, the residents must decide whom to trust before the truth disappears with the tide."
+
         let data: [String: Any] = ["meta": [
             "id": "detail-layout", "type": "series", "name": "North Coast", "description": synopsis,
             "releaseInfo": "2026", "runtime": "48 min", "imdbRating": "8.4", "ageRating": "TV-14",
