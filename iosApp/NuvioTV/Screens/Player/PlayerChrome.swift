@@ -38,10 +38,12 @@ struct PlayerChrome: View {
                     }
             }
 
-            if state.isBuffering {
-                PlayerLoadingView(context: context, coversVideo: state.positionSec < 1)
-                    .allowsHitTesting(false)
-            }
+            // Preserve loaded artwork across buffering events instead of remounting a
+            // text fallback on every stall. Hidden loading never enters the focus tree.
+            PlayerLoadingView(context: context, coversVideo: state.positionSec < 1)
+                .opacity(state.isBuffering ? 1 : 0)
+                .accessibilityHidden(!state.isBuffering)
+                .allowsHitTesting(false)
 
             LinearGradient(colors: [.clear, .black.opacity(0.65), .black.opacity(0.82)],
                            startPoint: .top, endPoint: .bottom)

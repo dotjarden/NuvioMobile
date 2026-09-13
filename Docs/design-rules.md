@@ -63,3 +63,9 @@ Validation covers identical native/MPV pause-and-seek behavior, direct track but
 ## Profile picker — September 13, 2026
 
 The account pass was too subtle on Who’s Watching. The launch gate now has a quiet Nuvio wordmark, one heading, larger circular portraits and a soft wash of the focused profile’s color. Keep Add Profile and Manage Profiles together below the portrait row. Management must be visually explicit: change the heading and show pencil badges and Edit Profile captions. Remove PRIMARY pills, stars and generic sync descriptions from the launch gate. Preserve cloud avatars, profile selection, PIN checks and account sync. Six profiles must fit with room for the native focus lift; keep caption heights equal. Respect Reduce Motion when changing the background color.
+
+## Loading motion and discovery discussion — September 13, 2026
+
+Keep the player’s loading title stationary: no repeating opacity pulse, bounce or layout movement when a logo replaces text. Use a fixed title slot, reuse cached artwork during engine handoff and preserve it across buffering events.
+
+Jordan likes Home’s expandable presentation. Proposed, not yet approved: combine Browse and Search into one Search destination using the shared Home presentation for discovery, with compact filters and an explicit search field. Preserve browsing position when a query is cleared. Keep Home’s personal rows and recommendations. Do not remove a tab until the navigation decision is approved.
