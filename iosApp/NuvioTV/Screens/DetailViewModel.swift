@@ -72,7 +72,22 @@ final class DetailViewModel: ObservableObject {
         self.preview = preview
     }
 
+    #if DEBUG
+    private var isLayoutFixture = false
+    convenience init(preview: MetaPreview, fixture: MetaDetails) {
+        self.init(preview: preview)
+        isLayoutFixture = true
+        meta = fixture
+        parentalWarnings = [ParentalWarning(label: "Violence", severity: "Moderate"),
+                            ParentalWarning(label: "Profanity", severity: "Mild"),
+                            ParentalWarning(label: "Frightening Scenes", severity: "Moderate")]
+    }
+    #endif
+
     func start() {
+        #if DEBUG
+        if isLayoutFixture { return }
+        #endif
         guard detailWatcher == nil else { return }
         Self.currentOwner = ownerToken
 

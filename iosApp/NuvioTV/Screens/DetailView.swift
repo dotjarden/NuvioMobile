@@ -392,6 +392,13 @@ struct DetailView: View {
         _model = StateObject(wrappedValue: DetailViewModel(preview: preview))
     }
 
+    #if DEBUG
+    init(preview: MetaPreview, fixture: MetaDetails) {
+        self.preview = preview
+        _model = StateObject(wrappedValue: DetailViewModel(preview: preview, fixture: fixture))
+    }
+    #endif
+
     /// BUG-41 measurement probe: counts `DetailView.body` evaluations so the main session can
     /// compare before/after this fix. Logs every 10th eval (not every single one) to stay cheap
     /// while still grep-able: `log show --predicate 'eventMessage contains "BUG41"'`. Gated by
@@ -454,8 +461,6 @@ struct DetailView: View {
                     Group {
                         companyLogosRow
                             .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        parentalGuideSection
-                            .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
                         EpisodesSection(
@@ -471,6 +476,7 @@ struct DetailView: View {
                     Group {
                         castRow
                             .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        supportingInformation
                         collectionRow
                             .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         trailersRow
@@ -1034,10 +1040,10 @@ struct DetailView: View {
             if let overview, !overview.isEmpty {
                 Text(overview)
                     .font(Theme.Font.body)
+                    .lineLimit(3)
                     .frame(maxWidth: 1100, alignment: .leading)
                     .foregroundStyle(Theme.Palette.textPrimary)
             }
-            infoSection
         }
         .focusSection()
     }
@@ -1070,71 +1076,34 @@ struct DetailView: View {
     }
 
     private var metaLine: some View {
-        HStack(spacing: Theme.Spacing.md + 2) {
-            if let year = model.meta?.releaseInfo ?? preview.releaseInfo, !year.isEmpty {
-                metaChip { Text(year) }
-            }
-            if let runtime = model.meta?.runtime, !runtime.isEmpty {
-                metaChip { Text(runtime) }
-            }
+        HStack(spacing: 16) {
+            let facts = [model.meta?.releaseInfo ?? preview.releaseInfo, model.meta?.runtime]
+                .compactMap { $0 }.filter { !$0.isEmpty }
+            if !facts.isEmpty { Text(facts.joined(separator: " · ")) }
             if let rating = model.meta?.imdbRating ?? preview.imdbRating, !rating.isEmpty {
-                metaChip {
-                    HStack(spacing: Theme.Spacing.xs - 2) {
-                        Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
-                        Text(rating)
-                    }
+                if !facts.isEmpty { Text("·") }
+                HStack(spacing: 7) {
+                    Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
+                    Text(rating)
                 }
             }
             if let age = model.meta?.ageRating, !age.isEmpty {
-                // Outlined rating chip (e.g. "TV-MA"), mirroring mobile's bordered pill.
-                metaChip(stroked: true) { Text(age) }
+                Text(age)
+                    .font(Theme.Font.caption)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.Palette.textSecondary, lineWidth: 1))
+            }
+            if !model.parentalWarnings.isEmpty {
+                Text(model.parentalWarnings.prefix(3).map(\.label).joined(separator: ", "))
+                    .font(Theme.Font.caption)
+                    .lineLimit(1)
             }
             if model.isLoading { ProgressView() }
         }
         .font(Theme.Font.meta)
         .foregroundStyle(Theme.Palette.textSecondary)
-    }
-
-    /// P-2b (BUG-41 attribution knob) + item 4 (BUG-41 fix candidate #4): wraps padded chip content
-    /// in either the shipping Liquid Glass capsule or a plain translucent capsule fill — flat
-    /// whenever a trailer is actually playing behind these chips (re-sampling a live video frame
-    /// every render is real GPU work for a barely-visible effect) OR on `DetailScrollAB` leg 2/3/4
-    /// (`chipGlassFlat`). The single swap point shared by `metaChip` and the parental-guide chips
-    /// below so the two don't duplicate the conditional. `actionRow`'s buttons/container are a
-    /// separate swap (leg 4 / `DetailScrollAB.buttonGlassDisabled`) and are untouched by this one.
-    ///
-    /// BUG-41 (beta.18): glass returns the instant `chipGlassFlat` flips back to false — most
-    /// commonly `dimModel.isScrolling` clearing ~150ms after the user stops scrolling — and the
-    /// hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass as this page's
-    /// RESTING-state material, so that return should read as "it was there all along," not a
-    /// visible pop/morph back in. `.transaction { $0.animation = nil }` forces a nil transaction on
-    /// this specific swap regardless of any ambient animation up the tree (e.g. `.animation`
-    /// modifiers elsewhere in `body` keyed to unrelated values) — belt-and-suspenders alongside the
-    /// fact that nothing here calls `withAnimation` in the first place.
-    @ViewBuilder
-    private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
-        Group {
-            if chipGlassFlat {
-                content().background(Color.white.opacity(0.12), in: .capsule)
-            } else {
-                content().glassEffect(.regular, in: .capsule)
-            }
-        }
-        .transaction { $0.animation = nil }
-    }
-
-    /// A small Liquid Glass capsule around one metadata item (year / runtime / rating).
-    private func metaChip(stroked: Bool = false, @ViewBuilder content: () -> some View) -> some View {
-        detailChipBackground {
-            content()
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs - 2)
-        }
-        .overlay {
-            if stroked {
-                Capsule().stroke(Theme.Palette.textSecondary, lineWidth: 1)
-            }
-        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detail.facts")
     }
 
     /// BUG-41 leg 4 (`DetailScrollAB.buttonGlassDisabled`): the Play/series-primary button's style
@@ -1386,27 +1355,43 @@ struct DetailView: View {
     /// A block of label/value rows for the metadata that isn't already on the meta line. Only the
     /// fields that are populated are shown — director/writer/country come from the addon; studios,
     /// networks, awards, language, status and external ratings fill in when TMDB enrichment is on.
+    /// Reading blocks share the page scroll. They deliberately avoid row-top anchoring so
+    /// moving down a long synopsis never snaps back to the beginning of the About column.
     @ViewBuilder
-    private var infoSection: some View {
-        let rows = infoRows
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                Text("Details")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ForEach(rows) { row in
-                    HStack(alignment: .top, spacing: Theme.Spacing.md) {
-                        Text(row.label)
-                            .font(Theme.Font.meta)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .frame(width: 180, alignment: .leading)
-                        Text(row.value)
-                            .font(Theme.Font.meta)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .frame(maxWidth: 900, alignment: .leading)
+    private var supportingInformation: some View {
+        let hasAbout = !(overview ?? "").isEmpty || !infoRows.isEmpty
+        let hasGuide = !model.parentalWarnings.isEmpty
+        if hasAbout || hasGuide {
+            HStack(alignment: .top, spacing: 72) {
+                if hasAbout {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("About").font(Theme.Font.sectionTitle)
+                        ForEach(Array(DetailReadingBlock.paragraphs(overview ?? "").enumerated()), id: \.offset) { index, paragraph in
+                            DetailReadingBlock(id: "detail.about.\(index)") {
+                                Text(paragraph).font(Theme.Font.body)
+                            }
+                        }
+                        ForEach(infoRows) { row in
+                            DetailReadingBlock(id: "detail.info.\(row.id)") {
+                                HStack(alignment: .top, spacing: 24) {
+                                    Text(row.label).foregroundStyle(Theme.Palette.textSecondary)
+                                        .frame(width: 155, alignment: .leading)
+                                    Text(row.value).frame(maxWidth: .infinity, alignment: .leading)
+                                }.font(Theme.Font.meta)
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .focusSection()
+                }
+                if hasGuide {
+                    parentalGuideSection
+                        .frame(width: hasAbout ? 450 : nil, alignment: .leading)
+                        .frame(maxWidth: hasAbout ? nil : .infinity, alignment: .leading)
+                        .focusSection()
                 }
             }
+            .padding(.top, 16)
         }
     }
 
@@ -1549,22 +1534,21 @@ struct DetailView: View {
                 Text("Parental Guide")
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
-                HStack(spacing: Theme.Spacing.md) {
-                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
-                        detailChipBackground {
-                            HStack(spacing: Theme.Spacing.xs) {
-                                Circle()
-                                    .fill(severityColor(warning.severity))
-                                    .frame(width: 12, height: 12)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(warnings.enumerated()), id: \.offset) { index, warning in
+                        DetailReadingBlock(id: "detail.parental.\(index)") {
+                            HStack(alignment: .firstTextBaseline, spacing: 20) {
                                 Text(warning.label)
-                                    .foregroundStyle(Theme.Palette.textPrimary)
-                                Text(warning.severity)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                HStack(spacing: 8) {
+                                    Circle().fill(severityColor(warning.severity)).frame(width: 7, height: 7)
+                                    Text(warning.severity).foregroundStyle(Theme.Palette.textSecondary)
+                                }
                             }
                             .font(Theme.Font.caption)
-                            .padding(.horizontal, Theme.Spacing.md)
-                            .padding(.vertical, Theme.Spacing.xs)
+                            .padding(.vertical, 14)
                         }
+                        if index < warnings.count - 1 { Divider().overlay(Theme.Palette.outline) }
                     }
                 }
             }

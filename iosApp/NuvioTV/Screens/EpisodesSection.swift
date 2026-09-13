@@ -20,69 +20,36 @@ struct EpisodesSection: View {
     var body: some View {
         let grouped = Self.groupedEpisodes(meta.videos)
         let seasons = grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) }
-        let current = selectedSeason ?? seasons.first
+        let current = selectedSeason.flatMap { seasons.contains($0) ? $0 : nil } ?? seasons.first
         let episodes = current.flatMap { grouped[$0] } ?? []
 
         return VStack(alignment: .leading, spacing: 20) {
-            if seasons.count > 1 {
-                // FEAT-24 (u/mrStevenx3, p4afwfo): season POSTERS instead of "Season 1 / Season 2"
-                // text, "comme le fait l'application mobile Nuvio". The data was already here —
-                // `MetaVideo.seasonPoster` is filled by the TMDB season fetch (`useSeasonPosters`,
-                // default ON) — tvOS just never drew it. Mobile's rule (DetailSeriesContent.kt):
-                // posters when any season has one, text chips otherwise; the poster's fallback is
-                // the show poster. No new setting this cycle (mobile's Posters/Text toggle stays
-                // out until someone asks), so no new strings either.
-                let posterBySeason = Self.seasonPosters(grouped, meta: meta)
-                if posterBySeason.values.contains(where: { $0 != nil }) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+            HStack(alignment: .center, spacing: 28) {
+                Text(String(localized: "Episodes"))
+                    .font(Theme.Font.sectionTitle)
+                if seasons.count > 1, let current {
+                    Menu {
+                        Picker(String(localized: "Season"), selection: Binding(
+                            get: { current }, set: { selectedSeason = $0 }
+                        )) {
                             ForEach(seasons, id: \.self) { season in
-                                Button {
-                                    selectedSeason = season
-                                } label: {
-                                    SeasonPosterCard(
-                                        label: Self.seasonLabel(season),
-                                        imageURL: posterBySeason[season] ?? nil ?? meta.poster ?? meta.background,
-                                        isSelected: season == current
-                                    )
-                                }
-                                // BUG-93: SeasonPosterCard has no manual treatment - keep the native lift in ring mode.
-                                .cardFocusButtonStyle(lift: .plain)
-                                // BUG-32: follow the user's Corners setting (system radius
-                                // otherwise overrides it — the BUG-25 class).
-                                .posterButtonShape()
-                                .accessibilityIdentifier("season_poster_\(season)")
+                                Text(Self.seasonLabel(season)).tag(season)
                             }
                         }
-                        .padding(.vertical, Theme.Spacing.md)
-                    }
-                    .scrollClipDisabled()
-                    .focusSection()
-                } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 16) {
-                            ForEach(seasons, id: \.self) { season in
-                                Button {
-                                    selectedSeason = season
-                                } label: {
-                                    Text(Self.seasonLabel(season))
-                                        .padding(.horizontal, 20).padding(.vertical, 8)
-                                }
-                                .buttonStyle(.chip(selected: season == current))
-                            }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(Self.seasonLabel(current))
+                            Image(systemName: "chevron.down").font(.system(size: 17, weight: .semibold))
                         }
-                        .padding(.vertical, 4)
+                        .font(Theme.Font.body)
                     }
-                    .focusSection()
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("detail.season")
+                    .accessibilityValue(Self.seasonLabel(current))
                 }
+                Spacer()
             }
-
-            // UX-15 (u/mrStevenx3, beta.13 review): with multiple seasons the heading used to sit
-            // ABOVE the season selector, reading "Episodes → seasons → episodes" — inverted
-            // hierarchy. It now labels the shelf it belongs to, directly under the selector. Was
-            // also a raw `Text("Episodes")` — the one unlocalized string on this screen (his
-            // French locale showed "Episodes", not "Épisodes").
-            Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
+            .focusSection()
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -103,6 +70,7 @@ struct EpisodesSection: View {
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)
+                            .accessibilityIdentifier("detail.episode.\(episode.id)")
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -221,28 +189,6 @@ struct EpisodesSection: View {
 
     private static func seasonLabel(_ season: Int) -> String {
         season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
-    }
-
-    /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule), then —
-    /// upstream 22096a1e parity — the addon's own `app_extras.seasonPosters` art for that season
-    /// number. Same precedence as mobile's `resolveSeasonPoster`: per-episode (TMDB enrichment or a
-    /// per-video addon field) first, addon season map second, and the caller's show poster/backdrop
-    /// last. The map is keyed by season NUMBER with specials at 0, matching `groupedEpisodes` keys.
-    nonisolated private static func seasonPosters(_ grouped: [Int: [MetaVideo]], meta: MetaDetails) -> [Int: String?] {
-        var result: [Int: String?] = [:]
-        for (season, episodes) in grouped {
-            let poster = episodes.lazy
-                .compactMap { $0.seasonPoster?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first { !$0.isEmpty }
-            // `Map<Int, String>` crosses the SharedCore boundary as `[KotlinInt: String]`.
-            let trimmedAddon: String? = meta.seasonPosters[KotlinInt(int: Int32(season))]?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let addonPoster: String? = (trimmedAddon?.isEmpty == false) ? trimmedAddon : nil
-            // Explicit `String?` so `??` doesn't infer against the dictionary's `String??` value type.
-            let resolved: String? = poster ?? addonPoster
-            result[season] = resolved
-        }
-        return result
     }
 
     private static func episodeVideoId(metaId: String, episode: MetaVideo) -> String {

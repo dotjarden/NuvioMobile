@@ -83,3 +83,11 @@ Keep common controls visible and longer groups expandable within the selected si
 Subtitle appearance must apply to native AVPlayer playback as well as MPV. Reapply native text rules when the item changes (including channel changes and remux retries) and when shared preferences update. Preview size, color, background, bold and outline accurately. Bitmap subtitles keep their encoded appearance and platform accessibility preferences may override native text styling. Compatibility buffer/renderer options must state their scope; retain the bounded native remux and live buffers.
 
 - Remote Setup follows the same quiet settings hierarchy: category navigation, inline inputs/actions, and readable status. Browser edits are drafts until TV approval; saved means repository operations finished, including async imports. Keep failed drafts retryable and reject stale snapshots before applying.
+
+## Content-page hierarchy — approved September 13, 2026
+
+Keep the cinematic artwork and prominent playback actions. Year/runtime/rating use a quiet inline facts row; only the age rating gets a small outline. Show a short parental advisory beside it. All series use one native season menu beside Episodes, including Specials, rather than switching between poster selectors and pill rows. Preserve episode artwork, watched state, stream routing, and the fixed-height focused synopsis.
+
+Keep the top synopsis short; put the complete description and credits in a wider About column below episodes/cast, with a narrower Parental Guide column alongside it. Guide categories and labelled severities use plain rows and subtle separators. Both columns participate in the same page scroll. Long reading blocks take remote focus with a small leading line and no pill/scale treatment; they must not use section-top anchoring that prevents reading down and back up. Missing columns collapse naturally, and empty sections stay hidden.
+
+Validation: the isolated content-page UI test passes on tvOS 27 for season selection, Specials, returning from episodes, reading long descriptions down/up, and crossing the About/Parental Guide columns. Device build passed and installed with app data preserved.
