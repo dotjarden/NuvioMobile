@@ -12,7 +12,7 @@ import Security
 /// - `POST /api/apply`      → proposes a change; returns `{id, status: "pending_confirmation"}`.
 ///                            Nothing is applied until the user confirms ON THE TV (alert in
 ///                            Settings) — same trust model as Android.
-/// - `GET  /api/status/{id}`→ `{status: pending|confirmed|rejected|not_found}` (browser polls)
+/// - `GET  /api/status/{id}`→ `{status: pending|applying|confirmed|failed|rejected|not_found}` (browser polls)
 ///
 /// Threading: the listener + connections run on a private queue. The state snapshot and the
 /// pending-change table are guarded by a lock; `onChangeProposed` is delivered on the main queue.
@@ -30,6 +30,8 @@ final class RemoteSetupServer {
 
         /// Full desired addon list, in order. Missing = leave addons untouched.
         let addons: [AddonEntry]?
+        /// Snapshot the browser edited; prevents overwriting changes made on TV/in another browser.
+        let baseRevision: String?
         /// Full desired Home-row key order. Missing = leave order untouched.
         let rowOrder: [String]?
         /// Keys of rows that should be disabled (everything else in `rowOrder` is enabled).
@@ -43,7 +45,9 @@ final class RemoteSetupServer {
 
     enum ChangeStatus: String {
         case pending
+        case applying
         case confirmed
+        case failed
         case rejected
     }
 
@@ -51,6 +55,8 @@ final class RemoteSetupServer {
         let id: String
         let proposal: Proposal
         var status: ChangeStatus = .pending
+        var errors: [String] = []
+        var started = false
         let createdAt = Date()
 
         init(proposal: Proposal) {
@@ -62,7 +68,7 @@ final class RemoteSetupServer {
     // MARK: - Public surface
 
     /// Fired (on main) when a browser POSTs a proposal. The host UI shows a confirm alert and
-    /// then calls `confirm(id:)` or `reject(id:)`.
+    /// then calls `beginApplying(id:)` or `reject(id:)`.
     var onChangeProposed: ((PendingChange) -> Void)?
 
     private(set) var port: UInt16?
@@ -101,6 +107,8 @@ final class RemoteSetupServer {
         listener = nil
         port = nil
         token = nil
+        stateJSON = Data("{}".utf8)
+        revision += 1
         pending.removeAll()
         pendingOrder.removeAll()
         lastProposalAt = nil
@@ -111,12 +119,30 @@ final class RemoteSetupServer {
     /// Replaces the JSON served at `/api/state`. Called from the main actor whenever repos emit.
     func updateState(_ json: Data) {
         lock.lock()
+        if stateJSON != json { revision += 1 }
         stateJSON = json
         lock.unlock()
     }
 
-    func confirm(id: String) {
-        setStatus(id: id, status: .confirmed)
+    /// Approval and application are distinct: imports may still fail after approval.
+    func beginApplying(id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let change = pending[id], change.status == .pending else { return false }
+        if let base = change.proposal.baseRevision, base != String(revision) {
+            change.status = .failed
+            change.errors = ["Settings changed on the TV. Reload and review your changes."]
+            return false
+        }
+        change.started = true
+        change.status = .applying
+        return true
+    }
+
+    func complete(id: String, errors: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        guard let change = pending[id], change.status == .applying else { return }
+        change.errors = errors
+        change.status = errors.isEmpty ? .confirmed : .failed
     }
 
     func reject(id: String) {
@@ -129,6 +155,7 @@ final class RemoteSetupServer {
     private var listener: NWListener?
     private let lock = NSLock()
     private var stateJSON = Data("{}".utf8)
+    private var revision = 0
     private var pending: [String: PendingChange] = [:]
     /// Insertion order of `pending` ids, oldest first, so the table stays bounded (ME-003).
     private var pendingOrder: [String] = []
@@ -155,7 +182,7 @@ final class RemoteSetupServer {
 
     private func setStatus(id: String, status: ChangeStatus) {
         lock.lock()
-        pending[id]?.status = status
+        if pending[id]?.status == .pending { pending[id]?.status = status }
         lock.unlock()
     }
 
@@ -292,17 +319,20 @@ final class RemoteSetupServer {
             )
         case ("GET", "/api/state"):
             lock.lock()
-            let body = stateJSON
+            var state = (try? JSONSerialization.jsonObject(with: stateJSON)) as? [String: Any] ?? [:]
+            state["revision"] = String(revision)
             lock.unlock()
-            response = HttpResponse(status: "200 OK", contentType: "application/json", body: body)
+            response = HttpResponse.json(state)
         case ("POST", "/api/apply"):
             response = handleApply(body: request.body)
         case ("GET", let path) where path.hasPrefix("/api/status/"):
             let id = String(path.dropFirst("/api/status/".count))
             lock.lock()
             let status = pending[id]?.status.rawValue ?? "not_found"
+            let errors = pending[id]?.errors ?? []
+            let started = pending[id]?.started ?? false
             lock.unlock()
-            response = HttpResponse.json(["status": status])
+            response = HttpResponse.json(["status": status, "errors": errors, "started": started])
         default:
             response = HttpResponse(
                 status: "404 Not Found",
@@ -318,9 +348,20 @@ final class RemoteSetupServer {
         guard let proposal = try? JSONDecoder().decode(Proposal.self, from: body) else {
             return HttpResponse.json(["error": "Invalid request body"], status: "400 Bad Request")
         }
+        if let error = proposal.validationError {
+            return HttpResponse.json(["error": error], status: "400 Bad Request")
+        }
         let change = PendingChange(proposal: proposal)
         let now = Date()
         lock.lock()
+        if let base = proposal.baseRevision, base != String(revision) {
+            lock.unlock()
+            return HttpResponse.json(["error": "Settings changed on the TV. Reload before sending."], status: "409 Conflict")
+        }
+        if pending.values.contains(where: { $0.status == .pending || $0.status == .applying }) {
+            lock.unlock()
+            return HttpResponse.json(["error": "A request is already waiting on the TV. Finish it before sending another."], status: "409 Conflict")
+        }
         // Simple rate limit: one proposal per second. Stops a misbehaving peer from replacing the
         // on-TV confirmation alert in a loop (ME-003).
         if let last = lastProposalAt, now.timeIntervalSince(last) < 1.0 {
@@ -328,10 +369,6 @@ final class RemoteSetupServer {
             return HttpResponse.json(["error": "Too many requests"], status: "429 Too Many Requests")
         }
         lastProposalAt = now
-        // A new proposal supersedes any stale pending one (mirrors Android).
-        for other in pending.values where other.status == .pending {
-            other.status = .rejected
-        }
         pending[change.id] = change
         pendingOrder.append(change.id)
         // Keep a small bounded history — enough for the browser's status polling of the current
@@ -342,9 +379,36 @@ final class RemoteSetupServer {
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
-            self?.onChangeProposed?(change)
+            guard let self else { return }
+            self.lock.lock()
+            let active = self.pending[change.id]?.status == .pending
+            self.lock.unlock()
+            if active { self.onChangeProposed?(change) }
         }
         return HttpResponse.json(["status": "pending_confirmation", "id": change.id])
+    }
+}
+
+extension RemoteSetupServer.Proposal {
+    var validationError: String? {
+        if let addons {
+            if Set(addons.map(\.url)).count != addons.count { return "Remove duplicate add-ons before sending." }
+            if addons.contains(where: { !Self.isWebURL($0.url) }) { return "Enter a valid HTTP or HTTPS add-on URL." }
+        }
+        if let badgeUrls, badgeUrls.contains(where: { !Self.isWebURL($0) }) { return "Enter a valid HTTP or HTTPS badge pack URL." }
+        if let rowOrder, Set(rowOrder).count != rowOrder.count { return "Home rows contain duplicates. Reload and try again." }
+        if let rowOrder, let disabledRowKeys, !Set(disabledRowKeys).isSubset(of: Set(rowOrder)) {
+            return "Home rows changed. Reload and try again."
+        }
+        return nil
+    }
+
+    private static func isWebURL(_ value: String) -> Bool {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.contains(where: \.isWhitespace), let url = URLComponents(string: value),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty else { return false }
+        return true
     }
 }
 
@@ -433,7 +497,7 @@ private struct HttpResponse {
     let contentType: String
     let body: Data
 
-    static func json(_ object: [String: String], status: String = "200 OK") -> HttpResponse {
+    static func json(_ object: [String: Any], status: String = "200 OK") -> HttpResponse {
         let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8)
         return HttpResponse(status: status, contentType: "application/json", body: data)
     }

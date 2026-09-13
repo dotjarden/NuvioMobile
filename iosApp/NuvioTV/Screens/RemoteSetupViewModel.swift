@@ -35,6 +35,8 @@ final class RemoteSetupViewModel: ObservableObject {
     private var tmdbWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
+    private var applicationTask: Task<Void, Never>?
+    private var stateReady = false
 
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
@@ -91,6 +93,9 @@ final class RemoteSetupViewModel: ObservableObject {
         isStarting = false
         startFailed = false
         UIApplication.shared.isIdleTimerDisabled = false
+        applicationTask?.cancel()
+        applicationTask = nil
+        stateReady = false
         server.stop()
         serverURL = nil
         qrImage = nil
@@ -129,6 +134,8 @@ final class RemoteSetupViewModel: ObservableObject {
         TmdbSettingsRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
         StreamBadgeSettingsRepository.shared.ensureLoaded()
+        stateReady = true
+        pushState()
     }
 
     private func cancelWatchers() {
@@ -148,9 +155,17 @@ final class RemoteSetupViewModel: ObservableObject {
 
     func confirmPending() {
         guard let change = pendingChange else { return }
-        apply(change.proposal)
-        server.confirm(id: change.id)
         pendingChange = nil
+        pushState()
+        guard server.beginApplying(id: change.id) else { return }
+        applicationTask = Task { [weak self] in
+            guard let self else { return }
+            let errors = await self.apply(change.proposal)
+            guard !Task.isCancelled else { return }
+            self.pushState()
+            self.server.complete(id: change.id, errors: errors)
+            self.applicationTask = nil
+        }
     }
 
     func rejectPending() {
@@ -183,6 +198,14 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     private func pushState() {
+        guard stateReady else { return }
+        // Flow callbacks are queued on Main. Read through before serving/confirming so an
+        // immediate browser refresh sees repository writes even before the next callback.
+        addons = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? addons
+        rows = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? rows
+        tmdbKeySet = (TmdbSettingsRepository.shared.uiState.value_ as? TmdbSettings)?.hasApiKey ?? tmdbKeySet
+        mdbListKeySet = (MdbListSettingsRepository.shared.uiState.value_ as? MdbListSettings)?.hasApiKey ?? mdbListKeySet
+        badgePackUrls = (StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)?.rules.imports.map(\.sourceUrl) ?? badgePackUrls
         let snapshot = StateSnapshot(
             deviceName: UIDevice.current.name,
             addons: addons.map {
@@ -205,15 +228,18 @@ final class RemoteSetupViewModel: ObservableObject {
             mdblistKeySet: mdbListKeySet,
             badgePacks: badgePackUrls
         )
-        if let data = try? JSONEncoder().encode(snapshot) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(snapshot) {
             server.updateState(data)
         }
     }
 
     // MARK: - Applying a confirmed proposal
 
-    private func apply(_ proposal: RemoteSetupServer.Proposal) {
-        applyAddons(proposal)
+    private func apply(_ proposal: RemoteSetupServer.Proposal) async -> [String] {
+        var errors = await applyAddons(proposal)
+        guard !Task.isCancelled else { return errors }
         applyRows(proposal)
         if let key = proposal.tmdbKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             TmdbSettingsRepository.shared.setApiKey(value: key)
@@ -223,58 +249,55 @@ final class RemoteSetupViewModel: ObservableObject {
             MdbListSettingsRepository.shared.setApiKey(value: key)
             MdbListSettingsRepository.shared.setEnabled(value: true)
         }
-        // Badge pack imports (async fetch+parse; the badge watcher refreshes the page state as
-        // each one lands). Already-imported URLs are re-fetched/updated by the shared repo.
+        // Wait for each repository operation before reporting completion to the browser.
         for url in proposal.badgeUrls ?? [] {
-            let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { _, _ in }
+            guard !Task.isCancelled else { break }
+            let error: String? = await withCheckedContinuation { continuation in
+                StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: url) { result, error in
+                    let message: String?
+                    if result is StreamBadgeImportResultSuccess { message = nil }
+                    else { message = (result as? StreamBadgeImportResultError)?.message ?? error?.localizedDescription ?? "" }
+                    continuation.resume(returning: message)
+                }
+            }
+            if let error {
+                errors.append("Badge pack: " + SettingsErrorMessage.readable(error, fallback: "Couldn't import. Check the URL and connection, then try again."))
+            }
         }
+        return errors
     }
 
-    private func applyAddons(_ proposal: RemoteSetupServer.Proposal) {
-        guard let proposed = proposal.addons else { return }
+    private var currentAddons: [ManagedAddon] {
+        (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? addons
+    }
+
+    private func applyAddons(_ proposal: RemoteSetupServer.Proposal) async -> [String] {
+        guard let proposed = proposal.addons else { return [] }
         let repo = AddonRepository.shared
-        let currentUrls = addons.map(\.manifestUrl)
-        let proposedUrls = proposed.map(\.url)
-
-        // 1. Removals (synchronous repo mutations).
-        for url in currentUrls where !proposedUrls.contains(url) {
-            repo.removeAddon(manifestUrl: url)
-        }
-
-        // 2. Enabled flips + reordering, simulated over the post-removal list. Repo indices track
-        //    the simulation because removeAddon/moveAddon mutate the list synchronously.
-        var simulated = currentUrls.filter { proposedUrls.contains($0) }
-        for entry in proposed {
-            guard let enabled = entry.enabled,
-                  let existing = addons.first(where: { $0.manifestUrl == entry.url }),
-                  existing.enabled != enabled
-            else { continue }
-            repo.setAddonEnabled(manifestUrl: entry.url, enabled: enabled)
-        }
-        let desired = proposedUrls.filter { simulated.contains($0) }
-        for targetIndex in desired.indices {
-            guard let fromIndex = simulated.firstIndex(of: desired[targetIndex]),
-                  fromIndex != targetIndex
-            else { continue }
-            repo.moveAddon(fromIndex: Int32(fromIndex), toIndex: Int32(targetIndex))
-            simulated.remove(at: fromIndex)
-            simulated.insert(desired[targetIndex], at: targetIndex)
-        }
-
-        // 3. Installs (async manifest fetch; appended by the repo when they resolve).
-        for entry in proposed where !currentUrls.contains(entry.url) {
-            repo.addAddon(rawUrl: entry.url) { _, _ in }
-        }
+        return await RemoteSetupAddonApplication.apply(proposed,
+            snapshot: { self.currentAddons.map { .init(url: $0.manifestUrl, enabled: $0.enabled) } },
+            install: { url in
+                await withCheckedContinuation { continuation in
+                    repo.addAddon(rawUrl: url) { result, error in
+                        if result is AddAddonResultSuccess { continuation.resume(returning: nil) }
+                        else { continuation.resume(returning: (result as? AddAddonResultError)?.message ?? error?.localizedDescription ?? "") }
+                    }
+                }
+            },
+            remove: { repo.removeAddon(manifestUrl: $0) },
+            setEnabled: { repo.setAddonEnabled(manifestUrl: $0, enabled: $1) },
+            move: { repo.moveAddon(fromIndex: Int32($0), toIndex: Int32($1)) })
     }
 
     private func applyRows(_ proposal: RemoteSetupServer.Proposal) {
         let repo = HomeCatalogSettingsRepository.shared
+        let currentRows = (repo.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? rows
 
         if let disabledKeys = proposal.disabledRowKeys {
             let disabled = Set(disabledKeys)
-            for row in rows {
+            // Only touch rows the browser actually edited; newly installed catalogs keep defaults.
+            let edited = Set(proposal.rowOrder ?? currentRows.map(\.key))
+            for row in currentRows where edited.contains(row.key) {
                 let shouldBeEnabled = !disabled.contains(row.key)
                 if row.enabled != shouldBeEnabled {
                     repo.setEnabled(key: row.key, enabled: shouldBeEnabled)
@@ -283,7 +306,7 @@ final class RemoteSetupViewModel: ObservableObject {
         }
 
         if let order = proposal.rowOrder {
-            var simulated = rows.map(\.key)
+            var simulated = currentRows.map(\.key)
             let desired = order.filter { simulated.contains($0) }
             for targetIndex in desired.indices {
                 guard let fromIndex = simulated.firstIndex(of: desired[targetIndex]),
@@ -349,6 +372,7 @@ final class RemoteSetupViewModel: ObservableObject {
     }
 
     deinit {
+        applicationTask?.cancel()
         server.stop()
         addonWatcher?.cancel()
         rowWatcher?.cancel()
