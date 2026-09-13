@@ -1,5 +1,28 @@
 import AVKit
 import SwiftUI
+import SharedCore
+
+/// Shared caption preferences for both native movies and Live TV. Bitmap captions and
+/// system accessibility overrides remain under the renderer's control.
+enum NativeSubtitleStyle {
+    static func attributes(_ style: SubtitleStyleState) -> [String: Any] {
+        func components(_ argb: Int64) -> [Double] {
+            [24, 16, 8, 0].map { Double((argb >> $0) & 0xFF) / 255 }
+        }
+        return [
+            kCMTextMarkupAttribute_ForegroundColorARGB as String: components(style.textColor),
+            kCMTextMarkupAttribute_BackgroundColorARGB as String: components(style.backgroundColor),
+            kCMTextMarkupAttribute_BoldStyle as String: style.bold,
+            kCMTextMarkupAttribute_RelativeFontSize as String: max(50, min(200, Double(style.fontSizeSp) / 18 * 100)),
+            kCMTextMarkupAttribute_CharacterEdgeStyle as String: style.outlineEnabled
+                ? kCMTextMarkupCharacterEdgeStyle_Uniform as String : kCMTextMarkupCharacterEdgeStyle_None as String
+        ]
+    }
+
+    static func apply(_ style: SubtitleStyleState, to item: AVPlayerItem?) {
+        item?.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes(style)).map { [$0] } ?? []
+    }
+}
 
 /// A video-only layer: no AVKit responder, transport overlay, or competing remote handler.
 struct AVPlayerSurface: UIViewRepresentable {
@@ -68,11 +91,26 @@ final class PlayerVideoView: UIView {
     private let state: PlayerPlaybackState
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
+    private var itemObserver: NSKeyValueObservation?
+    private var settingsWatcher: FlowWatcher?
+    private var subtitleStyle: SubtitleStyleState?
     private var hasStartedPlaying = false
 
     init(player: AVPlayer, state: PlayerPlaybackState) {
         self.player = player
         self.state = state
+        PlayerSettingsRepository.shared.ensureLoaded()
+        settingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
+            self.subtitleStyle = settings.subtitleStyle
+            NativeSubtitleStyle.apply(settings.subtitleStyle, to: self.player.currentItem)
+        }
+        itemObserver = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
+            Task { @MainActor in
+                guard let self, let style = self.subtitleStyle else { return }
+                NativeSubtitleStyle.apply(style, to: self.player.currentItem)
+            }
+        }
         state.togglePlayback = { [weak self] in
             guard let self else { return }
             if self.player.rate == 0 { self.player.playImmediately(atRate: self.player.defaultRate) }
@@ -93,6 +131,9 @@ final class PlayerVideoView: UIView {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         statusObserver = nil
+        itemObserver = nil
+        settingsWatcher?.cancel()
+        settingsWatcher = nil
         state.togglePlayback = nil
         state.seekRelative = nil
     }

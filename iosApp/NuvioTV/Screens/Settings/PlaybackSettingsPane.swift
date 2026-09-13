@@ -24,103 +24,61 @@ struct PlaybackSettingsPane: View {
 
     var body: some View {
         SettingsSection(nil) {
-            // Hidden entirely unless an external player (Infuse) is installed —
-            // see DefaultPlayerRow.
             DefaultPlayerRow()
-            SettingsToggleRow(
-                title: String(localized: "Skip Intro"),
-                subtitle: String(localized: "Show a Skip button during intros and outros"),
-                isOn: Binding(get: { model.skipIntroEnabled }, set: { model.setSkipIntro($0) })
-            )
-            SettingsToggleRow(
-                title: String(localized: "Match Content Frame Rate"),
-                subtitle: String(localized: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio."),
-                isOn: Binding(get: { model.matchFrameRate }, set: { model.setMatchFrameRate($0) })
-            )
-            SettingsToggleRow(
-                title: String(localized: "Enhanced Video Renderer"),
-                subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video."),
-                isOn: Binding(get: { model.enhancedRenderer }, set: { model.setEnhancedRenderer($0) })
-            )
-            SettingsToggleRow(
-                title: String(localized: "Native player (Dolby Vision & HDR)"),
-                subtitle: String(localized: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1."),
-                isOn: Binding(get: { model.nativeDolbyVision }, set: { model.setNativeDolbyVision($0) })
-            )
-            if model.nativeDolbyVision {
-                SettingsToggleRow(
-                    title: String(localized: "Keep Profile 7 FEL on mpv"),
-                    subtitle: String(localized: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native."),
-                    isOn: Binding(get: { model.dvP7FelMpv }, set: { model.setDvP7FelMpv($0) })
-                )
-            }
-            // FEAT-11
-            SettingsToggleRow(
-                title: String(localized: "Trailer Sound by Default"),
-                subtitle: String(localized: "Trailers start with sound; play/pause mutes"),
-                isOn: Binding(
-                    get: { trailerAudioDefaultOn },
-                    set: { newValue in
-                        trailerAudioDefaultOn = newValue
-                        // Applies immediately, without relaunch — DetailView otherwise only reads
-                        // this default at app launch and after a full-screen trailer dismisses.
-                        HeroTrailerAudioState.shared.setMuted(value: !newValue)
-                    }
-                )
-            )
-            SettingsPickerRow(
-                title: String(localized: "Streaming Buffer"),
-                selection: Binding(get: { model.bufferMB }, set: { model.setBufferMB($0) }),
-                options: [0, 64, 150, 512],
-                label: Self.bufferLabel
-            )
-            SettingsPickerRow(
-                title: String(localized: "Network Readahead"),
-                selection: Binding(get: { model.readaheadSec }, set: { model.setReadaheadSec($0) }),
-                options: [0, 30, 60, 120],
-                label: Self.readaheadLabel
-            )
-            Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(maxWidth: 1100, alignment: .leading)
+            SettingsToggleRow(title: String(localized: "Skip Intro"),
+                              subtitle: String(localized: "Offer a skip button when intro or outro markers are available."),
+                              isOn: Binding(get: { model.skipIntroEnabled }, set: model.setSkipIntro))
+            SettingsToggleRow(title: String(localized: "Match Content Frame Rate"),
+                              subtitle: String(localized: "Also enable Match Content in Apple TV’s Video and Audio settings."),
+                              isOn: Binding(get: { model.matchFrameRate }, set: model.setMatchFrameRate))
+            SettingsToggleRow(title: String(localized: "Dolby Vision & HDR"),
+                              subtitle: String(localized: "Automatically choose compatible playback for the best picture."),
+                              isOn: Binding(get: { model.nativeDolbyVision }, set: model.setNativeDolbyVision))
+            SettingsToggleRow(title: String(localized: "Trailer Sound by Default"),
+                              isOn: Binding(get: { trailerAudioDefaultOn }, set: {
+                trailerAudioDefaultOn = $0
+                HeroTrailerAudioState.shared.setMuted(value: !$0)
+            }))
         }
-
-        SettingsSection(String(localized: "Subtitles")) {
+        SettingsExpandableSection(String(localized: "Audio & Subtitle Language"), id: "languages") {
+            SettingsPickerRow(title: String(localized: "Audio"),
+                              selection: Binding(get: { model.preferredAudioLanguage }, set: model.setPreferredAudioLanguage),
+                              options: LanguageOptions.audio.map(\.code),
+                              label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.audio) })
+                .accessibilityIdentifier("settings.audioLanguage")
+            SettingsPickerRow(title: String(localized: "Subtitles"),
+                              selection: Binding(get: { model.preferredSubtitleLanguage }, set: model.setPreferredSubtitleLanguage),
+                              options: LanguageOptions.subtitle.map(\.code),
+                              label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.subtitle) })
+        }
+        SettingsExpandableSection(String(localized: "Subtitle Appearance"), id: "subtitles") {
             if let style = model.subtitleStyle {
-                SubtitleAppearanceControls(
-                    style: style,
-                    onTextColor: { model.setSubtitleTextColor($0) },
-                    onSize: { model.setSubtitleFontSize($0) },
-                    onBackground: { model.setSubtitleBackground($0) },
-                    onBold: { model.setSubtitleBold($0) },
-                    onOutline: { model.setSubtitleOutline($0) },
-                    onStripSdh: { model.setSubtitleStripSdh($0) }
-                )
-            } else {
-                Text("Loading subtitle settings\u{2026}")
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                SubtitleAppearanceControls(style: style,
+                    onTextColor: model.setSubtitleTextColor, onSize: model.setSubtitleFontSize,
+                    onBackground: model.setSubtitleBackground, onBold: model.setSubtitleBold,
+                    onOutline: model.setSubtitleOutline, onStripSdh: model.setSubtitleStripSdh)
             }
+            Text("Text subtitles use these preferences. Image-based subtitles keep their original appearance; Apple TV accessibility settings may override text styling.")
+                .font(SettingsRowFont.sectionHeader).foregroundStyle(.secondary)
         }
-
-        SettingsSection(String(localized: "Audio & Subtitle Language")) {
-            Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(maxWidth: 1100, alignment: .leading)
-            SettingsPickerRow(
-                title: String(localized: "Audio"),
-                selection: Binding(get: { model.preferredAudioLanguage }, set: { model.setPreferredAudioLanguage($0) }),
-                options: LanguageOptions.audio.map(\.code),
-                label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.audio) }
-            )
-            SettingsPickerRow(
-                title: String(localized: "Subtitles"),
-                selection: Binding(get: { model.preferredSubtitleLanguage }, set: { model.setPreferredSubtitleLanguage($0) }),
-                options: LanguageOptions.subtitle.map(\.code),
-                label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.subtitle) }
-            )
+        SettingsExpandableSection(String(localized: "Advanced Playback"), id: "playbackAdvanced") {
+            SettingsToggleRow(title: String(localized: "Enhanced Video Renderer"),
+                              subtitle: String(localized: "Experimental HDR tone mapping for compatibility playback. Applies to the next video on Apple TV hardware."),
+                              isOn: Binding(get: { model.enhancedRenderer }, set: model.setEnhancedRenderer))
+            if model.nativeDolbyVision {
+                SettingsToggleRow(title: String(localized: "Keep Profile 7 FEL on mpv"),
+                                  subtitle: String(localized: "Use HDR10 playback for FEL releases instead of converting to Dolby Vision 8.1."),
+                                  isOn: Binding(get: { model.dvP7FelMpv }, set: model.setDvP7FelMpv))
+            }
+            SettingsPickerRow(title: String(localized: "Streaming Buffer"),
+                              selection: Binding(get: { model.bufferMB }, set: model.setBufferMB),
+                              options: [0, 64, 150, 512], label: Self.bufferLabel)
+                .accessibilityIdentifier("settings.buffer")
+            SettingsPickerRow(title: String(localized: "Network Readahead"),
+                              selection: Binding(get: { model.readaheadSec }, set: model.setReadaheadSec),
+                              options: [0, 30, 60, 120], label: Self.readaheadLabel)
+            Text("Buffer options apply to the next video using compatibility playback. Automatic playback and Live TV manage their own buffers.")
+                .font(SettingsRowFont.sectionHeader).foregroundStyle(.secondary)
         }
     }
 
@@ -246,6 +204,8 @@ private struct SubtitleAppearanceControls: View {
                     )
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(entry.name)
+                .accessibilityValue(style.textColor == entry.argb ? "Selected" : "")
             }
         }
 
@@ -284,7 +244,9 @@ private struct SubtitleAppearanceControls: View {
         ZStack {
             RoundedRectangle(cornerRadius: Theme.Radius.card).fill(Color.black)
             Text("The quick brown fox")
-                .font(style.bold ? Theme.Font.sectionTitle : Theme.Font.body)
+                .font(.system(size: CGFloat(style.fontSizeSp) * 29 / 18, weight: style.bold ? .bold : .regular))
+                .shadow(color: style.outlineEnabled ? color(style.outlineColor) : .clear, radius: 0, x: 1, y: 1)
+                .shadow(color: style.outlineEnabled ? color(style.outlineColor) : .clear, radius: 0, x: -1, y: -1)
                 .foregroundStyle(color(style.textColor))
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xs)

@@ -166,6 +166,7 @@ struct SettingsView: View {
         switch selectedCategory {
         case .accountServices:
             AccountServicesSettingsPane(
+                model: model,
                 trakt: trakt,
                 simkl: simkl,
                 debrid: debrid,
@@ -195,8 +196,7 @@ struct SettingsView: View {
         }
     }
 
-    /// Left column: one focusable row per category, in a native `List`. Focusing a row
-    /// live-selects it (the tvOS Settings pattern); Right enters the pane.
+    /// Left column: Select opens a category; Right enters its settings.
     ///
     /// Rows are `Button`s, not bare `Label`s: a plain `Label` inside `List(selection:)` is NOT
     /// focusable on tvOS (C0 spike finding), so selection alone can't drive the walk. No

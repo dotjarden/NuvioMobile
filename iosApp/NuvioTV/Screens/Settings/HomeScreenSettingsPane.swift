@@ -46,7 +46,7 @@ struct HomeScreenSettingsPane: View {
     @State private var catalogsExpanded = false
 
     var body: some View {
-        SettingsSection(String(localized: "Home Rows")) {
+        SettingsSection(nil) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
             // switch must stay reachable when no catalog add-on is installed (Codex round 1).
             //
@@ -348,24 +348,6 @@ struct HomeScreenSettingsPane: View {
 /// fix, the env keys in DesignSystem/FlatControlStyles.swift, and the `@FocusState`-publishing
 /// pattern all still apply to other custom containers elsewhere in the app — nothing here changes
 /// them, they just have no publisher left in this file, so they default to false / are inert).
-private struct SettingsDisclosureRow: View {
-    let title: String
-    let subtitle: String
-    let isExpanded: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.lg) {
-                SettingsRowLabel(title: title, subtitle: subtitle)
-                Spacer()
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(SettingsRowFont.title)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
 
 /// A single Hero Sources row: catalog title + add-on, with an on/off indicator. At the 2-source
 /// limit an OFF row is INERT — it still takes focus and still reads normally, it just refuses the

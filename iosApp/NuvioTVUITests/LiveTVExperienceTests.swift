@@ -17,6 +17,17 @@ final class LiveTVExperienceTests: XCTestCase {
         }
         XCTFail("Could not focus \(target.label) using the remote\n\(app.debugDescription)")
     }
+    @MainActor private func selectSetting(_ target: XCUIElement, in app: XCUIApplication) {
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        if focused.exists {
+            // Move across the split first; moving vertically to a lower right-pane row while
+            // still in the category rail can only reach the end of that rail.
+            if focused.frame.midX < 550 && target.frame.midX > 550 { XCUIRemote.shared.press(.right) }
+            else if focused.frame.midX > 550 && target.frame.midX < 550 { XCUIRemote.shared.press(.left) }
+        }
+        select(target, in: app)
+    }
+
     @MainActor private func openSharedSettings(_ app: XCUIApplication, details: Bool = false) {
         let settings = app.buttons["player.settings"]
         // Use the physical remote sequence: tvOS can omit hasFocus for glass buttons inside
@@ -547,6 +558,83 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["settings.pane.appearance"].waitForExistence(timeout: 5))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Settings layout"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testSettingsGroupsAndPlaybackPersistence() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--settings-ui-test"]
+        app.launch()
+        func cell(_ id: String) -> XCUIElement {
+            app.cells.containing(.button, identifier: id).firstMatch
+        }
+        XCTAssertTrue(app.buttons["settings.group.playbackAdvanced"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["Streaming Buffer"].exists)
+        selectSetting(cell("settings.group.playbackAdvanced"), in: app)
+        let buffer = app.buttons["settings.buffer"]
+        XCTAssertTrue(buffer.waitForExistence(timeout: 5))
+        // Device-only preference: round-trip through the actual menu, then restore its value.
+        let original = buffer.value as? String ?? "Default"
+        selectSetting(cell("settings.buffer"), in: app)
+        let choice = app.descendants(matching: .any).matching(NSPredicate(format: "label == '64 MB'")).firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 5))
+        select(choice, in: app)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["settings.group.playbackAdvanced"].waitForExistence(timeout: 20))
+        selectSetting(cell("settings.group.playbackAdvanced"), in: app)
+        let persisted = app.buttons["settings.buffer"]
+        XCTAssertEqual(persisted.value as? String, "64 MB")
+        selectSetting(cell("settings.buffer"), in: app)
+        let restore = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", original)).firstMatch
+        select(restore, in: app)
+        selectSetting(cell("settings.group.playbackAdvanced"), in: app)
+        selectSetting(cell("settings.group.languages"), in: app)
+        let audio = app.buttons["settings.audioLanguage"]
+        XCTAssertTrue(audio.waitForExistence(timeout: 5))
+        selectSetting(cell("settings.audioLanguage"), in: app)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Original'")).firstMatch.waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.menu)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Organized playback settings"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testSettingsSourcesInlineInputsAndSections() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--settings-ui-test"]
+        app.launch()
+        func cell(_ id: String) -> XCUIElement { app.cells.containing(.button, identifier: id).firstMatch }
+        XCTAssertTrue(app.buttons["settings.category.contentSources"].waitForExistence(timeout: 20))
+        selectSetting(cell("settings.category.contentSources"), in: app)
+        XCTAssertTrue(app.buttons["settings.addons"].exists)
+        XCTAssertFalse(app.textFields["Repository manifest URL"].exists)
+        selectSetting(cell("settings.group.plugins"), in: app)
+        let field = app.textFields["Repository manifest URL"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let install = app.buttons["Install"]
+        XCTAssertTrue(install.exists)
+        XCTAssertFalse(install.isEnabled, "Empty URLs must not install")
+        XCTAssertEqual(field.frame.midY, install.frame.midY, accuracy: 8)
+        select(field, in: app)
+        app.typeText("https://example.invalid/manifest.json")
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(install.isEnabled, "The inline action enables after entering a URL")
+        // The reserved .invalid domain cannot install a provider. Exercise the actual button,
+        // failure feedback and retained URL so retry does not require typing everything again.
+        select(install, in: app)
+        let failure = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Couldn't install")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 25), app.debugDescription)
+        XCTAssertFalse(failure.label.contains("NSURLErrorDomain"))
+        XCTAssertLessThan(failure.label.count, 240)
+        XCTAssertEqual(field.value as? String, "https://example.invalid/manifest.json")
+        XCTAssertTrue(install.isEnabled)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Source settings inline install"; shot.lifetime = .keepAlways; add(shot)
+        selectSetting(cell("settings.category.accountServices"), in: app)
+        XCTAssertTrue(app.buttons["settings.group.librarySync"].waitForExistence(timeout: 5))
+        selectSetting(cell("settings.category.about"), in: app)
+        XCTAssertTrue(app.buttons["settings.group.diagnostics"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.switches["Hero Paint Diagnostics"].exists)
     }
 
     @MainActor func testGuideAndNativeSourceManagement() throws {

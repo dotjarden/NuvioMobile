@@ -44,23 +44,26 @@ final class PluginsViewModel: ObservableObject {
 
     @Published private(set) var isInstalling = false
     @Published private(set) var statusMessage: String?
+    @Published private(set) var installSucceeded = false
 
     /// Installs a repository by manifest URL (the shared repo normalizes and appends
     /// /manifest.json). Also pushes to the account so other devices pick it up.
     func addRepository(_ rawUrl: String) {
         let url = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !url.isEmpty else { return }
+        guard !url.isEmpty, !isInstalling else { return }
         isInstalling = true
         statusMessage = nil
+        installSucceeded = false
         PluginRepository.shared.addRepository(rawUrl: url) { [weak self] result, error in
             Task { @MainActor in
                 guard let self else { return }
                 self.isInstalling = false
                 if let error {
-                    self.statusMessage = String(localized: "Couldn't install: \(error.localizedDescription)")
+                    self.statusMessage = String(localized: "Couldn't install: \(SettingsErrorMessage.readable(error.localizedDescription, fallback: String(localized: "Check the repository URL and your connection, then try again.")))")
                 } else if let failure = result as? AddPluginRepositoryResultError {
-                    self.statusMessage = String(localized: "Couldn't install: \(failure.message)")
+                    self.statusMessage = String(localized: "Couldn't install: \(SettingsErrorMessage.readable(failure.message, fallback: String(localized: "Check the repository URL and your connection, then try again.")))")
                 } else if let success = result as? AddPluginRepositoryResultSuccess {
+                    self.installSucceeded = true
                     self.statusMessage = String(localized: "Installed \(success.repository.name).")
                 } else {
                     self.statusMessage = String(localized: "Couldn't install that URL.")

@@ -16,7 +16,7 @@ struct AdvancedSettingsPane: View {
                 ArtworkStore.clearCache(); cacheCleared = true
             }
         }
-        SettingsSection(String(localized: "Remote Setup")) {
+        SettingsExpandableSection(String(localized: "Remote Setup"), id: "remoteSetup") {
             remoteSetupSection
         }
     }
@@ -26,7 +26,7 @@ struct AdvancedSettingsPane: View {
     /// badge packs. Changes proposed from the browser surface as a confirm alert on SettingsView.
     @ViewBuilder
     private var remoteSetupSection: some View {
-        Text("Manage add-ons, Home rows, API keys, and stream badge packs from a phone or laptop browser on the same network \u{2014} no on-screen keyboard. Changes only apply after you confirm them here.")
+        Text("Use a phone or computer on the same network. Approve changes on this TV before they apply.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
@@ -46,7 +46,8 @@ struct AdvancedSettingsPane: View {
                         .font(Theme.Font.body)
                         .foregroundStyle(Theme.Palette.textSecondary)
                     Text(url)
-                        .font(Theme.Font.screenTitle.monospaced())
+                        .font(SettingsRowFont.subtitle.monospaced())
+                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundStyle(Theme.Palette.textPrimary)
                     Text("Keep this Settings screen open while you make changes.")
                         .font(Theme.Font.caption)

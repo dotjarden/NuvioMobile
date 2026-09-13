@@ -15,7 +15,7 @@ struct StreamBadgesSection: View {
     @ObservedObject var badges: BadgeSettingsViewModel
 
     var body: some View {
-        Text("Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL \u{2014} packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Advanced) lets you paste the URL from a phone browser.")
+        Text("Add quality, HDR and audio labels to stream results. Imported packs sync with Nuvio.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
@@ -44,34 +44,18 @@ struct StreamBadgesSection: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
         } else {
             ForEach(badges.imports, id: \.sourceUrl) { pack in
-                HStack(spacing: Theme.Spacing.md) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                        Text(BadgeSettingsViewModel.packLabel(pack.sourceUrl))
-                            .font(Theme.Font.body.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .lineLimit(1)
-                        Text(pack.enabledFilterCount == 1 ? String(localized: "1 filter \u{00B7} \(pack.sourceUrl)") : String(localized: "\(pack.enabledFilterCount) filters \u{00B7} \(pack.sourceUrl)"))
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if pack.isActive {
-                        Label("Active", systemImage: "checkmark.circle.fill")
-                            .font(Theme.Font.meta)
-                            .foregroundStyle(Theme.Palette.accent)
-                    } else {
-                        Button("Set Active") { badges.setActive(pack.sourceUrl) }
-                            .buttonStyle(.chip)
-                            .font(Theme.Font.meta)
-                    }
-                    Button {
-                        badges.deletePack(pack.sourceUrl)
+                Menu {
+                    Button("Set Active") { badges.setActive(pack.sourceUrl) }
+                        .disabled(pack.isActive)
+                    Button("Remove Pack", role: .destructive) { badges.deletePack(pack.sourceUrl) }
+                } label: {
+                    LabeledContent {
+                        Text(pack.isActive ? String(localized: "Active") : String(localized: "Inactive"))
+                            .foregroundStyle(.secondary)
                     } label: {
-                        Image(systemName: "trash")
-                            .font(Theme.Font.caption)
+                        SettingsRowLabel(title: BadgeSettingsViewModel.packLabel(pack.sourceUrl),
+                                         subtitle: String(localized: "\(pack.enabledFilterCount) filters"))
                     }
-                    .buttonStyle(.chip)
                 }
             }
         }
@@ -81,7 +65,7 @@ struct StreamBadgesSection: View {
         if let status = badges.statusMessage {
             Text(status)
                 .font(Theme.Font.caption)
-                .foregroundStyle(status.hasPrefix("Imported") ? Theme.Palette.textSecondary : .red)
+                .foregroundStyle(badges.importSucceeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
         }
     }
 }
@@ -93,32 +77,9 @@ private struct BadgeUrlEntryRow: View {
     @State private var url = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                Image(systemName: "tag")
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                TextField("Badge pack JSON URL", text: $url)
-                    .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-            }
-
-            Button {
-                if !url.isEmpty {
-                    onImport(url)
-                    url = ""
-                }
-            } label: {
-                if isImporting {
-                    ProgressView()
-                } else {
-                    Label("Import Badge Pack", systemImage: "plus")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.lg)
-                        .padding(.vertical, Theme.Spacing.xxs + 2)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isImporting)
+        SettingsTextEntryRow(placeholder: String(localized: "Badge pack JSON URL"),
+                             buttonTitle: String(localized: "Import"), text: $url, busy: isImporting) {
+            onImport(url)
         }
     }
 }

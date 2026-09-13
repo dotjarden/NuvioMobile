@@ -6,12 +6,14 @@ import SharedCore
 /// connections. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and
 /// wiring preserved verbatim, only regrouped into a per-category pane.
 struct AccountServicesSettingsPane: View {
+    @ObservedObject var model: SettingsViewModel
     @ObservedObject var trakt: TraktViewModel
     @ObservedObject var simkl: SimklViewModel
     @ObservedObject var debrid: DebridViewModel
     @EnvironmentObject private var auth: AuthViewModel
     /// Active backend (official vs self-hosted) for the Server section.
     @StateObject private var server = ActiveServerObserver()
+    @State private var syncRequested = false
 
     /// Drives the shared sign-in/sign-out confirmation alert owned by SettingsView.
     @Binding var confirmingSignOut: Bool
@@ -26,7 +28,7 @@ struct AccountServicesSettingsPane: View {
 
     var body: some View {
         Group {
-            SettingsSection(String(localized: "Account")) {
+            SettingsSection(nil) {
                 if auth.isAnonymous {
                     SettingsActionRow(
                         title: String(localized: "Sign In to Nuvio"),
@@ -48,32 +50,84 @@ struct AccountServicesSettingsPane: View {
 
             if !auth.isAnonymous {
                 SettingsActionRow(title: String(localized: "Sync Nuvio"),
-                    subtitle: String(localized: "Check for changes to this profile’s library and watch progress. Add-ons and shared preferences sync automatically."),
+                    subtitle: syncRequested ? String(localized: "Sync requested. Changes appear as they arrive.")
+                        : String(localized: "Refresh this profile’s library, watch progress and shared preferences."),
                     systemImage: "arrow.triangle.2.circlepath") {
+                    syncRequested = true
                     SyncManager.shared.requestForegroundPull(profileId: ProfileRepository.shared.activeProfileId, force: true)
                     SyncManager.shared.pullAllForProfile(profileId: ProfileRepository.shared.activeProfileId)
                 }
             }
 
-            SettingsSection(String(localized: "Server")) {
+            SettingsExpandableSection(String(localized: "Library & Sync"), id: "librarySync") {
+                librarySection
+            }
+
+            SettingsExpandableSection(String(localized: "Server"), id: "server") {
                 serverSection
             }
 
-            SettingsSection(String(localized: "Trakt")) {
+            SettingsExpandableSection(String(localized: "Trakt"), id: "trakt") {
                 traktSection
             }
 
-            SettingsSection(String(localized: "Simkl")) {
+            SettingsExpandableSection(String(localized: "Simkl"), id: "simkl") {
                 simklSection
             }
 
-            SettingsSection(String(localized: "Debrid")) {
+            SettingsExpandableSection(String(localized: "Debrid"), id: "debrid") {
                 debridSection
             }
         }
         // BUG-21 follow-up: verify each connected provider's stored credential the moment the
         // pane opens, so an expired token reads "Session expired" instead of "Connected".
         .onAppear { debrid.revalidateConnected() }
+    }
+
+    /// Display names for the Library Source / Watch Progress Source pickers below, keyed by the
+    /// shared repo's provider-neutral mode strings.
+    private static let librarySourceLabels: [(name: String, code: String)] = [
+        (String(localized: "Nuvio Library"), "local"),
+        (String(localized: "Trakt"), "trakt"),
+        (String(localized: "Simkl"), "simkl"),
+    ]
+    private static let watchProgressSourceLabels: [(name: String, code: String)] = [
+        (String(localized: "Nuvio Sync"), "nuvio_sync"),
+        (String(localized: "Trakt"), "trakt"),
+        (String(localized: "Simkl"), "simkl"),
+    ]
+
+    /// Library Source (which backend the Library tab reads from) and Watch Progress Source (which
+    /// backend owns Continue Watching / watched history). Both are provider-neutral picks backed by
+    /// `TrackingSettingsRepository`; the shared layer falls back to the local/Nuvio option on its
+    /// own if the chosen provider isn't connected (`effectiveLibrarySourceMode` /
+    /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
+    @ViewBuilder
+    private var librarySection: some View {
+        Text("Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        SettingsPickerRow(
+            title: String(localized: "Library Source"),
+            selection: Binding(
+                get: { model.librarySourceMode },
+                set: { model.setLibrarySourceMode($0) }
+            ),
+            options: Self.librarySourceLabels.map(\.code),
+            label: { code in LanguageOptions.name(forCode: code, in: Self.librarySourceLabels) }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Watch Progress Source"),
+            selection: Binding(
+                get: { model.watchProgressSource },
+                set: { model.setWatchProgressSource($0) }
+            ),
+            options: Self.watchProgressSourceLabels.map(\.code),
+            label: { code in LanguageOptions.name(forCode: code, in: Self.watchProgressSourceLabels) }
+        )
     }
 
     /// The Server section: which backend this Apple TV talks to, plus the self-hosted discovery
@@ -114,7 +168,7 @@ struct AccountServicesSettingsPane: View {
     @ViewBuilder
     private var traktSection: some View {
         if !trakt.credentialsConfigured {
-            Text("Trakt isn't configured in this build. Add TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET to local.properties, then rebuild the shared framework.")
+            Text("Trakt is unavailable in this build.")
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
@@ -146,7 +200,7 @@ struct AccountServicesSettingsPane: View {
                 trakt.connect()
             }
             if let error = trakt.errorMessage {
-                Text(error)
+                Text(SettingsErrorMessage.readable(error, fallback: String(localized: "Could not reach the service. Check your connection and try again.")))
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
             }
@@ -165,7 +219,7 @@ struct AccountServicesSettingsPane: View {
     @ViewBuilder
     private var simklSection: some View {
         if !simkl.credentialsConfigured {
-            Text("Simkl isn't configured in this build. Add SIMKL_CLIENT_ID to local.properties, then rebuild the shared framework.")
+            Text("Simkl is unavailable in this build.")
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
@@ -189,7 +243,7 @@ struct AccountServicesSettingsPane: View {
             // caption. A sync that fails fast (no client id in this build, no network) leaves the
             // section fully usable.
             if let syncError = simkl.syncErrorMessage {
-                Text(syncError)
+                Text(SettingsErrorMessage.readable(syncError, fallback: String(localized: "Could not reach the service. Check your connection and try again.")))
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
                     .frame(maxWidth: 1100, alignment: .leading)
@@ -227,7 +281,7 @@ struct AccountServicesSettingsPane: View {
                 simkl.connect()
             }
             if let error = simkl.errorMessage {
-                Text(error)
+                Text(SettingsErrorMessage.readable(error, fallback: String(localized: "Could not reach the service. Check your connection and try again.")))
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
             }
@@ -327,7 +381,7 @@ struct AccountServicesSettingsPane: View {
                     }
                 }
             case .failed(let message):
-                Text(message)
+                Text(SettingsErrorMessage.readable(message, fallback: String(localized: "Could not reach the service. Check your connection and try again.")))
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
                     .frame(maxWidth: 1100, alignment: .leading)

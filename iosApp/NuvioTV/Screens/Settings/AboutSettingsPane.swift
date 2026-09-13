@@ -103,9 +103,11 @@ struct AboutSettingsPane: View {
             )
             SettingsValueRow(
                 title: String(localized: "Source"),
-                value: "github.com/youngchris29-art/NuvioTV"
+                value: "github.com/dotjarden/NuvioTV"
             )
 
+        }
+        SettingsExpandableSection(String(localized: "Diagnostics"), id: "diagnostics") {
             SettingsToggleRow(
                 title: String(localized: "Hero Paint Diagnostics"),
                 subtitle: heroDiagnostics

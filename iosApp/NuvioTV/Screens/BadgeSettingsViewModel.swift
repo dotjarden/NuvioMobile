@@ -15,6 +15,7 @@ final class BadgeSettingsViewModel: ObservableObject {
     @Published private(set) var state: StreamBadgeSettingsUiState?
     @Published private(set) var isImporting = false
     @Published private(set) var statusMessage: String?
+    @Published private(set) var importSucceeded = false
 
     private var watcher: FlowWatcher?
 
@@ -46,17 +47,19 @@ final class BadgeSettingsViewModel: ObservableObject {
         guard !trimmed.isEmpty, !isImporting else { return }
         isImporting = true
         statusMessage = nil
+        importSucceeded = false
         StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isImporting = false
                 if let success = result as? StreamBadgeImportResultSuccess {
+                    self.importSucceeded = true
                     let count = Int(success.rules.enabledFilterCount)
                     self.statusMessage = count == 1 ? String(localized: "Imported 1 badge filter.") : String(localized: "Imported \(count) badge filters.")
                 } else if let failure = result as? StreamBadgeImportResultError {
-                    self.statusMessage = failure.message
+                    self.statusMessage = SettingsErrorMessage.readable(failure.message, fallback: String(localized: "Could not import this pack. Check the URL and your connection, then try again."))
                 } else {
-                    self.statusMessage = error?.localizedDescription ?? String(localized: "Badge import failed.")
+                    self.statusMessage = SettingsErrorMessage.readable(error?.localizedDescription ?? "", fallback: String(localized: "Could not import this pack. Check the URL and your connection, then try again."))
                 }
             }
         }

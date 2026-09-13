@@ -244,6 +244,33 @@ private struct LegacySettingsSection<Content: View>: View {
 
 // MARK: - Toggle
 
+/// A disclosure is its own list row; expanded controls remain individual native rows.
+/// Never wrap this content in a VStack, which combines the controls into one TV focus target.
+struct SettingsExpandableSection<Content: View>: View {
+    let title: String
+    let id: String
+    var subtitle: String? = nil
+    @ViewBuilder let content: () -> Content
+    @State private var expanded = false
+
+    init(_ title: String, id: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.id = id
+        self.subtitle = subtitle
+        self.content = content
+    }
+
+    var body: some View {
+        Section {
+            SettingsDisclosureRow(title: title, subtitle: subtitle, isExpanded: expanded) {
+                expanded.toggle()
+            }
+            .accessibilityIdentifier("settings.group.\(id)")
+            if expanded { content() }
+        }
+    }
+}
+
 /// A real `Toggle` — system switch, system platter, system label inversion, VoiceOver state for
 /// free. Replaces the `checkmark.circle.fill` glyph fake.
 struct SettingsToggleRow: View {
@@ -311,6 +338,7 @@ struct SettingsPickerRow<T: Hashable>: View {
                 SettingsRowLabel(title: title, subtitle: subtitle)
             }
         }
+        .accessibilityValue(label(selection.wrappedValue))
     }
 }
 
@@ -446,26 +474,10 @@ struct DebridKeyEntryRow: View {
     @State private var key = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                Image(systemName: "key")
-                    .font(SettingsRowFont.title)
-                    .foregroundStyle(.secondary)
-                TextField(placeholder ?? String(localized: "Or paste your \(providerName) API key"), text: $key)
-                    .textFieldStyle(.plain)
-                    .font(SettingsRowFont.title)
-            }
-
-            Button {
-                if !key.isEmpty {
-                    onSave(key)
-                    key = ""
-                }
-            } label: {
-                Label("Save Key", systemImage: "checkmark")
-                    .font(SettingsRowFont.subtitle)
-            }
-            .disabled(key.isEmpty)
+        SettingsTextEntryRow(placeholder: placeholder ?? String(localized: "\(providerName) API key"),
+                             buttonTitle: String(localized: "Save Key"), text: $key) {
+            onSave(key.trimmingCharacters(in: .whitespacesAndNewlines))
+            key = ""
         }
     }
 }
@@ -510,5 +522,51 @@ enum LanguageOptions {
     /// and needs the display name back.
     static func name(forCode code: String, in options: [(name: String, code: String)]) -> String {
         options.first { $0.code == code }?.name ?? code
+    }
+}
+
+struct SettingsDisclosureRow: View {
+    let title: String
+    let subtitle: String?
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.lg) {
+                SettingsRowLabel(title: title, subtitle: subtitle)
+                Spacer()
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(SettingsRowFont.title)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+
+/// Explicit button styling keeps the inline action independently focusable inside a TV list.
+struct SettingsTextEntryRow: View {
+    let placeholder: String
+    let buttonTitle: String
+    @Binding var text: String
+    var busy = false
+    let submit: () -> Void
+    private var canSubmit: Bool { !busy && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var body: some View {
+        HStack(spacing: 24) {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(SettingsRowFont.title)
+                .onSubmit { if canSubmit { submit() } }
+            Button(action: submit) {
+                if busy { ProgressView() }
+                else { Text(buttonTitle).font(SettingsRowFont.title) }
+            }
+            .buttonStyle(.glass)
+            .disabled(!canSubmit)
+        }
+        .focusSection()
+        .listRowBackground(Color.clear)
     }
 }

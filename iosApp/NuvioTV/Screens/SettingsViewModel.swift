@@ -547,6 +547,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     deinit {
+        themeWatcher?.cancel()
+        mdbListWatcher?.cancel()
         playerWatcher?.cancel()
         catalogWatcher?.cancel()
         addonWatcher?.cancel()

@@ -137,11 +137,7 @@ struct AppearanceSettingsPane: View {
 
     @ViewBuilder
     private var content: some View {
-        SettingsSection(String(localized: "Theme")) {
-            Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(maxWidth: 1100, alignment: .leading)
+        SettingsSection(nil) {
             ThemePickerRow(
                 selectedName: model.themeName,
                 pendingFocus: $pendingThemeSwatchFocus
@@ -212,7 +208,7 @@ struct AppearanceSettingsPane: View {
             .focused($appearanceRowFocus, equals: "typeface")
         }
 
-        SettingsSection(String(localized: "Poster Style")) {
+        SettingsExpandableSection(String(localized: "Poster Style"), id: "posters") {
             PosterStyleControls(
                 widthDp: model.posterWidthDp,
                 cornerDp: model.posterCornerRadiusDp,
@@ -224,6 +220,9 @@ struct AppearanceSettingsPane: View {
                 onLandscape: { model.setPosterLandscapeRows($0) },
                 onReset: { model.resetPosterStyle() }
             )
+        }
+
+        SettingsExpandableSection(String(localized: "Artwork & Trailers"), id: "detailAppearance") {
             // Default (off) always shows the Home hero's backdrop artwork — a beta
             // tester read the old focus-only fade as a bug ("hero posts don't
             // work"). This restores that original fade for anyone who preferred it.
@@ -265,7 +264,7 @@ struct AppearanceSettingsPane: View {
             )
         }
 
-        SettingsSection(String(localized: "Card Depth")) {
+        SettingsExpandableSection(String(localized: "Card Depth"), id: "depth") {
             CardDepthControls(
                 style: model.cardDepth,
                 onEnabled: { model.setCardDepthEnabled($0) },
@@ -277,7 +276,7 @@ struct AppearanceSettingsPane: View {
             )
         }
 
-        SettingsSection(String(localized: "Stream Badges")) {
+        SettingsExpandableSection(String(localized: "Stream Badges"), id: "badges") {
             StreamBadgesSection(badges: badges)
         }
     }

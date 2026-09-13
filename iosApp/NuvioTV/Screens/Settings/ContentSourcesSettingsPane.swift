@@ -14,8 +14,8 @@ struct ContentSourcesSettingsPane: View {
                             subtitle: String(localized: "Install and manage your catalogs and stream providers."),
                             systemImage: "puzzlepiece.extension") { AddonsView() }
                 .accessibilityIdentifier("settings.addons")
-            SettingsSection(String(localized: "Metadata (TMDB)")) {
-                Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
+            SettingsExpandableSection(String(localized: "Metadata (TMDB)"), id: "tmdb") {
+                Text("Cast, artwork and release details. Get a key at themoviedb.org → Settings → API.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
@@ -64,8 +64,8 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
-            SettingsSection(String(localized: "Ratings (MDBList)")) {
-                Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
+            SettingsExpandableSection(String(localized: "Ratings (MDBList)"), id: "mdblist") {
+                Text("Extra ratings on title pages. Get a key at mdblist.com → Preferences → API Access.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
@@ -93,67 +93,17 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
-            SettingsSection(String(localized: "Library & Watch Progress")) {
-                librarySection
-            }
-
             // FEAT-10 (tester ask): choose which catalogs Search fans out to. Fewer sources
             // means faster, more focused results — the fan-out across every search-capable
             // catalog of every addon is also the app's biggest single burst of requests.
-            SettingsSection(String(localized: "Search Sources")) {
+            SettingsExpandableSection(String(localized: "Search Sources"), id: "searchSources") {
                 searchSourcesSection
             }
 
-            SettingsSection(String(localized: "Plugins")) {
+            SettingsExpandableSection(String(localized: "Plugins"), id: "plugins") {
                 pluginsSection
             }
         }
-    }
-
-    /// Display names for the Library Source / Watch Progress Source pickers below, keyed by the
-    /// shared repo's provider-neutral mode strings.
-    private static let librarySourceLabels: [(name: String, code: String)] = [
-        (String(localized: "Nuvio Library"), "local"),
-        (String(localized: "Trakt"), "trakt"),
-        (String(localized: "Simkl"), "simkl"),
-    ]
-    private static let watchProgressSourceLabels: [(name: String, code: String)] = [
-        (String(localized: "Nuvio Sync"), "nuvio_sync"),
-        (String(localized: "Trakt"), "trakt"),
-        (String(localized: "Simkl"), "simkl"),
-    ]
-
-    /// Library Source (which backend the Library tab reads from) and Watch Progress Source (which
-    /// backend owns Continue Watching / watched history). Both are provider-neutral picks backed by
-    /// `TrackingSettingsRepository`; the shared layer falls back to the local/Nuvio option on its
-    /// own if the chosen provider isn't connected (`effectiveLibrarySourceMode` /
-    /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
-    @ViewBuilder
-    private var librarySection: some View {
-        Text("Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.textSecondary)
-            .frame(maxWidth: 1100, alignment: .leading)
-
-        SettingsPickerRow(
-            title: String(localized: "Library Source"),
-            selection: Binding(
-                get: { model.librarySourceMode },
-                set: { model.setLibrarySourceMode($0) }
-            ),
-            options: Self.librarySourceLabels.map(\.code),
-            label: { code in LanguageOptions.name(forCode: code, in: Self.librarySourceLabels) }
-        )
-
-        SettingsPickerRow(
-            title: String(localized: "Watch Progress Source"),
-            selection: Binding(
-                get: { model.watchProgressSource },
-                set: { model.setWatchProgressSource($0) }
-            ),
-            options: Self.watchProgressSourceLabels.map(\.code),
-            label: { code in LanguageOptions.name(forCode: code, in: Self.watchProgressSourceLabels) }
-        )
     }
 
     /// FEAT-10: one toggle per search-capable catalog. Rows derive from the installed addons
@@ -167,7 +117,7 @@ struct ContentSourcesSettingsPane: View {
             title: String(localized: "Hide Discover"),
             subtitle: model.hideDiscover
                 ? String(localized: "Search shows only the search field and recent searches")
-                : String(localized: "Search shows the Discover section (types, catalogs, genres) below the field"),
+                : String(localized: "Search opens with artwork, catalog rows and filters"),
             isOn: Binding(
                 get: { model.hideDiscover },
                 set: { model.setHideDiscover($0) }
@@ -200,15 +150,7 @@ struct ContentSourcesSettingsPane: View {
                 )
             }
 
-            // BUG-33 defect 1 (P1, twice re-opened): the tester's only way to confirm a
-            // deselected catalog was actually skipped was a device log capture — and the
-            // diagnostic that shipped logged at debug level, which os_log hides by default
-            // (BUG-11). This mirrors it in-app: one caption naming exactly which catalogs the
-            // last search hit, screenshot-able from this exact pane.
-            Text(model.lastSearchFanOut ?? String(localized: "No search performed yet."))
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(maxWidth: 1100, alignment: .leading)
+
         }
     }
 
@@ -235,7 +177,7 @@ struct ContentSourcesSettingsPane: View {
         if let status = plugins.statusMessage {
             Text(status)
                 .font(Theme.Font.caption)
-                .foregroundStyle(status.hasPrefix("Installed") ? Theme.Palette.textSecondary : .red)
+                .foregroundStyle(plugins.installSucceeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
         }
 
         if plugins.repositories.isEmpty {
@@ -244,42 +186,16 @@ struct ContentSourcesSettingsPane: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
         } else {
             ForEach(plugins.repositories, id: \.manifestUrl) { repo in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        Text(repo.name)
-                            .font(Theme.Font.body.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                        if repo.isRefreshing {
-                            ProgressView().scaleEffect(0.6)
-                        }
-                        Text(repo.scraperCount == 1 ? String(localized: "1 provider") : String(localized: "\(repo.scraperCount) providers"))
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                        Button {
-                            plugins.removeRepository(repo)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(Theme.Font.caption)
-                        }
-                        .buttonStyle(.chip)
-                    }
-                    if let error = repo.errorMessage, !error.isEmpty {
-                        Text(error)
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(.red)
-                    }
-                    ForEach(plugins.scrapers(in: repo), id: \.id) { scraper in
-                        SettingsToggleRow(
-                            title: scraper.name,
-                            subtitle: scraper.description_.isEmpty
-                                ? String(localized: "v\(scraper.version)")
-                                : String(localized: "\(scraper.description_) \u{00B7} v\(scraper.version)"),
-                            isOn: Binding(
-                                get: { scraper.enabled },
-                                set: { plugins.toggleScraper(scraper, $0) }
-                            )
-                        )
-                    }
+                SettingsDestructiveRow(title: String(localized: "Remove \(repo.name)"),
+                    subtitle: String(localized: "\(repo.scraperCount) providers"), systemImage: "trash") {
+                    plugins.removeRepository(repo)
+                }
+                if let error = repo.errorMessage, !error.isEmpty {
+                    Text(SettingsErrorMessage.readable(error, fallback: String(localized: "Could not refresh this repository. Try again."))).font(SettingsRowFont.sectionHeader).foregroundStyle(.red)
+                }
+                ForEach(plugins.scrapers(in: repo), id: \.id) { scraper in
+                    SettingsToggleRow(title: scraper.name, subtitle: String(localized: "v\(scraper.version)"),
+                        isOn: Binding(get: { scraper.enabled }, set: { plugins.toggleScraper(scraper, $0) }))
                 }
             }
             SettingsActionRow(
@@ -300,27 +216,10 @@ private struct TmdbKeyEntryRow: View {
     @State private var key = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                Image(systemName: "key")
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                TextField("TMDB API Key (v3 auth)", text: $key)
-                    .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-            }
-
-            Button {
-                if !key.isEmpty { onSave(key) }
-            } label: {
-                Label("Save & Enable", systemImage: "checkmark")
-                    .font(Theme.Font.meta)
-                    .prominentAccentLabel()
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.Palette.accent)
-            .disabled(key.isEmpty)
+        SettingsTextEntryRow(placeholder: String(localized: "TMDB API Key (v3 auth)"),
+                             buttonTitle: String(localized: "Save & Enable"), text: $key) {
+            onSave(key.trimmingCharacters(in: .whitespacesAndNewlines))
+            key = ""
         }
     }
 }
@@ -333,32 +232,9 @@ private struct PluginRepoEntryRow: View {
     @State private var url = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                Image(systemName: "puzzlepiece.extension")
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                TextField("Repository manifest URL", text: $url)
-                    .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-            }
-
-            Button {
-                if !url.isEmpty {
-                    onInstall(url)
-                    url = ""
-                }
-            } label: {
-                if isInstalling {
-                    ProgressView()
-                } else {
-                    Label("Install Repository", systemImage: "plus")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.lg)
-                        .padding(.vertical, Theme.Spacing.xxs + 2)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isInstalling)
+        SettingsTextEntryRow(placeholder: String(localized: "Repository manifest URL"),
+                             buttonTitle: String(localized: "Install"), text: $url, busy: isInstalling) {
+            onInstall(url)
         }
     }
 }
