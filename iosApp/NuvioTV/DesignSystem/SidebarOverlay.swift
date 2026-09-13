@@ -144,9 +144,8 @@ struct SidebarItem: Identifiable, Equatable {
     /// this list moves with it.
     static let tabShell: [SidebarItem] = [
         SidebarItem(id: 0, title: "Home", systemImage: "house"),
-        SidebarItem(id: 7, title: "Browse", systemImage: "film"),
-        SidebarItem(id: 6, title: "Live TV", systemImage: "tv"),
         SidebarItem(id: 1, title: "Search", systemImage: "magnifyingglass"),
+        SidebarItem(id: 6, title: "Live TV", systemImage: "tv"),
         SidebarItem(id: 2, title: "Library", systemImage: "books.vertical"),
         SidebarItem(id: 4, title: "Settings", systemImage: "gearshape"),
         SidebarItem(id: 5, title: "Profile", systemImage: "person.crop.circle"),

@@ -1,354 +1,232 @@
 import SwiftUI
 import SharedCore
 
-/// Search screen. Uses a plain `TextField` rather than `.searchable` — on tvOS `.searchable` inside a
-/// `TabView` leaves a persistent keyboard panel that bleeds over results and pushed screens. A
-/// `TextField` instead opens tvOS's self-contained full-screen keyboard which dismisses on commit,
-/// then shows results inline. Results push the detail screen via a normal NavigationLink.
-///
-/// While the query is empty the screen doubles as **Discover**: recent-search chips plus shared
-/// `SearchRepository.discoverUiState`-driven browsing (type → catalog → genre → paginated grid).
+/// One discovery destination. Keep the Home-based browsing surface mounted while a committed
+/// query presents results, preserving filter selection, row expansion and scroll positions.
 struct SearchView: View {
+    let home: HomeViewModel
     @StateObject private var model = SearchViewModel()
+    @State private var draftQuery = ""
     @State private var query = ""
     @State private var resultType = "All titles"
+    @State private var resultCatalog: String? = nil
+    @State private var resultGenre = "All genres"
+    @State private var resultSort = "Recommended"
     @Environment(\.posterStyle) private var posterStyle
+    @Environment(\.tabBarVisibility) private var visibility
+    @FocusState private var resultsFieldFocused: Bool
+    @State private var restoreBrowseFocus = 0
 
-    private var gridColumns: [GridItem] {
-        [GridItem(
-            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
-            spacing: Theme.Spacing.rowGap
-        )]
+    private var isSearching: Bool { !query.isEmpty }
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap), spacing: Theme.Spacing.rowGap)]
     }
 
     var body: some View {
+        ZStack {
+            MediaBrowseView(model: home, mediaType: "movie",
+                            searchControls: AnyView(searchEntry(width: 330, identifier: "search.query")),
+                            restoreSearchFocus: restoreBrowseFocus)
+                .opacity(isSearching || model.hideDiscover ? 0 : 1)
+                .disabled(isSearching || model.hideDiscover)
+                .allowsHitTesting(!isSearching && !model.hideDiscover)
+                .accessibilityHidden(isSearching || model.hideDiscover)
+
+            if !isSearching && model.hideDiscover {
+                // Respect Nuvio's synced Hide Discover preference after merging the tabs.
+                ZStack {
+                    Theme.Palette.background.ignoresSafeArea()
+                    VStack(alignment: .leading) {
+                        searchEntry(width: 630, identifier: "search.query")
+                        Spacer()
+                    }.padding(Theme.Spacing.screen)
+                }.sidebarMenuReveal()
+            }
+            if isSearching {
+                resultsPage
+            }
+        }
+        .onAppear {
+            model.start()
+            visibility.setSearchResultsActive(isSearching || model.hideDiscover)
+        }
+        .onDisappear {
+            model.stop()
+            visibility.setSearchResultsActive(false)
+        }
+        .onChange(of: model.hideDiscover) { _, hidden in
+            visibility.setSearchResultsActive(isSearching || hidden)
+        }
+        .onChange(of: isSearching) { _, active in
+            visibility.setSearchResultsActive(active || model.hideDiscover)
+            if active {
+                DispatchQueue.main.async { resultsFieldFocused = true }
+            } else {
+                restoreBrowseFocus += 1
+            }
+        }
+    }
+
+    private func searchEntry(width: CGFloat, identifier: String) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search movies & shows", text: $draftQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 26))
+                .frame(width: width)
+                .accessibilityIdentifier(identifier)
+                // Commit only after the native keyboard closes. Hiding its source field
+                // during typing can tear down tvOS's keyboard before the query is finished.
+                .onSubmit { commitSearch(draftQuery) }
+            if !model.history.isEmpty {
+                Menu {
+                    ForEach(model.history, id: \.self) { item in
+                        Button(item) { commitSearch(item) }
+                    }
+                    Divider()
+                    Menu("Remove from history") {
+                        ForEach(model.history, id: \.self) { item in
+                            Button(item, role: .destructive) { model.removeHistory(item) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 23)).frame(width: 30, height: 30)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Recent Searches")
+                .accessibilityIdentifier("search.recent")
+            }
+        }
+    }
+
+    private var resultsPage: some View {
         NavigationStack {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
-
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            Image(systemName: "magnifyingglass")
-                                .foregroundStyle(Theme.Palette.textSecondary)
-                            TextField("Search movies & shows", text: $query)
-                                .textFieldStyle(.plain)
-                                .font(Theme.Font.body)
-                                .onSubmit { model.recordSearch(query) }
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack(spacing: 28) {
+                        searchEntry(width: 630, identifier: "search.results.query")
+                            .focused($resultsFieldFocused)
+                        Button {
+                            commitSearch("")
+                        } label: {
+                            Label("Clear Search", systemImage: "xmark")
                         }
+                        .buttonStyle(.glass)
+                        .accessibilityIdentifier("search.clear")
+                        Spacer(minLength: 0)
+                    }.focusSection()
 
-                        if queryIsEmpty {
-                            historyChips
-                            // UX-8: the user can hide the whole Discover section (synced per
-                            // profile) — the page is then the search field + recent searches.
-                            if !model.hideDiscover {
-                                discoverSection
-                            }
-                        } else {
-                            searchResults
+                    HStack(spacing: 24) {
+                        TVSelectionMenu(title: "Content type", value: resultType,
+                                        options: ["All titles", "Movies", "Shows"]) { resultType = $0 }
+                        TVSelectionMenu(title: "Genre", value: resultGenre,
+                                        options: ["All genres"] + resultGenres) { resultGenre = $0 }
+                        TVSelectionMenu(title: "Catalog", value: selectedCatalogLabel,
+                                        options: ["All catalogs"] + model.sections.map(catalogLabel)) { label in
+                            resultCatalog = model.sections.first { catalogLabel($0) == label }?.key
                         }
-                    }
-                    .padding(Theme.Spacing.screen)
-                }
-                .scrollClipDisabled()
-                .reportsScrollToTabBar(tab: "Search")
-                // FEAT-30: in sidebar mode Menu summons the floating sidebar instead of
-                // suspending the app; a second Menu (with focus now in the sidebar) falls through
-                // to the system default and exits, so the exit convention survives one step
-                // further in. Structurally absent in tabs mode — see `SidebarMenuRevealModifier`.
-                .sidebarMenuReveal()
-            }
-            .navigationDestination(for: TitleRoute.self) { route in
-                DetailView(preview: route.preview)
-            }
-            .navigationDestination(for: CatalogRoute.self) { route in
-                CatalogGridView(route: route)
-            }
-            .navigationDestination(for: PersonRoute.self) { route in
-                PersonDetailView(personId: route.id, personName: route.name)
-            }
-            .navigationDestination(for: EntityRoute.self) { route in
-                EntityBrowseView(route: route)
-            }
-        }
-        .onChange(of: query) { _, newValue in
-            model.queryChanged(newValue)
-        }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
-    }
+                        TVSelectionMenu(title: "Sort", value: resultSort,
+                                        options: ["Recommended", "A–Z", "Highest rated"]) { resultSort = $0 }
+                        if resultType != "All titles" || resultGenre != "All genres" || resultCatalog != nil || resultSort != "Recommended" {
+                            Button("Reset") { resetResultFilters() }.buttonStyle(.glass)
+                        }
+                        Spacer()
+                        if !model.isLoading {
+                            Text("\(results.count) titles").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.focusSection()
 
-    private var queryIsEmpty: Bool {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    // MARK: - Search results (query non-empty)
-
-    @ViewBuilder
-    private var searchResults: some View {
-        if model.isLoading {
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Searching\u{2026}")
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-            }
-        } else if let error = model.searchError {
-            // Codex r1 on upstream 085e8dc6: a failed fan-out is not "No results." — name it and
-            // offer the recovery (manifest re-fetch or a forced re-query, see retrySearch()).
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text(error).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
-                Button {
-                    model.retrySearch()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
-                }
-                .buttonStyle(.chip)
-            }
-        } else if let message = model.emptyMessage {
-            Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
-        }
-
-        HStack {
-            TVSelectionMenu(title: "Content type", value: resultType, options: ["All titles", "Movies", "Shows"]) { resultType = $0 }
-            Spacer()
-            Text("\(uniqueResults.count) titles").font(.caption).foregroundStyle(.secondary)
-        }
-        LazyVGrid(columns: gridColumns, spacing: Theme.Spacing.xl) {
-            ForEach(uniqueResults) { result in
-                let item = result.item
-                NavigationLink(value: TitleRoute(preview: item)) { PosterCard(title: item.name, imageURL: item.poster) }
-                    .cardFocusButtonStyle().posterButtonShape()
-            }
-        }
-    }
-
-    private struct SearchHit: Identifiable {
-        let item: MetaPreview
-        var id: String { item.type + ":" + item.id }
-    }
-
-    private var uniqueResults: [SearchHit] {
-        var seen = Set<String>()
-        return model.sections.flatMap { $0.items }.filter {
-            (resultType == "All titles" || $0.type == (resultType == "Movies" ? "movie" : "series")) && seen.insert($0.type + ":" + $0.id).inserted
-        }.map { SearchHit(item: $0) }
-    }
-
-    // MARK: - Recent searches
-
-    @ViewBuilder
-    private var historyChips: some View {
-        if !model.history.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Recent Searches")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Theme.Spacing.md) {
-                        ForEach(model.history, id: \.self) { item in
-                            RecentSearchChip(item: item) {
-                                query = item
-                            }
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    model.removeHistory(item)
-                                } label: {
-                                    Label("Remove from history", systemImage: "trash")
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 28) {
+                            resultStatus
+                            LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
+                                ForEach(results, id: \.key) { hit in
+                                    NavigationLink(value: TitleRoute(preview: hit.item)) {
+                                        PosterCard(title: hit.item.name, imageURL: hit.item.poster)
+                                    }
+                                    .cardFocusButtonStyle().posterButtonShape()
+                                    .accessibilityIdentifier("search.result.\(hit.key)")
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 24)
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    .scrollClipDisabled()
+                    .reportsScrollToTabBar(tab: "Search")
+                    .sidebarMenuReveal()
                 }
+                .padding(.horizontal, Theme.Spacing.screen)
+                .padding(.top, 34)
             }
+            .navigationDestination(for: TitleRoute.self) { DetailView(preview: $0.preview) }
         }
     }
 
-    // MARK: - Discover (query empty)
-
-    @ViewBuilder
-    private var discoverSection: some View {
-        if let discover = model.discover {
-            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                HStack(spacing: 24) {
-                    TVSelectionMenu(title: "Content type", value: typeLabel(widen(discover.selectedType) ?? "movie"), options: discover.typeOptions.map(typeLabel)) { selected in
-                        if let type = discover.typeOptions.first(where: { typeLabel($0) == selected }) { model.selectDiscoverType(type) }
-                    }
-                    TVSelectionMenu(title: "Catalog", value: discover.selectedCatalog.map { $0.catalogName + " · " + $0.addonName } ?? "Catalog", options: discover.catalogOptions.map { $0.catalogName + " · " + $0.addonName }) { selected in
-                        if let option = discover.catalogOptions.first(where: { $0.catalogName + " · " + $0.addonName == selected }) { model.selectDiscoverCatalog(option.key) }
-                    }
-                    if !discover.genreOptions.isEmpty {
-                        TVSelectionMenu(title: "Genre", value: widen(discover.selectedGenre) ?? "All genres", options: (discover.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + discover.genreOptions) {
-                            model.selectDiscoverGenre($0 == "All genres" ? nil : $0)
-                        }
-                    }
-                }
-
-                discoverGrid(discover)
+    @ViewBuilder private var resultStatus: some View {
+        if model.isLoading {
+            HStack(spacing: 18) {
+                ProgressView()
+                Text("Searching…").foregroundStyle(.secondary)
             }
+        } else if let error = model.searchError {
+            VStack(alignment: .leading, spacing: 24) {
+                Text(error).foregroundStyle(.secondary)
+                Button("Retry") { model.retrySearch() }.buttonStyle(.glass)
+            }
+        } else if results.isEmpty {
+            Text(model.emptyMessage ?? "No titles match these filters.")
+                .foregroundStyle(.secondary)
         }
     }
 
-    @ViewBuilder
-    private func discoverGrid(_ discover: DiscoverUiState) -> some View {
-        if discover.items.isEmpty {
-            if discover.isLoading {
-                HStack(spacing: Theme.Spacing.md) {
-                    ProgressView()
-                    Text("Loading\u{2026}")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-            } else if let reason = discover.emptyStateReason {
-                // Upstream 085e8dc6: RequestFailed with NO catalog options means an add-on MANIFEST
-                // failed (SearchRepository.refreshDiscover's early return), not a catalog page —
-                // say so and offer the honest recovery (re-fetch the manifests) instead of
-                // "try another genre". The root TextField keeps this screen focusable regardless.
-                if reason == DiscoverEmptyStateReason.requestfailed, discover.catalogOptions.isEmpty {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                        Text(widen(discover.errorMessage) ?? String(localized: "Couldn't load your add-ons."))
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                        Button {
-                            AddonRepository.shared.refreshAll()
-                        } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
-                                .font(Theme.Font.meta)
-                                .padding(.horizontal, Theme.Spacing.md)
-                                .padding(.vertical, Theme.Spacing.xs)
-                        }
-                        .buttonStyle(.chip)
-                    }
-                } else {
-                    Text(discoverEmptyMessage(reason))
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-            }
-        } else {
-            LazyVGrid(columns: gridColumns, spacing: Theme.Spacing.xl) {
-                ForEach(Array(discover.items.enumerated()), id: \.element.id) { index, item in
-                    NavigationLink(value: TitleRoute(preview: item)) {
-                        PosterCard(title: item.name, imageURL: item.poster)
-                    }
-                    .cardFocusButtonStyle()
-                    .posterButtonShape()
-                    .onAppear { model.discoverItemAppeared(at: index) }
-                }
-            }
-            if discover.isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .padding(.vertical, Theme.Spacing.md)
-            }
-        }
+    private func catalogLabel(_ section: HomeCatalogSection) -> String {
+        section.title + " · " + section.addonName
+    }
+    private var selectedCatalogLabel: String {
+        model.sections.first { $0.key == resultCatalog }.map(catalogLabel) ?? "All catalogs"
+    }
+    private var resultGenres: [String] {
+        Array(Set(model.sections.flatMap(\.items).flatMap(\.genres))).sorted()
     }
 
-    // MARK: - Chip helpers
+    private struct SearchHit {
+        let item: MetaPreview
+        var key: String { item.type + ":" + item.id }
+    }
 
-    private func chipRow(
-        options: [String],
-        isSelected: @escaping (String) -> Bool,
-        label: @escaping (String) -> String,
-        onSelect: @escaping (String) -> Void
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(options, id: \.self) { option in
-                    DiscoverChip(title: label(option), subtitle: nil, isSelected: isSelected(option)) {
-                        onSelect(option)
-                    }
-                }
+    private var results: [SearchHit] {
+        var seen = Set<String>()
+        let items = model.sections.filter { resultCatalog == nil || $0.key == resultCatalog }
+            .flatMap(\.items).filter { item in
+                (resultType == "All titles" || item.type == (resultType == "Movies" ? "movie" : "series"))
+                    && (resultGenre == "All genres" || item.genres.contains { $0.localizedCaseInsensitiveCompare(resultGenre) == .orderedSame })
+                    && seen.insert(item.type + ":" + item.id).inserted
             }
-            .padding(.vertical, Theme.Spacing.xs)
+        let sorted: [MetaPreview]
+        switch resultSort {
+        case "A–Z": sorted = items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case "Highest rated": sorted = items.sorted { (Double($0.imdbRating ?? "") ?? 0) > (Double($1.imdbRating ?? "") ?? 0) }
+        default: sorted = items
         }
+        return sorted.map { SearchHit(item: $0) }
     }
 
-    /// Kotlin `String?` properties can surface non-optional; force an explicit optional for ==.
-    private func widen(_ value: String?) -> String? { value }
-
-    private func typeLabel(_ type: String) -> String {
-        switch type.lowercased() {
-        case "movie": return String(localized: "Movies")
-        case "series": return String(localized: "Series")
-        case "tv": return String(localized: "TV")
-        case "anime": return String(localized: "Anime")
-        default: return type.capitalized
-        }
+    private func resetResultFilters() {
+        resultType = "All titles"
+        resultGenre = "All genres"
+        resultCatalog = nil
+        resultSort = "Recommended"
     }
 
-    private func discoverEmptyMessage(_ reason: DiscoverEmptyStateReason) -> String {
-        // KMP exports these enum entries all-lowercase (like CloudLibraryItemType.webdownload).
-        if reason == DiscoverEmptyStateReason.noactiveaddons {
-            return String(localized: "Install and enable an add-on to browse its catalogs.")
-        }
-        if reason == DiscoverEmptyStateReason.nodiscovercatalogs {
-            return String(localized: "Your add-ons don't expose browsable catalogs.")
-        }
-        if reason == DiscoverEmptyStateReason.requestfailed {
-            return String(localized: "Couldn't load this catalog. Try another genre or catalog.")
-        }
-        return String(localized: "Nothing here yet \u{2014} try another genre or catalog.")
-    }
-}
-
-private struct RecentSearchChip: View {
-    let item: String
-    let action: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: "clock.arrow.circlepath")
-                Text(item)
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-            .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
-        }
-        .buttonStyle(.chip)
-        .focused($focused)
-        .environment(\.settingsRowIsFocused, focused)
-    }
-}
-
-private struct DiscoverChip: View {
-    let title: String
-    let subtitle: String?
-    let isSelected: Bool
-    let action: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(Theme.Font.caption)
-                            .chipMetaText(selected: isSelected)
-                    }
-                }
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        }
-        .buttonStyle(.chip(selected: isSelected))
-        .focused($focused)
-        .environment(\.settingsRowIsFocused, focused)
+    private func commitSearch(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftQuery = trimmed
+        query = trimmed
+        resetResultFilters()
+        model.queryChanged(trimmed)
+        if !trimmed.isEmpty { model.recordSearch(trimmed) }
     }
 }

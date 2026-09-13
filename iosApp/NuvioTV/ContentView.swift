@@ -321,29 +321,20 @@ struct MainTabView: View {
                 HomeView(model: home)
                     .tabBarImmersiveHide()
             }
-            Tab("Browse", systemImage: "film", value: 7) {
-                MediaBrowseView(model: home, mediaType: "movie").tabBarImmersiveHide()
+            Tab("Search", systemImage: "magnifyingglass", value: 1) {
+                SearchView(home: home).tabBarImmersiveHide()
             }
             Tab("Live TV", systemImage: "tv", value: 6) {
                 LiveTVView(profile: liveProfileKey)
                     .id(liveProfileKey)
                     .tabBarImmersiveHide()
             }
-            Tab("Search", systemImage: "magnifyingglass", value: 1) {
-                SearchView()
-                    .tabBarImmersiveHide()
-            }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
                     .tabBarImmersiveHide()
             }
-            // T4: Settings and Profile don't scroll meaningfully, so they were left with no
-            // tab-bar declaration at all — but that's not neutral. Without one, the resolved
-            // `.toolbarVisibility` preference CHANGES on entering/leaving these two tabs (nothing
-            // → whatever `.automatic` resolves to elsewhere), and a preference change is exactly
-            // the kind of re-resolution that can latch the bar visible (BUG-66). `.automatic` via
-            // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
-            // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
+            // Every root uses the same navigation visibility declaration, including
+            // Settings and Profile. Switching tabs must not hide the bar or reset focus.
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView(
                     selectedCategory: $settingsCategory,
@@ -406,7 +397,7 @@ struct MainTabView: View {
         // teardown can't be deferred along with a hidden tab's rendering.
         .onAppear {
             tabBarVisibility.setHomeTabSelected(selectedTab == 0)
-            tabBarVisibility.setBrowseTabSelected(selectedTab == 7)
+            tabBarVisibility.setBrowseTabSelected(selectedTab == 1)
             tabBarVisibility.setRootCoverActive(rootCoverActive)
         }
         .onChange(of: rootCoverActive) { _, active in
@@ -414,7 +405,7 @@ struct MainTabView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
-            tabBarVisibility.setBrowseTabSelected(tab == 7)
+            tabBarVisibility.setBrowseTabSelected(tab == 1)
         }
     }
 }

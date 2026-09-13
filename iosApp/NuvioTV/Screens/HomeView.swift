@@ -251,7 +251,8 @@ struct HomeView: View {
 
     /// Show Hero on AND the hero fan-out has landed: the rotating carousel exists.
     private var heroCarouselActive: Bool {
-        browse != nil ? heroSettings.heroEnabled : !heroItems.isEmpty
+        // Search discovery is a context panel, not a second carousel/CTA destination.
+        browse != nil ? (browse?.isSearchDiscovery == false && heroSettings.heroEnabled) : !heroItems.isEmpty
     }
 
     /// Anything a row card can focus. The focus panel has nothing to reflect (and nothing to
@@ -272,7 +273,10 @@ struct HomeView: View {
     /// a collection-only Home built from Fusion collections gets its hero. With no seed the
     /// layout degenerates to pure rows, which is also the only way a "rows only, no hero region"
     /// configuration remains reachable. Still a content/load-boundary value, never per-focus.
-    private var focusHeroActive: Bool { !heroSettings.heroEnabled && heroPanelSeed != nil }
+    private var focusHeroActive: Bool {
+        // Search keeps a contextual title at rest and follows row focus without a carousel.
+        (!heroSettings.heroEnabled || browse?.isSearchDiscovery == true) && heroPanelSeed != nil
+    }
 
     /// Whether a hero header is mounted above the rows ScrollView at all.
     private var heroHeaderVisible: Bool {
@@ -829,7 +833,8 @@ struct HomeView: View {
                             // nothing down the page is left for the focus engine to drag the
                             // scroll back toward while the proxy animates (the classic branch's
                             // whole failure mode).
-                            heroFocused = true
+                            if let browse, browse.isSearchDiscovery { browse.focusFilters() }
+                            else { heroFocused = true }
                             withAnimation(.easeInOut(duration: 0.45)) {
                                 scrollProxy.scrollTo("home_top", anchor: .top)
                             }
@@ -844,7 +849,8 @@ struct HomeView: View {
                                     withAnimation(.easeInOut(duration: 0.3)) {
                                         scrollProxy.scrollTo("home_top", anchor: .top)
                                     }
-                                    if !heroFocused { heroFocused = true }
+                                    if let browse, browse.isSearchDiscovery { browse.focusFilters() }
+                                    else if !heroFocused { heroFocused = true }
                                 }
                             }
                         } else {
@@ -1379,7 +1385,8 @@ struct HomeView: View {
                                        forceNuvioLayout: browse != nil || focusHeroActive,
                                         folderRoute: isCollectionHero(presentation.item)
                                             ? heroFolderRoutes[presentation.item.id] : nil,
-                                        compression: compact ? pinnedPlan.compression : 0)
+                                        compression: compact ? pinnedPlan.compression : 0,
+                                        maximumSynopsisLines: browse?.isSearchDiscovery == true ? 2 : nil)
                 } else if browse != nil {
                     // An empty Group has no frame. Keep Browse's header slot during first load
                     // and filter transitions so a focused menu cannot move as artwork arrives.
@@ -3733,6 +3740,7 @@ struct HomeHeroForeground: View {
     /// alternative the product review rejected. 0 everywhere except pinned mode at a Poster Size
     /// that needs it (Large today; Small/Medium compute 0 and are bit-identical to Wave 9).
     var compression: CGFloat = 0
+    var maximumSynopsisLines: Int? = nil
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     /// The compression split across the two elastic slots, each bounded by its own floor.
@@ -3934,7 +3942,7 @@ struct HomeHeroForeground: View {
                     Text(synopsis)
                         .font(Theme.Font.body)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                        .lineLimit(synopsisLineLimit)
+                        .lineLimit(min(synopsisLineLimit, maximumSynopsisLines ?? synopsisLineLimit))
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(height: synopsisSlotHeight, alignment: .topLeading)

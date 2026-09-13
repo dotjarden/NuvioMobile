@@ -160,6 +160,8 @@ struct NuvioTVApp: App {
             AddonsView()
         } else if ProcessInfo.processInfo.arguments.contains("--settings-ui-test") {
             SettingsUITestRoot()
+        } else if ProcessInfo.processInfo.arguments.contains("--search-ui-test") {
+            SearchUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
             BrowseUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--welcome-ui-test") {
@@ -254,6 +256,14 @@ private struct SettingsUITestRoot: View {
 private struct HomeUITestRoot: View {
     @StateObject private var home = HomeViewModel()
     var body: some View { HomeView(model: home) }
+}
+private struct SearchUITestRoot: View {
+    @StateObject private var home = HomeViewModel()
+    @State private var visibility = TabBarVisibility()
+    var body: some View {
+        SearchView(home: home).environment(\.tabBarVisibility, visibility)
+            .onAppear { visibility.setHomeTabSelected(false); visibility.setBrowseTabSelected(true) }
+    }
 }
 private struct BrowseUITestRoot: View {
     @StateObject private var home = HomeViewModel()

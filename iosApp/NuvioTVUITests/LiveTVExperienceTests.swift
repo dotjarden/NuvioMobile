@@ -398,10 +398,13 @@ final class LiveTVExperienceTests: XCTestCase {
     @MainActor func testLargeBrowseFiltersSurviveScrollReturn() throws {
         verifyFiltersSurviveScrollReturn(largePosters: true)
     }
-    @MainActor private func verifyFiltersSurviveScrollReturn(largePosters: Bool) {
+    @MainActor func testUnifiedSearchFiltersSurviveScrollReturn() throws {
+        verifyFiltersSurviveScrollReturn(largePosters: false, unifiedSearch: true)
+    }
+    @MainActor private func verifyFiltersSurviveScrollReturn(largePosters: Bool, unifiedSearch: Bool = false) {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["--browse-ui-test", "-hero_nuvio_style", "YES"]
+        app.launchArguments = [unifiedSearch ? "--search-ui-test" : "--browse-ui-test", "-hero_nuvio_style", "YES"]
         if largePosters { app.launchArguments.append("--large-posters") }
         app.launch()
         let filter = app.buttons["Browse: Movies"]
@@ -422,12 +425,19 @@ final class LiveTVExperienceTests: XCTestCase {
                 let center = CGPoint(x: current.frame.midX, y: current.frame.midY)
                 if !current.frame.isEmpty {
                     returnedFilter = filterOptions.firstIndex { app.buttons[$0].frame.contains(center) }
+                    if unifiedSearch && (app.textFields["search.query"].frame.contains(center) || app.buttons["search.recent"].frame.contains(center)) {
+                        returnedFilter = -1 // Search and History are also valid pinned-row destinations.
+                    }
                     if returnedFilter != nil { break }
                 }
             }
             XCTAssertNotNil(returnedFilter, "Up must focus the filter bar before reaching the hero or sidebar")
-            XCUIRemote.shared.press(.select)
-            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", expectedOptions[returnedFilter ?? 0])).firstMatch.waitForExistence(timeout: 3), "Select after scrolling up must open the filter")
+            if returnedFilter == -1 {
+                select(filter, in: app)
+            } else {
+                XCUIRemote.shared.press(.select)
+            }
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", expectedOptions[max(0, returnedFilter ?? 0)])).firstMatch.waitForExistence(timeout: 3), "Select after scrolling up must open the filter")
             XCUIRemote.shared.press(.menu)
             XCTAssertEqual(filter.frame.midY, filterY, accuracy: 2)
             XCTAssertTrue(filter.isHittable)
@@ -436,6 +446,51 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch.waitForExistence(timeout: 5))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Filters after repeated scroll returns"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testUnifiedSearchPreservesBrowsingOnClear() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--search-ui-test", "-hero_nuvio_style", "YES"]
+        app.launch()
+        let movies = app.buttons["Browse: Movies"]
+        XCTAssertTrue(movies.waitForExistence(timeout: 30))
+        XCTAssertEqual(app.keyboards.count, 0, "Entering Search must not open the keyboard")
+        select(movies, in: app)
+        let showsOption = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch
+        XCTAssertTrue(showsOption.waitForExistence(timeout: 5))
+        select(showsOption, in: app)
+        let shows = app.buttons["Browse: Shows"]
+        XCTAssertTrue(shows.waitForExistence(timeout: 10))
+        let genre = app.buttons["Genre: All genres"]
+        let filterY = shows.frame.midY
+        for query in ["alien", "matrix"] {
+            let entry = app.textFields["search.query"]
+            XCTAssertTrue(entry.waitForExistence(timeout: 5))
+            select(entry, in: app)
+            app.typeText(query + "\n")
+            let clear = app.buttons["search.clear"]
+            XCTAssertTrue(clear.waitForExistence(timeout: 15), app.debugDescription)
+            XCTAssertFalse(shows.isHittable, "Hidden catalog controls must not receive focus")
+            XCTAssertTrue(app.buttons["Content type: All titles"].exists)
+            XCTAssertTrue(app.buttons["Genre: All genres"].exists)
+            XCTAssertTrue(app.buttons["Catalog: All catalogs"].exists)
+            XCTAssertTrue(app.buttons["Sort: Recommended"].exists)
+            let hit = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'search.result.'")).firstMatch
+            XCTAssertTrue(hit.waitForExistence(timeout: 30), "A real query should return playable title destinations")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "Unified Search results \(query)"; shot.lifetime = .keepAlways; add(shot)
+            select(clear, in: app)
+            XCTAssertTrue(shows.waitForExistence(timeout: 10), "Clearing must preserve Shows selection")
+            XCTAssertTrue(genre.isHittable, "Pinned filters must be reachable again")
+            XCTAssertEqual(shows.frame.midY, filterY, accuracy: 2)
+            XCTAssertFalse(app.buttons["search.clear"].exists)
+        }
+        select(genre, in: app)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Action")).firstMatch.waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.menu)
+        let restored = XCTAttachment(screenshot: app.screenshot())
+        restored.name = "Unified Search restored browsing"; restored.lifetime = .keepAlways; add(restored)
     }
 
     @MainActor func testWelcomeAccountRoutes() throws {

@@ -187,6 +187,11 @@ final class SearchViewModel: ObservableObject {
             return
         }
 
+        // A newly committed query must not briefly present the previous query's hits.
+        sections = []
+        emptyMessage = nil
+        searchError = nil
+        isLoading = true
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled, let self else { return }

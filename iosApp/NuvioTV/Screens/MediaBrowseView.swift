@@ -6,6 +6,10 @@ import SharedCore
 struct MediaBrowseView: View {
     @ObservedObject var model: HomeViewModel
     @State var mediaType: String
+    /// Search is inserted into the same pinned control row; no second header or scroll view.
+    var searchControls: AnyView? = nil
+    var restoreSearchFocus: Int = 0
+    @FocusState private var searchFocused: Bool
     @StateObject private var discovery = SearchViewModel()
     @State private var genre = "All genres"
     @State private var catalog = "All catalogs"
@@ -51,12 +55,16 @@ struct MediaBrowseView: View {
 
     var body: some View {
         HomeView(model: model, browse: HomeBrowseConfiguration(
-            rows: browseRows, items: results, filtered: filtered,
+            rows: browseRows, items: results, filtered: filtered, isSearchDiscovery: searchControls != nil,
             selectionKey: [mediaType, catalog, genre, order].joined(separator: "|"),
             controls: AnyView(filters), emptyState: AnyView(emptyState),
             focusFilters: {
                 focusedFilter = nil
-                DispatchQueue.main.async { focusedFilter = lastFilter }
+                searchFocused = false
+                DispatchQueue.main.async {
+                    if lastFilter == "search" { searchFocused = true }
+                    else { focusedFilter = lastFilter }
+                }
             },
             onItemFocus: { item in
                 guard filtered, let item,
@@ -66,13 +74,20 @@ struct MediaBrowseView: View {
         .onAppear { discovery.start(); discovery.selectDiscoverType(mediaType) }
         .onDisappear { discovery.stop() }
         .onChange(of: focusedFilter) { _, value in if let value { lastFilter = value } }
+        .onChange(of: searchFocused) { _, value in if value { lastFilter = "search" } }
+        .onChange(of: restoreSearchFocus) { _, _ in
+            DispatchQueue.main.async { searchFocused = true }
+        }
         .onChange(of: discovery.discover?.selectedType) { _, selected in
             if let selected, selected != mediaType { discovery.selectDiscoverType(mediaType) }
         }
     }
 
     private var filters: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 20) {
+            if let searchControls {
+                searchControls.focused($searchFocused)
+            }
             TVSelectionMenu(title: "Browse", value: mediaType == "movie" ? "Movies" : "Shows", options: ["Movies", "Shows"]) { mediaType = $0 == "Movies" ? "movie" : "series"; genre = "All genres"; catalog = "All catalogs"; discovery.selectDiscoverType(mediaType) }
                 .focused($focusedFilter, equals: "type")
             TVSelectionMenu(title: "Genre", value: genre, options: (discovery.discover?.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + availableGenres) { genre = $0; catalog = selectedCatalogLabel; discovery.selectDiscoverGenre($0 == "All genres" ? nil : $0) }
@@ -104,6 +119,7 @@ struct HomeBrowseConfiguration {
     let rows: [HomeRow]
     let items: [MetaPreview]
     let filtered: Bool
+    var isSearchDiscovery: Bool = false
     let selectionKey: String
     let controls: AnyView
     let emptyState: AnyView

@@ -67,6 +67,14 @@ final class TabBarVisibility: ObservableObject {
     @Published private(set) var homeSurfaceCovered = false
     @Published private(set) var browseSurfaceCovered = true
     private var browseTabSelected = false
+    private var searchResultsActive = false
+
+    /// Search retains its discovery surface for scroll restoration, but its trailer must stop.
+    func setSearchResultsActive(_ active: Bool) {
+        guard searchResultsActive != active else { return }
+        searchResultsActive = active
+        recomputeHomeCovered()
+    }
 
     func setBrowseTabSelected(_ selected: Bool) {
         guard browseTabSelected != selected else { return }
@@ -98,7 +106,7 @@ final class TabBarVisibility: ObservableObject {
     private func recomputeHomeCovered() {
         let covered = !homeTabSelected || detailDepth > 0 || rootCoverActive
         if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
-        let browseCovered = !browseTabSelected || detailDepth > 0 || rootCoverActive
+        let browseCovered = !browseTabSelected || searchResultsActive || detailDepth > 0 || rootCoverActive
         if browseSurfaceCovered != browseCovered { browseSurfaceCovered = browseCovered }
     }
 
@@ -191,13 +199,10 @@ private struct TabBarImmersiveHideModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // Round 4 (see TabBarVisibility.immersiveHidden): scroll no longer toggles bar
-            // visibility at all — `.automatic` lets the tvOS 26 system bar do its native
-            // minimize/expand as content scrolls, and only the immersive detail push
-            // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
-            // on hardware (clipped at the top until focus re-entered the bar), so the fix
-            // is to not have a reshow.
-            .toolbarVisibility((immersive || Self.sidebarSpike || sidebarMode) ? .hidden : .automatic, for: .tabBar)
+            // Keep root navigation available. Automatic minimization can strand remote
+            // focus below a pinned header on tvOS 27. All tab roots resolve the same value;
+            // immersive details and explicit sidebar mode still hide the system bar.
+            .toolbarVisibility((immersive || Self.sidebarSpike || sidebarMode) ? .hidden : .visible, for: .tabBar)
             // T3: use the PAYLOAD from `onReceive`, not the property — `@Published` emits on
             // willSet, same house rule as HomeView.swift's hero-trailer sync (~L1762-1768:
             // "`@Published` emits on willSet, so use the payload, not the property"). A
@@ -282,7 +287,7 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// keep their existing `tab:` signature, and the names they already pass are the same ones
     /// `TabBarProbe.tabNames` fixes for the diagnostics readout. Settings and Profile never attach
     /// this modifier (they don't meaningfully scroll), so they are correctly absent.
-    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3, "Live TV": 6, "Browse": 7]
+    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3, "Live TV": 6, "Browse": 1]
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: TabBarScrollSample.self, of: { geo in

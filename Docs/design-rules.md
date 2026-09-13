@@ -69,3 +69,9 @@ The account pass was too subtle on Who’s Watching. The launch gate now has a q
 Keep the player’s loading title stationary: no repeating opacity pulse, bounce or layout movement when a logo replaces text. Use a fixed title slot, reuse cached artwork during engine handoff and preserve it across buffering events.
 
 Jordan likes Home’s expandable presentation. Proposed, not yet approved: combine Browse and Search into one Search destination using the shared Home presentation for discovery, with compact filters and an explicit search field. Preserve browsing position when a query is cleared. Keep Home’s personal rows and recommendations. Do not remove a tab until the navigation decision is approved.
+
+## Combined Search — approved September 13, 2026
+
+Browse and Search are one Search destination, immediately after Home in tabs and sidebar. Keep Home unchanged. Search’s empty-query surface reuses MediaBrowseView/HomeView with an explicit native text field and the existing Movies/Shows, Genre, Catalog and Sort menus in one pinned row. Selecting Search does not open the keyboard. A committed query shows a deduplicated results grid with full type, genre, catalog and sort filters; Clear Search restores the same discovery view and filters. Keep discovery mounted for scroll restoration, disable hidden focus and accessibility, and cover its trailer while results are shown. Keep the synced Hide Discover preference and recent-search management.
+
+Search refinement: keep the contextual backdrop/title, remove its separate hero CTA and carousel dots, stop automatic hero paging and limit the synopsis to two lines. Results retain the full type/genre/catalog/sort filter row and Reset; genres filter the metadata provided by the catalogs. History is a native glass button with a visible focus state. Keep native root navigation visible and reachable; hide it for immersive pushed content and explicit sidebar mode.

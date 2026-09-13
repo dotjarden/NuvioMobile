@@ -1235,129 +1235,44 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
-    // MARK: - BUG-33(2): Discover survives a search + clear cycle
-
-    /// SearchView.swift: query-empty shows Discover (recent-search chips + the shared
-    /// `discoverUiState` browse grid); a non-empty query swaps in `searchResults`. The reported
-    /// bug is Discover staying wiped after a search is cleared back to empty.
-    ///
-    /// tvOS drives text entry via its own full-screen system keyboard (the file's own comment:
-    /// "opens tvOS's self-contained full-screen keyboard"), which no test in this harness has
-    /// driven before, so its exact key-grid layout/labels are unverified here — this pass has no
-    /// sim run available to confirm `app.keys[...]` resolves the way it does for a plain iOS
-    /// on-screen keyboard. Every keyboard-grid step below is therefore guarded by `.exists`
-    /// checks: if the grid doesn't expose the expected keys, the test backs out via Menu and
-    /// still captures the "after" screenshot, instead of guessing a fixed arrow-press count that
-    /// could hang or mistype.
-    ///
-    /// MANUAL SIM STEP — keyboard grid driving unreliable: if the exported "19a2_after_query"
-    /// screenshot never shows a typed query, or "19b_discover_after" doesn't show the Discover
-    /// chips/grid back on screen, verify this manually instead: open Search, select the field,
-    /// type 1-2 letters on the tvOS keyboard, wait for results to render, clear the field (Menu
-    /// back to the field, then delete/backspace to empty it, or re-select and clear), and confirm
-    /// Discover's genre chips / catalog grid reappear rather than staying blank.
-    ///
-    /// FINDING 7 fix (P2, Codex review): every failure path previously fell through to only
-    /// `app.state == .runningForeground`, so the test could pass without ever confirming Discover
-    /// actually rendered — a regression that left Discover blank after clearing a search, or a sim
-    /// that couldn't drive the keyboard at all, would still go green. This now asserts a concrete
-    /// Discover signal — the `Text("Discover")` section header from `SearchView.discoverSection`
-    /// (SearchView.swift ~line 143) — which `SearchViewModel.start()` renders as soon as
-    /// `discoverUiState` emits once, independent of whether any catalogs/items are present (an
-    /// empty-addon profile still gets the header plus an empty-state message below it). Profile
-    /// "Chris" (launchToHome) has real addons installed (test16 walks live Settings against it),
-    /// so the header is expected to appear here, not just in principle.
-    ///
-    /// ALWAYS asserted (mandatory, regardless of how the keyboard step goes):
-    ///   1. the Discover header exists right after opening Search, before any keyboard interaction.
-    ///   2. the Discover header exists again after the Menu/Menu round-trip that backs out of the
-    ///      keyboard — this is the actual BUG-33(2) regression check.
-    ///   3. the app is still in the foreground at the end (kept as a final sanity net).
-    /// Best-effort / conditional (does not fail the test if the keyboard grid can't be driven):
-    ///   - typing "as" into the query field.
-    ///   - if typing demonstrably succeeded (both letter keys were focused and selected), that a
-    ///     results signal (a result cell, or the "No results." empty-results message) appeared —
-    ///     this is still a real `XCTAssertTrue`, it's just skipped entirely when typing itself
-    ///     could not be driven, so a keyboard-grid mismatch doesn't fail the test.
+    // The combined Search entry uses Home's shelves instead of a duplicate Discover heading.
+    // Full keyboard/search/clear coverage lives in LiveTVExperienceTests.
     func test19DiscoverSurvivesSearch() throws {
-        // Fresh launch (2026-08-02): the Discover asserts below need a Search tab with no
-        // leftover query/keyboard state from suite order, and test18's end state fed this test
-        // the springboard escape in-suite (see launchToHome's header).
-        let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Search")
-        pause(1.5)
-        shot(app, "19a_discover_before")
-
-        // Mandatory: Discover must actually be on screen before we touch the keyboard at all,
-        // otherwise everything that follows is exercising nothing.
-        let discoverHeader = app.staticTexts["Discover"]
-        XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover missing on entry")
-
-        let searchField = app.textFields.firstMatch
-        guard searchField.waitForExistence(timeout: 4) else {
-            // Field never resolved — nothing further to drive automatically. Still re-check
-            // Discover so this path can't silently pass without exercising anything.
-            shot(app, "19b_discover_after")
-            XCTAssertTrue(discoverHeader.exists, "Discover gone after search/keyboard round-trip — BUG-33(2) regression")
-            XCTAssertTrue(app.state == .runningForeground)
-            return
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let profiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'profiles.profile.'"))
+        XCTAssertTrue(profiles.firstMatch.waitForExistence(timeout: 25), "A signed-in or guest profile is required")
+        remote.press(.select) // The picker defaults to the current profile, not a hard-coded name.
+        XCTAssertTrue(app.buttons["Home"].waitForExistence(timeout: 20))
+        let homeTab = app.buttons["Home"]
+        let searchTab = app.buttons["Search"]
+        for _ in 0..<8 {
+            if homeTab.hasFocus || searchTab.hasFocus { break }
+            remote.press(.up)
+            pause(0.4)
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
+        XCTAssertTrue(moveFocus(.right, until: searchTab, max: 6), app.debugDescription)
         remote.press(.select)
-        pause(2) // full-screen keyboard presentation
-
-        // Best-effort "as": walk to "a", select, then to "s", select. Bail to the manual-step
-        // path (Menu back out) if the grid doesn't expose letter keys the way expected. Tracks
-        // whether both selects were actually driven, so the post-typing results assert below can
-        // stay guarded rather than failing the test on a keyboard-grid mismatch.
-        var typedSuccessfully = false
-        let keyA = app.keys["a"]
-        if keyA.waitForExistence(timeout: 3) {
-            _ = moveFocus(.right, until: keyA, max: 12)
-            var selectedA = false
-            if keyA.hasFocus {
-                remote.press(.select)
-                selectedA = true
-            }
-            pause(0.5)
-            let keyS = app.keys["s"]
-            var selectedS = false
-            if moveFocus(.right, until: keyS, max: 8) || moveFocus(.down, until: keyS, max: 6) {
-                remote.press(.select)
-                selectedS = true
-            }
-            pause(2.5) // debounce + results fetch
-            shot(app, "19a2_after_query_typed")
-            typedSuccessfully = selectedA && selectedS
+        pause(1)
+        remote.press(.down)
+        XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["Browse: Movies"].exists)
+        XCTAssertTrue(app.buttons["Genre: All genres"].exists)
+        XCTAssertFalse(app.buttons["Browse"].exists, "Browse must not remain as a second tab")
+        XCTAssertEqual(app.keyboards.count, 0, "Search entry must not force the keyboard open")
+        let contextHero = app.staticTexts["debug_hero"]
+        let contextReady = NSPredicate(format: "label CONTAINS 'mode=focus' AND NOT (label CONTAINS 'pitem=-')")
+        expectation(for: contextReady, evaluatedWith: contextHero)
+        waitForExpectations(timeout: 60)
+        shot(app, "19_combined_search_entry")
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Go to Movie:' OR label BEGINSWITH 'Go to Show:'")).firstMatch.exists)
+        for _ in 0..<8 {
+            if searchTab.hasFocus { break }
+            remote.press(.up)
+            pause(0.4)
         }
-
-        // Conditional: only when typing was actually driven do we require a results signal — a
-        // result cell for a hit, or the "No results." empty-results text for a legitimate miss.
-        // Either counts as proof the query round-tripped through SearchRepository.
-        if typedSuccessfully {
-            let resultCell = app.cells.firstMatch
-            let noResultsMessage = app.staticTexts["No results."]
-            XCTAssertTrue(
-                resultCell.waitForExistence(timeout: 3) || noResultsMessage.waitForExistence(timeout: 1),
-                "typed query \"as\" produced neither result cells nor an empty-results message"
-            )
-        }
-
-        // Clear back to Discover: Menu dismisses the keyboard/backs out of the query. If the
-        // query text survived (see the manual-step note above), a human should re-check by
-        // clearing it explicitly and re-screenshotting.
-        remote.press(.menu)
-        pause(1.5)
-        remote.press(.menu)
-        pause(1.5)
-
-        shot(app, "19b_discover_after")
-        // Mandatory: the actual BUG-33(2) regression check — Discover must reappear after the
-        // search + clear round-trip, whether or not the query itself could be typed.
-        XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover gone after search/keyboard round-trip — BUG-33(2) regression")
-        XCTAssertTrue(app.state == .runningForeground, "app must survive the search + clear cycle even if the query itself couldn't be driven")
+        XCTAssertTrue(searchTab.hasFocus, "Up from Search must reach navigation again")
     }
 
     // MARK: - UX-7: focus-follows-backdrop hero on Home
