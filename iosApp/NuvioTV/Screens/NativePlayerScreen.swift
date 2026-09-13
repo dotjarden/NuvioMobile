@@ -3,21 +3,7 @@ import Combine
 import SharedCore
 import SwiftUI
 
-// Phase 3 of the hybrid player (+ post-Phase-5 polish): the native AVPlayer playback screen, chosen
-// by `PlayerScreen` for Dolby-Vision-eligible files. Shows a preparing state while the on-device
-// remux spins up, then a full AVPlayerViewController (native tvOS transport, scrubbing, Now Playing).
-// Watch progress, resume, and Trakt live in `NativePlaybackCoordinator`; next-episode autoplay reuses
-// `NextEpisodeEngine`. A pre-playback failure calls `onFallback` so the dispatcher can hand the same
-// context to the mpv player. See docs/tvos-hybrid-player-plan.md.
-//
-// Unlike the mpv screen — which owns the remote and must draw its own pills — this screen integrates
-// with the system player UI:
-//  - Skip Intro/Outro/Recap ride `contextualActions` (the same system affordance TV+/Netflix use;
-//    segments come from the shared `SkipIntroRepository`, evaluated against playback ticks).
-//  - "Play Next Episode" / "Continue Watching" are contextual actions too; the countdown is a small
-//    app-drawn caption (`PlayerChipCaption`, shared with the mpv screen) above them.
-//  - Settings presents the shared bottom Audio / Subtitles / Playback / Details drawer.
-//    Native Audio and Subtitles popovers remain for system features such as Enhance Dialogue.
+// Native decoding and progress remain in the coordinator. PlayerChrome is shared with MPV and Live TV.
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
@@ -32,7 +18,7 @@ struct NativePlayerScreen: View {
     @State private var panelAdapter: NativePlayerPanelAdapter?
     @State private var skipSegments: [SkipSegment] = []
     @State private var skipPrompt: SkipPrompt?
-    @State private var panelOpen = false
+    @StateObject private var state: PlayerPlaybackState
     @Environment(\.dismiss) private var dismiss
 
     init(context: PlaybackContext,
@@ -40,6 +26,7 @@ struct NativePlayerScreen: View {
          onFallback: ((Double) -> Void)? = nil,
          routingNote: String? = nil) {
         self.context = context
+        _state = StateObject(wrappedValue: PlayerPlaybackState(title: context.title))
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
@@ -57,31 +44,19 @@ struct NativePlayerScreen: View {
             case .preparing:
                 VStack(spacing: 20) {
                     ProgressView().scaleEffect(1.6)
-                    Text(coordinator.preparingLabel)
+                    Text("Preparing playback…")
                         .font(Theme.Font.body)
                         .foregroundStyle(.white.opacity(0.7))
                 }
             case .playing:
                 if let player = coordinator.player {
-                    AVPlayerContainer(
-                        player: player,
-                        skipPrompt: skipPrompt,
-                        upNextAction: upNextAction,
-                        allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
-                            ? coordinator.languagePlan.subtitleFilterLanguages : nil,
-                        panelModel: panelModel,
-                        makePlaybackTab: { PlayerPanelExtraTab(maximumWidth: onPlayNext == nil ? 1000 : 1640) {
-                            NativePlaybackOptions(player: player, engine: upNext, canSwitchStreams: onPlayNext != nil,
-                                                  onClose: { panelModel.onClose?() })
-                        } },
-                        onSkip: { [weak coordinator] target in
-                            coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
-                        },
-                        onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
-                        onDismissUpNext: { [weak upNext] in upNext?.dismissIfVisible() ?? false },
-                        onPanelOpenChanged: { open in panelOpen = open }
-                    )
-                    .ignoresSafeArea()
+                    AVPlayerSurface(player: player, state: state).ignoresSafeArea()
+                    PlayerChrome(state: state, context: context, panelModel: panelModel,
+                                 extraTab: PlayerPanelExtraTab {
+                        NativePlaybackOptions(player: player, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                              onClose: { panelModel.onClose?() })
+                    }, onExit: { dismiss() })
+
                 }
             case .failed:
                 // Hand back to the dispatcher, which re-presents the mpv player for this context.
@@ -90,19 +65,22 @@ struct NativePlayerScreen: View {
                 }
             }
 
-            // Up-next status/countdown caption (visual only). The interactive part is the
-            // "Play Next Episode" contextual action the container installs — its title stays static
-            // (a per-second UIAction title change re-animates the transport bar), so the countdown
-            // lives here, in the shared chip caption both engines draw. Inset above the system's
-            // contextual-action pill; the extra bottom offset is device-tuned for tvOS 26.
-
-            if !panelOpen, let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
-                PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.trailing, PlayerChipStyle.edgePadding)
-                    .padding(.bottom, PlayerChipStyle.edgePadding + Self.contextualActionClearance)
-                    .transition(.opacity)
+            if !state.panelOpen {
+                VStack(alignment: .trailing, spacing: Theme.Spacing.sm) {
+                    if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
+                        PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
+                    }
+                    if let action = upNextAction {
+                        PlayerActionChip(label: action.title, symbol: PlayerChipStyle.nextSymbol, showsPressHint: true)
+                    } else if let prompt = skipPrompt {
+                        PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(PlayerChipStyle.edgePadding)
+                .allowsHitTesting(false)
             }
+
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .onAppear {
@@ -114,6 +92,15 @@ struct NativePlayerScreen: View {
                 updateSkipPrompt(position: position)
                 adapter?.onTick()
             }
+            state.upNextDismiss = { [weak upNext] in upNext?.dismissIfVisible() ?? false }
+            state.upNextCancel = { [weak upNext] in upNext?.cancel() }
+            state.performDownAction = {
+                if upNext.playNow() { return }
+                if let prompt = skipPrompt {
+                    coordinator.player?.seek(to: CMTime(seconds: prompt.targetSec, preferredTimescale: 600))
+                }
+                state.reveal()
+            }
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
             if onPlayNext != nil { upNext.startNative() }
@@ -124,10 +111,6 @@ struct NativePlayerScreen: View {
             upNext.stop()
         }
     }
-
-    /// Vertical room the system contextual-action pill occupies above the bottom inset on tvOS 26,
-    /// so the caption sits above it rather than on top of it. Device-tuned.
-    private static let contextualActionClearance: CGFloat = 96
 
     /// Which up-next contextual action to offer: "Play Next Episode" during the countdown,
     /// "Continue Watching" once the still-watching guard has paused autoplay, none otherwise.
@@ -186,91 +169,6 @@ enum UpNextAction: String {
         case .playNext: return String(localized: "Play Next Episode")
         case .continueWatching: return String(localized: "Continue Watching")
         }
-    }
-}
-
-private struct AVPlayerContainer: UIViewControllerRepresentable {
-    let player: AVPlayer
-    let skipPrompt: SkipPrompt?
-    let upNextAction: UpNextAction?
-    /// "Show only preferred languages" (Settings → Playback → Subtitles): restrict the panel's
-    /// Subtitles list to these BCP-47 tags. nil = show every rendition.
-    let allowedSubtitleLanguages: [String]?
-    let panelModel: PlayerTopPanelModel
-    let makePlaybackTab: () -> PlayerPanelExtraTab
-    let onSkip: (Double) -> Void
-    let onPlayNow: () -> Void
-    /// Menu while the up-next chip is showing → dismiss it (returns true) instead of exiting.
-    let onDismissUpNext: () -> Bool
-    let onPanelOpenChanged: (Bool) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIViewController(context: Context) -> NativePlayerHostController {
-        let host = NativePlayerHostController()
-        host.playerVC.player = player
-        // No `customInfoViewControllers`: on tvOS 26 that renders as an "Info" pill under the seek
-        // bar. Info lives in the app-drawn swipe-down panel presented by the host instead.
-        let model = panelModel
-        let openChanged = onPanelOpenChanged
-        let makePlaybackTab = makePlaybackTab
-        host.onOpenPanel = { [weak host] tab in
-            guard let host else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makePlaybackTab(), initialTab: tab))
-            model.onClose = { [weak panel] in panel?.close(animated: true) }
-            host.present(panel: panel)
-            openChanged(true)
-        }
-        host.onPanelClosed = { openChanged(false) }
-        // Set once, like `onOpenPanel`: the closure captures the screen's stable `@StateObject`.
-        host.onMenuPress = onDismissUpNext
-        return host
-    }
-
-    static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
-        host.closePanel(animated: false)
-    }
-
-    func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
-        let controller = host.playerVC
-        if controller.player !== player { controller.player = player }
-        // Only assign on change — it's a panel-content property, not part of the transport-bar
-        // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
-        if context.coordinator.allowedSubtitleLanguages != allowedSubtitleLanguages {
-            context.coordinator.allowedSubtitleLanguages = allowedSubtitleLanguages
-            controller.allowedSubtitleOptionLanguages = allowedSubtitleLanguages
-        }
-        // Reinstall contextual actions only when their meaning changes — reassigning identical
-        // actions every SwiftUI update makes the transport bar re-animate them. The skip target is
-        // part of the signature so back-to-back segments with the same label still refresh the
-        // captured seek position.
-        let signature = "\(skipPrompt.map { "\($0.label)@\($0.targetSec)" } ?? "-")|\(upNextAction?.rawValue ?? "-")"
-        guard signature != context.coordinator.actionsSignature else { return }
-        context.coordinator.actionsSignature = signature
-
-        var actions: [UIAction] = []
-        if let prompt = skipPrompt {
-            let target = prompt.targetSec
-            let skip = onSkip
-            actions.append(UIAction(title: prompt.label,
-                                    image: UIImage(systemName: PlayerChipStyle.skipSymbol)) { _ in skip(target) })
-        }
-        if let upNextAction {
-            let playNow = onPlayNow
-            actions.append(UIAction(title: upNextAction.title,
-                                    image: UIImage(systemName: PlayerChipStyle.nextSymbol)) { _ in playNow() })
-            // Discoverable twin of the Menu-press dismiss (transport-bar users never see a hint
-            // that Menu backs out of the chip). Same signature key as the play-next action.
-            let dismissUpNext = onDismissUpNext
-            actions.append(UIAction(title: String(localized: "Dismiss"),
-                                    image: UIImage(systemName: "xmark")) { _ in _ = dismissUpNext() })
-        }
-        controller.contextualActions = actions
-    }
-
-    final class Coordinator {
-        var actionsSignature = ""
-        var allowedSubtitleLanguages: [String]?
     }
 }
 

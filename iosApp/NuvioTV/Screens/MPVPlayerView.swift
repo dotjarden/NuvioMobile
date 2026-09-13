@@ -23,72 +23,6 @@ final class TVMetalLayer: CAMetalLayer {
     }
 }
 
-/// Observable playback state the SwiftUI controls overlay binds to. The player controller polls libmpv
-/// (~2x/sec) and pushes updates here on the main thread.
-@MainActor
-final class MPVPlaybackState: ObservableObject {
-    @Published var positionSec: Double = 0
-    @Published var durationSec: Double = 0
-    @Published var isPaused: Bool = false
-    @Published var isBuffering: Bool = true
-    @Published var controlsVisible: Bool = false
-
-    @Published var audioTracks: [PlayerTrack] = []
-    @Published var subtitleTracks: [PlayerTrack] = []
-    /// The shared bottom Settings drawer is presented.
-    @Published var panelOpen: Bool = false
-    var detailsVisible = false
-    var requestDetails: (() -> Void)?
-    var openPanel: ((PlayerPanelTab) -> Void)?
-    var togglePlayback: (() -> Void)?
-    var seekRelative: ((Double) -> Void)?
-    var revealControls: (() -> Void)?
-    var hideControls: (() -> Void)?
-    var performDownAction: (() -> Void)?
-    /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
-    @Published var subtitleSearchInFlight: Bool = false
-
-    /// Active skip prompt ("Skip Intro"/"Skip Outro") when playback is inside a known segment.
-    @Published var skipPrompt: SkipPrompt?
-
-    /// Playback-settings panel state (speed, subtitle/audio delay, diagnostics).
-    @Published var playbackSpeed: Double = 1.0
-    @Published var subtitleDelaySec: Double = 0
-    @Published var audioDelaySec: Double = 0
-    @Published var streamInfo: StreamInfoSnapshot?
-    /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
-    /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
-    @Published var routingNote: String = ""
-
-    /// True once playback hit end-of-file (keep-open holds the last frame; drives the post-play cover).
-    @Published var isEnded: Bool = false
-
-    /// Wired by the controller so the SwiftUI track picker can drive libmpv.
-    var selectAudio: ((Int) -> Void)?
-    var selectSubtitle: ((Int) -> Void)?
-    var setSpeed: ((Double) -> Void)?
-    var setSubtitleDelay: ((Double) -> Void)?
-    var setAudioDelay: ((Double) -> Void)?
-    var replay: (() -> Void)?
-    var reclaimFocus: (() -> Void)?
-
-    /// Wired by `NextEpisodeEngine`: down-press plays the ready next episode (returns true when
-    /// consumed, so the skip pill doesn't also fire); backward seek cancels the countdown.
-    var upNextPlayNow: (() -> Bool)?
-    var upNextCancel: (() -> Void)?
-    /// Menu while the up-next chip is visible dismisses the chip instead of exiting the player;
-    /// returns true when it consumed the press. The next Menu exits as before (upstream 4026ec92).
-    var upNextDismiss: (() -> Bool)?
-
-    let title: String
-    init(title: String) { self.title = title }
-
-    var fraction: Double {
-        durationSec > 0 ? min(max(positionSec / durationSec, 0), 1) : 0
-    }
-    var hasTracks: Bool { !audioTracks.isEmpty || !subtitleTracks.isEmpty }
-}
-
 /// libmpv-backed player for tvOS. Siri-remote transport: select/play-pause toggles, left/right seek
 /// ±10s, down (or a down swipe) opens the top panel, Menu exits. Publishes position/duration/paused/buffering and
 /// track lists to `state`, and records watch progress (resume position) via `WatchProgressRepository`.
@@ -99,10 +33,9 @@ final class MPVTVPlayerViewController: UIViewController {
     private var lastDrawableSize: CGSize = .zero
     private let eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
     private let context: PlaybackContext
-    private let state: MPVPlaybackState
+    private let state: PlayerPlaybackState
     private var didLoad = false
     private var pollTimer: Timer?
-    private var hideWork: DispatchWorkItem?
     private var lastSaveUptime: TimeInterval = 0
     private var lastDetailsUptime: TimeInterval = 0
     private var detailsRequestInFlight = false
@@ -183,12 +116,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
     /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
-    /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
+    /// swallowed too, so nothing above sees a half press.
     private var swallowMenuRelease = false
-    /// Open a drawer tab from Settings, or via the existing Down shortcut.
-    var onOpenPanel: ((PlayerPanelTab) -> Void)?
 
-    init(context: PlaybackContext, state: MPVPlaybackState) {
+    init(context: PlaybackContext, state: PlayerPlaybackState) {
         self.context = context
         self.state = state
         super.init(nibName: nil, bundle: nil)
@@ -211,12 +142,6 @@ final class MPVTVPlayerViewController: UIViewController {
         layoutMetalLayer()
 
         state.requestDetails = { [weak self] in self?.refreshStreamInfoAsync() }
-        state.revealControls = { [weak self] in self?.flashControls() }
-        state.hideControls = { [weak self] in
-            self?.hideWork?.cancel()
-            self?.state.controlsVisible = false
-        }
-        state.performDownAction = { [weak self] in self?.performDownAction() }
         state.togglePlayback = { [weak self] in self?.togglePause(); self?.flashControls() }
         state.seekRelative = { [weak self] delta in
             guard let self, delta.isFinite, self.state.durationSec > 0 else { return }
@@ -1369,16 +1294,7 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    private func flashControls() {
-        state.controlsVisible = true
-        hideWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            if !self.state.isPaused { self.state.controlsVisible = false }
-        }
-        hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
-    }
+    private func flashControls() { state.reveal() }
 
     // MARK: - Teardown
 
@@ -1548,29 +1464,12 @@ final class MPVTVPlayerViewController: UIViewController {
 
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
-    let state: MPVPlaybackState
-    let panelModel: PlayerTopPanelModel
-    /// Builds supported Playback controls at open time (its views observe live state).
-    let makeExtraTab: () -> PlayerPanelExtraTab
+    let state: PlayerPlaybackState
     let onExit: () -> Void
 
     func makeUIViewController(context ctx: Context) -> MPVTVPlayerViewController {
         let controller = MPVTVPlayerViewController(context: context, state: state)
         controller.onExit = onExit
-        let state = state, model = panelModel, makeExtraTab = makeExtraTab
-        controller.onOpenPanel = { [weak controller] tab in
-            guard let controller, controller.presentedViewController == nil else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab(), initialTab: tab))
-            panel.modalPresentationStyle = .overFullScreen
-            panel.modalTransitionStyle = .crossDissolve
-            model.onClose = { [weak panel] in panel?.close(animated: true) }
-            panel.onClosed = { [weak state] in
-                state?.panelOpen = false
-            }
-            state.panelOpen = true
-            controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
-        }
-        state.openPanel = { [weak controller] tab in controller?.onOpenPanel?(tab) }
         return controller
     }
 
@@ -1591,14 +1490,11 @@ struct MPVPlayerScreen: View {
     var routingNote: String? = nil
     var liveActions: AnyView? = nil
 
-    @StateObject private var state: MPVPlaybackState
+    @StateObject private var state: PlayerPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
     @Environment(\.dismiss) private var dismiss
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
-    @FocusState private var videoFocused: Bool
-    @FocusState private var transportFocus: MPVTransportFocus?
-    @State private var revealFocus: MPVTransportFocus = .timeline
 
     /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
     private var upNextChipAction: String? {
@@ -1614,7 +1510,7 @@ struct MPVPlayerScreen: View {
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
         self.liveActions = liveActions
-        _state = StateObject(wrappedValue: MPVPlaybackState(title: context.title))
+        _state = StateObject(wrappedValue: PlayerPlaybackState(title: context.title))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
             context: context,
             onPlayNext: onPlayNext ?? { _ in }
@@ -1626,71 +1522,24 @@ struct MPVPlayerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             MPVPlayerRepresentable(
-                context: context, state: state, panelModel: panelModel,
-                makeExtraTab: { [state, upNext, onPlayNext, panelModel, liveActions] in
-                    PlayerPanelExtraTab(maximumWidth: liveActions != nil ? 1100 : (onPlayNext == nil ? 1000 : 1640)) {
-                        if let liveActions { liveActions }
-                        else {
-                            MPVPlaybackOptions(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
-                                               onClose: { panelModel.onClose?() })
-                        }
-                    }
-                },
+                context: context, state: state,
                 onExit: { dismiss() }
             )
             .ignoresSafeArea()
 
-            // SwiftUI owns focus while its controls are hidden. Merely making the sibling
-            // UIKit renderer first responder does not give it tvOS directional focus.
-            Color.clear
-                .contentShape(Rectangle())
-                .focusable(!state.controlsVisible && !state.panelOpen)
-                .focused($videoFocused)
-                .accessibilityLabel("Video")
-                .accessibilityIdentifier("player.videoSurface")
-                .onTapGesture { state.togglePlayback?() }
-                .onMoveCommand { direction in
-                    switch direction {
-                    case .left: state.seekRelative?(-10)
-                    case .right: state.seekRelative?(10)
-                    case .up:
-                        revealFocus = .settings
-                        state.revealControls?()
-                        transportFocus = .settings
-                    case .down:
-                        state.performDownAction?()
-                        transportFocus = .timeline
-                    default: break
-                    }
+            PlayerChrome(state: state, context: context, panelModel: panelModel,
+                         extraTab: PlayerPanelExtraTab {
+                if let liveActions { liveActions }
+                else {
+                    MPVPlaybackOptions(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                       onClose: { panelModel.onClose?() })
                 }
-                .allowsHitTesting(!state.controlsVisible && !state.panelOpen)
-
-            if state.isBuffering {
-                ProgressView()
-                    .scaleEffect(1.6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            LinearGradient(colors: [.clear, .black.opacity(0.65), .black.opacity(0.82)],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: 320)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .ignoresSafeArea()
-                .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
-                .allowsHitTesting(false)
-                .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
-
-            PlayerControlsOverlay(state: state, subtitle: context.transportSubtitle, focus: $transportFocus)
-                .opacity(state.controlsVisible && !state.panelOpen ? 1 : 0)
-                .allowsHitTesting(state.controlsVisible && !state.panelOpen)
-                .disabled(!state.controlsVisible || state.panelOpen)
-                .accessibilityHidden(!state.controlsVisible || state.panelOpen)
-                .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
+            }, onExit: { dismiss() })
 
             // Transient prompts, bottom-trailing — same chip family as the native screen's
             // contextual actions (PlayerChipStyle). libmpv owns the remote, so these are drawn
             // non-focusable and fire on D-pad Down (see `pressesBegan`); up-next wins over a skip.
-            if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
+            if !state.panelOpen, let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
                 VStack(alignment: .trailing, spacing: Theme.Spacing.sm) {
                     PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
                     if let action = upNextChipAction {
@@ -1700,34 +1549,13 @@ struct MPVPlayerScreen: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 .padding(PlayerChipStyle.edgePadding)
                 .transition(.opacity)
-            } else if let prompt = state.skipPrompt {
+            } else if !state.panelOpen, let prompt = state.skipPrompt {
                 PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(PlayerChipStyle.edgePadding)
                     .transition(.opacity)
             }
         }
-        .onChange(of: state.controlsVisible) { _, visible in
-            videoFocused = !visible && !state.panelOpen
-            if visible {
-                let target = revealFocus
-                revealFocus = .timeline
-                // Re-enable the controls before moving focus from the hidden-video surface.
-                DispatchQueue.main.async {
-                    if state.controlsVisible && !state.panelOpen { transportFocus = target }
-                }
-            }
-            if !visible { transportFocus = nil }
-        }
-        .onChange(of: state.panelOpen) { _, open in
-            videoFocused = !open && !state.controlsVisible
-            transportFocus = !open && state.controlsVisible ? .timeline : nil
-        }
-        .onExitCommand {
-            if state.controlsVisible { state.hideControls?() }
-            else if state.upNextDismiss?() != true { dismiss() }
-        }
-        .onPlayPauseCommand { state.togglePlayback?() }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .fullScreenCover(
@@ -1754,141 +1582,16 @@ struct MPVPlayerScreen: View {
             if onPlayNext != nil {
                 upNext.start(state: state)
             }
-            // libmpv renders into a bare Metal layer, so tvOS doesn't know video is playing and
-            // its idle timer fires the screensaver mid-movie (device report). Hold the idle timer
-            // while playback is active — mirroring AVPlayerViewController, which does this
-            // automatically — and release it on pause (screen protection) and on dismiss.
-            UIApplication.shared.isIdleTimerDisabled = !state.isPaused
+
         }
         .onChange(of: routingNote) { _, note in state.routingNote = note ?? "" }
         .onDisappear {
             upNext.stop()
-            UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: state.positionSec) { _, position in
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
         }
-        .onChange(of: state.isPaused) { _, paused in
-            // Paused → let the idle timer run again (a long-paused frame should be allowed to
-            // hand off to the screensaver, same as the native player); playing → hold it.
-            UIApplication.shared.isIdleTimerDisabled = !paused
-            // A pause can originate in the engine or system controls, not only our button
-            // callback. Keep the title and transport visible for every pause transition.
-            state.revealControls?()
-        }
-    }
-}
 
-private enum MPVTransportFocus: Hashable { case timeline, settings, subtitles, audio }
-
-/// Native-style action row above the scrubber; elapsed and remaining time sit below it.
-private struct PlayerControlsOverlay: View {
-    @ObservedObject var state: MPVPlaybackState
-    let subtitle: String?
-    var focus: FocusState<MPVTransportFocus?>.Binding
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 36) {
-            HStack(alignment: .bottom, spacing: 24) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let subtitle { Text(subtitle).font(.system(size: 26)).foregroundStyle(.secondary).lineLimit(1) }
-                    Text(state.title).font(.system(size: 52, weight: .semibold)).lineLimit(1)
-                        .accessibilityIdentifier("player.transport.title")
-                }
-                Spacer(minLength: 24)
-                Menu {
-                    ForEach([PlayerPanelTab.audio, .subtitles, .playback, .info]) { tab in
-                        Button(tab.title) { state.openPanel?(tab) }
-                    }
-                } label: { transportIcon("slider.horizontal.3") }
-                .accessibilityLabel("Settings")
-                .accessibilityIdentifier("player.settings")
-                .focused(focus, equals: .settings)
-                .onMoveCommand { move(from: .settings, direction: $0) }
-                Button { state.openPanel?(.subtitles) } label: { transportIcon("captions.bubble") }
-                    .accessibilityLabel("Subtitles")
-                    .accessibilityIdentifier("player.subtitles")
-                    .focused(focus, equals: .subtitles)
-                    .onMoveCommand { move(from: .subtitles, direction: $0) }
-                Button { state.openPanel?(.audio) } label: { transportIcon("waveform") }
-                    .accessibilityLabel("Audio")
-                    .accessibilityIdentifier("player.audio")
-                    .focused(focus, equals: .audio)
-                    .onMoveCommand { move(from: .audio, direction: $0) }
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.small)
-
-            VStack(spacing: 8) {
-                ProgressBar(fraction: state.fraction)
-                    .frame(height: focus.wrappedValue == .timeline ? 12 : 8)
-                HStack {
-                    Text(timeString(state.positionSec))
-                    Image(systemName: state.isPaused ? "pause.circle" : "play.circle")
-                    Spacer()
-                    Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
-                }
-                .font(Theme.Font.caption).monospacedDigit()
-            }
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-            .focusable()
-            .focused(focus, equals: .timeline)
-            .accessibilityElement(children: .ignore)
-            .accessibilityIdentifier("player.timeline")
-            .accessibilityLabel(state.isPaused ? "Paused, playback position" : "Playing, playback position")
-            .accessibilityValue(timeString(state.positionSec))
-            .accessibilityHint("Press Left or Right to seek ten seconds. Press Up for controls. Press Select to play or pause.")
-            .onTapGesture { state.togglePlayback?() }
-            .onMoveCommand { direction in
-                if direction == .left { state.seekRelative?(-10) }
-                if direction == .right { state.seekRelative?(10) }
-                if direction == .up { state.revealControls?(); focus.wrappedValue = .settings }
-                if direction == .down { state.performDownAction?() }
-            }
-        }
-        .padding(.horizontal, 80)
-        .padding(.bottom, 118)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .ignoresSafeArea()
-    }
-
-    private func transportIcon(_ name: String) -> some View {
-        Image(systemName: name).font(.system(size: 26)).frame(width: 46, height: 46)
-    }
-
-    private func move(from current: MPVTransportFocus, direction: MoveCommandDirection) {
-        state.revealControls?()
-        let actions: [MPVTransportFocus] = [.settings, .subtitles, .audio]
-        guard let index = actions.firstIndex(of: current) else { return }
-        switch direction {
-        case .left: focus.wrappedValue = actions[max(0, index - 1)]
-        case .right: focus.wrappedValue = actions[min(actions.count - 1, index + 1)]
-        case .down: focus.wrappedValue = .timeline
-        default: break
-        }
-    }
-
-    private func timeString(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
-    }
-}
-
-private struct ProgressBar: View {
-    let fraction: Double
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.25))
-                Capsule().fill(.white)
-                    .frame(width: max(0, geo.size.width * fraction))
-            }
-        }
     }
 }
 

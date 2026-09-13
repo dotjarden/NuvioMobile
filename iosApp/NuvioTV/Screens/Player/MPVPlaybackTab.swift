@@ -93,7 +93,7 @@ struct PlayerPlaybackTab: View {
         let watched = watchedEpisodeKeys
         return VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             PlayerPanelSectionCaption(text: String(localized: "Episodes"))
-            PlayerPanelScroll {
+            PlayerPanelScroll(maximumHeight: 260) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
                         let isCurrent = isCurrentEpisode(episode)
@@ -174,7 +174,7 @@ struct PlayerPlaybackTab: View {
                 PlayerPanelSectionCaption(text: String(localized: "Sources"))
                 if engine.sourcesLoading { ProgressView().scaleEffect(0.6) }
             }
-            PlayerPanelScroll {
+            PlayerPanelScroll(maximumHeight: 260) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     if engine.sources.isEmpty && !engine.sourcesLoading {
                         Text("No alternate sources found yet.")
@@ -219,7 +219,7 @@ struct PlayerPlaybackTab: View {
 }
 
 struct MPVPlaybackOptions: View {
-    @ObservedObject var state: MPVPlaybackState
+    @ObservedObject var state: PlayerPlaybackState
     @ObservedObject var engine: NextEpisodeEngine
     let canSwitchStreams: Bool
     let onClose: () -> Void

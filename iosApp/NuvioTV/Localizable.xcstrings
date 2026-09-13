@@ -107,6 +107,7 @@
       }
     },
     "%@ remaining": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -5429,7 +5430,6 @@
         }
       }
     },
-    "Compatibility player": {},
     "Confirm the PIN before choosing a new one.": {
       "localizations": {
         "de": {
@@ -8570,6 +8570,7 @@
       }
     },
     "Enhance Dialogue and sound options are in the player's Audio button.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -9181,7 +9182,9 @@
         }
       }
     },
+    "Favorite": {},
     "Favorite channel": {},
+    "Favorited": {},
     "File Size Badges": {
       "localizations": {
         "de": {
@@ -9969,6 +9972,7 @@
         }
       }
     },
+    "Guide": {},
     "Half": {
       "localizations": {
         "de": {
@@ -13222,6 +13226,7 @@
         }
       }
     },
+    "Next": {},
     "Next channel": {},
     "No Upcoming row on Home": {},
     "No Zoom on Focus": {
@@ -16819,8 +16824,8 @@
         }
       }
     },
-    "Pause": {},
     "Paused": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -16854,7 +16859,9 @@
         }
       }
     },
+    "Paused, playback position": {},
     "Play": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17094,6 +17101,7 @@
       }
     },
     "Playback Speed": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17128,6 +17136,7 @@
       }
     },
     "Playback controls are available below the video.": {},
+    "Playback speed": {},
     "Playing": {
       "localizations": {
         "de": {
@@ -17162,6 +17171,7 @@
         }
       }
     },
+    "Playing, playback position": {},
     "Playlist URL": {},
     "Plugins": {
       "localizations": {
@@ -17711,6 +17721,7 @@
         }
       }
     },
+    "Preparing playback…": {},
     "Preparing sign-in…": {
       "localizations": {
         "de": {
@@ -17779,6 +17790,7 @@
         }
       }
     },
+    "Press Left or Right to seek ten seconds. Press Up for controls. Press Select to play or pause.": {},
     "Press to disconnect": {
       "localizations": {
         "de": {
@@ -17813,6 +17825,7 @@
         }
       }
     },
+    "Previous": {},
     "Previous channel": {},
     "Production": {
       "localizations": {
@@ -20276,6 +20289,7 @@
       }
     },
     "Season %lld · Episode %lld": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -22735,6 +22749,7 @@
     },
     "Stream Diagnostics": {},
     "Stream Info": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {

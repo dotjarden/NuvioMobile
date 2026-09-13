@@ -3,8 +3,7 @@ import SwiftUI
 
 /// Audio tab, laid out like the classic tvOS panel: a LANGUAGE column (one checkmark row per audio
 /// track) and a SPEAKERS & HEADPHONES column (current output route + the system route picker).
-/// Enhance Dialogue / Reduce Loud Sounds have no public API — they stay in the native transport-bar
-/// Audio popover, and the column says so.
+/// System-only sound processing is not advertised as an app control.
 struct PlayerAudioTab: View {
     @ObservedObject var model: PlayerTopPanelModel
 
@@ -47,13 +46,7 @@ struct PlayerAudioTab: View {
                         .padding(.top, Theme.Spacing.xs)
                         .accessibilityIdentifier("player.panel.audio.route")
                 }
-                if model.hasNativeSoundOptions {
-                    Text("Enhance Dialogue and sound options are in the player's Audio button.")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, Theme.Spacing.sm)
-                }
+
             }
             .frame(width: 420, alignment: .leading)
             .focusSection()

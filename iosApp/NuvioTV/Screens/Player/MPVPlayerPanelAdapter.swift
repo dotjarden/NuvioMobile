@@ -2,19 +2,19 @@ import AVFoundation
 import Combine
 import SwiftUI
 
-/// Feeds the shared top panel from the mpv player: `MPVPlaybackState.audioTracks/subtitleTracks`
+/// Feeds the shared top panel from the mpv player: `PlayerPlaybackState.audioTracks/subtitleTracks`
 /// (mpv track ids; -1 = subtitles Off) → checkmark rows, the libmpv diagnostics snapshot → Info
 /// rows/chips, AVAudioSession → output route name. Picks go back through the state's
 /// `selectAudio/selectSubtitle` closures, exactly like the old swipe-up picker did.
 @MainActor
 final class MPVPlayerPanelAdapter {
-    private let state: MPVPlaybackState
+    private let state: PlayerPlaybackState
     private let model: PlayerTopPanelModel
     private let context: PlaybackContext
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
 
-    init(state: MPVPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
+    init(state: PlayerPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
         self.state = state
         self.model = model
         self.context = context

@@ -19,9 +19,7 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
 /// Engine-supported content for the shared Playback tab.
 struct PlayerPanelExtraTab {
     let content: AnyView
-    let maximumWidth: CGFloat
-    init<V: View>(maximumWidth: CGFloat = 1640, @ViewBuilder content: () -> V) {
-        self.maximumWidth = maximumWidth
+    init<V: View>(@ViewBuilder content: () -> V) {
         self.content = AnyView(content())
     }
 }
@@ -44,16 +42,23 @@ struct PlayerTopPanel: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // Full-screen clear layer so the hosting view fills the window (focus + gestures).
-            Color.clear.ignoresSafeArea()
+            LinearGradient(stops: [.init(color: .clear, location: 0),
+                                   .init(color: .black.opacity(0.88), location: 0.36),
+                                   .init(color: .black.opacity(0.97), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 760)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             if shown {
                 panel
+                    .onAppear { DispatchQueue.main.async { focusedTab = tab } }
                     .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .ignoresSafeArea()
         .onAppear {
             withAnimation(reduceMotion ? nil : PlayerChipStyle.animation) { shown = true }
-            focusedTab = tab
         }
         .onAppear { model.onPresentation?(); model.setDetailsVisible(tab == .info) }
         .onChange(of: tab) { _, value in model.setDetailsVisible(value == .info) }
@@ -66,38 +71,30 @@ struct PlayerTopPanel: View {
             tabRow
                 .focusSection()
             content
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .focusSection()
         }
         .padding(24)
-        .frame(maxWidth: panelWidth, alignment: .topLeading)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 24))
-        .glassEffect(.regular.tint(.black.opacity(0.3)), in: RoundedRectangle(cornerRadius: 24))
+        .frame(width: 1640, height: 460, alignment: .topLeading)
         .padding(.horizontal, 24)
-        .padding(.bottom, 12)
-    }
-
-    private var panelWidth: CGFloat {
-        switch tab {
-        case .audio: return 1320
-        case .subtitles: return 1320
-        case .info: return 1480
-        case .playback: return extraTab?.maximumWidth ?? 1000
-        }
+        .padding(.bottom, 60)
     }
 
     private var tabRow: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            ForEach(tabs) { item in
-                Button(item.title) { tab = item }
-                    .font(Theme.Font.body)
-                    .controlSize(.small)
-                    .focused($focusedTab, equals: item)
-                    .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
-                    .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
+        GlassEffectContainer(spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(tabs) { item in
+                    Button(item.title) { tab = item }
+                        .buttonStyle(.glass)
+                        .font(Theme.Font.body)
+                        .controlSize(.small)
+                        .focused($focusedTab, equals: item)
+                        .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
+                        .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var tabs: [PlayerPanelTab] {
@@ -170,11 +167,12 @@ struct PlayerPanelSectionCaption: View {
 /// Short settings lists size to their content; long lists keep remote scrolling within the panel.
 struct PlayerPanelScroll<Content: View>: View {
     var maximumHeight: CGFloat = 320
+    var showsIndicators = false
     @ViewBuilder var content: () -> Content
     @State private var contentHeight: CGFloat = 120
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
             content()
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(8)

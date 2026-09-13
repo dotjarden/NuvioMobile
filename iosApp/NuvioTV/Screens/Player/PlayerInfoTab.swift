@@ -56,7 +56,7 @@ struct PlayerInfoTab: View {
     private static let artHeight: CGFloat = 100
 
     var body: some View {
-        PlayerPanelScroll {
+        PlayerPanelScroll(showsIndicators: true) {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             headerView
             if !info.chips.isEmpty { chipRow }
@@ -133,8 +133,8 @@ struct PlayerInfoTab: View {
         return Grid(alignment: .topLeading, horizontalSpacing: Theme.Spacing.xl, verticalSpacing: Theme.Spacing.xs) {
             ForEach(0..<max(half, 1), id: \.self) { i in
                 GridRow {
-                    if i < rows.count { rowView(rows[i]).focusable() } else { Color.clear.frame(height: 1) }
-                    if i + half < rows.count { rowView(rows[i + half]).focusable() } else { Color.clear.frame(height: 1) }
+                    if i < rows.count { PlayerDetailRow(row: rows[i]) } else { Color.clear.frame(height: 1) }
+                    if i + half < rows.count { PlayerDetailRow(row: rows[i + half]) } else { Color.clear.frame(height: 1) }
                 }
             }
             if rows.isEmpty {
@@ -148,20 +148,31 @@ struct PlayerInfoTab: View {
         }
     }
 
-    private func rowView(_ row: NativeInfoRow) -> some View {
+}
+
+private struct PlayerDetailRow: View {
+    let row: NativeInfoRow
+    @FocusState private var focused: Bool
+    var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
             Text(row.label)
                 .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
+                .foregroundStyle(.secondary)
                 .frame(width: 260, alignment: .leading)
             Text(row.value)
                 .font(Theme.Font.body.monospacedDigit())
-                .foregroundStyle(Theme.Palette.textPrimary)
-                .lineLimit(2)
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(focused ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 10))
+        .focusable()
+        .focused($focused)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("player.details.row.\(row.id)")
     }
 }
 

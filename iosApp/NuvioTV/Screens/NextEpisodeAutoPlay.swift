@@ -86,7 +86,7 @@ final class NextEpisodeEngine: ObservableObject {
     // MARK: - Lifecycle
 
     /// Wires the mpv player state's up-next hooks and resolves the next aired episode (if any).
-    func start(state: MPVPlaybackState) {
+    func start(state: PlayerPlaybackState) {
         prime()
         state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
         state.upNextCancel = { [weak self] in self?.cancel() }
@@ -277,7 +277,7 @@ final class NextEpisodeEngine: ObservableObject {
         }
     }
 
-    // MARK: - User actions (wired into the Siri-remote handler via MPVPlaybackState)
+    // MARK: - User actions (wired into the Siri-remote handler via PlayerPlaybackState)
 
     /// Down-press while the card is up: play immediately when a stream is ready. Also confirms
     /// the "Still watching?" prompt. Returns true when consumed (so the skip pill doesn't fire).

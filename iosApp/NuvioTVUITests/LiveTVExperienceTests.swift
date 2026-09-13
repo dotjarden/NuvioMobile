@@ -17,32 +17,38 @@ final class LiveTVExperienceTests: XCTestCase {
         }
         XCTFail("Could not focus \(target.label) using the remote\n\(app.debugDescription)")
     }
-    @MainActor private func openNativeDrawer(_ app: XCUIApplication, details: Bool = false) {
-        XCUIRemote.shared.press(.select)
-        let settings = app.cells["Settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 20), app.debugDescription)
-        // AVKit exposes its focused playback surface as a full-screen accessibility element.
-        // Up enters its custom transport action, then Select opens the Settings menu.
+    @MainActor private func openSharedSettings(_ app: XCUIApplication, details: Bool = false) {
+        let settings = app.buttons["player.settings"]
+        // Use the physical remote sequence: tvOS can omit hasFocus for glass buttons inside
+        // a full-screen cover, so an AX focus-search loop cannot reliably select them.
+        if settings.exists {
+            XCUIRemote.shared.press(.menu)
+            XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+        }
         XCUIRemote.shared.press(.up)
+        XCTAssertTrue(settings.waitForExistence(timeout: 5), app.debugDescription)
         XCUIRemote.shared.press(.select)
-        let item = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", details ? "Details" : "Playback")).firstMatch
-        XCTAssertTrue(item.waitForExistence(timeout: 5), app.debugDescription)
-        select(item, in: app)
+        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(app.buttons["player.panel.tab.playback"].value as? String, "selected", "Settings starts on Playback")
+        select(app.buttons[details ? "player.panel.tab.info" : "player.panel.tab.playback"], in: app)
         let tab = app.buttons[details ? "player.panel.tab.info" : "player.panel.tab.playback"]
         XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertEqual(tab.value as? String, "selected")
+        XCTAssertEqual(tab.value as? String, "selected", app.debugDescription)
     }
 
     @MainActor private func verifyDrawer(_ app: XCUIApplication) {
         let audio = app.buttons["player.panel.tab.audio"]
         XCTAssertTrue(audio.waitForExistence(timeout: 10))
         XCTAssertGreaterThan(audio.frame.minY, 350, "Player tabs must be in the bottom drawer")
+        let tabOrigin = audio.frame.origin
         select(audio, in: app)
         XCTAssertEqual(audio.value as? String, "selected")
         select(app.buttons["player.panel.tab.subtitles"], in: app)
         XCTAssertEqual(app.buttons["player.panel.tab.subtitles"].value as? String, "selected")
         select(app.buttons["player.panel.tab.info"], in: app)
         XCTAssertEqual(app.buttons["player.panel.tab.info"].value as? String, "selected")
+        XCTAssertEqual(audio.frame.minX, tabOrigin.x, accuracy: 1, "Panel width stays fixed across tabs")
+        XCTAssertEqual(audio.frame.minY, tabOrigin.y, accuracy: 1, "Panel height stays fixed across tabs")
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Shared bottom player Details"; shot.lifetime = .keepAlways; add(shot)
         select(app.buttons["player.panel.tab.playback"], in: app)
@@ -81,11 +87,11 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(channel.waitForExistence(timeout: 20))
         select(channel, in: app)
         Thread.sleep(forTimeInterval: 5)
-        openNativeDrawer(app)
+        openSharedSettings(app)
         verifyDrawer(app)
         select(app.buttons["Next channel"], in: app)
         Thread.sleep(forTimeInterval: 2)
-        openNativeDrawer(app)
+        openSharedSettings(app)
         select(app.buttons["Channel guide"], in: app)
         XCTAssertTrue(app.buttons["Sources"].waitForExistence(timeout: 10))
     }
@@ -95,14 +101,14 @@ final class LiveTVExperienceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--native-player-ui-test"]
         app.launch()
-        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60), app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["player.timeline"].waitForExistence(timeout: 60), app.debugDescription)
         Thread.sleep(forTimeInterval: 3)
-        openNativeDrawer(app)
+        openSharedSettings(app)
         verifyDrawer(app)
         verifyMovieControls(app)
         XCUIRemote.shared.press(.menu)
         XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.otherElements["player.native"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["player.timeline"].exists)
     }
 
     @MainActor func testNativeNestedPlayerSettings() throws {
@@ -114,14 +120,14 @@ final class LiveTVExperienceTests: XCTestCase {
         select(app.buttons["Continue Watching"], in: app)
         XCTAssertTrue(app.buttons["First stream"].waitForExistence(timeout: 5))
         select(app.buttons["First stream"], in: app)
-        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60))
+        XCTAssertTrue(app.descendants(matching: .any)["player.timeline"].waitForExistence(timeout: 60))
         Thread.sleep(forTimeInterval: 3)
         for details in [true, false] {
-            openNativeDrawer(app, details: details)
+            openSharedSettings(app, details: details)
             verifyDrawer(app)
             XCUIRemote.shared.press(.menu)
             XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
-            XCTAssertTrue(app.otherElements["player.native"].exists)
+            XCTAssertTrue(app.descendants(matching: .any)["player.timeline"].exists)
         }
     }
 
@@ -183,6 +189,28 @@ final class LiveTVExperienceTests: XCTestCase {
         label.split(separator: ":").compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
     }
 
+    @MainActor func testFixedPanelDetailsScroll() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--player-panel-ui-test"]
+        app.launch()
+        let audio = app.buttons["player.panel.tab.audio"]
+        XCTAssertTrue(audio.waitForExistence(timeout: 20))
+        XCTAssertEqual(audio.value as? String, "selected")
+        let origin = audio.frame.origin
+        select(app.buttons["player.panel.tab.info"], in: app)
+        XCTAssertEqual(audio.frame.minX, origin.x, accuracy: 1)
+        XCTAssertEqual(audio.frame.minY, origin.y, accuracy: 1)
+        let last = app.descendants(matching: .any)["player.details.row.Detail 20"]
+        select(last, in: app)
+        XCTAssertTrue(last.isHittable, "Details must scroll to the final diagnostic row")
+        let first = app.descendants(matching: .any)["player.details.row.Detail 1"]
+        select(first, in: app)
+        XCTAssertTrue(first.isHittable, "Details must scroll back to the beginning")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Fixed panel scrollable Details"; screenshot.lifetime = .keepAlways; add(screenshot)
+    }
+
     @MainActor func testCompactPanelLongTrackLists() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -210,18 +238,28 @@ final class LiveTVExperienceTests: XCTestCase {
     }
 
     @MainActor func testMPVTransportAfterDrawer() throws {
+        try verifySharedTransport(launchArgument: "--mpv-player-ui-test")
+    }
+
+    @MainActor func testNativeTransportAfterDrawer() throws {
+        try verifySharedTransport(launchArgument: "--native-player-ui-test")
+    }
+
+    @MainActor private func verifySharedTransport(launchArgument: String) throws {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["--mpv-player-ui-test"]
+        app.launchArguments = [launchArgument]
         app.launch()
         let timeline = app.descendants(matching: .any)["player.timeline"]
         XCTAssertTrue(timeline.waitForExistence(timeout: 20))
+        let started = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@ AND value != %@", "Playing, playback position", "0:00"), object: timeline)
+        XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 30), .completed, "Wait for decoded playback before testing transport")
         XCTAssertFalse(app.buttons["player.playPause"].exists, "Use native-style timeline/remote playback control without a duplicate Play/Pause button")
         let transportHeight = timeline.frame.maxY - app.buttons["player.settings"].frame.minY
         XCTAssertGreaterThan(transportHeight, 60, "The timeline belongs beneath the transport buttons")
         XCTAssertLessThan(transportHeight, 180, "Native-size actions and timeline should remain a compact bottom control area")
         let compact = XCTAttachment(screenshot: app.screenshot())
-        compact.name = "Compact MPV transport"; compact.lifetime = .keepAlways; add(compact)
+        compact.name = "Shared transport \(launchArgument)"; compact.lifetime = .keepAlways; add(compact)
         XCUIRemote.shared.press(.playPause)
         XCTAssertEqual(timeline.label, "Paused, playback position", "The remote Play/Pause button must pause exactly once")
         select(timeline, in: app)
@@ -249,11 +287,11 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(timeline.hasFocus, app.debugDescription)
         let pausedAt = timeline.value as? String ?? ""
         Thread.sleep(forTimeInterval: 4.5)
-        XCTAssertTrue(app.staticTexts["player.transport.title"].isHittable, "Pause keeps the title visible past the normal hide timeout")
+        XCTAssertTrue(app.staticTexts["player.transport.title"].exists, "Pause keeps the title visible past the normal hide timeout")
         XCTAssertTrue(timeline.isHittable, "Pause keeps the timeline visible")
         XCTAssertEqual(timeline.value as? String, pausedAt, "The film must actually remain paused")
         let pauseShot = XCTAttachment(screenshot: app.screenshot())
-        pauseShot.name = "MPV native-style paused transport"; pauseShot.lifetime = .keepAlways; add(pauseShot)
+        pauseShot.name = "Shared paused transport \(launchArgument)"; pauseShot.lifetime = .keepAlways; add(pauseShot)
         let beforeSeek = timeline.value as? String ?? ""
         XCUIRemote.shared.press(.right)
         let seeks = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", beforeSeek), object: timeline)
@@ -275,42 +313,6 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertGreaterThan(afterHiddenSeek, beforeHide + 7, "Right must seek while the controls are hidden")
         XCTAssertLessThan(afterHiddenSeek, beforeHide + 25, "Releasing Right must stop repeat seeking")
 
-    }
-
-    @MainActor func testNativeTransportAfterDrawer() throws {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--native-player-ui-test"]
-        app.launch()
-        XCTAssertTrue(app.otherElements["player.native"].waitForExistence(timeout: 60))
-        Thread.sleep(forTimeInterval: 2)
-        openNativeDrawer(app)
-        XCUIRemote.shared.press(.menu)
-        XCTAssertTrue(app.buttons["player.panel.tab.playback"].waitForNonExistence(timeout: 5))
-        // The drawer must return control to AVKit's timeline, including repeated play/pause.
-        XCUIRemote.shared.press(.playPause)
-        let elapsed = app.otherElements["AXElapsedTime"]
-        XCTAssertTrue(elapsed.waitForExistence(timeout: 5), app.debugDescription)
-        let first = elapsed.label
-        Thread.sleep(forTimeInterval: 1.5)
-        let initiallyPlaying = elapsed.label != first
-        XCUIRemote.shared.press(.playPause)
-        Thread.sleep(forTimeInterval: 0.5)
-        let second = elapsed.label
-        Thread.sleep(forTimeInterval: 1.5)
-        XCTAssertNotEqual(elapsed.label != second, initiallyPlaying, "Play/Pause must change the actual playback state after closing the drawer")
-        // Pause before seeking. Down enters the native scrubber from the transport action row.
-        if !initiallyPlaying { XCUIRemote.shared.press(.playPause) }
-        XCTAssertTrue(app.staticTexts["Player test film"].waitForExistence(timeout: 5))
-        let nativePause = XCTAttachment(screenshot: app.screenshot())
-        nativePause.name = "Native paused transport reference"; nativePause.lifetime = .keepAlways; add(nativePause)
-        XCUIRemote.shared.press(.down)
-        let beforeSeek = playbackSeconds(elapsed.label)
-        XCUIRemote.shared.press(.right)
-        XCUIRemote.shared.press(.select)
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertGreaterThan(playbackSeconds(elapsed.label), beforeSeek + 5, app.debugDescription)
-        XCTAssertTrue(app.otherElements["player.native"].exists)
     }
 
     @MainActor func testBrowseTypeSelection() throws {

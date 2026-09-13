@@ -83,21 +83,11 @@ struct LiveTVPlayerView: View {
             if compatibilityPlayer {
                 MPVPlayerScreen(context: compatibilityContext, liveActions: AnyView(compatibilityActions))
                     .id(active.id + playbackGeneration.uuidString).ignoresSafeArea()
-            } else if let error = model.error {
-                VStack(alignment: .leading, spacing: 28) {
-                    Text(active.name).font(.title2.bold())
-                    Text(error).font(.body)
-                    HStack(spacing: 24) {
-                        Button("Retry") { model.tune(active) }
-                        Button("Compatibility player") { model.stop(); compatibilityPlayer = true; model.error = nil }
-                        Button("Channel guide") { returnToGuide() }
-                    }.buttonStyle(.glass).focusSection()
-                }.padding(60).frame(maxWidth: 1300)
             } else {
                 NativeLiveTVPlayer(player: model.player, playbackContext: compatibilityContext,
                                    playbackActions: AnyView(compatibilityActions))
+                    .id(active.id)
                     .ignoresSafeArea()
-                if model.waiting { ProgressView("Connecting…").padding(25).background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16)).allowsHitTesting(false) }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -106,7 +96,11 @@ struct LiveTVPlayerView: View {
             store.watched(active)
         }
         .onDisappear { model.stop() }
-        .onExitCommand { dismiss() }
+        .onChange(of: model.error) { _, error in
+            guard error != nil, !compatibilityPlayer else { return }
+            model.stop()
+            compatibilityPlayer = true
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { model.stop() }
             else if phase == .active && !compatibilityPlayer { model.tune(active) }
@@ -116,7 +110,7 @@ struct LiveTVPlayerView: View {
 
     private var compatibilityActions: some View {
         LiveTVCompatibilityActions(store: store, channel: active, canSwitch: channels.count > 1,
-            previous: { switchChannel(-1) }, next: { switchChannel(1) }, goLive: { playbackGeneration = UUID() }, guide: { returnToGuide() })
+            previous: { switchChannel(-1) }, next: { switchChannel(1) }, goLive: { if compatibilityPlayer { playbackGeneration = UUID() } else { model.goLive() } }, guide: { returnToGuide() })
     }
     private func switchChannel(_ step: Int) {
         guard !channels.isEmpty else { return }
@@ -127,46 +121,37 @@ struct LiveTVPlayerView: View {
 }
 
 /// Native live playback uses the same Settings entry point and bottom drawer as movie playback.
-private struct NativeLiveTVPlayer: UIViewControllerRepresentable {
+private struct NativeLiveTVPlayer: View {
     let player: AVPlayer
     let playbackContext: PlaybackContext
     let playbackActions: AnyView
-    final class Coordinator {
-        let model: PlayerTopPanelModel
-        var adapter: LivePlayerPanelAdapter?
-        var item: AVPlayerItem?
-        init(context: PlaybackContext) {
-            model = PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: context)))
-        }
+    @StateObject private var state: PlayerPlaybackState
+    @StateObject private var model: PlayerTopPanelModel
+    @State private var adapter: LivePlayerPanelAdapter?
+    @Environment(\.dismiss) private var dismiss
+
+    init(player: AVPlayer, playbackContext: PlaybackContext, playbackActions: AnyView) {
+        self.player = player
+        self.playbackContext = playbackContext
+        self.playbackActions = playbackActions
+        let state = PlayerPlaybackState(title: playbackContext.title)
+        state.isLive = true
+        _state = StateObject(wrappedValue: state)
+        _model = StateObject(wrappedValue: PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: playbackContext))))
     }
-    func makeCoordinator() -> Coordinator { Coordinator(context: playbackContext) }
-    func makeUIViewController(context: Context) -> NativePlayerHostController {
-        let host = NativePlayerHostController()
-        host.playerVC.player = player
-        updateUIViewController(host, context: context)
-        return host
-    }
-    func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
-        if host.playerVC.player !== player { host.playerVC.player = player }
-        let coordinator = context.coordinator
-        if coordinator.item !== player.currentItem {
-            host.closePanel(animated: false)
-            coordinator.item = player.currentItem
-            coordinator.adapter = LivePlayerPanelAdapter(player: player, model: coordinator.model, context: playbackContext)
+
+    var body: some View {
+        ZStack {
+            AVPlayerSurface(player: player, state: state).ignoresSafeArea()
+            PlayerChrome(state: state, context: playbackContext, panelModel: model,
+                         extraTab: PlayerPanelExtraTab { playbackActions },
+                         onExit: { dismiss() })
         }
-        let model = coordinator.model, actions = playbackActions
-        host.onOpenPanel = { [weak host] tab in
-            guard let host else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model,
-                extraTab: PlayerPanelExtraTab(maximumWidth: 1100) { actions }, initialTab: tab))
-            model.onClose = { [weak panel] in panel?.close(animated: true) }
-            host.present(panel: panel)
+        .onAppear {
+            adapter = LivePlayerPanelAdapter(player: player, model: model, context: playbackContext)
+            state.performDownAction = { [weak state] in state?.reveal() }
         }
-    }
-    static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
-        host.closePanel(animated: false)
-        coordinator.adapter = nil
-        host.playerVC.player = nil
+        .onDisappear { adapter = nil }
     }
 }
 
@@ -197,7 +182,6 @@ private struct NativeLiveTVPlayer: UIViewControllerRepresentable {
             self.player.currentItem?.select(selected, in: group)
             self.updateSelections()
         }
-        model.hasNativeSoundOptions = true
         model.onPresentation = { [weak self] in self?.updateSelections() }
         model.onDetailsVisibilityChange = { [weak self] visible in
             guard let self else { return }
@@ -267,17 +251,50 @@ private struct LiveTVCompatibilityActions: View {
     let goLive: () -> Void
     let guide: () -> Void
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            Text(channel.name).font(.headline)
-            HStack(spacing: 24) {
-                Button("Previous channel", action: previous).disabled(!canSwitch)
-                Button("Next channel", action: next).disabled(!canSwitch)
-                Button("Go Live", action: goLive)
-            }.focusSection()
-            HStack(spacing: 24) {
-                Button(store.favorites.contains(channel.id) ? "Remove favorite" : "Favorite channel") { store.toggleFavorite(channel) }
-                Button("Channel guide", action: guide)
-            }.focusSection()
-        }.padding(.vertical, 20)
+        VStack(alignment: .leading, spacing: 32) {
+            HStack(spacing: 20) {
+                if let logo = channel.logo {
+                    CachedAsyncImage(string: logo.absoluteString, contentMode: .fit)
+                        .frame(width: 84, height: 64)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(channel.name).font(.title3.bold())
+                    if !channel.group.isEmpty {
+                        Text(channel.group).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.caption.weight(.semibold))
+            }
+            HStack(alignment: .top, spacing: 60) {
+                VStack(alignment: .leading, spacing: 16) {
+                    PlayerPanelSectionCaption(text: "Channel")
+                    HStack(spacing: 20) {
+                        Button(action: previous) { Label("Previous", systemImage: "backward.end") }
+                            .accessibilityLabel("Previous channel").disabled(!canSwitch)
+                        Button("Go Live", action: goLive)
+                        Button(action: next) { Label("Next", systemImage: "forward.end") }
+                            .accessibilityLabel("Next channel").disabled(!canSwitch)
+                    }
+                }.focusSection()
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 16) {
+                    PlayerPanelSectionCaption(text: "Browse")
+                    HStack(spacing: 20) {
+                        Button { store.toggleFavorite(channel) } label: {
+                            Label(store.favorites.contains(channel.id) ? "Favorited" : "Favorite", systemImage: store.favorites.contains(channel.id) ? "star.fill" : "star")
+                        }
+                        .accessibilityLabel(store.favorites.contains(channel.id) ? "Remove favorite" : "Favorite channel")
+                        Button(action: guide) { Label("Guide", systemImage: "list.bullet.rectangle") }
+                            .accessibilityLabel("Channel guide")
+                    }
+                }.focusSection()
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 12)
     }
 }

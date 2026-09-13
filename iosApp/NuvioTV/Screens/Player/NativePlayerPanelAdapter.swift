@@ -22,7 +22,6 @@ final class NativePlayerPanelAdapter {
         self.model = model
         self.context = context
         self.routingNote = routingNote
-        model.hasNativeSoundOptions = true
         model.onPresentation = { [weak self] in self?.rebuildSelections() }
         model.onDetailsVisibilityChange = { [weak self] visible in if visible { self?.onTick() } }
 

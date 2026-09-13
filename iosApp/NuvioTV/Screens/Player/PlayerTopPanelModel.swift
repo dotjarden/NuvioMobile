@@ -47,7 +47,6 @@ final class PlayerTopPanelModel: ObservableObject {
     /// Whether the Audio tab offers the system route picker (AirPlay/Bluetooth). False on engines
     /// that don't drive AVAudioSession routing.
     @Published var canPickRoute = true
-    var hasNativeSoundOptions = false
 
     /// Current subtitle delay in milliseconds (0 = none, positive = subtitles later). Meaningless
     /// while `supportsSubtitleDelay` is false.

@@ -217,6 +217,7 @@ private struct PlayerPanelUITestRoot: View {
 
     init(context: PlaybackContext) {
         let model = PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: context)))
+        model.info.rows = (1...20).map { NativeInfoRow(label: "Detail \($0)", value: "Stream information \($0)") }
         model.audio = (1...20).map { PlayerPanelOption(id: "\($0)", title: "Audio track \($0)", group: .audio, isSelected: $0 == 1) }
         model.subtitles = [PlayerPanelOption(id: "off", title: "Off", group: .off, isSelected: true)] +
             (1...20).map { PlayerPanelOption(id: "\($0)", title: "Subtitle track \($0)", group: .embedded, isSelected: false) }
