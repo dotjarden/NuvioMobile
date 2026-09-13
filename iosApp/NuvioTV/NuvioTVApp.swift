@@ -162,6 +162,8 @@ struct NuvioTVApp: App {
             SettingsUITestRoot()
         } else if ProcessInfo.processInfo.arguments.contains("--browse-ui-test") {
             BrowseUITestRoot()
+        } else if ProcessInfo.processInfo.arguments.contains("--welcome-ui-test") {
+            WelcomeView(model: AuthViewModel())
         } else if ProcessInfo.processInfo.arguments.contains("--qr-sign-in-ui-test") {
             QrSignInView()
         } else {
@@ -187,7 +189,7 @@ struct NuvioTVApp: App {
         PlaybackContext(url: URL(string: "http://127.0.0.1:8767/movie.mp4")!, title: "Player test film",
             contentType: "movie", parentMetaId: "player-ui-fixture", videoId: "player-ui-fixture",
             season: nil, episode: nil, poster: nil, background: nil, providerName: "Local fixture",
-            providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [])
+            providerAddonId: nil, streamTitle: nil, streamSubtitle: nil, externalSubtitles: [], recordsWatchProgress: false)
     }
     #endif
 
@@ -216,6 +218,8 @@ private struct PlayerPanelUITestRoot: View {
     @StateObject private var model: PlayerTopPanelModel
 
     init(context: PlaybackContext) {
+        var context = context
+        context.synopsis = Array(repeating: "A long synopsis remains readable while moving through stream details with the remote, and scrolling back brings the title into view.", count: 6).joined(separator: " ")
         let model = PlayerTopPanelModel(info: PlayerPanelInfo(header: NativeInfoHeader(context: context)))
         model.info.rows = (1...20).map { NativeInfoRow(label: "Detail \($0)", value: "Stream information \($0)") }
         model.audio = (1...20).map { PlayerPanelOption(id: "\($0)", title: "Audio track \($0)", group: .audio, isSelected: $0 == 1) }

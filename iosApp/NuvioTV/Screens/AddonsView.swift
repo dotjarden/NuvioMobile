@@ -10,23 +10,15 @@ struct AddonsView: View {
     @State private var addonPendingRemoval: ManagedAddon?
 
     var body: some View {
-        NavigationStack {
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 40) {
-                    installSection
-                        .focusSection()
-                    installedSection
-                        .focusSection()
-                }
-                .padding(60)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 40) {
+                installSection.focusSection()
+                installedSection.focusSection()
             }
-            .background(Theme.Palette.background.ignoresSafeArea())
-            .reportsScrollToTabBar(tab: "Add-ons")
-            // FEAT-30: Menu summons the sidebar in sidebar mode (a second Menu, with focus in the
-            // sidebar, exits as before). No modifier at all in tabs mode.
-            .sidebarMenuReveal()
+            .padding(60)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Theme.Palette.background.ignoresSafeArea())
         .onAppear { model.start() }
         .onDisappear { model.stop() }
         .alert(

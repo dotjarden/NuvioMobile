@@ -739,7 +739,7 @@ final class MPVTVPlayerViewController: UIViewController {
     // resolves IMDB/TMDB ids itself and silently no-ops when Trakt isn't connected.
 
     private func startTraktScrobble() {
-        guard !context.isLive else { return }
+        guard !context.isLive, context.recordsWatchProgress else { return }
         guard !traktScrobbleRequested else { return }
         // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
         // open a Trakt session — mirrors the shared short-placeholder guard.
@@ -1011,7 +1011,11 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
-        guard !context.isLive else { return }
+        guard !context.isLive, context.recordsWatchProgress else { return }
+        if let position = context.resumePosition, position.isFinite, position > 0 {
+            pendingResumeSec = position
+            return
+        }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -1029,23 +1033,23 @@ final class MPVTVPlayerViewController: UIViewController {
         parentMetaType: context.contentType,
         videoId: context.videoId,
         title: context.title,
-        logo: nil,
+        logo: context.logo,
         poster: context.poster,
         background: context.background,
         seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
         episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
-        episodeTitle: nil,
-        episodeThumbnail: nil,
+        episodeTitle: context.episodes.first { $0.season?.value == context.season && $0.episode?.value == context.episode }?.title,
+        episodeThumbnail: context.episodeStill,
         providerName: context.providerName,
         providerAddonId: context.providerAddonId,
         lastStreamTitle: context.streamTitle,
         lastStreamSubtitle: context.streamSubtitle,
-        pauseDescription: nil,
+        pauseDescription: context.synopsis,
         lastSourceUrl: context.url.absoluteString
     )
 
     private func saveProgress(flush: Bool = false) {
-        guard !context.isLive else { return }
+        guard !context.isLive, context.recordsWatchProgress else { return }
         guard mpv != nil else { return }
         let duration = state.durationSec
         let position = state.positionSec
@@ -1063,9 +1067,9 @@ final class MPVTVPlayerViewController: UIViewController {
             videoHeight: Int32(truncatingIfNeeded: cachedProps().videoH)
         )
         if flush {
-            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: true)
         } else {
-            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: true)
         }
     }
 

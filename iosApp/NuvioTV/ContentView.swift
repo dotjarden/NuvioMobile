@@ -337,10 +337,6 @@ struct MainTabView: View {
                 LibraryView()
                     .tabBarImmersiveHide()
             }
-            Tab("Add-ons", systemImage: "puzzlepiece.extension", value: 3) {
-                AddonsView()
-                    .tabBarImmersiveHide()
-            }
             // T4: Settings and Profile don't scroll meaningfully, so they were left with no
             // tab-bar declaration at all — but that's not neutral. Without one, the resolved
             // `.toolbarVisibility` preference CHANGES on entering/leaving these two tabs (nothing
@@ -357,7 +353,8 @@ struct MainTabView: View {
                     .tabBarImmersiveHide()
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {
-                ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
+                ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile,
+                               onAccountSettings: { settingsCategory = .accountServices; selectedTab = 4 })
                     .tabBarImmersiveHide()
             }
         }
@@ -427,32 +424,33 @@ struct MainTabView: View {
 struct ProfileTabView: View {
     let activeProfile: NuvioProfile?
     let onSwitchProfile: () -> Void
+    let onAccountSettings: () -> Void
+    @EnvironmentObject private var auth: AuthViewModel
 
     var body: some View {
         ZStack {
-            Theme.Palette.background.ignoresSafeArea()
-
-            VStack(spacing: Theme.Spacing.xl) {
-                if let profile = activeProfile {
-                    ProfileAvatar(profile: profile, size: 220)
-                    Text(profile.name)
-                        .font(Theme.Font.screenTitle)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+            AccountBackdrop()
+            HStack(spacing: 90) {
+                if let profile = activeProfile { ProfileAvatar(profile: profile, size: 240) }
+                VStack(alignment: .leading, spacing: 28) {
+                    Text(activeProfile?.name ?? "Your Profile").font(.system(size: 58, weight: .semibold))
+                    Label(auth.isAnonymous ? "Guest on this Apple TV" : (auth.accountEmail ?? "Nuvio account"),
+                          systemImage: auth.isAnonymous ? "appletv" : "person.crop.circle.badge.checkmark")
+                        .font(.title3).foregroundStyle(.secondary)
+                    Text(auth.isAnonymous ? "Sign in to keep your library and progress across devices." : "Your profiles, library and watch progress follow your Nuvio account.")
+                        .font(.callout).foregroundStyle(.secondary).frame(maxWidth: 700, alignment: .leading)
+                    GlassEffectContainer(spacing: 24) {
+                        HStack(spacing: 24) {
+                            Button(action: onSwitchProfile) { Label("Switch Profile", systemImage: "arrow.left.arrow.right") }
+                                .buttonStyle(.glassProminent)
+                            Button(action: onAccountSettings) {
+                                Label(auth.isAnonymous ? "Sign In" : "Account Settings", systemImage: "person.crop.circle")
+                            }.buttonStyle(.glass)
+                        }
+                    }
                 }
-
-                Button(action: onSwitchProfile) {
-                    Label("Switch Profile", systemImage: "arrow.left.arrow.right")
-                        .font(Theme.Font.body)
-                        .padding(.horizontal, Theme.Spacing.xl)
-                        .padding(.vertical, Theme.Spacing.md)
-                }
-                .buttonStyle(.chip)
-            }
-            .padding(Theme.Spacing.screen)
-        }
-        // FEAT-30 (Codex r2): Profile is a tab root too; with the system bar hidden in sidebar
-        // mode a Menu press here needs the same route to the sidebar the other roots have.
-        .sidebarMenuReveal()
+            }.padding(80)
+        }.sidebarMenuReveal()
     }
 }
 

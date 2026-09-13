@@ -15,7 +15,8 @@ final class PlaybackProgressRecorder {
 
     /// Saved resume position in seconds — only if >10s in and not completed (mirrors MPV's gate).
     func resumePositionSec() -> Double? {
-        guard !context.isLive else { return nil }
+        guard !context.isLive, context.recordsWatchProgress else { return nil }
+        if let position = context.resumePosition, position.isFinite, position > 0 { return position }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -35,24 +36,24 @@ final class PlaybackProgressRecorder {
         parentMetaType: context.contentType,
         videoId: context.videoId,
         title: context.title,
-        logo: nil,
+        logo: context.logo,
         poster: context.poster,
         background: context.background,
         seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
         episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
-        episodeTitle: nil,
-        episodeThumbnail: nil,
+        episodeTitle: context.episodes.first { $0.season?.value == context.season && $0.episode?.value == context.episode }?.title,
+        episodeThumbnail: context.episodeStill,
         providerName: context.providerName,
         providerAddonId: context.providerAddonId,
         lastStreamTitle: context.streamTitle,
         lastStreamSubtitle: context.streamSubtitle,
-        pauseDescription: nil,
+        pauseDescription: context.synopsis,
         lastSourceUrl: context.url.absoluteString
     )
 
     /// Record playback progress. `flush` forces an immediate write (use on teardown).
     func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool) {
-        guard !context.isLive else { return }
+        guard !context.isLive, context.recordsWatchProgress else { return }
         guard durationSec > 0, positionSec > 1 else { return }
         let snapshot = PlayerPlaybackSnapshot(
             isLoading: false,
@@ -66,9 +67,9 @@ final class PlaybackProgressRecorder {
             videoHeight: 0
         )
         if flush {
-            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+            WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: true)
         } else {
-            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
+            WatchProgressRepository.shared.upsertPlaybackProgress(session: session, snapshot: snapshot, syncRemote: true)
         }
     }
 
@@ -79,7 +80,7 @@ final class PlaybackProgressRecorder {
     private var traktClosed = false
 
     func startTrakt(positionSec: Double, durationSec: Double) {
-        guard !context.isLive else { return }
+        guard !context.isLive, context.recordsWatchProgress else { return }
         guard !traktRequested else { return }
         // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
         // open a Trakt session — mirrors the shared short-placeholder guard.

@@ -43,6 +43,8 @@ struct StreamPickerView: View {
     let synopsis: String?
     /// Title-level facts for the player's Info tab chips (nil when the caller has no meta).
     let meta: PlaybackMeta?
+    let logo: String?
+    let background: String?
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
@@ -87,9 +89,13 @@ struct StreamPickerView: View {
         poster: String? = nil,
         episodeStill: String? = nil,
         synopsis: String? = nil,
-        meta: PlaybackMeta? = nil
+        meta: PlaybackMeta? = nil,
+        logo: String? = nil,
+        background: String? = nil
     ) {
         self.meta = meta
+        self.logo = logo
+        self.background = background
         self.poster = poster
         self.episodeStill = episodeStill
         self.synopsis = synopsis
@@ -106,7 +112,8 @@ struct StreamPickerView: View {
     }
 
     private func context(url: URL, stream: StreamItem?) -> PlaybackContext {
-        PlaybackContext(
+        let cached = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)
+        return PlaybackContext(
             url: url,
             title: title,
             contentType: type,
@@ -114,8 +121,8 @@ struct StreamPickerView: View {
             videoId: videoId,
             season: season,
             episode: episode,
-            poster: poster,
-            background: nil,
+            poster: poster ?? cached?.poster,
+            background: background ?? meta?.background ?? cached?.background,
             providerName: stream?.addonName,
             providerAddonId: stream?.addonId,
             streamTitle: stream.map { $0.streamLabel },
@@ -130,7 +137,8 @@ struct StreamPickerView: View {
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
-                headers: stream?.behaviorHints.proxyHeaders?.request)
+                headers: stream?.behaviorHints.proxyHeaders?.request),
+            logo: logo ?? meta?.logo ?? cached?.logo
         )
     }
 

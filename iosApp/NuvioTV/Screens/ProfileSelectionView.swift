@@ -44,6 +44,7 @@ struct ProfileSelectionView: View {
     var onSelected: () -> Void
 
     @State private var editing: ProfileEditTarget?
+    @State private var managing = false
     @State private var pinPrompt: PinPrompt?
 
     /// Anchors `.prefersDefaultFocus` so initial D-pad focus lands on the user's own (first)
@@ -57,22 +58,13 @@ struct ProfileSelectionView: View {
 
     var body: some View {
         ZStack {
-            Theme.Palette.background.ignoresSafeArea()
-            // Accent-derived wash (mobile reference: color-graded backdrop behind the picker).
-            LinearGradient(
-                colors: [Theme.Palette.accent.opacity(0.22), .clear],
-                startPoint: .top, endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            AccountBackdrop()
 
             VStack(spacing: Theme.Spacing.sectionGap) {
                 VStack(spacing: Theme.Spacing.md) {
                     Text("Who\u{2019}s watching?")
                         .font(Theme.Font.hero)
                         .foregroundStyle(Theme.Palette.textPrimary)
-                    Text("Select a profile to continue")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
                 }
 
                 // Max 6 profiles + Add tile fit on screen, so no ScrollView — a plain HStack
@@ -80,7 +72,7 @@ struct ProfileSelectionView: View {
                 HStack(alignment: .top, spacing: Theme.Spacing.xl) {
                         ForEach(model.profiles, id: \.profileIndex) { profile in
                             Button {
-                                requirePin(for: profile, action: .select)
+                                requirePin(for: profile, action: managing ? .edit : .select)
                             } label: {
                                 profileTile(name: profile.name, isPrimary: profile.profileIndex == 1) {
                                     ZStack(alignment: .bottomTrailing) {
@@ -105,7 +97,7 @@ struct ProfileSelectionView: View {
                             .buttonStyle(.borderless)
                             .focused($focusedProfile, equals: profile.profileIndex)
                             .prefersDefaultFocus(
-                                profile.profileIndex == model.profiles.first?.profileIndex,
+                                profile.profileIndex == (model.activeProfile?.profileIndex ?? model.profiles.first?.profileIndex),
                                 in: defaultFocusNamespace
                             )
                             .contextMenu {
@@ -143,12 +135,15 @@ struct ProfileSelectionView: View {
                     .focusSection()
                     .focusScope(defaultFocusNamespace)
 
-                Text("Hold to manage profile")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, Theme.Spacing.xs + 2)
-                    .glassEffect(.regular, in: .capsule)
+                Button {
+                    managing.toggle()
+                } label: {
+                    Label(managing ? "Done" : "Manage Profiles", systemImage: managing ? "checkmark" : "pencil")
+                }.buttonStyle(.glass)
+                .accessibilityIdentifier("profiles.manage")
+                Text(model.isCloudAccount ? "Profiles sync with your Nuvio account" : "Guest profiles are saved on this Apple TV")
+                    .font(.callout).foregroundStyle(.secondary)
+
             }
         }
         .onAppear { model.start() }
@@ -157,7 +152,7 @@ struct ProfileSelectionView: View {
             // nudge focus onto the first real profile the moment they arrive (empty → non-empty).
             guard !didSeedDefaultFocus, oldCount == 0, newCount > 0 else { return }
             didSeedDefaultFocus = true
-            let firstProfileIndex = model.profiles.first?.profileIndex
+            let firstProfileIndex = model.activeProfile?.profileIndex ?? model.profiles.first?.profileIndex
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 focusedProfile = firstProfileIndex
             }

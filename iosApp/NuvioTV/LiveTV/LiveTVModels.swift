@@ -27,7 +27,7 @@ nonisolated struct LiveTVChannel: Identifiable, Codable, Equatable, Sendable {
     var headers: [String: String] = [:]
 }
 
-nonisolated struct LiveTVProgramme: Identifiable, Equatable, Sendable {
+nonisolated struct LiveTVProgramme: Identifiable, Codable, Equatable, Sendable {
     var id: String { "\(channelID)|\(start.timeIntervalSince1970)|\(title)" }
     let channelID: String
     let title: String

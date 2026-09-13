@@ -10,6 +10,8 @@ struct MediaBrowseView: View {
     @State private var genre = "All genres"
     @State private var catalog = "All catalogs"
     @State private var order = "Recommended"
+    @FocusState private var focusedFilter: String?
+    @State private var lastFilter = "type"
     private var selectedCatalogLabel: String {
         guard let selected = discovery.discover?.selectedCatalog else { return "Catalog" }
         return selected.catalogName + " · " + selected.addonName
@@ -52,6 +54,10 @@ struct MediaBrowseView: View {
             rows: browseRows, items: results, filtered: filtered,
             selectionKey: [mediaType, catalog, genre, order].joined(separator: "|"),
             controls: AnyView(filters), emptyState: AnyView(emptyState),
+            focusFilters: {
+                focusedFilter = nil
+                DispatchQueue.main.async { focusedFilter = lastFilter }
+            },
             onItemFocus: { item in
                 guard filtered, let item,
                       let index = discovery.discover?.items.firstIndex(where: { $0.id == item.id && $0.type == item.type }) else { return }
@@ -59,6 +65,7 @@ struct MediaBrowseView: View {
             }))
         .onAppear { discovery.start(); discovery.selectDiscoverType(mediaType) }
         .onDisappear { discovery.stop() }
+        .onChange(of: focusedFilter) { _, value in if let value { lastFilter = value } }
         .onChange(of: discovery.discover?.selectedType) { _, selected in
             if let selected, selected != mediaType { discovery.selectDiscoverType(mediaType) }
         }
@@ -67,12 +74,16 @@ struct MediaBrowseView: View {
     private var filters: some View {
         HStack(spacing: 24) {
             TVSelectionMenu(title: "Browse", value: mediaType == "movie" ? "Movies" : "Shows", options: ["Movies", "Shows"]) { mediaType = $0 == "Movies" ? "movie" : "series"; genre = "All genres"; catalog = "All catalogs"; discovery.selectDiscoverType(mediaType) }
+                .focused($focusedFilter, equals: "type")
             TVSelectionMenu(title: "Genre", value: genre, options: (discovery.discover?.selectedCatalog?.genreRequired == true ? [] : ["All genres"]) + availableGenres) { genre = $0; catalog = selectedCatalogLabel; discovery.selectDiscoverGenre($0 == "All genres" ? nil : $0) }
+                .focused($focusedFilter, equals: "genre")
             TVSelectionMenu(title: "Catalog", value: catalog, options: ["All catalogs"] + (discovery.discover?.catalogOptions.map { $0.catalogName + " · " + $0.addonName } ?? [])) { selected in
                 catalog = selected; genre = "All genres"
                 if let option = discovery.discover?.catalogOptions.first(where: { $0.catalogName + " · " + $0.addonName == selected }) { discovery.selectDiscoverCatalog(option.key) }
             }
+            .focused($focusedFilter, equals: "catalog")
             TVSelectionMenu(title: "Sort", value: order, options: ["Recommended", "A–Z", "Highest rated"]) { order = $0; if filtered && catalog == "All catalogs" { catalog = selectedCatalogLabel } }
+                .focused($focusedFilter, equals: "sort")
             if filtered { Button("Reset") { genre = "All genres"; catalog = "All catalogs"; order = "Recommended" }.buttonStyle(.glass) }
         }.padding(.bottom, 12)
     }
@@ -96,5 +107,6 @@ struct HomeBrowseConfiguration {
     let selectionKey: String
     let controls: AnyView
     let emptyState: AnyView
+    let focusFilters: () -> Void
     let onItemFocus: (MetaPreview?) -> Void
 }

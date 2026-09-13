@@ -71,7 +71,7 @@ struct QrSignInView: View {
 
     var body: some View {
         ZStack {
-            Theme.Palette.background.ignoresSafeArea()
+            AccountBackdrop()
 
             HStack(spacing: Theme.Spacing.sectionGap) {
                 qrPanel

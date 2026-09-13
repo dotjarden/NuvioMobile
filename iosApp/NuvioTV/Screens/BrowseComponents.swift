@@ -3382,6 +3382,7 @@ struct CatalogRowView: View {
     /// label — so the play/pause mute toggle has to be attached at this level and gated on "this is
     /// the focused item, and it is the one playing".
     @FocusState private var focusedItemId: String?
+    @Environment(\.browsePositionMemory) private var positionMemory
 
     /// Which card currently owns the single inline `AVPlayer`, published by the shared coordinator.
     @ObservedObject private var trailerCoordinator = InlineTrailerCoordinator.shared
@@ -3581,6 +3582,11 @@ struct CatalogRowView: View {
                     .clipShape(RowLeadingEdgeClip(allowance: leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
+                .onAppear {
+                    if let saved = positionMemory?.item(in: section.key), section.items.contains(where: { $0.id == saved }) {
+                        proxy.scrollTo(saved, anchor: .leading)
+                    }
+                }
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.
@@ -3617,6 +3623,7 @@ struct CatalogRowView: View {
         // that tile is part of this row and its rests need the same correction (Codex r3 P2-1).
         .pinnedRowSettleTracking(rowKey: section.key, isFocused: focusedItemId != nil)
         .onChange(of: focusedItemId) { _, newId in
+            if let newId, newId != Self.seeAllFocusKey { positionMemory?.remember(newId, in: section.key) }
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
         // H3: the row (and its ScrollViewReader) can disappear mid-flight — a pop while the

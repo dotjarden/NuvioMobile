@@ -10,6 +10,10 @@ struct ContentSourcesSettingsPane: View {
 
     var body: some View {
         Group {
+            SettingsLinkRow(title: String(localized: "Add-ons"),
+                            subtitle: String(localized: "Install and manage your catalogs and stream providers."),
+                            systemImage: "puzzlepiece.extension") { AddonsView() }
+                .accessibilityIdentifier("settings.addons")
             SettingsSection(String(localized: "Metadata (TMDB)")) {
                 Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                     .font(Theme.Font.caption)

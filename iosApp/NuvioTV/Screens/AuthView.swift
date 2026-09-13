@@ -17,14 +17,15 @@ struct AuthView: View {
     private var canSubmit: Bool {
         !model.isBusy &&
             email.contains("@") &&
-            password.count >= 6
+            (isSignUp ? password.count >= 6 : !password.isEmpty)
     }
 
     var body: some View {
         ZStack {
-            Theme.Palette.background.ignoresSafeArea()
+            AccountBackdrop()
 
             VStack(spacing: Theme.Spacing.xl) {
+                Image("LogoMark").resizable().scaledToFit().frame(height: 70).accessibilityHidden(true)
                 Text(isSignUp ? String(localized: "Create your Nuvio account") : String(localized: "Sign in to Nuvio"))
                     .font(Theme.Font.screenTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
@@ -44,12 +45,15 @@ struct AuthView: View {
                         .textInputAutocapitalization(.never)
                         .font(Theme.Font.body)
                         .frame(maxWidth: 800)
+                        .accessibilityIdentifier("auth.email")
 
                     SecureField("Password", text: $password)
                         .textFieldStyle(.plain)
                         .textContentType(isSignUp ? .newPassword : .password)
                         .font(Theme.Font.body)
                         .frame(maxWidth: 800)
+                        .accessibilityIdentifier("auth.password")
+                        .onSubmit { if canSubmit { submit() } }
                 }
 
                 if let error = model.errorMessage {
@@ -106,7 +110,7 @@ struct AuthView: View {
     }
 
     private func submit() {
-        let trimmedEmail = email.trimmingCharacters(in: .whitespaces)
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         if isSignUp {
             model.signUp(email: trimmedEmail, password: password)
         } else {

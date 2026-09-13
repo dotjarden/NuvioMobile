@@ -77,6 +77,14 @@ nonisolated enum MediaProbe {
     /// (network I/O) — call off the main thread. A deadline-based interrupt callback guarantees the
     /// call cannot hang past `timeoutSec`.
     static func probe(url: URL, timeoutSec: Double, requestHeaders: [String: String] = [:]) -> ProbeResult? {
+        let key = url.absoluteString + "\u{1E}" + ffmpegHeaderBlock(requestHeaders)
+        if let cached = ProbeMemoryCache.shared.get(key) { return cached }
+        let result = uncachedProbe(url: url, timeoutSec: timeoutSec, requestHeaders: requestHeaders)
+        if let result { ProbeMemoryCache.shared.put(result, for: key) }
+        return result
+    }
+
+    private static func uncachedProbe(url: URL, timeoutSec: Double, requestHeaders: [String: String]) -> ProbeResult? {
         MediaProbeNetwork.ensureInit()
 
         guard let ctx = avformat_alloc_context() else { return nil }
@@ -250,4 +258,23 @@ private nonisolated enum MediaProbeNetwork {
         return ()
     }()
     static func ensureInit() { _ = initialized }
+}
+
+/// Bounded and memory-only: signed stream addresses never enter a disk cache or logs.
+private nonisolated final class ProbeMemoryCache: @unchecked Sendable {
+    static let shared = ProbeMemoryCache()
+    private let lock = NSLock()
+    private var entries: [String: (date: Date, result: ProbeResult)] = [:]
+    func get(_ key: String) -> ProbeResult? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = entries[key], Date().timeIntervalSince(entry.date) < 300 else {
+            entries[key] = nil; return nil
+        }
+        return entry.result
+    }
+    func put(_ result: ProbeResult, for key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if entries.count >= 32, let oldest = entries.min(by: { $0.value.date < $1.value.date })?.key { entries[oldest] = nil }
+        entries[key] = (Date(), result)
+    }
 }

@@ -51,6 +51,7 @@ struct NativeInfoHeader: Equatable {
 /// the live stream rows in two columns. Read-only rows can take focus so the remote can scroll long details.
 struct PlayerInfoTab: View {
     let info: PlayerPanelInfo
+    @FocusState private var headerFocused: Bool
 
     /// Header art height; poster (2:3) or episode still (16:9) scale into it.
     private static let artHeight: CGFloat = 100
@@ -58,13 +59,35 @@ struct PlayerInfoTab: View {
     var body: some View {
         PlayerPanelScroll(showsIndicators: true) {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            headerView
-            if !info.chips.isEmpty { chipRow }
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                headerView
+                if !info.chips.isEmpty { chipRow }
+            }
+            .padding(12)
+            .background(headerFocused ? Color.white.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
+            .focusable()
+            .focused($headerFocused)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("player.details.header")
+            ForEach(Array(synopsisParagraphs.enumerated()), id: \.offset) { index, text in
+                PlayerDescriptionParagraph(text: text, index: index)
+            }
             Divider().overlay(Theme.Palette.outline)
             rowsView
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+    }
+
+    // Keep every focus target shorter than the viewport, even for unusually long synopses.
+    private var synopsisParagraphs: [String] {
+        var chunks: [String] = [], current = ""
+        for word in (info.header.synopsis ?? "").split(whereSeparator: { $0.isWhitespace }) {
+            if !current.isEmpty, current.count + word.count > 240 { chunks.append(current); current = "" }
+            current += (current.isEmpty ? "" : " ") + word
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
     }
 
     private var headerView: some View {
@@ -86,13 +109,6 @@ struct PlayerInfoTab: View {
                         .font(Theme.Font.sectionTitle)
                         .foregroundStyle(Theme.Palette.textSecondary)
                         .lineLimit(1)
-                }
-                if let synopsis = info.header.synopsis {
-                    Text(synopsis)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let label = info.header.streamLabel {
                     Text(label)
@@ -183,5 +199,19 @@ extension PlaybackContext {
         let number = String(localized: "S\(season) · E\(episode)")
         let name = episodes.first { $0.season?.value == season && $0.episode?.value == episode }?.title
         return name.flatMap { $0.isEmpty ? nil : "\(number) · \($0)" } ?? number
+    }
+}
+
+private struct PlayerDescriptionParagraph: View {
+    let text: String
+    let index: Int
+    @FocusState private var focused: Bool
+    var body: some View {
+        Text(text).font(Theme.Font.body).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(focused ? Color.white.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 12))
+            .focusable().focused($focused)
+            .accessibilityIdentifier("player.details.synopsis.\(index)")
     }
 }

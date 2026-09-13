@@ -197,16 +197,28 @@ final class LiveTVExperienceTests: XCTestCase {
         let audio = app.buttons["player.panel.tab.audio"]
         XCTAssertTrue(audio.waitForExistence(timeout: 20))
         XCTAssertEqual(audio.value as? String, "selected")
-        let origin = audio.frame.origin
+        let origin = CGPoint(x: audio.frame.midX, y: audio.frame.midY)
         select(app.buttons["player.panel.tab.info"], in: app)
-        XCTAssertEqual(audio.frame.minX, origin.x, accuracy: 1)
-        XCTAssertEqual(audio.frame.minY, origin.y, accuracy: 1)
+        XCTAssertEqual(audio.frame.midX, origin.x, accuracy: 1)
+        XCTAssertEqual(audio.frame.midY, origin.y, accuracy: 1)
         let last = app.descendants(matching: .any)["player.details.row.Detail 20"]
         select(last, in: app)
         XCTAssertTrue(last.isHittable, "Details must scroll to the final diagnostic row")
         let first = app.descendants(matching: .any)["player.details.row.Detail 1"]
         select(first, in: app)
         XCTAssertTrue(first.isHittable, "Details must scroll back to the beginning")
+        let header = app.descendants(matching: .any)["player.details.header"]
+        XCTAssertTrue(header.waitForExistence(timeout: 3))
+        var reachedSynopsis = false
+        for _ in 0..<8 {
+            XCUIRemote.shared.press(.up)
+            let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+            if focused.identifier.hasPrefix("player.details.synopsis.") { reachedSynopsis = true }
+            if header.hasFocus { break }
+        }
+        XCTAssertTrue(reachedSynopsis, "The complete synopsis must remain scrollable")
+        XCTAssertTrue(header.hasFocus, "Up must restore the title, rather than skip from details to the tabs")
+        XCTAssertTrue(header.isHittable)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Fixed panel scrollable Details"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
@@ -400,7 +412,23 @@ final class LiveTVExperienceTests: XCTestCase {
             select(filter, in: app)
             XCUIRemote.shared.press(.menu)
             for _ in 0..<4 { XCUIRemote.shared.press(.down); Thread.sleep(forTimeInterval: 0.25) }
-            for _ in 0..<5 { XCUIRemote.shared.press(.up); Thread.sleep(forTimeInterval: 0.25) }
+            let filterOptions = ["Browse: Movies", "Genre: All genres", "Catalog: All catalogs", "Sort: Recommended"]
+            let expectedOptions = ["Shows", "Action", "All catalogs", "A–Z"]
+            var returnedFilter: Int?
+            for _ in 0..<8 {
+                XCUIRemote.shared.press(.up); Thread.sleep(forTimeInterval: 0.35)
+                let current = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+                // Native Menu places focus on its hosting view, not the AX button itself.
+                let center = CGPoint(x: current.frame.midX, y: current.frame.midY)
+                if !current.frame.isEmpty {
+                    returnedFilter = filterOptions.firstIndex { app.buttons[$0].frame.contains(center) }
+                    if returnedFilter != nil { break }
+                }
+            }
+            XCTAssertNotNil(returnedFilter, "Up must focus the filter bar before reaching the hero or sidebar")
+            XCUIRemote.shared.press(.select)
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", expectedOptions[returnedFilter ?? 0])).firstMatch.waitForExistence(timeout: 3), "Select after scrolling up must open the filter")
+            XCUIRemote.shared.press(.menu)
             XCTAssertEqual(filter.frame.midY, filterY, accuracy: 2)
             XCTAssertTrue(filter.isHittable)
         }
@@ -408,6 +436,19 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Shows")).firstMatch.waitForExistence(timeout: 5))
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Filters after repeated scroll returns"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testWelcomeAccountRoutes() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--welcome-ui-test"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Sign In with Your Phone"].waitForExistence(timeout: 15))
+        select(app.buttons["Sign In with Email"], in: app)
+        XCTAssertTrue(app.textFields["auth.email"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["auth.password"].exists)
+        XCTAssertFalse(app.buttons["Sign In"].isEnabled)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Native email sign in"; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 
     @MainActor func testAddonsInlineInstallLayout() throws {
@@ -423,6 +464,21 @@ final class LiveTVExperienceTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Install from manifest URL"].exists)
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "Add-ons inline install"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor func testAddonsLivesInSettingsAndBackReturns() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--settings-ui-test"]
+        app.launch()
+        let category = app.buttons["settings.category.contentSources"]
+        XCTAssertTrue(category.waitForExistence(timeout: 20))
+        select(app.cells.containing(.button, identifier: "settings.category.contentSources").firstMatch, in: app)
+        select(app.cells.containing(.button, identifier: "settings.addons").firstMatch, in: app)
+        XCTAssertTrue(app.textFields["addons.manifest"].waitForExistence(timeout: 10))
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(category.waitForExistence(timeout: 10), "Back from Add-ons must return to Settings")
+        XCTAssertTrue(app.cells.containing(.button, identifier: "settings.addons").firstMatch.isHittable)
     }
 
     @MainActor func testSettingsCategorySelection() throws {

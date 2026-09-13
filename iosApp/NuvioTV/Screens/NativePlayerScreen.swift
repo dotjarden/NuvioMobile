@@ -42,12 +42,7 @@ struct NativePlayerScreen: View {
 
             switch coordinator.phase {
             case .preparing:
-                VStack(spacing: 20) {
-                    ProgressView().scaleEffect(1.6)
-                    Text("Preparing playback…")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
+                PlayerLoadingView(context: context)
             case .playing:
                 if let player = coordinator.player {
                     AVPlayerSurface(player: player, state: state).ignoresSafeArea()

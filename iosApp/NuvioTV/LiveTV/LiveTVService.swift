@@ -26,7 +26,7 @@ actor LiveTVService {
         try Task.checkCancellation()
         return data
     }
-    func load(_ source: LiveTVSource) async throws -> LiveTVLoadResult {
+    func load(_ source: LiveTVSource, onChannels: @escaping @Sendable ([LiveTVChannel]) async -> Void = { _ in }) async throws -> LiveTVLoadResult {
         guard let base = LiveTVURL.parse(source.address) else { throw LiveTVError.invalidURL }
         var guideURL = LiveTVURL.parse(source.guideAddress)
         let channels: [LiveTVChannel]
@@ -43,6 +43,8 @@ actor LiveTVService {
             channels = try await xtream(source, base: base)
             if guideURL == nil { guideURL = try endpoint(base, path: "xmltv.php", source: source) }
         }
+        try Task.checkCancellation()
+        await onChannels(channels)
         var programmes: [LiveTVProgramme] = [], warning: String?
         if let guideURL {
             do { programmes = try XMLTVParser().parse(try await fetch(guideURL, limit: 64 * 1024 * 1024)) }
@@ -64,11 +66,13 @@ actor LiveTVService {
         guard string(user?["auth"]) == "1" else { throw LiveTVError.authentication }
         let formats = user?["allowed_output_formats"] as? [String] ?? ["m3u8"]
         let streamExtension = formats.contains("m3u8") ? "m3u8" : "ts"
-        let categoryData = try await fetch(endpoint(base, path: "player_api.php", source: source, action: "get_live_categories"))
+        async let categoryRequest = fetch(endpoint(base, path: "player_api.php", source: source, action: "get_live_categories"))
+        async let channelRequest = fetch(endpoint(base, path: "player_api.php", source: source, action: "get_live_streams"))
+        let categoryData = try await categoryRequest
         let categories = (try JSONSerialization.jsonObject(with: categoryData)) as? [[String: Any]] ?? []
         var groups: [String: String] = [:]
         for item in categories { if let id = string(item["category_id"]) { groups[id] = string(item["category_name"]) } }
-        let channelData = try await fetch(endpoint(base, path: "player_api.php", source: source, action: "get_live_streams"))
+        let channelData = try await channelRequest
         let rows = try JSONSerialization.jsonObject(with: channelData) as? [[String: Any]] ?? []
         var seen = Set<String>()
         let channels = rows.compactMap { row -> LiveTVChannel? in

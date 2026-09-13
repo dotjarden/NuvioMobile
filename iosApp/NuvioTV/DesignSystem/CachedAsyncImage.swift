@@ -213,6 +213,11 @@ enum ArtworkStore {
 
     /// Synchronous memory-cache lookup. Safe from any context (NSCache locks internally); lets
     /// views seed their first frame without an async hop, avoiding a placeholder flash.
+    @MainActor static func clearCache() {
+        memory.removeAllObjects()
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
     static func cached(_ url: URL?) -> UIImage? {
         guard let url else { return nil }
         return memory.object(forKey: url as NSURL)

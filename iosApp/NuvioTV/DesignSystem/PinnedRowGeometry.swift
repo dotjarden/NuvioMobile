@@ -86,21 +86,9 @@ import CoreGraphics
 /// costs a hidden row title, never a broken hero — the same handoff contract `PinnedRowSettle` and
 /// the visibility belt have always had.
 ///
-/// ## Scope gate — Small and Medium are untouched
-///
-/// The plan spends NOTHING at a Poster Size whose row already fits Wave 10's own extent rule, i.e.
-/// wherever `PinnedRowTitle.pinnedHeroCompression` computes 0 today: Small (395), Medium (450) and
-/// landscape catalog rows (323), all under the 455 budget, at EVERY flag combination. That is a
-/// deliberate scope decision, not an oversight — Medium is the default Poster Size with captions
-/// ON, its device/sim band table records zero corrections, and keying its compression to the link
-/// frame would silently compress the default configuration's hero by ~82pt to fix a rest nobody has
-/// reported. The structural fix applies to the sizes that were ALREADY compressing, which is
-/// exactly the population that reports the bug.
-///
-/// The gate reads through `PinnedRowTitle.pinnedHeroCompression`, so `-debug.pinnedHeroCompressionOff`
-/// (test48's historical-geometry knob) keeps working unchanged: with the knob set the legacy
-/// compression is 0 everywhere, the gate stays shut, and every plan returns the pre-Wave-10 reaches
-/// and viewport.
+/// Small cards keep their original geometry when their complete focus frame fits. Medium cards
+/// used to be exempt from fitting even with captions; that exemption clipped artwork on upward
+/// scrolling. Every size now budgets the complete focus frame before deciding to compress.
 enum PinnedRowGeometry {
 
     /// Everything the pinned rows layout needs to agree on for ONE (Poster Size × caption × hero
@@ -272,6 +260,16 @@ enum PinnedRowGeometry {
     ///     (`FolderTile.artworkHeight`), and such a row is over-tall here exactly as it is at Medium
     ///     today — the belt owns it. Compressing a hero by ~112pt for a page whose catalog rows are
     ///     203pt tall would be the worse trade.
+    /// Cap artwork only when the hero's full elastic space still cannot fit its focus frame.
+    nonisolated static func fittedPosterHeight(_ requested: CGFloat, captionVisible: Bool,
+                                               showsCTA: Bool, reservedHeight: CGFloat) -> CGFloat {
+        let caption = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let available = Theme.Size.heroPinnedRowsViewportBudget - reservedHeight + elasticGive(showsCTA: showsCTA)
+        let maximum = available - topReachFloor - bottomReachFloor - caption
+            - Theme.Spacing.lg - Theme.Size.heroPinnedRowsSettledCushion
+        return min(requested, max(1, maximum))
+    }
+
     nonisolated static func plan(posterHeight: CGFloat,
                                  captionVisible: Bool,
                                  showsCTA: Bool,
@@ -310,7 +308,7 @@ enum PinnedRowGeometry {
                                 topReach: baseTopReach,
                                 bottomReach: baseBottomReach)
 
-        guard legacyCompression > 0 || reservedHeight > 0 else {
+        guard !unchanged.fits || legacyCompression > 0 || reservedHeight > 0 else {
             noteIfShort(unchanged)
             return unchanged
         }

@@ -1,200 +1,77 @@
 import SwiftUI
 
-/// First-run / signed-out gate. QR sign-in (scan with the phone, approve, done) is the primary,
-/// default-focused path — typing an email/password with the Siri Remote is painful, so we lead
-/// with the option that needs no on-screen keyboard. Email sign-in, account creation, and guest
-/// mode remain one Select-press away as clearly secondary options. Shown whenever
-/// `AuthRepository` reports `Unauthenticated` — existing guest installs never see this (their
-/// stored anonymous id authenticates immediately).
-///
-/// Self-hosted servers: a "Connect to a Server" action opens the discovery flow, and when the
-/// active server doesn't advertise `tv_login` the email form becomes the primary (default-focused)
-/// action instead of QR — the layout is otherwise unchanged for the official backend.
+/// Phone approval is the primary TV sign-in route; every supported account path stays available.
 struct WelcomeView: View {
     @ObservedObject var model: AuthViewModel
     @StateObject private var server = ActiveServerObserver()
-
     private enum AuthSheet: String, Identifiable {
         case signIn, signUp, qr, server
         var id: String { rawValue }
     }
-
     @State private var sheet: AuthSheet?
-    /// Anchors `.prefersDefaultFocus` so initial D-pad focus lands on the QR action below,
-    /// regardless of layout order.
     @Namespace private var focusNamespace
 
     var body: some View {
         ZStack {
-            Theme.Palette.background.ignoresSafeArea()
-
-            VStack(spacing: Theme.Spacing.sectionGap) {
-                VStack(spacing: Theme.Spacing.lg) {
-                    // Brand mark (the app icon's gradient triangle) instead of a text wordmark —
-                    // same asset family as the icon/top-shelf art, so Welcome reads as the brand
-                    // regardless of which accent theme the user later picks.
-                    Image("LogoMark")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 130)
+            AccountBackdrop()
+            HStack(spacing: 150) {
+                VStack(alignment: .leading, spacing: 30) {
+                    Image("LogoMark").resizable().scaledToFit().frame(width: 180, height: 130)
                         .accessibilityLabel("Nuvio")
-                    if server.supportsTvLogin {
-                        Text("Sign in with your phone — scan a QR code, no typing on the remote.")
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 900)
-                    } else {
-                        Text("Sign in with your email and password to get started.")
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 900)
-                    }
-                    if server.isCustom {
-                        Text("Connected to \(server.displayHost)")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                    }
-                }
-
-                VStack(spacing: Theme.Spacing.xl) {
-                    // Liquid Glass, same as the Detail action row: prominent accent glass for the
-                    // primary action, plain glass for the secondary ones. Plain `.glass` pills
-                    // below are left to the system (see StreamPicker's `.glass` note) — but this
-                    // one is `.glassProminent` + an accent tint, and the "verified on a sim" claim
-                    // this comment used to make only held for the *focused* state (glass's focus
-                    // lift auto-picks dark text regardless of tint). Unfocused, the fill is the
-                    // raw accent tint with no auto contrast, so on the White theme — reachable by
-                    // arrowing down to "Sign In with Email" and back — this label went invisible
-                    // white-on-near-white, same failure as BUG-14's Detail Play button.
-                    // `prominentAccentLabel()` handles both states.
-                    if server.supportsTvLogin {
-                        Button {
-                            model.clearError()
-                            sheet = .qr
-                        } label: {
-                            VStack(spacing: Theme.Spacing.sm) {
-                                Image(systemName: "qrcode")
-                                    .font(Theme.Font.hero)
-                                Text("Sign In with Your Phone")
-                                    .font(Theme.Font.sectionTitle)
-                                Text("Scan a QR code to sign in — no typing required")
-                                    .font(Theme.Font.caption)
-                                    .opacity(0.85)
+                    Text("Your next watch.\nRight where you left off.")
+                        .font(.system(size: 58, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Text("Your library, profiles and watch progress, together on every Nuvio device.")
+                        .font(.title3).foregroundStyle(.secondary)
+                }.frame(width: 680, alignment: .leading)
+                VStack(alignment: .leading, spacing: 30) {
+                    Text("Welcome to Nuvio").font(.largeTitle.bold())
+                    if server.isCustom { Text(server.displayHost).font(.callout).foregroundStyle(.secondary) }
+                    GlassEffectContainer(spacing: 24) {
+                        VStack(alignment: .leading, spacing: 24) {
+                            if server.supportsTvLogin {
+                                Button { open(.qr) } label: {
+                                    Label("Sign In with Your Phone", systemImage: "qrcode")
+                                        .frame(width: 490, alignment: .leading)
+                                }.buttonStyle(.glassProminent).prefersDefaultFocus(true, in: focusNamespace)
                             }
-                            .prominentAccentLabel()
-                            .frame(maxWidth: 640)
-                            .padding(.vertical, Theme.Spacing.xl)
-                        }
-                        .buttonStyle(.glassProminent)
-                        .tint(Theme.Palette.accent)
-                        .prefersDefaultFocus(true, in: focusNamespace)
-                    } else {
-                        // Self-hosted server without `tv_login`: email sign-in is the only
-                        // account path, so it takes the primary slot and default focus.
-                        Button {
-                            model.clearError()
-                            sheet = .signIn
-                        } label: {
-                            VStack(spacing: Theme.Spacing.sm) {
-                                Image(systemName: "envelope")
-                                    .font(Theme.Font.hero)
-                                Text("Sign In with Email")
-                                    .font(Theme.Font.sectionTitle)
-                                Text("This server signs in with email and password")
-                                    .font(Theme.Font.caption)
-                                    .opacity(0.85)
+                            if server.supportsEmailPassword {
+                                Button { open(.signIn) } label: {
+                                    Label("Sign In with Email", systemImage: "envelope")
+                                        .frame(width: 490, alignment: .leading)
+                                }.buttonStyle(.glass).prefersDefaultFocus(!server.supportsTvLogin, in: focusNamespace)
+                                Button("Create Account") { open(.signUp) }.buttonStyle(.glass)
                             }
-                            .prominentAccentLabel()
-                            .frame(maxWidth: 640)
-                            .padding(.vertical, Theme.Spacing.xl)
+                            Button("Continue as Guest") { model.continueAsGuest() }
+                                .buttonStyle(.glass).disabled(model.isBusy)
                         }
-                        .buttonStyle(.glassProminent)
-                        .tint(Theme.Palette.accent)
-                        .prefersDefaultFocus(true, in: focusNamespace)
+                    }.focusScope(focusNamespace)
+                    Button(server.isCustom ? "Change Server" : "Connect to a Server") { open(.server) }
+                        .buttonStyle(.borderless).font(.callout)
+                    if let error = model.errorMessage {
+                        Text(error).foregroundStyle(.red).font(.callout).fixedSize(horizontal: false, vertical: true)
                     }
-
-                    VStack(spacing: Theme.Spacing.md) {
-                        Text("Or continue another way")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-
-                        GlassEffectContainer(spacing: Theme.Spacing.md) {
-                            HStack(spacing: Theme.Spacing.md) {
-                                // Both email routes require `email_password_auth` — discovery
-                                // accepts QR-only servers (tv_login=true, email_password_auth=false),
-                                // and offering email sign-in/sign-up against one would just fail.
-                                if server.supportsTvLogin && server.supportsEmailPassword {
-                                    Button {
-                                        model.clearError()
-                                        sheet = .signIn
-                                    } label: {
-                                        Text("Sign In with Email")
-                                            .font(Theme.Font.meta)
-                                            .padding(.horizontal, Theme.Spacing.lg)
-                                            .padding(.vertical, Theme.Spacing.xs)
-                                    }
-                                    .buttonStyle(.glass)
-                                }
-
-                                if server.supportsEmailPassword {
-                                    Button {
-                                        model.clearError()
-                                        sheet = .signUp
-                                    } label: {
-                                        Text("Create Account")
-                                            .font(Theme.Font.meta)
-                                            .padding(.horizontal, Theme.Spacing.lg)
-                                            .padding(.vertical, Theme.Spacing.xs)
-                                    }
-                                    .buttonStyle(.glass)
-                                }
-
-                                Button {
-                                    model.continueAsGuest()
-                                } label: {
-                                    Text("Continue as Guest")
-                                        .font(Theme.Font.meta)
-                                        .padding(.horizontal, Theme.Spacing.lg)
-                                        .padding(.vertical, Theme.Spacing.xs)
-                                }
-                                .buttonStyle(.glass)
-
-                                Button {
-                                    model.clearError()
-                                    sheet = .server
-                                } label: {
-                                    if server.isCustom {
-                                        Text("Server: \(server.displayHost)")
-                                            .font(Theme.Font.meta)
-                                            .padding(.horizontal, Theme.Spacing.lg)
-                                            .padding(.vertical, Theme.Spacing.xs)
-                                    } else {
-                                        Text("Connect to a Server")
-                                            .font(Theme.Font.meta)
-                                            .padding(.horizontal, Theme.Spacing.lg)
-                                            .padding(.vertical, Theme.Spacing.xs)
-                                    }
-                                }
-                                .buttonStyle(.glass)
-                            }
-                        }
-                    }
-                }
-                .focusScope(focusNamespace)
-            }
-            .padding(Theme.Spacing.screen)
+                }.frame(width: 560, alignment: .leading)
+            }.padding(80)
         }
         .fullScreenCover(item: $sheet) { mode in
             switch mode {
-            case .qr:
-                QrSignInView()
-            case .server:
-                ServerConnectionView()
-            case .signIn, .signUp:
-                AuthView(model: model, isSignUp: mode == .signUp)
+            case .signIn: AuthView(model: model, isSignUp: false)
+            case .signUp: AuthView(model: model, isSignUp: true)
+            case .qr: QrSignInView()
+            case .server: ServerConnectionView()
             }
         }
+    }
+    private func open(_ mode: AuthSheet) { model.clearError(); sheet = mode }
+}
+
+/// A quiet opaque base keeps native glass controls and account text readable.
+struct AccountBackdrop: View {
+    var body: some View {
+        ZStack {
+            Theme.Palette.background
+            RadialGradient(colors: [Theme.Palette.accent.opacity(0.18), .clear],
+                           center: .topLeading, startRadius: 30, endRadius: 1200)
+        }.ignoresSafeArea()
     }
 }

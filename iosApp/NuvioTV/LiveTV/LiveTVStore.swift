@@ -48,37 +48,79 @@ enum LiveTVSecureStorage {
         recent = UserDefaults.standard.stringArray(forKey: "livetv.recent.\(profile)") ?? []
     }
     var groups: [String] { Array(Set(channels.map(\.group))).filter { !["All channels", "Favorites", "Recent"].contains($0) }.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
-    func start() async { if !loaded { await refresh() } }
+    private var refreshTask: Task<Void, Never>?
+    func start() async {
+        guard !loading else { return }
+        if loaded, let refreshedAt, Date().timeIntervalSince(refreshedAt) < 15 * 60 { return }
+        let fingerprint = LiveTVCache.fingerprint(sources)
+        if let cached = await LiveTVCache.shared.read(profile: profile, fingerprint: fingerprint),
+           fingerprint == LiveTVCache.fingerprint(sources) {
+            channels = cached.channels; programmes = cached.programmes; refreshedAt = cached.date
+            if Date().timeIntervalSince(cached.date) < 15 * 60 { loaded = true; return }
+        }
+        await refresh()
+    }
     func refresh() async {
         let token = UUID(); generation = token; loading = true; error = nil
         defer { if generation == token { loading = false } }
         let snapshot = sources
-        var newChannels: [LiveTVChannel] = [], guides: [UUID: [String: [LiveTVProgramme]]] = [:], failures: [String] = []
-        for source in snapshot {
-            do {
-                let result = try await service.load(source)
-                guard generation == token, !Task.isCancelled else { return }
-                newChannels += result.channels
-                guides[source.id] = Dictionary(grouping: result.programmes, by: \.channelID)
-                if let warning = result.guideWarning { failures.append("\(source.name): \(warning)") }
-            } catch {
-                guard generation == token, !Task.isCancelled else { return }
-                // URLSession errors can contain credential-bearing URLs. Present curated text only.
-                let message = (error as? LiveTVError)?.errorDescription ?? "Could not connect. Check the address, network, and provider account."
-                failures.append("\(source.name): \(message)")
-                newChannels += channels.filter { $0.sourceID == source.id }
-                guides[source.id] = programmes[source.id]
+        let service = service
+        var failures: [String] = []
+        await withTaskGroup(of: (LiveTVSource, LiveTVLoadResult?, String?).self) { group in
+            var pending = snapshot.makeIterator()
+            func enqueue(_ source: LiveTVSource) {
+                group.addTask {
+                    do {
+                        let result = try await service.load(source) { channels in
+                            await self.receive(channels, from: source.id, generation: token)
+                        }
+                        return (source, result, nil)
+                    } catch {
+                        let message = (error as? LiveTVError)?.errorDescription ?? "Could not connect. Check the address, network, and provider account."
+                        return (source, nil, message)
+                    }
+                }
+            }
+            // Bound simultaneous provider requests; publish each playlist before its guide completes.
+            for _ in 0..<3 { if let source = pending.next() { enqueue(source) } }
+            for await (source, result, failure) in group {
+                guard generation == token, !Task.isCancelled else { group.cancelAll(); return }
+                if let result {
+                    if result.guideWarning == nil {
+                        programmes[source.id] = Dictionary(grouping: result.programmes, by: \.channelID)
+                    }
+                    if let warning = result.guideWarning { failures.append("\(source.name): \(warning)") }
+                } else if let failure { failures.append("\(source.name): \(failure)") }
+                if let source = pending.next() { enqueue(source) }
             }
         }
         guard generation == token, !Task.isCancelled else { return }
-        channels = newChannels; programmes = guides; loaded = true; refreshedAt = Date()
+        loaded = failures.isEmpty; refreshedAt = Date()
         error = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        if failures.isEmpty {
+            await LiveTVCache.shared.write(.init(fingerprint: LiveTVCache.fingerprint(snapshot), date: Date(),
+                channels: channels, programmes: programmes), profile: profile)
+        }
+    }
+    private func receive(_ incoming: [LiveTVChannel], from source: UUID, generation token: UUID) {
+        guard generation == token else { return }
+        let bySource = Dictionary(grouping: channels.filter { $0.sourceID != source } + incoming, by: \.sourceID)
+        channels = sources.flatMap { bySource[$0.id] ?? [] }
+    }
+    private func refreshInBackground() {
+        generation = UUID()
+        loaded = false
+        refreshTask?.cancel()
+        refreshTask = Task { await refresh() }
     }
     func save(_ source: LiveTVSource) async throws {
         var next = sources
         if let index = next.firstIndex(where: { $0.id == source.id }) { next[index] = source } else { next.append(source) }
         try LiveTVSecureStorage.write(next, profile: profile)
-        sources = next; await refresh()
+        sources = next
+        // Source edits invalidate cached signed URLs immediately. The editor can dismiss now.
+        await LiveTVCache.shared.remove(profile: profile)
+        refreshInBackground()
     }
     func remove(_ source: LiveTVSource) async throws {
         let next = sources.filter { $0.id != source.id }
@@ -87,7 +129,8 @@ enum LiveTVSecureStorage {
         let removed = Set(channels.filter { $0.sourceID == source.id }.map(\.id))
         favorites.subtract(removed); recent.removeAll { removed.contains($0) }; persistPreferences()
         channels.removeAll { $0.sourceID == source.id }; programmes[source.id] = nil
-        await refresh()
+        await LiveTVCache.shared.remove(profile: profile)
+        refreshInBackground()
     }
     func toggleFavorite(_ channel: LiveTVChannel) {
         if favorites.contains(channel.id) { favorites.remove(channel.id) } else { favorites.insert(channel.id) }; persistPreferences()

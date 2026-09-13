@@ -39,9 +39,8 @@ struct PlayerChrome: View {
             }
 
             if state.isBuffering {
-                ProgressView()
-                    .scaleEffect(1.6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                PlayerLoadingView(context: context, coversVideo: state.positionSec < 1)
+                    .allowsHitTesting(false)
             }
 
             LinearGradient(colors: [.clear, .black.opacity(0.65), .black.opacity(0.82)],

@@ -2454,6 +2454,7 @@
         }
       }
     },
+    "Account Settings": {},
     "Acting": {
       "localizations": {
         "de": {
@@ -4368,6 +4369,7 @@
         }
       }
     },
+    "Buffering…": {},
     "Build": {
       "localizations": {
         "de": {
@@ -4709,6 +4711,7 @@
         }
       }
     },
+    "Change Server": {},
     "Changes made in Nuvio are sent to Simkl immediately. Use Sync Now whenever you want Nuvio to check for remote changes sooner.": {
       "localizations": {
         "de": {
@@ -4813,6 +4816,7 @@
         }
       }
     },
+    "Check for changes to this profile’s library and watch progress. Add-ons and shared preferences sync automatically.": {},
     "Check the highlighted fields.": {
       "localizations": {
         "de": {
@@ -5909,6 +5913,7 @@
       }
     },
     "Connected to %@": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -9972,6 +9977,7 @@
         }
       }
     },
+    "Guest profiles are saved on this Apple TV": {},
     "Guide": {},
     "Half": {
       "localizations": {
@@ -10455,6 +10461,7 @@
       }
     },
     "Hold to manage profile": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -11205,6 +11212,7 @@
         }
       }
     },
+    "Install and manage your catalogs and stream providers.": {},
     "Install from manifest URL": {
       "extractionState": "stale",
       "localizations": {
@@ -12030,6 +12038,7 @@
     "Limit reached — turn another source off first": {},
     "Live TV": {},
     "Live TV sources": {},
+    "Loading %@": {},
     "Loading catalogs…": {
       "localizations": {
         "de": {
@@ -12304,6 +12313,7 @@
       }
     },
     "Manage Add-ons": {},
+    "Manage Profiles": {},
     "Manage add-ons, Home rows, API keys, and stream badge packs from a phone or laptop browser on the same network — no on-screen keyboard. Changes only apply after you confirm them here.": {
       "localizations": {
         "de": {
@@ -16347,6 +16357,7 @@
       }
     },
     "Or continue another way": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -17721,7 +17732,6 @@
         }
       }
     },
-    "Preparing playback…": {},
     "Preparing sign-in…": {
       "localizations": {
         "de": {
@@ -17963,6 +17973,7 @@
         }
       }
     },
+    "Profiles sync with your Nuvio account": {},
     "Publishable key discovered automatically": {
       "localizations": {
         "de": {
@@ -19875,6 +19886,7 @@
       }
     },
     "Scan a QR code to sign in — no typing required": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -20392,6 +20404,7 @@
       }
     },
     "Select a profile to continue": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -20529,6 +20542,7 @@
     },
     "Server URL": {},
     "Server: %@": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -21620,6 +21634,7 @@
         }
       }
     },
+    "Sign in to keep your library and progress across devices.": {},
     "Sign in to sync your library, watch progress, and profiles across devices — or continue as a guest on this Apple TV only.": {
       "extractionState": "stale",
       "localizations": {
@@ -21656,6 +21671,7 @@
       }
     },
     "Sign in with your email and password to get started.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -21690,6 +21706,7 @@
       }
     },
     "Sign in with your phone — scan a QR code, no typing on the remote.": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -22509,6 +22526,7 @@
         }
       }
     },
+    "Starting playback…": {},
     "Starts a local config page on your network.": {
       "localizations": {
         "de": {
@@ -23499,6 +23517,7 @@
         }
       }
     },
+    "Sync Nuvio": {},
     "Sync didn't complete. Try again.": {
       "localizations": {
         "de": {
@@ -24831,6 +24850,7 @@
       }
     },
     "This server signs in with email and password": {
+      "extractionState": "stale",
       "localizations": {
         "de": {
           "stringUnit": {
@@ -27259,6 +27279,7 @@
         }
       }
     },
+    "Welcome to Nuvio": {},
     "What Nuvio sends to Simkl, when it checks back, and why some shows leave Continue Watching.": {
       "localizations": {
         "de": {
@@ -27704,6 +27725,9 @@
         }
       }
     },
+    "Your library, profiles and watch progress, together on every Nuvio device.": {},
+    "Your next watch.\nRight where you left off.": {},
+    "Your profiles, library and watch progress follow your Nuvio account.": {},
     "You’ll be signed out of the current server and local data on this Apple TV will be cleared. Your synced data stays on its own server.": {
       "localizations": {
         "de": {

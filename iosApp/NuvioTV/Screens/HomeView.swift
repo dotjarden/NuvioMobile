@@ -17,6 +17,7 @@ struct HomeView: View {
     @ObservedObject var model: HomeViewModel
     /// Browse supplies catalog data and filters; both tabs use this same presentation and focus graph.
     var browse: HomeBrowseConfiguration? = nil
+    @State private var browsePositions = BrowsePositionMemory()
     private var displayRows: [HomeRow] { browse?.rows ?? model.rows }
     private var includesPersonalRows: Bool { browse == nil }
     private var filterBarHeight: CGFloat { browse == nil ? 0 : 84 }
@@ -1010,7 +1011,9 @@ struct HomeView: View {
                     // present (blank values count as missing).
                     poster: target.entry.poster,
                     episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
-                    synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }()
+                    synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
+                    logo: target.entry.logo,
+                    background: target.entry.background
                 )
             }
         }
@@ -1252,6 +1255,7 @@ struct HomeView: View {
                     // `debug_pinned` line say `last=1` instead of reading an unreachable rest as a
                     // fresh failure.
                     .environment(\.pinnedRowIsLast, row.id == displayRows.last?.id)
+                    .modifier(BrowseFilterReturnModifier(action: browse != nil && row.id == displayRows.first?.id ? browse?.focusFilters : nil))
                 }
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
@@ -1269,6 +1273,8 @@ struct HomeView: View {
             // content below it to protect), then, only if still short, the top reach (88 → 64, and
             // never above 88, which is the dial that kills focus resolution). At every Poster Size
             // that fits today these are exactly `heroPinnedRowTopPad` / `heroPinnedRowBottomReach`.
+            .environment(\.browsePositionMemory, browsePositions)
+            .environment(\.posterStyle, pinned ? pinnedPosterStyle : posterStyle)
             .environment(\.rowCardTopReach, pinned ? pinnedPlan.topReach : 0)
             .environment(\.rowCardBottomReach, pinned ? pinnedPlan.bottomReach : 0)
             // "Trailer Location: Hero" — tell every row card to skip the inline morph, because
@@ -1691,8 +1697,19 @@ struct HomeView: View {
     ///
     /// STATIC in the Wave 10 sense: it changes when a Settings/Appearance value changes and at no
     /// other time — never per row, per focus, or per rest.
+    private var pinnedPosterStyle: PosterStyle {
+        var style = posterStyle
+        guard heroContainerPinned, !style.landscapeCatalogRows else { return style }
+        let maximum = PinnedRowGeometry.fittedPosterHeight(style.height, captionVisible: style.showTitle,
+            showsCTA: heroCarouselActive, reservedHeight: filterBarHeight)
+        if style.height > maximum, maximum > 0 {
+            style.width *= maximum / style.height
+            style.height = maximum
+        }
+        return style
+    }
     private var pinnedPlan: PinnedRowGeometry.Plan {
-        PinnedRowGeometry.plan(posterHeight: posterStyle.height,
+        PinnedRowGeometry.plan(posterHeight: pinnedPosterStyle.height,
                                captionVisible: posterStyle.showTitle,
                                showsCTA: heroCarouselActive,
                                landscapeRows: posterStyle.landscapeCatalogRows,
@@ -4150,5 +4167,14 @@ struct HeroPageDots: View {
         .glassEffect(.regular, in: .capsule)
         .animation(.easeInOut(duration: 0.3), value: index)
         .accessibilityHidden(true)
+    }
+}
+
+/// Scoped to Browse's first shelf; never steals Up while walking between deeper catalog rows.
+private struct BrowseFilterReturnModifier: ViewModifier {
+    let action: (() -> Void)?
+    @ViewBuilder func body(content: Content) -> some View {
+        if let action { content.onMoveCommand { if $0 == .up { action() } } }
+        else { content }
     }
 }

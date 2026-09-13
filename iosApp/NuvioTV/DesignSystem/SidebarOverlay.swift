@@ -148,7 +148,6 @@ struct SidebarItem: Identifiable, Equatable {
         SidebarItem(id: 6, title: "Live TV", systemImage: "tv"),
         SidebarItem(id: 1, title: "Search", systemImage: "magnifyingglass"),
         SidebarItem(id: 2, title: "Library", systemImage: "books.vertical"),
-        SidebarItem(id: 3, title: "Add-ons", systemImage: "puzzlepiece.extension"),
         SidebarItem(id: 4, title: "Settings", systemImage: "gearshape"),
         SidebarItem(id: 5, title: "Profile", systemImage: "person.crop.circle"),
     ]

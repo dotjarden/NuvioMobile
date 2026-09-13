@@ -46,6 +46,15 @@ struct AccountServicesSettingsPane: View {
                 }
             }
 
+            if !auth.isAnonymous {
+                SettingsActionRow(title: String(localized: "Sync Nuvio"),
+                    subtitle: String(localized: "Check for changes to this profile’s library and watch progress. Add-ons and shared preferences sync automatically."),
+                    systemImage: "arrow.triangle.2.circlepath") {
+                    SyncManager.shared.requestForegroundPull(profileId: ProfileRepository.shared.activeProfileId, force: true)
+                    SyncManager.shared.pullAllForProfile(profileId: ProfileRepository.shared.activeProfileId)
+                }
+            }
+
             SettingsSection(String(localized: "Server")) {
                 serverSection
             }

@@ -65,6 +65,11 @@ struct PlaybackContext: Identifiable {
     var requestHeaders: [String: String] = [:]
     /// Live channels must never resume, scrobble, or enter movie/episode watch history.
     var isLive: Bool = false
+    /// Title artwork and an explicit handoff position travel with the stream across engines.
+    var logo: String? = nil
+    var resumePosition: Double? = nil
+    /// Synthetic playback fixtures exercise controls without recording account activity.
+    var recordsWatchProgress = true
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and
@@ -86,6 +91,8 @@ struct PlaybackContext: Identifiable {
 
 /// Title-level catalog facts shown as chips in the player's Info tab.
 struct PlaybackMeta: Equatable {
+    var logo: String? = nil
+    var background: String? = nil
     var year: String? = nil
     var runtime: String? = nil
     var imdbRating: String? = nil
@@ -100,6 +107,8 @@ struct PlaybackMeta: Equatable {
     /// From a full catalog record (Detail / episode shelf launch paths).
     init(details: MetaDetails) {
         func nonEmpty(_ s: String?) -> String? { (s ?? "").isEmpty ? nil : s }
+        logo = nonEmpty(details.logo)
+        background = nonEmpty(details.background)
         year = nonEmpty(details.releaseInfo)
         runtime = nonEmpty(details.runtime)
         imdbRating = nonEmpty(details.imdbRating)

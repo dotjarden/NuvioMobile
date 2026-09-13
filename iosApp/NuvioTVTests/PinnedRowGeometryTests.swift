@@ -69,17 +69,29 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// captions ON, its recorded band table shows zero corrections, and keying its compression to
     /// the link frame would compress the default configuration's hero by ~82pt to fix a rest nobody
     /// has reported. The fix applies to the sizes that were already compressing.
-    func testSmallAndMediumSpendNothingAtEveryFlagCombination() {
+    func testSmallAndMediumFitIncludingTheirCaptions() {
         for (label, plan) in Self.crossProduct() where label.hasPrefix("Small") || label.hasPrefix("Medium") {
-            XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
-            XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
-            XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
-            XCTAssertEqual(plan.viewport, Theme.Size.heroPinnedRowsViewportBudget, accuracy: epsilon, label)
+            XCTAssertTrue(plan.fits, label)
+            if label.hasPrefix("Small") { XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label) }
         }
     }
 
-    /// Landscape catalog rows are 203pt tall (`Theme.Size.landscapeHeight`) — 323 against the 455
-    /// budget with the band and cushion — so nothing is ever spent for them, at any Poster Size.
+    func testHomeAndBrowseFitEverySupportedPosterSize() {
+        for (_, requested) in Self.allSizes {
+            for reserved: CGFloat in [0, 84] {
+                for caption in [false, true] {
+                    for cta in [false, true] {
+                        let height = PinnedRowGeometry.fittedPosterHeight(requested, captionVisible: caption, showsCTA: cta, reservedHeight: reserved)
+                        let plan = PinnedRowGeometry.plan(posterHeight: height, captionVisible: caption, showsCTA: cta, landscapeRows: false, reservedHeight: reserved)
+                        XCTAssertTrue(plan.fits, "A supported card size must never be clipped by its viewport")
+                        XCTAssertLessThanOrEqual(height, requested)
+                        XCTAssertGreaterThan(height, 0)
+                    }
+                }
+            }
+        }
+    }
+
     func testLandscapeRowsSpendNothingAtEverySize() {
         for (label, plan) in Self.crossProduct() where label.contains("landscape=true") {
             XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
@@ -325,8 +337,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                 XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon, label)
                 XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon, label)
             } else {
-                XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
-                XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
+                XCTAssertGreaterThanOrEqual(plan.topReach, PinnedRowGeometry.topReachFloor - epsilon, label)
+                XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor - epsilon, label)
             }
         }
     }

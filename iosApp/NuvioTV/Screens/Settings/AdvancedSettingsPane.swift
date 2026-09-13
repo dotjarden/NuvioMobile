@@ -6,8 +6,16 @@ import SharedCore
 /// regrouped into a per-category pane.
 struct AdvancedSettingsPane: View {
     @ObservedObject var remote: RemoteSetupViewModel
+    @State private var cacheCleared = false
 
     var body: some View {
+        SettingsSection(String(localized: "Storage")) {
+            SettingsActionRow(title: String(localized: "Clear Artwork Cache"),
+                subtitle: cacheCleared ? String(localized: "Artwork cache cleared. Images download again when needed.") : String(localized: "Free cached image storage. Your saved positions, library and accounts are kept."),
+                systemImage: "internaldrive") {
+                ArtworkStore.clearCache(); cacheCleared = true
+            }
+        }
         SettingsSection(String(localized: "Remote Setup")) {
             remoteSetupSection
         }

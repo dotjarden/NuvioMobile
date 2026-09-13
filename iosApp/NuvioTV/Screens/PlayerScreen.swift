@@ -16,6 +16,12 @@ struct PlayerScreen: View {
     @State private var decision: EngineDecision?
     /// Set when the native path fails; pins this context to mpv.
     @State private var forcedMPV = false
+    @State private var fallbackPosition: Double?
+    private var fallbackContext: PlaybackContext {
+        var value = context
+        value.resumePosition = fallbackPosition
+        return value
+    }
 
     private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
 
@@ -32,16 +38,13 @@ struct PlayerScreen: View {
             switch shown {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
-                                   onFallback: { _ in forcedMPV = true },
+                                   onFallback: { position in fallbackPosition = position > 0 ? position : nil; forcedMPV = true },
                                    routingNote: decision?.displayNote)
             case .mpv:
-                MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
+                MPVPlayerScreen(context: fallbackContext, onPlayNext: onPlayNext,
                                 routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote)
             case .deciding:
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    ProgressView().scaleEffect(1.5)
-                }
+                PlayerLoadingView(context: context)
             }
         }
         .task(id: context.id) { await decideEngine() }
