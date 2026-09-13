@@ -36,9 +36,8 @@ struct ProfileAvatar: View {
     }
 }
 
-/// The "Who's watching?" launch gate. Shows the profiles as a focusable row; selecting one enters
-/// the app — PIN-locked profiles prompt for their 4-digit PIN first (as do edit/delete on them).
-/// Long-press a profile to edit/delete; the trailing tile adds a new profile.
+/// The launch gate keeps profile selection separate from explicit profile management.
+/// Account repositories and PIN checks remain the authority for every action.
 struct ProfileSelectionView: View {
     @ObservedObject var model: ProfilesViewModel
     var onSelected: () -> Void
@@ -46,105 +45,105 @@ struct ProfileSelectionView: View {
     @State private var editing: ProfileEditTarget?
     @State private var managing = false
     @State private var pinPrompt: PinPrompt?
-
-    /// Anchors `.prefersDefaultFocus` so initial D-pad focus lands on the user's own (first)
-    /// profile tile instead of the Add-profile tile, regardless of layout order.
     @Namespace private var defaultFocusNamespace
-    /// Profiles arrive asynchronously (`model.start()`), so at first render the row may contain
-    /// only the Add tile and `.prefersDefaultFocus` settles on it. This nudges focus onto the
-    /// first real profile once profiles land, one time only.
     @FocusState private var focusedProfile: Int32?
     @State private var didSeedDefaultFocus = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var selectedColor: Color {
+        let profile = model.profiles.first { $0.profileIndex == focusedProfile } ?? model.activeProfile
+        return profile.flatMap { Color(hexString: $0.avatarColorHex) } ?? Theme.Palette.accent
+    }
 
     var body: some View {
         ZStack {
-            AccountBackdrop()
+            Theme.Palette.background.ignoresSafeArea()
+            RadialGradient(colors: [selectedColor.opacity(0.24), .clear],
+                           center: UnitPoint(x: 0.5, y: 0.46), startRadius: 60, endRadius: 850)
+                .ignoresSafeArea()
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: focusedProfile)
 
-            VStack(spacing: Theme.Spacing.sectionGap) {
-                VStack(spacing: Theme.Spacing.md) {
-                    Text("Who\u{2019}s watching?")
-                        .font(Theme.Font.hero)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+            VStack {
+                HStack {
+                    HStack(spacing: 14) {
+                        Image("LogoMark").resizable().scaledToFit().frame(width: 48, height: 38)
+                        Text("Nuvio").font(.system(size: 30, weight: .semibold))
+                    }.accessibilityElement(children: .combine)
+                    Spacer()
+                    Label(model.isCloudAccount ? "Nuvio account" : "Guest",
+                          systemImage: model.isCloudAccount ? "person.crop.circle" : "appletv")
+                        .font(.system(size: 22)).foregroundStyle(.secondary)
                 }
+                Spacer()
+            }.padding(.horizontal, 90).padding(.vertical, 60)
 
-                // Max 6 profiles + Add tile fit on screen, so no ScrollView — a plain HStack
-                // centers the row in the middle of the screen (a ScrollView would pin it left).
-                HStack(alignment: .top, spacing: Theme.Spacing.xl) {
-                        ForEach(model.profiles, id: \.profileIndex) { profile in
+            VStack(spacing: 64) {
+                Text(managing ? "Manage Profiles" : "Who’s watching?")
+                    .font(.system(size: 56, weight: .medium))
+                    .foregroundStyle(.white)
+                    .accessibilityIdentifier("profiles.heading")
+
+                // Six fixed-width portraits fit without clipping the native focus lift.
+                HStack(alignment: .top, spacing: 36) {
+                    ForEach(model.profiles, id: \.profileIndex) { profile in
+                        Button {
+                            requirePin(for: profile, action: managing ? .edit : .select)
+                        } label: {
+                            ProfileTileLabel(profile: profile, avatars: model.avatars,
+                                             managing: managing,
+                                             isCurrent: profile.profileIndex == model.activeProfile?.profileIndex)
+                        }
+                        .buttonStyle(.borderless)
+                        .focused($focusedProfile, equals: profile.profileIndex)
+                        .prefersDefaultFocus(
+                            profile.profileIndex == (model.activeProfile?.profileIndex ?? model.profiles.first?.profileIndex),
+                            in: defaultFocusNamespace
+                        )
+                        .accessibilityLabel(profile.name)
+                        .accessibilityValue(managing ? "Edit profile" : (profile.pinEnabled ? "Locked" : ""))
+                        .accessibilityIdentifier("profiles.profile.\(profile.profileIndex)")
+                        .contextMenu {
                             Button {
-                                requirePin(for: profile, action: managing ? .edit : .select)
-                            } label: {
-                                profileTile(name: profile.name, isPrimary: profile.profileIndex == 1) {
-                                    ZStack(alignment: .bottomTrailing) {
-                                        ProfileAvatar(profile: profile, avatars: model.avatars)
-                                        if profile.pinEnabled {
-                                            Image(systemName: "lock.fill")
-                                                .font(Theme.Font.body)
-                                                .foregroundStyle(Theme.Palette.textPrimary)
-                                                .padding(10)
-                                                .glassEffect(.regular, in: Circle())
-                                        } else if profile.profileIndex == 1 {
-                                            // Primary-profile star badge (mobile reference).
-                                            Image(systemName: "star.fill")
-                                                .font(Theme.Font.caption)
-                                                .foregroundStyle(.black)
-                                                .padding(8)
-                                                .background(Theme.Palette.star, in: Circle())
-                                        }
-                                    }
-                                }
-                            }
-                            .buttonStyle(.borderless)
-                            .focused($focusedProfile, equals: profile.profileIndex)
-                            .prefersDefaultFocus(
-                                profile.profileIndex == (model.activeProfile?.profileIndex ?? model.profiles.first?.profileIndex),
-                                in: defaultFocusNamespace
-                            )
-                            .contextMenu {
-                                Button {
-                                    requirePin(for: profile, action: .edit)
-                                } label: { Label("Edit Profile", systemImage: "pencil") }
-                                if model.profiles.count > 1 {
-                                    Button(role: .destructive) {
-                                        requirePin(for: profile, action: .delete)
-                                    } label: { Label("Delete Profile", systemImage: "trash") }
-                                }
+                                requirePin(for: profile, action: .edit)
+                            } label: { Label("Edit Profile", systemImage: "pencil") }
+                            if model.profiles.count > 1 {
+                                Button(role: .destructive) {
+                                    requirePin(for: profile, action: .delete)
+                                } label: { Label("Delete Profile", systemImage: "trash") }
                             }
                         }
+                    }
+                }
+                .frame(minHeight: 310)
+                .padding(.vertical, 20)
+                .focusSection()
+                .focusScope(defaultFocusNamespace)
 
+                GlassEffectContainer(spacing: 30) {
+                    HStack(spacing: 30) {
+                        Button {
+                            managing.toggle()
+                        } label: {
+                            Label(managing ? "Done" : "Manage Profiles", systemImage: managing ? "checkmark" : "pencil")
+                                .font(.system(size: 23, weight: .medium))
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityIdentifier("profiles.manage")
                         if model.profiles.count < model.maxProfiles {
                             Button {
                                 editing = ProfileEditTarget(profile: nil)
                             } label: {
-                                profileTile(name: String(localized: "Add Profile")) {
-                                    ZStack {
-                                        Circle().strokeBorder(Theme.Palette.textSecondary, lineWidth: 3)
-                                        Image(systemName: "plus")
-                                            .font(Theme.Font.hero)
-                                            .foregroundStyle(Theme.Palette.textSecondary)
-                                    }
-                                    .frame(width: 170, height: 170)
-                                }
+                                Label("Add Profile", systemImage: "plus")
+                                    .font(.system(size: 23, weight: .medium))
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.glass)
+                            .accessibilityIdentifier("profiles.add")
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, Theme.Spacing.screen)
-                    .padding(.vertical, Theme.Spacing.lg)
-                    .focusSection()
-                    .focusScope(defaultFocusNamespace)
-
-                Button {
-                    managing.toggle()
-                } label: {
-                    Label(managing ? "Done" : "Manage Profiles", systemImage: managing ? "checkmark" : "pencil")
-                }.buttonStyle(.glass)
-                .accessibilityIdentifier("profiles.manage")
-                Text(model.isCloudAccount ? "Profiles sync with your Nuvio account" : "Guest profiles are saved on this Apple TV")
-                    .font(.callout).foregroundStyle(.secondary)
-
+                }.focusSection()
             }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 80)
         }
         .onAppear { model.start() }
         .onChange(of: model.profiles.count) { oldCount, newCount in
@@ -208,51 +207,45 @@ struct ProfileSelectionView: View {
         }
     }
 
-    private func profileTile<Content: View>(
-        name: String,
-        isPrimary: Bool = false,
-        @ViewBuilder avatar: () -> Content
-    ) -> some View {
-        ProfileTileLabel(name: name, isPrimary: isPrimary, avatar: avatar)
-    }
 }
 
-/// Focus-aware profile tile label used with the platter-free `.poster` button style: no grey
-/// border — the focused avatar zooms slightly and gets a soft white + accent glow, and the name
-/// brightens. `@Environment(\.isFocused)` reflects the enclosing Button's focus.
-private struct ProfileTileLabel<Content: View>: View {
-    let name: String
-    var isPrimary: Bool = false
-    let avatar: Content
-
+/// Native focus lift, one portrait outline and a fixed caption slot keep selection legible
+/// without a rectangular tile or a second scaling animation.
+private struct ProfileTileLabel: View {
+    let profile: NuvioProfile
+    let avatars: [AvatarCatalogItem]
+    let managing: Bool
+    let isCurrent: Bool
     @Environment(\.isFocused) private var isFocused
 
-    init(name: String, isPrimary: Bool = false, @ViewBuilder avatar: () -> Content) {
-        self.name = name
-        self.isPrimary = isPrimary
-        self.avatar = avatar()
-    }
-
     var body: some View {
-        VStack(spacing: Theme.Spacing.md) {
-            // Focus motion comes from the system `.borderless` lift (HIG revamp) — no custom
-            // scale or glow on top of it.
-            avatar
-            Text(name)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                .lineLimit(1)
-            if isPrimary {
-                Text("PRIMARY")
-                    .font(Theme.Font.caption)
-                    .tracking(2)
-                    .foregroundStyle(Theme.Palette.star)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, 4)
-                    .glassEffect(.regular, in: .capsule)
+        VStack(spacing: 24) {
+            ProfileAvatar(profile: profile, size: 220, avatars: avatars)
+                .overlay {
+                    Circle().strokeBorder(.white.opacity(isFocused ? 0.95 : 0.12), lineWidth: isFocused ? 4 : 1)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if managing || profile.pinEnabled {
+                        Image(systemName: managing ? "pencil" : "lock.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(Color(white: 0.14), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.2), lineWidth: 1))
+                    }
+                }
+            VStack(spacing: 8) {
+                Text(profile.name)
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(isFocused ? .white : .white.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(managing ? "Edit Profile" : (isCurrent ? "Last used" : ""))
+                    .font(.system(size: 18))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(height: 24)
             }
-        }
-        .animation(.easeOut(duration: 0.18), value: isFocused)
+        }.frame(width: 240)
     }
 }
 
