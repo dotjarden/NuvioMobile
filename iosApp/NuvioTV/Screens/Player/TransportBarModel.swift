@@ -7,6 +7,18 @@ import CoreGraphics
 /// or nil. The controller holds one as `seekPreviewSource`; nil means the scrub card shows time only.
 protocol SeekPreviewSource: AnyObject, Sendable {
     func thumbnail(near sec: Double) async -> CGImage?
+    /// P3: the frame plus its stamp and origin, so the scrub path can tell a near hit from a far one.
+    func match(near sec: Double) async -> SeekPreviewMatch?
+}
+
+/// Where a stored preview frame came from (P3): played by the viewer, or decoded ahead of them.
+nonisolated enum PreviewFrameOrigin: String, Sendable { case harvest, decode }
+
+/// A seek-preview lookup hit: the frame, the time it shows, and its origin.
+nonisolated struct SeekPreviewMatch: @unchecked Sendable {
+    let image: CGImage
+    let sec: Double
+    let origin: PreviewFrameOrigin
 }
 
 struct TransportSpan: Equatable, Hashable { var start: Double; var end: Double; var kind: String? }

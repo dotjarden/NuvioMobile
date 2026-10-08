@@ -22,6 +22,18 @@ private final class FakeCodec: PreviewFrameCodec, @unchecked Sendable {
     }
 }
 
+/// Counts encodes (P3: a rejected decode insert must not pay one).
+private final class CountingCodec: PreviewFrameCodec, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _encodes = 0
+    var encodes: Int { lock.lock(); defer { lock.unlock() }; return _encodes }
+    func encode(_ image: CGImage) -> Data? {
+        lock.lock(); _encodes += 1; lock.unlock()
+        return Data(count: image.width * 10)
+    }
+    func decode(_ data: Data) -> CGImage? { SeekPreviewStoreTests.image(width: 1) }
+}
+
 final class SeekPreviewStoreTests: XCTestCase {
     static func image(width: Int, height: Int = 1) -> CGImage {
         let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -234,5 +246,208 @@ final class SeekPreviewStoreTests: XCTestCase {
         let back = data.flatMap { codec.decode($0) }
         XCTAssertEqual(back?.width, 320)
         XCTAssertEqual(back?.height, 180)
+    }
+
+    // MARK: - P3 merge rules (origin, snapshot, decode caps)
+
+    private func insert(_ s: SeekPreviewStore, _ w: Int = 4, at t: Double, _ o: PreviewFrameOrigin) async -> SeekPreviewInsertOutcome {
+        await s.insert(img(w), at: t, origin: o).outcome
+    }
+
+    // P3-1
+    func testHarvestWithinOneSecondOfDecodeReplacesIt() async {
+        let codec = FakeCodec()
+        let s = store(codec: codec)
+        let first = await insert(s, 3, at: 10, .decode)
+        let second = await insert(s, 9, at: 10.6, .harvest)
+        XCTAssertEqual(first, .stored)
+        XCTAssertEqual(second, .replaced)
+        let snap = await s.snapshot()
+        XCTAssertEqual(snap.count, 1)
+        XCTAssertEqual(snap.harvest, 1)
+        XCTAssertEqual(snap.decode, 0)
+        let m = await s.match(near: 10.6)
+        XCTAssertEqual(m?.origin, .harvest)
+        XCTAssertEqual(m?.sec, 10.6)
+        XCTAssertEqual(codec.lastDecodedTag, 9)
+    }
+
+    // P3-2
+    func testDecodeWithinOneSecondOfHarvestIsKeptExisting() async {
+        let s = store()
+        _ = await insert(s, 3, at: 10, .harvest)
+        let before = await s.byteCount
+        let r = await s.insert(img(9), at: 10.9, origin: .decode)
+        XCTAssertEqual(r.outcome, .keptExisting)
+        XCTAssertEqual(r.snapshot.bytes, before)
+        XCTAssertEqual(r.snapshot.harvest, 1)
+        XCTAssertEqual(r.snapshot.decode, 0)
+    }
+
+    // P3-3
+    func testDecodeWithinOneSecondOfDecodeIsKeptExisting() async {
+        let codec = FakeCodec()
+        let s = store(codec: codec)
+        _ = await insert(s, 3, at: 10, .decode)
+        let r = await insert(s, 9, at: 9.2, .decode)
+        XCTAssertEqual(r, .keptExisting)
+        _ = await s.thumbnail(near: 10)
+        XCTAssertEqual(codec.lastDecodedTag, 3)
+    }
+
+    // P3-4 (C17): densest decode entry goes first, never a harvest entry while a decode one is left.
+    func testHarvestOverCapEvictsDensestDecodeEntry() async {
+        let s = store(maxEntries: 4)
+        _ = await insert(s, at: 0, .decode)      // coarse
+        _ = await insert(s, at: 60, .decode)     // coarse
+        _ = await insert(s, at: 100, .harvest)
+        _ = await insert(s, at: 63, .decode)     // 3 s from 60: the densest pair
+        let r = await s.insert(img(), at: 200, origin: .harvest)
+        XCTAssertEqual(r.outcome, .stored)
+        XCTAssertEqual(r.snapshot.count, 4)
+        // 60 and 63 tie on gap 3; 60 is older and goes. The coarse 0 and both harvest frames stay.
+        XCTAssertEqual(r.snapshot.stamps, [0, 63, 100, 200])
+        XCTAssertEqual(r.snapshot.harvest, 2)
+    }
+
+    // P3-5
+    func testHarvestOverCapWithNoDecodeEntriesEvictsOldestHarvest() async {
+        let s = store(maxEntries: 2)
+        _ = await insert(s, at: 300, .harvest)
+        _ = await insert(s, at: 10, .harvest)
+        let r = await s.insert(img(), at: 20, origin: .harvest)
+        XCTAssertEqual(r.snapshot.stamps, [10, 20])
+    }
+
+    // P3-6
+    func testDecodeAtEntryCapIsRejectedWithoutEncodeOrEviction() async {
+        let codec = CountingCodec()
+        let s = SeekPreviewStore(streamKey: "t", codec: codec, maxEntries: 2, maxBytes: 1 << 20)
+        _ = await s.insert(img(), at: 0, origin: .harvest)
+        _ = await s.insert(img(), at: 10, origin: .decode)
+        let encodesBefore = codec.encodes
+        let r = await s.insert(img(), at: 20, origin: .decode)
+        XCTAssertEqual(r.outcome, .rejectedFull)
+        XCTAssertEqual(codec.encodes, encodesBefore, "a rejected decode never pays the encode")
+        XCTAssertEqual(r.snapshot.stamps, [0, 10])
+        XCTAssertFalse(r.snapshot.acceptsDecode)
+        let accepts = await s.acceptsDecode
+        XCTAssertFalse(accepts)
+    }
+
+    // P3-7
+    func testByteCapRejectsDecodeAndEvictsForHarvest() async {
+        let s = store(maxEntries: 100, maxBytes: 100)    // 40 bytes per width-4 entry
+        _ = await insert(s, at: 0, .decode)
+        _ = await insert(s, at: 10, .decode)
+        let full = await s.snapshot()
+        XCTAssertFalse(full.acceptsDecode, "80 + 40 > 100")
+        let rejected = await insert(s, at: 20, .decode)
+        XCTAssertEqual(rejected, .rejectedFull)
+        let r = await s.insert(img(), at: 30, origin: .harvest)
+        XCTAssertEqual(r.outcome, .stored)
+        XCTAssertEqual(r.snapshot.bytes, 80)
+        XCTAssertEqual(r.snapshot.harvest, 1)
+        XCTAssertEqual(r.snapshot.decode, 1)
+        // Only harvest left over the cap: oldest harvest goes (P2).
+        _ = await s.setCaps(maxEntries: 100, maxBytes: 40)
+        let snap = await s.snapshot()
+        XCTAssertEqual(snap.stamps, [30])
+    }
+
+    // P3-8
+    func testMatchReturnsStampAndOriginAndThumbnailAgrees() async {
+        let s = store()
+        _ = await insert(s, at: 40, .decode)
+        _ = await insert(s, at: 50, .harvest)
+        let m = await s.match(near: 42)
+        XCTAssertEqual(m?.sec, 40)
+        XCTAssertEqual(m?.origin, .decode)
+        let t = await s.thumbnail(near: 42)
+        XCTAssertTrue(t === m?.image, "thumbnail(near:) is match(near:)?.image (same cached decode)")
+        let source: SeekPreviewSource = s
+        let viaProtocol = await source.match(near: 49)
+        XCTAssertEqual(viaProtocol?.origin, .harvest)
+        let none = await s.match(near: 500)
+        XCTAssertNil(none)
+    }
+
+    // P3-9 (C18): concrete stamps.
+    func testKeyframeSpacingRaisesToleranceUpToThirty() async {
+        let s = store()
+        _ = await insert(s, at: 0, .harvest)
+        _ = await insert(s, at: 10, .harvest)                 // spacing 10 (fewer than 3 entries)
+        var tol = await s.defaultTolerance()
+        XCTAssertEqual(tol, 10)
+        tol = await s.setKeyframeSpacing(8).tolerance
+        XCTAssertEqual(tol, 10)
+        tol = await s.setKeyframeSpacing(12).tolerance
+        XCTAssertEqual(tol, 12)
+        let hit = await s.thumbnail(near: 22)
+        XCTAssertNotNil(hit)
+        tol = await s.setKeyframeSpacing(40).tolerance
+        XCTAssertEqual(tol, 30)
+        tol = await s.setKeyframeSpacing(nil).tolerance
+        XCTAssertEqual(tol, 10)
+        tol = await s.setKeyframeSpacing(.nan).tolerance
+        XCTAssertEqual(tol, 10)
+    }
+
+    // P3-10
+    func testCountsAndStampsTrackInsertsReplacesAndEvictions() async {
+        let s = store(maxEntries: 3)
+        _ = await insert(s, at: 5, .decode)
+        _ = await insert(s, at: 15, .decode)
+        _ = await insert(s, at: 25, .harvest)
+        var c = await s.counts
+        XCTAssertEqual(c.harvest, 1); XCTAssertEqual(c.decode, 2)
+        _ = await insert(s, at: 15.5, .harvest)                // replaces the decode at 15
+        c = await s.counts
+        XCTAssertEqual(c.harvest, 2); XCTAssertEqual(c.decode, 1)
+        _ = await insert(s, at: 35, .harvest)                  // evicts the decode at 5
+        c = await s.counts
+        XCTAssertEqual(c.harvest, 3); XCTAssertEqual(c.decode, 0)
+        let stamps = await s.stamps()
+        XCTAssertEqual(stamps, [15.5, 25, 35])
+    }
+
+    // P3-11
+    func testSnapshotIsTakenAfterTheInsert() async {
+        let s = store()
+        let r = await s.insert(img(4), at: 7, origin: .decode)
+        XCTAssertEqual(r.snapshot, SeekPreviewSnapshot(count: 1, bytes: 40, harvest: 0, decode: 1, stamps: [7],
+                                                       acceptsDecode: true, tolerance: 10))
+        let invalid = await s.insert(img(), at: -3, origin: .decode)
+        XCTAssertEqual(invalid.outcome, .invalid)
+        XCTAssertEqual(invalid.snapshot.count, 1)
+        let cleared = await s.removeAll()
+        XCTAssertEqual(cleared, .empty)
+    }
+
+    // P3-12
+    func testDecodeCapsAndModeCaps() async {
+        XCTAssertEqual(SeekPreviewStore.caps(for: .decode).maxEntries, 800)
+        XCTAssertEqual(SeekPreviewStore.caps(for: .decode).maxBytes, 16 * 1024 * 1024)
+        XCTAssertEqual(SeekPreviewStore.caps(for: .harvest).maxEntries, 200)
+        XCTAssertEqual(SeekPreviewStore.caps(for: .off).maxBytes, 6 * 1024 * 1024)
+        let s = store(maxEntries: 1)
+        _ = await insert(s, at: 0, .harvest)
+        let before = await s.acceptsDecode
+        XCTAssertFalse(before)
+        let after = await s.setCaps(maxEntries: 800, maxBytes: 16 * 1024 * 1024)
+        XCTAssertTrue(after.acceptsDecode)
+        let r = await insert(s, at: 10, .decode)
+        XCTAssertEqual(r, .stored)
+    }
+
+    // P3-13: a decoded frame never displaces a harvest frame, even when the store is full of them.
+    func testDecodeNeverEvictsHarvest() async {
+        let s = store(maxEntries: 2)
+        _ = await insert(s, at: 0, .harvest)
+        _ = await insert(s, at: 10, .harvest)
+        let r = await s.insert(img(), at: 50, origin: .decode)
+        XCTAssertEqual(r.outcome, .rejectedFull)
+        XCTAssertEqual(r.snapshot.stamps, [0, 10])
+        XCTAssertEqual(r.snapshot.harvest, 2)
     }
 }
