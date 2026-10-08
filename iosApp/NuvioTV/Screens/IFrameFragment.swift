@@ -21,6 +21,20 @@ enum IFrameFragment {
         var firstSampleSize: Int
     }
 
+    /// Apple's own fMP4 I-frame entries are byte ranges that keep the ORIGINAL `moof` (every sample
+    /// still listed in the `trun`) and simply end after the first sample's bytes, so the `mdat`
+    /// size field claims more than the resource holds. This variant reproduces that shape exactly.
+    static func cutAfterFirstSample(of seg: Data) -> Data? {
+        guard seg.count >= 16, boxType(seg, at: 0) == "moof" else { return nil }
+        let moofSize = Int(be32(seg, 0))
+        guard moofSize >= 16, moofSize + 8 <= seg.count, boxType(seg, at: moofSize) == "mdat",
+              let traf = child(seg, in: 8..<moofSize, type: "traf"),
+              let trunRange = child(seg, in: (traf.lowerBound + 8)..<traf.upperBound, type: "trun"),
+              let trun = parseTrun(seg, range: trunRange), trun.firstSampleSize > 0,
+              moofSize + 8 + trun.firstSampleSize <= seg.count else { return nil }
+        return seg.subdata(in: 0..<(moofSize + 8 + trun.firstSampleSize))
+    }
+
     static func firstSample(of seg: Data) -> Data? {
         guard seg.count >= 16, boxType(seg, at: 0) == "moof" else { return nil }
         let moofSize = Int(be32(seg, 0))

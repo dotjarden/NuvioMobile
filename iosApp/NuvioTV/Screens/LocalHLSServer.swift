@@ -452,22 +452,14 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
-        // iframe-NNNNN.m4s (P3): the first sample of seg-NNNNN.m4s as a one-sample fragment. Served
-        // only from a segment already on disk: an I-frame request must never block the connection
-        // or move the remux frontier (AVKit asks for a spread of them while the finger scrubs). A
-        // segment not produced yet answers 404 and AVKit simply shows no preview there.
+        // iframe-NNNNN.m4s (P3): the boundary keyframe of seg-NNNNN.m4s. AVKit asks for a spread
+        // of these at item load and while the finger scrubs; a request must never move the remux
+        // frontier. A segment inside the producing window is awaited with the JIT poll (the device
+        // spike showed AVKit prefetching the next three at load, and a 404 there switched the whole
+        // rendition off); one outside the window answers 404 and AVKit shows no preview there.
         if let idx = SegmentMap.iFrameSegmentIndex(name) {
-            let segURL = rootDir.appendingPathComponent(String(format: "seg-%05d.m4s", idx))
-            guard idx >= 1, idx <= map.count, let data = try? Data(contentsOf: segURL, options: .mappedIfSafe) else {
-                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not produced".utf8),
-                     on: connection, requestPath: name)
-                return
-            }
-            let body = IFrameFragment.firstSample(of: data) ?? data
-            #if DEBUG
-            NSLog("[HLS] iframe %@ from seg (%d → %d bytes)", name, data.count, body.count)
-            #endif
-            serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            serveIFrame(name: name, idx: idx, rangeHeader: rangeHeader, isHead: isHead, on: connection,
+                        deadline: Date().addingTimeInterval(blockTimeout), live: live)
             return
         }
 
@@ -560,6 +552,50 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// outside the producing window on arrival — far forward seek OR backward seek into an unproduced
     /// hole — repositions the remux once and waits; a `.poll` request whose window moves away fast-503s
     /// (a newer seek won). Past the last segment → 404; abandoned connection → stop immediately.
+    private func serveIFrame(name: String, idx: Int, rangeHeader: String?, isHead: Bool,
+                             on connection: NWConnection, deadline: Date, live: ConnLive) {
+        guard live.alive else { connection.cancel(); return }
+        guard idx >= 1, idx <= map.count else {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Out of range".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+        let segURL = rootDir.appendingPathComponent(String(format: "seg-%05d.m4s", idx))
+        if let data = try? Data(contentsOf: segURL, options: .mappedIfSafe) {
+            // Spike A/B (`-debug.iframeMode whole|cut|trim`, DEBUG): "whole" serves the entire
+            // segment (a fragment AVFoundation already decodes as media); "cut" keeps the original
+            // moof and ends the resource after the first sample's bytes (Apple's byte-range shape);
+            // "trim" rewrites the trun to one sample.
+            var mode = "whole"
+            #if DEBUG
+            if let m = UserDefaults.standard.string(forKey: "debug.iframeMode"), !m.isEmpty { mode = m }
+            #endif
+            let body: Data
+            switch mode {
+            case "trim": body = IFrameFragment.firstSample(of: data) ?? data
+            case "cut": body = IFrameFragment.cutAfterFirstSample(of: data) ?? data
+            default: body = data
+            }
+            #if DEBUG
+            NSLog("[HLS] iframe %@ from seg (%d → %d bytes, mode=%@)", name, data.count, body.count, mode)
+            #endif
+            serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            return
+        }
+        let (producing, pending) = producingInfo()
+        let effective = pending ?? producing
+        let inWindow = idx >= effective && idx <= effective + blockMargin
+        guard inWindow, Date() < deadline else {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Not produced".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+        connQueue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.serveIFrame(name: name, idx: idx, rangeHeader: rangeHeader, isHead: isHead,
+                              on: connection, deadline: deadline, live: live)
+        }
+    }
+
     private func serveSegmentJIT(name: String, rangeHeader: String?, isHead: Bool,
                                  on connection: NWConnection, deadline: Date,
                                  mode: JITMode?, live: ConnLive) {

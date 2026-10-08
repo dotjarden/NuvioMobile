@@ -60,6 +60,16 @@ final class IFrameFragmentTests: XCTestCase {
         XCTAssertEqual(Array(out.suffix(11)), (0..<11).map { UInt8($0) })
     }
 
+    func testCutKeepsTheMoofAndEndsAfterTheFirstSample() throws {
+        let seg = fragment(sizes: [5, 7, 9], durations: false)
+        let out = try XCTUnwrap(IFrameFragment.cutAfterFirstSample(of: seg))
+        let moofSize = Int(IFrameFragment.be32(seg, 0))
+        XCTAssertEqual(out.count, moofSize + 8 + 5)
+        XCTAssertEqual(out.prefix(moofSize), seg.prefix(moofSize))          // moof untouched
+        XCTAssertEqual(Int(IFrameFragment.be32(out, moofSize)), 8 + 21)     // original mdat size kept
+        XCTAssertEqual(Array(out.suffix(5)), [0, 1, 2, 3, 4])
+    }
+
     func testSingleSampleIsUnchanged() throws {
         let seg = fragment(sizes: [6], durations: false)
         XCTAssertEqual(IFrameFragment.firstSample(of: seg), seg)
