@@ -472,6 +472,59 @@ final class PlayerTransportUITests: XCTestCase {
         XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["frame"] == "0" }, barProbeText(app))
     }
 
+    // MARK: Seek preview decode (P3), reads the bar probe's `decoded=` / `fsec=`
+
+    /// Harvest + Decode: on the simulator the harvest is off, so every stored frame here came from
+    /// the keyframe thumbnailer's pre-warm (it opens after 20 s of healthy play, then passes of up
+    /// to 8 frames every 10 s). Ten frames within 60 s of playback.
+    func testDecodePrewarmGrows() throws {
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
+        let ok = waitBar(app, timeout: 60) {
+            (Int($0["decoded"] ?? "") ?? 0) >= 10 && (Int($0["thumbs"] ?? "") ?? 0) >= 10
+        }
+        print("[DecodeLeg] prewarm end: \(barProbeText(app))")
+        XCTAssertTrue(ok, "pre-warm never reached 10 decoded frames: \(barProbeText(app))")
+    }
+
+    /// A scrub at about 8 s of playback (before the 20 s healthy open, so nothing is decoded yet)
+    /// into unwatched ground: the miss opens the thumbnailer and decodes the keyframe there, and
+    /// the card shows a frame stamped within 5 s of the target (critique C23).
+    func testDecodeScrubIntoUnwatched() throws {
+        let app = try launchWithBarHidden(extra: ["-debug.seekPreviewMode", "decode", "-debug.scrubInject", Self.scrubScript])
+        let before = bar(app)
+        print("[DecodeLeg] before scrub: \(barProbeText(app))")
+        XCTAssertEqual(before["decoded"], "0", "something decoded before the scrub: \(barProbeText(app))")
+        XCTAssertEqual(before["thumbs"], "0", barProbeText(app))
+        XCTAssertLessThan(Double(before["pos"] ?? "") ?? 99, 18, "scrub too late for the premise: \(barProbeText(app))")
+        raiseBarForScrub(app)
+        let target = injectAndReadTarget(app)
+        let start = Date()
+        XCTAssertGreaterThanOrEqual(target - (Double(before["pos"] ?? "") ?? 0), 25, "scrub moved too little: \(barProbeText(app))")
+        let framed = waitBar(app, timeout: 1.5) {
+            guard $0["mode"] == "scrubbing", $0["frame"] == "1", let f = Double($0["fsec"] ?? "") else { return false }
+            return abs(f - target) <= 5
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        let p = bar(app)
+        print("[DecodeLeg] scrub target=\(target) framed=\(framed) after \(String(format: "%.2f", elapsed)) s: \(barProbeText(app))")
+        XCTAssertTrue(framed, "no decoded frame near the scrub target \(target): \(barProbeText(app))")
+        XCTAssertGreaterThanOrEqual(Int(p["decoded"] ?? "") ?? 0, 1, barProbeText(app))
+        remote.press(.menu)
+        XCTAssertTrue(waitBar(app) { $0["mode"] == "idle" && $0["frame"] == "0" && $0["fsec"] == "nil" }, barProbeText(app))
+    }
+
+    /// Off beats the DEBUG synthetic harvest (critique C22): with `-debug.harvestSynthetic YES` the
+    /// store grows in harvest mode (`testHarvestPlumbingSynthetic`, the positive control); with
+    /// the mode Off nothing is stored or decoded after 30 s of playback.
+    func testDecodeOffByMode() throws {
+        let app = try launch(extra: ["-debug.seekPreviewMode", "off", "-debug.harvestSynthetic", "YES"])
+        XCTAssertTrue(waitBar(app, timeout: 45) { (Double($0["pos"] ?? "") ?? 0) >= 30 }, "playback stalled: \(barProbeText(app))")
+        let p = bar(app)
+        print("[DecodeLeg] off end: \(barProbeText(app))")
+        XCTAssertEqual(p["thumbs"], "0", barProbeText(app))
+        XCTAssertEqual(p["decoded"], "0", barProbeText(app))
+    }
+
     // MARK: Chapters and aspect (P2-C)
 
     /// The chapters fixture (five chapters at 0/90/240/390/540 s); skips when unset.
