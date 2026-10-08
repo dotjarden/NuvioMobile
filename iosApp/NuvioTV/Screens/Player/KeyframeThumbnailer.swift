@@ -125,10 +125,40 @@ nonisolated func thumbShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int
 nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
     /// The range size while opening (header, Cues, priming).
     static let openRequestBytes = 512 * 1024
-    /// Requests charged for an open on top of the bytes it consumed. The logging range server saw
-    /// five on the smoke fixture (the first range, the tail Cues, the header again, the priming
-    /// tail twice); each is charged a whole open range.
-    static let openChargeRequests = 5
+    /// Requests an open makes on top of the ranges it crosses (review r2 P2 #1, P3 #6), counted on
+    /// the logging range server (`build/smoke/logging_range_server.py`) with the smoke fixture:
+    /// a first open makes five (the first range, the tail Cues, the header again, the priming tail
+    /// twice); a reopen with the known facts makes one (the first range; its first frame then
+    /// makes three, `reopenFirstFrameRequests`). An MP4 can keep its `moov` at the end: two more
+    /// (to the end and back).
+    static let firstOpenRequests = 5
+    static let reopenRequests = 1
+    static let reopenFirstFrameRequests = 3
+    static let mp4TailIndexRequests = 2
+
+    /// What the budget counts as an open's requests: the measured seeks above plus one request per
+    /// open range the consumed bytes crossed (`find_stream_info` reading on, a long header).
+    /// An upper bound: a crossed range is counted again on top of the bytes it delivered.
+    static func openRequests(reopen: Bool, container: String, consumed: Int64) -> Int {
+        let seeks = reopen ? reopenRequests : firstOpenRequests
+        let tail = container.contains("mov") ? mp4TailIndexRequests : 0
+        let crossed = Int(max(consumed, 0) / Int64(openRequestBytes))
+        return seeks + tail + crossed
+    }
+
+    /// A range up to this size is sent in full into the socket buffers and the host closes the
+    /// connection (`end=complete` on the logging range server at 256 KB). A larger range read
+    /// short of its end leaves the host still sending (review r2 P2 #1).
+    static let hostFinishesBytes = 256 * 1024
+
+    /// Whether the last request is still open at the host: its range is larger than
+    /// `hostFinishesBytes` and the bytes read since the request began (`httpRead`, nil when the
+    /// HTTP position could not be read) did not end on a range boundary.
+    static func requestLeftOpen(rangeBytes: Int, httpRead: Int64?) -> Bool {
+        guard rangeBytes > hostFinishesBytes else { return false }
+        guard let read = httpRead, read > 0 else { return true }
+        return read % Int64(rangeBytes) != 0
+    }
     /// Review r1 P2 #2: what the priming seek may read before it is interrupted.
     static let primingByteCap: Int64 = 16 * 1024 * 1024
     /// The primed index must reach this share of the duration (else `.noIndex`).
@@ -175,6 +205,8 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
     private let bytesLock = NSLock()
     private var _bytesRead: Int64 = 0
     private var _bytesCharged: Int64 = 0
+    private var _leftOpen = false
+    private var _primingCapHit = false
 
     // `queue` only (or `deinit`, when no block can be pending).
     private var closed = false
@@ -221,6 +253,20 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         return _bytesCharged
     }
 
+    /// Review r2 P2 #1: the last call's request may still be sending at the host
+    /// (`requestLeftOpen`). The controller closes an idle thumbnailer at once when it is, else
+    /// after a long idle. Any thread.
+    var lastRequestLeftOpen: Bool {
+        bytesLock.lock(); defer { bytesLock.unlock() }
+        return _leftOpen
+    }
+
+    /// The priming seek hit its byte cap during the open (tests). Any thread.
+    var primingCapHit: Bool {
+        bytesLock.lock(); defer { bytesLock.unlock() }
+        return _primingCapHit
+    }
+
     /// Opens once; later calls return the first result.
     func open() async -> ThumbOpenResult {
         await withCheckedContinuation { (cont: CheckedContinuation<ThumbOpenResult, Never>) in
@@ -263,9 +309,15 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         if let openResult { return openResult }
         let r = doOpen()
         openResult = r
-        // Charged once, whatever the outcome: the requests went out.
-        addCharge(Self.charge(consumed: currentAvioBytes(), requests: Self.openChargeRequests,
+        // Charged once, whatever the outcome: the requests went out (review r2 P3 #6: counted,
+        // not a fixed five).
+        let consumed = currentAvioBytes()
+        let container = fmt?.pointee.iformat.flatMap { $0.pointee.name }.map { String(cString: $0) } ?? ""
+        addCharge(Self.charge(consumed: consumed,
+                              requests: Self.openRequests(reopen: knownFacts != nil, container: container, consumed: consumed),
                               requestBytes: Self.openRequestBytes))
+        // The open's last range is 512 KB, past what the host finishes unread.
+        setLeftOpen(Self.requestLeftOpen(rangeBytes: Self.openRequestBytes, httpRead: nil))
         return r
     }
 
@@ -371,6 +423,7 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
             // stream_index -1: the timestamp is in AV_TIME_BASE, matching `duration`.
             av_seek_frame(ctx, -1, ctx.pointee.duration, AVSEEK_FLAG_BACKWARD)
             gate.disarmBytes()
+            if gate.byteLimitHit { bytesLock.lock(); _primingCapHit = true; bytesLock.unlock() }
             let primed = keyframeSeconds(vs)
             if primed.count > index.count { index = primed }
             noteBytes()
@@ -448,11 +501,15 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         // One seek, so one new request (three on a reopen's first frame: matroskadec loads the Cues
         // and rereads the header first, as the range-server log shows); ranges crossed are inside
         // `consumed` (`charge`).
-        let requests = knownFacts != nil && framesSinceOpen == 0 ? 3 : 1
+        let requests = knownFacts != nil && framesSinceOpen == 0 ? Self.reopenFirstFrameRequests : 1
         framesSinceOpen += 1
+        var httpAtSeek: Int64?
         defer {
             gate.disarm(); noteBytes()
             addCharge(Self.charge(consumed: currentAvioBytes() - bytes0, requests: requests, requestBytes: requestBytes))
+            // Review r2 P2 #1: measured from the request the seek opened.
+            let read = httpAtSeek.flatMap { start in httpOffset().map { $0 - start } }
+            setLeftOpen(Self.requestLeftOpen(rangeBytes: requestBytes, httpRead: read))
         }
 
         if packet == nil { packet = av_packet_alloc() }
@@ -463,6 +520,7 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         let ts = Int64(((max(sec, 0) + startSec) / tb).rounded(.down))
         let seekRC = av_seek_frame(fmt, videoIndex, ts, AVSEEK_FLAG_BACKWARD)
         if seekRC < 0 { return readFailure(seekRC) }
+        httpAtSeek = httpOffset()
 
         // The first video key packet after the seek (matroskadec lands on the cue at or before
         // the target, C9). Other streams are discarded at the demuxer (C8).
@@ -640,6 +698,18 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
 
     private func addCharge(_ n: Int64) {
         bytesLock.lock(); _bytesCharged += max(n, 0); bytesLock.unlock()
+    }
+
+    private func setLeftOpen(_ v: Bool) {
+        bytesLock.lock(); _leftOpen = v; bytesLock.unlock()
+    }
+
+    /// The HTTP protocol's position (`HTTPContext.off`, the `offset` option: bytes received up to
+    /// here), reached through the avformat-owned `pb` like the range resize; nil when unreadable.
+    private func httpOffset() -> Int64? {
+        guard let pb = fmt?.pointee.pb else { return nil }
+        var v: Int64 = 0
+        return av_opt_get_int(UnsafeMutableRawPointer(pb), "offset", AV_OPT_SEARCH_CHILDREN, &v) >= 0 ? v : nil
     }
 
     /// `AVIOContext.bytes_read` is cumulative for the input: what avio consumed, not what the

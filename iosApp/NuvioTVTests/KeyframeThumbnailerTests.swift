@@ -42,6 +42,34 @@ final class KeyframeThumbnailerTests: XCTestCase {
         XCTAssertLessThanOrEqual(KeyframeThumbnailer.openRequestBytes, 512 * 1024)
     }
 
+    /// Review r2 P2 #1, P3 #6: an open is charged the requests it makes (counted on the logging
+    /// range server: five on a first open of the fixture, one on a reopen), plus a range per open
+    /// range crossed, plus two for an MP4 that may keep its index at the end.
+    func testOpenRequestsCountTheMeasuredSeeksAndTheRangesCrossed() {
+        let mkv = "matroska,webm", mp4 = "mov,mp4,m4a,3gp,3g2,mj2"
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mkv, consumed: 452 * 1024), 5)
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: true, container: mkv, consumed: 8 * 1024), 1)
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mp4, consumed: 0), 7)
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: true, container: mp4, consumed: 0), 3)
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mkv, consumed: 1536 * 1024), 8,
+                       "three open ranges crossed")
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: "", consumed: -1), 5)
+        XCTAssertEqual(KeyframeThumbnailer.reopenFirstFrameRequests, 3)
+    }
+
+    /// Review r2 P2 #1: the host is still sending when a range larger than 256 KB was read short
+    /// of a range boundary (or the read is unknown); a 256 KB range always finishes at the host.
+    func testRequestLeftOpenOnlyForLargeRangesReadShort() {
+        let k = 1024
+        XCTAssertFalse(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 256 * k, httpRead: 32 * 1024))
+        XCTAssertFalse(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 256 * k, httpRead: nil))
+        XCTAssertTrue(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 1024 * k, httpRead: 2_300_000))
+        XCTAssertFalse(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 1024 * k, httpRead: 2 * 1024 * 1024),
+                       "read to a range end: the host closed")
+        XCTAssertTrue(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 1024 * k, httpRead: nil))
+        XCTAssertTrue(KeyframeThumbnailer.requestLeftOpen(rangeBytes: 512 * k, httpRead: 0))
+    }
+
     /// P2 #2: enough entries AND the last one at 80 % of the duration.
     func testIndexMustSpanEightyPercentOfTheDuration() {
         let full = stride(from: 0.0, through: 590, by: 2).map { $0 }
@@ -135,6 +163,10 @@ final class KeyframeThumbnailerTests: XCTestCase {
         XCTAssertGreaterThan(kf, 290)
         XCTAssertGreaterThanOrEqual(charged, Int64(KeyframeThumbnailer.requestBytes(width: 1920)))
         XCTAssertEqual(t.bytesCharged - afterOpen, charged)
+        // Review r2 P2 #1, P3 #6: a reopen is charged one open range plus what it read, not five,
+        // and a 1080p frame's 256 KB range finishes at the host.
+        XCTAssertLessThan(afterOpen, 2 * Int64(KeyframeThumbnailer.openRequestBytes))
+        XCTAssertFalse(t.lastRequestLeftOpen)
         print(String(format: "[ThumbsTest] reopen read=%lldKB charged open=%lldKB frame=%lldKB",
                      t.bytesRead / 1024, afterOpen / 1024, charged / 1024))
     }
