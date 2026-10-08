@@ -161,6 +161,22 @@ nonisolated enum RemuxSmokeTest {
                         }
                     }
                 }
+                // debug.remuxSmokeScanRate=N (player P3): 6 s after ready, play at rate N for 6 s
+                // (FF scan), then back to 1. AVPlayer scans HLS through the EXT-X-I-FRAMES-ONLY
+                // rendition, so with it published the run shows iframe.m3u8 + iframe-NNNNN.m4s
+                // fetches; with Seek Preview Frames Off it shows none (canPlayFastForward=false).
+                let scanRate = UserDefaults.standard.float(forKey: "debug.remuxSmokeScanRate")
+                if scanRate != 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak coordinator] in
+                        guard let player = coordinator?.player, let item = player.currentItem else { return }
+                        print("[RemuxSmoke] SCAN rate=\(scanRate) canPlayFastForward=\(item.canPlayFastForward) canPlayFastReverse=\(item.canPlayFastReverse)")
+                        player.rate = scanRate
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                            print("[RemuxSmoke] SCAN end rate=\(player.rate) pos=\(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))")
+                            player.rate = 1
+                        }
+                    }
+                }
                 samplePlayback(coordinator, sample: 0)
             } else if attempt < 160 {   // throttled sources ready slowly (~40s ceiling)
                 schedule(coordinator, attempt: attempt + 1)
