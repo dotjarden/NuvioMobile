@@ -185,6 +185,34 @@ final class MPVTVPlayerViewController: UIViewController {
     private let harvestSentinel = HarvestCrashSentinel(store: UserDefaults.standard)
     /// `eventQueue` only: the first real capture of this file flushes the armed flag to disk.
     private var harvestSentinelFlushed = false
+    /// The crash guard turned the harvest off for this playback (the Info row says so).
+    private var harvestCrashOff = false
+    // Seek preview decode (P3): the keyframe thumbnailer fills unwatched ground (mode `decode`).
+    /// Developer › Seek Preview Frames, read once in `viewDidLoad`.
+    private var seekPreviewMode: SeekPreviewMode = .harvest
+    /// Main only. Disabled unless the mode is `decode`.
+    private var thumbs = ThumbScheduler(enabled: false)
+    /// Main only; created lazily (`shouldOpen`), closed in `destroyPlayer` or when it stops.
+    private var thumbnailer: KeyframeThumbnailer?
+    private var thumbOpened = false
+    private var thumbByteBudget: Int64 = ThumbScheduler.byteBudget(fileSize: nil)
+    /// The last store snapshot (critique C1): what the scheduler reads, never the actor itself.
+    private var storeMirror = SeekPreviewSnapshot.empty
+    private var thumbLastDecodeMs: Double?
+    /// Cache health for the pre-warm (critique C2), from the 2 s `eventQueue` read; main only.
+    private var cacheHealthSec: Double = 0
+    private var cacheHealthFill: Double = 0
+    private var cacheHealthEofCached = false
+    private var cacheTrend = ThumbCacheTrend()
+    private var cacheHealthReadPending = false
+    private var lastCacheHealthRead: TimeInterval = 0
+    /// What `setupMpv` applied as `demuxer-max-bytes` (150 MiB when Streaming Buffer is unset).
+    private var demuxerMaxBytes: Int64 = 150 * 1024 * 1024
+    private var thumbScrubWork: DispatchWorkItem?       // 50 ms: a pending scrub miss becomes due
+    private var thumbReleaseWork: DispatchWorkItem?     // frees the decoder 2 s after a scrub job
+    #if DEBUG
+    private var loggedThumbStop = false
+    #endif
     /// One Left/Right click: ±10 s or a chapter jump (`player.edgeClickMode`, read in viewDidLoad).
     private var edgeClickMode: EdgeClickMode = .skip10
     /// Clears the aspect flash 2 s after the last Aspect pill press.
@@ -455,7 +483,9 @@ final class MPVTVPlayerViewController: UIViewController {
             ? PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "local",
                                      url: context.url.absoluteString, label: context.title)
             : context.streamKey
-        let store = SeekPreviewStore(streamKey: previewKey)
+        seekPreviewMode = SeekPreviewMode.current()
+        let caps = SeekPreviewStore.caps(for: seekPreviewMode)
+        let store = SeekPreviewStore(streamKey: previewKey, maxEntries: caps.maxEntries, maxBytes: caps.maxBytes)
         previewStore = store
         seekPreviewSource = store
         harvest = HarvestScheduler(intervalSec: HarvestScheduler.interval(
@@ -472,6 +502,7 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         if harvestSentinel.isDisabled, !harvestSynthetic {
             harvest = HarvestScheduler(intervalSec: 0)
+            harvestCrashOff = true
             state.previewStoreSummary = String(localized: "Off after a crash in an earlier playback")
         }
         #if targetEnvironment(simulator)
@@ -485,6 +516,12 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
         }
         #endif
+        // Seek Preview Frames (P3). Off beats everything above, the DEBUG synthetic harvest
+        // included (critique C22). Decode adds the keyframe thumbnailer beside the harvest.
+        if !seekPreviewMode.allowsHarvest { harvest = HarvestScheduler(intervalSec: 0) }
+        thumbs = ThumbScheduler(enabled: seekPreviewMode.allowsDecode)
+        let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
+        if bufferMB > 0 { demuxerMaxBytes = Int64(bufferMB) * 1024 * 1024 }
 
         // Chapters (P2-C): the Chapters tab seeks through here; one click on Left/Right follows
         // Settings › Playback › Left/Right Click.
@@ -1659,8 +1696,14 @@ final class MPVTVPlayerViewController: UIViewController {
                         playing: fileLoaded && !snap.paused && !snap.cacheWait && !snap.coreIdle && !snap.eof && snap.videoW > 0,
                         transportIdle: !transport.mode.isActive,
                         seekInFlight: skipPlanner.seekInFlight != nil,
-                        recentInput: harvestNow - lastClickUptime < HarvestScheduler.recentInputSec) {
+                        recentInput: harvestNow - lastClickUptime < HarvestScheduler.recentInputSec),
+           thumbs.inFlight == nil {
+            // One heavy thing at a time: the tick stays due until a decode is not in flight.
             startHarvest()
+        }
+        if seekPreviewMode.allowsDecode {
+            if harvestNow - lastCacheHealthRead >= 2 { refreshCacheHealthAsync() }
+            driveThumbs()
         }
 
         // Transport bar mirror + preview model inputs (P1).
@@ -1896,18 +1939,12 @@ final class MPVTVPlayerViewController: UIViewController {
             #endif
         }
         guard let frame, sec.isFinite, let store = previewStore else { return }
-        // Built on main; the utility work holds this closure, never the controller.
-        let publish: @MainActor @Sendable (Int, Int, Int) -> Void = { [weak state = self.state] n, bytes, rss in
-            guard let state else { return }
-            state.transport.previewFrames = n
-            let mb = "\(n) · \(String(format: "%.1f", Double(bytes) / 1_048_576)) MB"
+        // Built on main (the controller is alive here); the utility work holds this closure.
+        let publish: @MainActor @Sendable (SeekPreviewInsertResult) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.applyStoreSnapshot(result.snapshot)
             #if DEBUG
-            state.previewStoreSummary = mb + " · RSS \(rss) MB"   // jargon: debug builds only (review r1 P3 #9)
-            #else
-            state.previewStoreSummary = mb
-            #endif
-            #if DEBUG
-            NSLog("%@", "[Harvest] stored n=\(n) bytes=\(bytes) rss=\(rss)MB")
+            NSLog("%@", "[Harvest] stored n=\(result.snapshot.count) bytes=\(result.snapshot.bytes) outcome=\(result.outcome.rawValue)")
             #endif
         }
         DispatchQueue.global(qos: .utility).async {
@@ -1918,12 +1955,253 @@ final class MPVTVPlayerViewController: UIViewController {
                 return
             }
             Task {
-                await store.insert(thumb, at: sec)
-                let n = await store.count
-                let bytes = await store.byteCount
-                await publish(n, bytes, ProcessMemory.footprintMB())
+                let result = await store.insert(thumb, at: sec, origin: .harvest)
+                await publish(result)
             }
         }
+    }
+
+    // MARK: - Seek preview decode (P3)
+
+    /// Main. The one place store state reaches the controller (critique C1): the scheduler's
+    /// mirror, the probe's `thumbs=`, and the Info row, for harvest and decode inserts alike.
+    private func applyStoreSnapshot(_ snapshot: SeekPreviewSnapshot) {
+        storeMirror = snapshot
+        state.transport.previewFrames = snapshot.count
+        rebuildPreviewSummary()
+    }
+
+    /// The Info tab's "Seek Previews" row (one builder, critique C26).
+    private func rebuildPreviewSummary() {
+        let snap = storeMirror
+        var parts: [String] = []
+        if snap.count == 0, harvestCrashOff {
+            parts.append(String(localized: "Off after a crash in an earlier playback"))
+        } else if snap.count > 0 {
+            parts.append("\(snap.count) · \(String(format: "%.1f", Double(snap.bytes) / 1_048_576)) MB")
+        }
+        if seekPreviewMode.allowsDecode {
+            if let ms = thumbLastDecodeMs {
+                parts.append(String(format: String(localized: "last decode %d ms"), Int(ms.rounded())))
+            }
+            if let t = thumbnailer, t.bytesRead > 0 {
+                parts.append(String(format: String(localized: "%@ MB read"),
+                                    String(format: "%.1f", Double(t.bytesRead) / 1_048_576)))
+            }
+            if let reason = thumbs.stopped ?? thumbs.prewarmStopped, let words = Self.thumbStopWords(reason) {
+                parts.append(String(format: String(localized: "decode off: %@"), words))
+            }
+        }
+        guard !parts.isEmpty else { return }
+        var text = parts.joined(separator: " · ")
+        #if DEBUG
+        // Jargon: debug builds only (review r1 P3 #9).
+        text += " · RSS \(ProcessMemory.footprintMB()) MB · h \(snap.harvest) / d \(snap.decode)"
+        #endif
+        state.previewStoreSummary = text
+    }
+
+    /// Plain words for the Info row; nil for reasons the viewer does not need to see.
+    private static func thumbStopWords(_ reason: ThumbStopReason) -> String? {
+        switch reason {
+        case .noIndex: return String(localized: "no seek index")
+        case .httpRefused: return String(localized: "the server refused")
+        case .byteBudget: return String(localized: "budget used")
+        case .storeFull, .frameCap: return String(localized: "store full")
+        case .dvProfile5: return String(localized: "Dolby Vision profile 5")
+        case .container, .openFailed, .stalled: return String(localized: "not supported for this file")
+        case .modeOff: return nil
+        }
+    }
+
+    /// Main. Opens the thumbnailer when the scheduler asks, starts the next job, and frees the
+    /// decoder when a pre-warm pass ends. Called every UI tick, after each finished job (passes run
+    /// back to back), after the open, and 50 ms after a scrub miss.
+    private func driveThumbs() {
+        guard seekPreviewMode.allowsDecode, mpv != nil, fileLoaded, previewStore != nil else { return }
+        let inputs = thumbInputs()
+        if thumbs.shouldOpen(inputs) { openThumbnailer() }
+        if let job = thumbs.next(inputs) {
+            startThumbJob(job)
+        } else if thumbs.takePassEnded(), thumbs.inFlight == nil {
+            thumbnailer?.releaseDecoder()
+        }
+        if thumbs.stopped != nil, thumbnailer != nil { closeThumbnailer() }
+    }
+
+    private func thumbInputs() -> ThumbScheduler.Inputs {
+        let snap = cachedProps()
+        let now = ProcessInfo.processInfo.systemUptime
+        let position = max(snap.position, 0)
+        return ThumbScheduler.Inputs(
+            now: now, positionSec: position, durationSec: snap.duration, paused: snap.paused,
+            cacheWait: snap.cacheWait, cacheSec: cacheHealthSec, cacheTrendSec: cacheTrend.trendSec(now: now),
+            cacheReachesEnd: cacheHealthEofCached
+                || ThumbScheduler.cacheReachesEnd(positionSec: position, cacheSec: cacheHealthSec, durationSec: snap.duration),
+            cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil, scrubbing: isScrubbing,
+            recentInput: now - lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
+            store: storeMirror, bytesRead: thumbnailer?.bytesRead ?? 0, byteBudget: thumbByteBudget,
+            scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened)
+    }
+
+    /// A scrub lookup missed (or landed more than 5 s off): ask for the keyframe at `target`
+    /// after the 50 ms debounce, and start the open now if this is the first ask.
+    private func noteThumbScrubMiss(target: Double) {
+        guard seekPreviewMode.allowsDecode else { return }
+        thumbs.noteScrubMiss(target: target, now: ProcessInfo.processInfo.systemUptime)
+        driveThumbs()
+        thumbScrubWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.thumbScrubWork = nil
+            self.driveThumbs()
+        }
+        thumbScrubWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + ThumbScheduler.Config().scrubDebounceSec + 0.005, execute: work)
+    }
+
+    /// Same URL and headers mpv uses (`context.requestHeaders`, sanitized): the thumbnailer talks
+    /// to the media host itself, so the credentials go too (spec §5, not the `subAdd` path).
+    private func openThumbnailer() {
+        guard thumbnailer == nil, let scheme = context.url.scheme?.lowercased() else { return }
+        guard ["http", "https", "file"].contains(scheme) else {
+            thumbs.stop(.container)
+            rebuildPreviewSummary()
+            return
+        }
+        let t = KeyframeThumbnailer(url: context.url, headers: context.requestHeaders)
+        thumbnailer = t
+        Task { @MainActor [weak self] in
+            let result = await t.open()
+            guard let self, self.thumbnailer === t else { return }
+            switch result {
+            case .ready(let facts):
+                self.thumbOpened = true
+                self.thumbByteBudget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
+                #if DEBUG
+                let overrideMB = UserDefaults.standard.integer(forKey: "debug.thumbBudgetMB")
+                if overrideMB > 0 { self.thumbByteBudget = Int64(overrideMB) * ThumbScheduler.mib }
+                #endif
+                self.thumbs.setKeyframeIndex(facts.keyframeIndex)
+                if let store = self.previewStore {
+                    let gap = ThumbScheduler.medianGap(facts.keyframeIndex)
+                    Task { @MainActor [weak self] in
+                        let snapshot = await store.setKeyframeSpacing(gap)
+                        self?.applyStoreSnapshot(snapshot)
+                    }
+                }
+                self.rebuildPreviewSummary()
+                self.driveThumbs()          // a pending scrub runs now, not at the next tick (C14)
+            case .refused(let reason):
+                self.thumbs.stop(reason)
+                self.closeThumbnailer()
+                self.rebuildPreviewSummary()
+            }
+        }
+    }
+
+    private func closeThumbnailer() {
+        thumbReleaseWork?.cancel(); thumbReleaseWork = nil
+        thumbnailer?.close()
+        thumbnailer = nil
+        thumbOpened = false
+    }
+
+    private func startThumbJob(_ job: ThumbScheduler.Job) {
+        guard let t = thumbnailer, let store = previewStore else { return }
+        thumbs.noteStarted(job, now: ProcessInfo.processInfo.systemUptime)
+        if job.isScrub { thumbReleaseWork?.cancel(); thumbReleaseWork = nil }
+        Task { @MainActor [weak self] in
+            let result = await t.frame(at: job.sec, urgent: job.isScrub)
+            guard let self, self.thumbnailer === t else { return }    // a closed thumbnailer's late result
+            var outcome = ThumbScheduler.Outcome.failed
+            switch result {
+            case .frame(let image, let kf, let took, let dec, let tm, let bytes):
+                let inserted = await store.insert(image, at: kf, origin: .decode)
+                guard self.thumbnailer === t else { return }
+                self.applyStoreSnapshot(inserted.snapshot)
+                outcome = ThumbScheduler.Outcome(insert: inserted.outcome, keyframeSec: kf)
+                self.thumbLastDecodeMs = took
+                #if DEBUG
+                NSLog("%@", String(format: "[Thumbs] decode at=%.1f kf=%.1f took=%.0fms dec=%.0fms tm=%.1fms bytes=%lldKB job=%@ outcome=%@",
+                                   job.sec, kf, took, dec, tm, bytes / 1024, job.name, inserted.outcome.rawValue))
+                #endif
+                // The viewer is still scrubbing near this keyframe: refresh the card.
+                if job.isScrub, case .scrubbing(let target) = self.transport.mode,
+                   abs(target - kf) <= inserted.snapshot.tolerance {
+                    self.requestPreviewFrame()
+                }
+            case .failed(let reason):
+                if let reason { self.thumbs.stop(reason) }
+                #if DEBUG
+                NSLog("%@", "[Thumbs] decode at=\(String(format: "%.1f", job.sec)) failed job=\(job.name) stop=\(reason?.rawValue ?? "-")")
+                #endif
+            case .aborted:
+                outcome = .aborted
+            }
+            self.thumbs.noteFinished(job, result: outcome, now: ProcessInfo.processInfo.systemUptime)
+            self.state.transport.decodedFrames = self.thumbs.decoded
+            #if DEBUG
+            if let reason = self.thumbs.stopped ?? self.thumbs.prewarmStopped, !self.loggedThumbStop {
+                self.loggedThumbStop = true
+                NSLog("%@", String(format: "[Thumbs] stop reason=%@ decoded=%ld read=%.1fMB", reason.rawValue,
+                                   self.thumbs.decoded, Double(t.bytesRead) / 1_048_576))
+            }
+            #endif
+            self.rebuildPreviewSummary()
+            if job.isScrub { self.scheduleThumbRelease() }
+            self.driveThumbs()
+        }
+    }
+
+    /// Frees a 4K decoder's frame pools 2 s after the last scrub job (pre-warm passes release
+    /// theirs when they end, `driveThumbs`).
+    private func scheduleThumbRelease() {
+        thumbReleaseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.thumbReleaseWork = nil
+            if self.thumbs.inFlight == nil { self.thumbnailer?.releaseDecoder() }
+        }
+        thumbReleaseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    /// One coalesced cache-health read on `eventQueue` every 2 s in decode mode (critique C2,
+    /// C15): `demuxer-cache-state`'s `fw-bytes` / `eof-cached` and `demuxer-cache-duration`. Both
+    /// paths end with a strong hop to main (`deinit` can never run on `eventQueue`).
+    private func refreshCacheHealthAsync() {
+        guard !cacheHealthReadPending, fileLoaded else { return }
+        cacheHealthReadPending = true
+        lastCacheHealthRead = ProcessInfo.processInfo.systemUptime
+        eventQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.mpv != nil else {
+                DispatchQueue.main.async { self.cacheHealthReadPending = false }
+                return
+            }
+            let raw = self.getString("demuxer-cache-state")
+            let cacheSec = self.getDouble("demuxer-cache-duration")
+            var fwBytes: Int64 = 0
+            var eofCached = false
+            if let raw, let data = raw.data(using: .utf8),
+               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                fwBytes = (obj["fw-bytes"] as? NSNumber)?.int64Value ?? 0
+                eofCached = (obj["eof-cached"] as? Bool) ?? false
+            }
+            DispatchQueue.main.async {
+                self.cacheHealthReadPending = false
+                self.applyCacheHealth(sec: cacheSec, forwardBytes: fwBytes, eofCached: eofCached)
+            }
+        }
+    }
+
+    private func applyCacheHealth(sec: Double, forwardBytes: Int64, eofCached: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        cacheHealthSec = sec.isFinite ? max(sec, 0) : 0
+        cacheHealthFill = ThumbScheduler.cacheFill(forwardBytes: forwardBytes, maxBytes: demuxerMaxBytes)
+        cacheHealthEofCached = eofCached
+        cacheTrend.record(now: now, cacheSec: cacheHealthSec)
     }
 
     #if DEBUG
@@ -2342,6 +2620,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 previewFrameThrottle.reset()
                 previewFrameToken += 1
                 state.transport.previewFrame = nil
+                state.transport.previewFrameSec = nil
+                thumbScrubWork?.cancel(); thumbScrubWork = nil
+                thumbs.noteScrubEnded(now: ProcessInfo.processInfo.systemUptime)
                 scrubArbiter.abandon()
                 #if DEBUG
                 state.transport.debugArbiter = scrubArbiter.probeCode
@@ -2537,11 +2818,16 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             let token = previewFrameToken
             Task { @MainActor [weak self] in
-                let image = await source.thumbnail(near: target)
+                let match = await source.match(near: target)
                 // A scrub that ended (or a newer one) bumped the token: drop the late frame, and
                 // do not touch the reset throttle.
                 guard let self, self.previewFrameToken == token else { return }
-                self.state.transport.previewFrame = image
+                self.state.transport.previewFrame = match?.image
+                self.state.transport.previewFrameSec = match?.sec
+                // P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there.
+                if self.thumbs.lookupWantsRefine(target: target, matchSec: match?.sec) {
+                    self.noteThumbScrubMiss(target: target)
+                }
                 self.handlePreviewFrameDecision(
                     self.previewFrameThrottle.finished(now: ProcessInfo.processInfo.systemUptime))
             }
@@ -3115,6 +3401,13 @@ final class MPVTVPlayerViewController: UIViewController {
         scrubPublishWork?.cancel()
         previewFrameWork?.cancel()
         previewFrameToken += 1
+        // P3: the thumbnailer never touches mpv; closing first starts its abort while mpv shuts
+        // down. Plain property writes (no weak reference formed in deinit).
+        thumbScrubWork?.cancel()
+        thumbReleaseWork?.cancel()
+        thumbs.cancel()
+        thumbnailer?.close()
+        thumbnailer = nil
         guard let ctx = mpv else { return }
         mpv = nil
         // mpv invokes the wakeup callback under the lock this call takes, so once it returns no
@@ -3187,6 +3480,7 @@ final class MPVTVPlayerViewController: UIViewController {
                     // A newer seek was issued meanwhile: this is not its completion.
                     guard generation == self.seekGeneration else { return }
                     self.harvest.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
+                    self.thumbs.noteSeekLanded(now: ProcessInfo.processInfo.systemUptime)
                     self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
                     // Keyframes landed: show that picture first, then run the exact stage.
                     if let p = self.pendingExact, p.generation == generation {

@@ -450,6 +450,7 @@ struct PlayerTransportBar: View {
             + " scrub=\(scrub) curve=\(model.scrubCurveCode) frame=\(model.previewFrame != nil ? 1 : 0) arb=\(model.debugArbiter)"
             + " chapters=\(model.chapters.count) aspect=\(model.aspectMode.rawValue)"
             + " thumbs=\(model.previewFrames) stored=\(model.debugAspectStored.rawValue) aw=\(model.debugAspectWrites)"
+            + " decoded=\(model.decodedFrames) fsec=\(model.previewFrameSec.map { String(format: "%.1f", $0) } ?? "nil")"
         return Text(verbatim: text)
             .font(.system(size: 8))
             .opacity(0.011)

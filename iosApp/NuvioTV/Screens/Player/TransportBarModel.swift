@@ -49,6 +49,10 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var scrubCurveCode = "o"
     /// Frames in the seek-preview store (P2-B), for the probe's `thumbs=` field.
     @Published var previewFrames: Int = 0
+    /// Frames the keyframe thumbnailer stored (P3), for the probe's `decoded=` field.
+    @Published var decodedFrames: Int = 0
+    /// The stamp of the frame on the scrub card (P3), for the probe's `fsec=` field.
+    @Published var previewFrameSec: Double? = nil
     /// The picture fit the Aspect pill cycles (P2).
     @Published var aspectMode: PlayerAspectMode = .fit
     /// The aspect label shown for 2 s after a cycle; nil = no flash.
