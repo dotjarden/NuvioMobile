@@ -38,7 +38,8 @@ nonisolated enum ThumbOpenResult: Sendable {
 
 nonisolated enum ThumbFrameResult: @unchecked Sendable {
     /// `keyframeSec` on mpv's timeline; `tookMs` the whole call; `decodeMs` send → receive;
-    /// `toneMapMs` the HDR tone map (0 for SDR); `bytes` what avio consumed for this frame.
+    /// `toneMapMs` the HDR tone map (0 for SDR); `bytes` what the budget charged for this frame
+    /// (`KeyframeThumbnailer.charge`).
     case frame(CGImage, keyframeSec: Double, tookMs: Double, decodeMs: Double, toneMapMs: Double, bytes: Int64)
     /// nil = transient (this slot only); non-nil = stop the file.
     case failed(ThumbStopReason?)
@@ -56,6 +57,9 @@ nonisolated final class ThumbInterruptGate: @unchecked Sendable {
     private let lock = NSLock()
     private var _aborted = false
     private var _deadline: TimeInterval = .infinity
+    private var _byteLimit: Int64 = .max
+    private var _byteReader: (() -> Int64)?
+    private var _byteLimitHit = false
 
     var aborted: Bool { lock.lock(); defer { lock.unlock() }; return _aborted }
     func abort() { lock.lock(); _aborted = true; lock.unlock() }
@@ -63,13 +67,23 @@ nonisolated final class ThumbInterruptGate: @unchecked Sendable {
         lock.lock(); _deadline = ProcessInfo.processInfo.systemUptime + seconds; lock.unlock()
     }
     func disarm() { lock.lock(); _deadline = .infinity; lock.unlock() }
+    /// Review r1 P2 #2: interrupt once `reader()` reaches `limit` (the priming seek's byte
+    /// ceiling). `reader` runs inside the poll, on the thread that drives avformat.
+    func armBytes(limit: Int64, reader: @escaping () -> Int64) {
+        lock.lock(); _byteLimit = limit; _byteReader = reader; _byteLimitHit = false; lock.unlock()
+    }
+    func disarmBytes() { lock.lock(); _byteLimit = .max; _byteReader = nil; lock.unlock() }
+    /// The byte ceiling fired since the last `armBytes`.
+    var byteLimitHit: Bool { lock.lock(); defer { lock.unlock() }; return _byteLimitHit }
     var deadlinePassed: Bool {
         lock.lock(); defer { lock.unlock() }
         return ProcessInfo.processInfo.systemUptime >= _deadline
     }
     var shouldInterrupt: Bool {
         lock.lock(); defer { lock.unlock() }
-        return _aborted || ProcessInfo.processInfo.systemUptime >= _deadline
+        if _aborted || ProcessInfo.processInfo.systemUptime >= _deadline { return true }
+        if let reader = _byteReader, reader() >= _byteLimit { _byteLimitHit = true; return true }
+        return false
     }
 }
 
@@ -96,13 +110,50 @@ nonisolated func thumbShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int
 /// decode returns, with the decoder's frame pools (about 25–40 MB at 4K) alive meanwhile. Blocking
 /// on a semaphore instead was rejected (a main-thread stall on every exit).
 ///
-/// Network (C6): the same URL and addon headers mpv sends (this is the media host, so the
-/// credentials go too), `user_agent` = mpv's when the headers carry none, `request_size` 2 MB so
-/// every read is a bounded range, `multiple_requests` 0 so the connection closes with the
-/// response: between frames this holds no connection to the host at all. avformat opens a new
-/// TCP (and TLS) connection per seek. Never logs the URL or the headers.
+/// Network (C6, review r1 P1): the same URL and addon headers mpv sends (this is the media host,
+/// so the credentials go too), `user_agent` = mpv's when the headers carry none, and every request
+/// is a bounded range with `Connection: close` (`multiple_requests` 0). avformat opens a new TCP
+/// (and TLS) connection per seek and per range crossed. The host sends the whole range whatever
+/// the demuxer reads, so the range is kept small: 512 KB while opening (`initial_request_size`
+/// and `request_size`), then sized to the picture (`requestBytes(width:)`: 256 KB up to 1080p,
+/// 1 MB above). A keyframe usually fits in one range, the host finishes the send and closes, and
+/// the budget charges what the wire can carry (`charge`), not only what avio consumed. In
+/// FFmpeg 8.1 `initial_request_size` covers only the requests before the first range end, not
+/// the first request after each seek, which is why `request_size` itself is small. The controller
+/// closes an idle thumbnailer (pre-warm stopped, no scrub) and reopens it with the known facts.
+/// Never logs the URL or the headers.
 nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
-    static let requestSizeBytes = 2 * 1024 * 1024
+    /// The range size while opening (header, Cues, priming).
+    static let openRequestBytes = 512 * 1024
+    /// Requests charged for an open on top of the bytes it consumed. The logging range server saw
+    /// five on the smoke fixture (the first range, the tail Cues, the header again, the priming
+    /// tail twice); each is charged a whole open range.
+    static let openChargeRequests = 5
+    /// Review r1 P2 #2: what the priming seek may read before it is interrupted.
+    static let primingByteCap: Int64 = 16 * 1024 * 1024
+    /// The primed index must reach this share of the duration (else `.noIndex`).
+    static let indexSpanShare = 0.8
+
+    /// Range size for frame reads: one 1080p keyframe (about 50–300 KB) fits in 256 KB; a 4K
+    /// keyframe (0.5–3 MB) takes one to three 1 MB ranges.
+    static func requestBytes(width: Int32) -> Int { width > 1920 ? 1024 * 1024 : 256 * 1024 }
+
+    /// What the budget charges for one call: the bytes avio consumed plus one whole range per
+    /// request the call opened (each request's unread tail still crosses the wire, up to a
+    /// range). An upper bound: every request but the last of a run is read to its end.
+    static func charge(consumed: Int64, requests: Int, requestBytes: Int) -> Int64 {
+        max(consumed, 0) + Int64(max(requests, 0)) * Int64(requestBytes)
+    }
+
+    /// Review r1 P2 #2: the index is usable when it has enough entries for the duration and its
+    /// last entry reaches 80 % of it (a Cue-less file primed by an interrupted scan covers only
+    /// the start; snapping every later slot to its last entry would waste the budget).
+    static func indexUsable(_ index: [Double], durationSec: Double) -> Bool {
+        let minUsable = durationSec > 0 ? Int(durationSec / 30) + 1 : 2
+        guard index.count >= max(2, minUsable) else { return false }
+        guard durationSec > 0 else { return true }
+        return (index.last ?? 0) >= indexSpanShare * durationSec
+    }
     /// Per call: open, then each frame (urgent = a scrub the viewer is waiting on).
     static let openDeadlineSec = 10.0
     static let urgentFrameDeadlineSec = 3.0
@@ -115,10 +166,15 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
 
     private let url: URL
     private let headers: [String: String]
+    /// A reopen after an idle close: the facts the first open learned (the index is not primed
+    /// again; matroskadec loads the Cues on the first seek).
+    private let knownFacts: ThumbFileFacts?
+    private let primingCap: Int64
     private let queue = DispatchQueue(label: "player.thumbs", qos: .utility)
     private let gate = ThumbInterruptGate()
     private let bytesLock = NSLock()
     private var _bytesRead: Int64 = 0
+    private var _bytesCharged: Int64 = 0
 
     // `queue` only (or `deinit`, when no block can be pending).
     private var closed = false
@@ -134,10 +190,16 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
     private var consecutiveStalls = 0
     private var parTrc: Int32 = HDRThumbnailToneMap.avcolTrcUnspecified
     private var parPrimaries: Int32 = HDRThumbnailToneMap.avcolPriUnspecified
+    /// The range size requests use now (`openRequestBytes`, then `requestBytes(width:)`).
+    private var requestBytes = KeyframeThumbnailer.openRequestBytes
+    private var framesSinceOpen = 0
 
-    init(url: URL, headers: [String: String]) {
+    init(url: URL, headers: [String: String], knownFacts: ThumbFileFacts? = nil,
+         primingByteCap: Int64 = KeyframeThumbnailer.primingByteCap) {
         self.url = url
         self.headers = headers
+        self.knownFacts = knownFacts
+        self.primingCap = primingByteCap
     }
 
     /// C13 (b): a thumbnailer dropped without `close()` still frees its native state. Every queue
@@ -150,6 +212,13 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
     var bytesRead: Int64 {
         bytesLock.lock(); defer { bytesLock.unlock() }
         return _bytesRead
+    }
+
+    /// What the budget counts (review r1 P1): consumed bytes plus a whole range per request
+    /// (`charge`). Any thread.
+    var bytesCharged: Int64 {
+        bytesLock.lock(); defer { bytesLock.unlock() }
+        return _bytesCharged
     }
 
     /// Opens once; later calls return the first result.
@@ -194,6 +263,9 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         if let openResult { return openResult }
         let r = doOpen()
         openResult = r
+        // Charged once, whatever the outcome: the requests went out.
+        addCharge(Self.charge(consumed: currentAvioBytes(), requests: Self.openChargeRequests,
+                              requestBytes: Self.openRequestBytes))
         return r
     }
 
@@ -216,7 +288,8 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         if !headers.keys.contains(where: { $0.lowercased() == "user-agent" }) {
             av_dict_set(&opts, "user_agent", "libmpv", 0)        // what mpv's own requests carry
         }
-        av_dict_set(&opts, "request_size", String(Self.requestSizeBytes), 0)
+        av_dict_set(&opts, "request_size", String(Self.openRequestBytes), 0)
+        av_dict_set(&opts, "initial_request_size", String(Self.openRequestBytes), 0)
         av_dict_set(&opts, "multiple_requests", "0", 0)
         av_dict_set(&opts, "rw_timeout", "5000000", 0)
         av_dict_set(&opts, "timeout", "5000000", 0)
@@ -287,17 +360,45 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         // the index is too sparse"): find_stream_info can leave 3–6 entries on high-bitrate
         // remuxes, and tail-loaded Cues (mkvmerge's default, and ffmpeg's muxer, which wrote the
         // smoke fixture) load only on a seek. Copied, not shared, so the remuxer stays untouched.
-        var index = keyframeSeconds(vs)
+        // Review r1 P2 #2: on a Cue-less MKV the priming seek is a linear scan of the file, so
+        // it stops at `primingCap` bytes, and the index must reach 80 % of the duration.
+        // A reopen (`knownFacts`) skips all of this: the index is already known.
+        var index = knownFacts?.keyframeIndex ?? keyframeSeconds(vs)
         let minUsable = durationSec > 0 ? Int(durationSec / 30) + 1 : 2
-        if index.count < max(2, minUsable), ctx.pointee.duration > 0 {
+        if knownFacts == nil, index.count < max(2, minUsable), ctx.pointee.duration > 0 {
+            let start = currentAvioBytes()
+            gate.armBytes(limit: start + primingCap) { ctx.pointee.pb?.pointee.bytes_read ?? 0 }
             // stream_index -1: the timestamp is in AV_TIME_BASE, matching `duration`.
             av_seek_frame(ctx, -1, ctx.pointee.duration, AVSEEK_FLAG_BACKWARD)
+            gate.disarmBytes()
             let primed = keyframeSeconds(vs)
             if primed.count > index.count { index = primed }
             noteBytes()
+            if gate.byteLimitHit, let pb = ctx.pointee.pb {
+                // The interrupted read left the error on the context; the next seek starts clean.
+                pb.pointee.error = 0
+                pb.pointee.eof_reached = 0
+                #if DEBUG
+                NSLog("%@", String(format: "[Thumbs] priming stopped at the %.0f MB cap, index=%d last=%.0fs of %.0fs",
+                                   Double(primingCap) / 1_048_576, index.count, index.last ?? 0, durationSec))
+                #endif
+            }
         }
         if gate.aborted { return .refused(.modeOff) }
-        guard index.count >= max(2, minUsable) else { return refuse(.noIndex) }
+        guard knownFacts != nil || Self.indexUsable(index, durationSec: durationSec) else { return refuse(.noIndex) }
+
+        // Frame reads use a range sized to the picture (review r1 P1). Both keys: FFmpeg keeps
+        // using `initial_request_size` until a range end is reached, which a short open may not do.
+        let frameRange = Self.requestBytes(width: par.pointee.width)
+        if let pb = ctx.pointee.pb {
+            let v = String(frameRange)
+            let a = av_opt_set(UnsafeMutableRawPointer(pb), "request_size", v, AV_OPT_SEARCH_CHILDREN)
+            let b = av_opt_set(UnsafeMutableRawPointer(pb), "initial_request_size", v, AV_OPT_SEARCH_CHILDREN)
+            if a >= 0, b >= 0 { requestBytes = frameRange }
+            #if DEBUG
+            if a < 0 || b < 0 { NSLog("%@", "[Thumbs] range resize refused rc=\(a),\(b); frames use \(requestBytes / 1024) KB") }
+            #endif
+        }
 
         let size = ctx.pointee.pb.map { avio_size($0) } ?? -1
         let facts = ThumbFileFacts(
@@ -306,9 +407,10 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
             openMs: Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
         #if DEBUG
         let budget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
-        NSLog("%@", String(format: "[Thumbs] open took=%.0fms container=%@ index=%d size=%.0fMB budget=%.1fMB hdr=%@ read=%.0fKB",
+        NSLog("%@", String(format: "[Thumbs] open took=%.0fms container=%@ index=%d size=%.0fMB budget=%.1fMB hdr=%@ read=%.0fKB range=%ldKB reopen=%ld",
                            facts.openMs, container, index.count, Double(size > 0 ? size : 0) / 1_048_576,
-                           Double(budget) / 1_048_576, facts.hdr.rawValue, Double(bytesRead) / 1024))
+                           Double(budget) / 1_048_576, facts.hdr.rawValue, Double(currentAvioBytes()) / 1024,
+                           requestBytes / 1024, knownFacts == nil ? 0 : 1))
         #endif
         return .ready(facts)
     }
@@ -343,7 +445,15 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         let t0 = DispatchTime.now().uptimeNanoseconds
         let bytes0 = currentAvioBytes()
         gate.arm(seconds: urgent ? Self.urgentFrameDeadlineSec : Self.frameDeadlineSec)
-        defer { gate.disarm(); noteBytes() }
+        // One seek, so one new request (three on a reopen's first frame: matroskadec loads the Cues
+        // and rereads the header first, as the range-server log shows); ranges crossed are inside
+        // `consumed` (`charge`).
+        let requests = knownFacts != nil && framesSinceOpen == 0 ? 3 : 1
+        framesSinceOpen += 1
+        defer {
+            gate.disarm(); noteBytes()
+            addCharge(Self.charge(consumed: currentAvioBytes() - bytes0, requests: requests, requestBytes: requestBytes))
+        }
 
         if packet == nil { packet = av_packet_alloc() }
         if avFrame == nil { avFrame = av_frame_alloc() }
@@ -398,7 +508,8 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         noteBytes()
         let tookMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
         return .frame(scaled.image, keyframeSec: keyframeSec, tookMs: tookMs, decodeMs: decodeMs,
-                      toneMapMs: scaled.toneMapMs, bytes: max(currentAvioBytes() - bytes0, 0))
+                      toneMapMs: scaled.toneMapMs,
+                      bytes: Self.charge(consumed: currentAvioBytes() - bytes0, requests: requests, requestBytes: requestBytes))
     }
 
     /// A failed seek or read: aborted, an HTTP refusal (stop the file, C7), a deadline expiry
@@ -527,8 +638,12 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
 
     private func currentAvioBytes() -> Int64 { fmt?.pointee.pb?.pointee.bytes_read ?? 0 }
 
-    /// `AVIOContext.bytes_read` is cumulative for the input; with bounded ranges (C6) it is
-    /// what came over the wire.
+    private func addCharge(_ n: Int64) {
+        bytesLock.lock(); _bytesCharged += max(n, 0); bytesLock.unlock()
+    }
+
+    /// `AVIOContext.bytes_read` is cumulative for the input: what avio consumed, not what the
+    /// wire carried (`bytesCharged` is the budget's number).
     private func noteBytes() {
         let b = currentAvioBytes()
         bytesLock.lock()

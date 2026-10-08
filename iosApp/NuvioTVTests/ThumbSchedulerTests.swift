@@ -168,6 +168,37 @@ final class ThumbSchedulerTests: XCTestCase {
         XCTAssertEqual(T.scrubCeiling(budget: budget), 90 * T.mib)
     }
 
+    // Review r1 P1: once the pre-warm has stopped and nothing is pending, the controller closes the
+    // thumbnailer; healthy play never reopens it, the next scrub miss does.
+    func testIdleCloseAfterPrewarmStopAndScrubReopens() {
+        var t = T(enabled: true)
+        let budget = 40 * T.mib
+        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "pre-warm still running")
+        XCTAssertNil(t.next(inputs { $0.bytesRead = budget }))
+        XCTAssertEqual(t.prewarmStopped, .byteBudget)
+        XCTAssertTrue(t.idleCloseWanted(scrubbing: false))
+        XCTAssertFalse(t.idleCloseWanted(scrubbing: true), "not while the viewer scrubs")
+        t.noteIdleClosed()
+        // Long healthy play: no reopen.
+        for k in 0..<60 {
+            XCTAssertFalse(t.shouldOpen(inputs(now: 101 + Double(k)) { $0.opened = false; $0.bytesRead = budget }))
+        }
+        // A scrub miss reopens, once.
+        t.noteScrubMiss(target: 300, now: 170)
+        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "a scrub is pending")
+        XCTAssertTrue(t.shouldOpen(inputs(now: 170.01) { $0.opened = false; $0.bytesRead = budget }))
+        XCTAssertFalse(t.shouldOpen(inputs(now: 170.02) { $0.opened = false; $0.bytesRead = budget }))
+        let job = t.next(inputs(now: 170.1) { $0.bytesRead = budget })
+        XCTAssertEqual(job, .scrub(300))
+        t.noteStarted(.scrub(300), now: 170.1)
+        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "a job is in flight")
+        t.noteFinished(.scrub(300), result: .stored(keyframeSec: 300), now: 170.5)
+        XCTAssertTrue(t.idleCloseWanted(scrubbing: false))
+        // A file-level stop is the controller's plain close, not an idle close.
+        t.stop(.httpRefused)
+        XCTAssertFalse(t.idleCloseWanted(scrubbing: false))
+    }
+
     // 12
     func testStoreFullAndFrameCapStopPrewarm() {
         var t = T(enabled: true)

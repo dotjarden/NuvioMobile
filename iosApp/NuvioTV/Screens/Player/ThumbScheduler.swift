@@ -84,7 +84,8 @@ nonisolated struct ThumbScheduler {
         var harvestInFlight: Bool
         /// The controller's mirror of the store (the last snapshot an insert returned, C1).
         var store: SeekPreviewSnapshot
-        /// `KeyframeThumbnailer.bytesRead`.
+        /// What the budget has charged so far, across reopens (`KeyframeThumbnailer.bytesCharged`
+        /// plus every closed thumbnailer's, review r1 P1).
         var bytesRead: Int64
         var byteBudget: Int64
         var scrubCeiling: Int64
@@ -214,6 +215,19 @@ nonisolated struct ThumbScheduler {
         endPass()
     }
 
+    /// Review r1 P1: nothing more will run until the viewer scrubs (the pre-warm stopped, no job,
+    /// no pending scrub, not scrubbing). The controller then closes the thumbnailer, so no
+    /// connection to the host stays open, and calls `noteIdleClosed`.
+    func idleCloseWanted(scrubbing: Bool) -> Bool {
+        enabled && stopped == nil && prewarmStopped != nil && inFlight == nil && pendingScrub == nil && !scrubbing
+    }
+
+    /// The thumbnailer was closed while idle: the next scrub miss opens it again (with the facts
+    /// the first open learned, so only the connect and the header are paid).
+    mutating func noteIdleClosed() {
+        openRequested = false
+    }
+
     /// True once per pass that issued at least one job, after it ended (release the decoder).
     mutating func takePassEnded() -> Bool {
         defer { passEndedUnreported = false }
@@ -227,7 +241,10 @@ nonisolated struct ThumbScheduler {
     mutating func shouldOpen(_ i: Inputs) -> Bool {
         advanceClock(i)
         guard enabled, stopped == nil, !openRequested, !i.opened, !i.cacheWait else { return false }
-        guard pendingScrub != nil || healthyPlaySec >= config.openAfterHealthySec else { return false }
+        // Once the pre-warm has stopped only a scrub opens (the reopen after an idle close).
+        guard pendingScrub != nil || (prewarmStopped == nil && healthyPlaySec >= config.openAfterHealthySec) else {
+            return false
+        }
         openRequested = true
         return true
     }

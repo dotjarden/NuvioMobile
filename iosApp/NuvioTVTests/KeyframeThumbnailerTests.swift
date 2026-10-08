@@ -4,16 +4,139 @@ import XCTest
 @testable import NuvioTV
 
 /// Integration tests for the P3 keyframe thumbnailer against the smoke rig's range server
-/// (`build/smoke/range_server.py` on :8000). Skipped when the fixture does not answer a HEAD.
+/// (`build/smoke/range_server.py`). The fixture URL comes from `TEST_RUNNER_THUMB_FIXTURE_URL`
+/// (default `http://127.0.0.1:8000/test-long.mkv`); review r1 P3 #10: when it does not answer, the
+/// integration tests SKIP with a loud message, and a gate's pass count does not show that, so the
+/// batch record states the skip count with the gate.
 final class KeyframeThumbnailerTests: XCTestCase {
-    private static let fixture = URL(string: "http://127.0.0.1:8000/test-long.mkv")!
+    private static let fixture: URL = {
+        let raw = ProcessInfo.processInfo.environment["THUMB_FIXTURE_URL"] ?? ""
+        return URL(string: raw.isEmpty ? "http://127.0.0.1:8000/test-long.mkv" : raw)!
+    }()
 
     private func requireFixture() async throws {
         var req = URLRequest(url: Self.fixture)
         req.httpMethod = "HEAD"
         req.timeoutInterval = 2
         let ok = (try? await URLSession.shared.data(for: req)).map { ($0.1 as? HTTPURLResponse)?.statusCode == 200 } ?? false
-        try XCTSkipUnless(ok, "smoke range server not running on 127.0.0.1:8000")
+        if !ok { print("[ThumbsTest] SKIPPED: fixture \(Self.fixture.absoluteString) did not answer a HEAD") }
+        try XCTSkipUnless(ok, "THUMBNAILER INTEGRATION TEST SKIPPED: fixture \(Self.fixture.absoluteString) did not answer "
+                          + "(start build/smoke/range_server.py or set TEST_RUNNER_THUMB_FIXTURE_URL)")
+    }
+
+    /// The fixture's sibling path on the same server.
+    private static func sibling(_ name: String) -> URL {
+        fixture.deletingLastPathComponent().appendingPathComponent(name)
+    }
+
+    // MARK: Review r1 (pure)
+
+    /// P1: the budget charges consumed bytes plus a whole range per request.
+    func testChargeAddsAWholeRangePerRequest() {
+        XCTAssertEqual(KeyframeThumbnailer.charge(consumed: 32 * 1024, requests: 1, requestBytes: 256 * 1024),
+                       288 * 1024)
+        XCTAssertEqual(KeyframeThumbnailer.charge(consumed: 0, requests: 2, requestBytes: 1024), 2048)
+        XCTAssertEqual(KeyframeThumbnailer.charge(consumed: -5, requests: -1, requestBytes: 1024), 0)
+        XCTAssertEqual(KeyframeThumbnailer.requestBytes(width: 1920), 256 * 1024)
+        XCTAssertEqual(KeyframeThumbnailer.requestBytes(width: 3840), 1024 * 1024)
+        XCTAssertLessThanOrEqual(KeyframeThumbnailer.openRequestBytes, 512 * 1024)
+    }
+
+    /// P2 #2: enough entries AND the last one at 80 % of the duration.
+    func testIndexMustSpanEightyPercentOfTheDuration() {
+        let full = stride(from: 0.0, through: 590, by: 2).map { $0 }
+        XCTAssertTrue(KeyframeThumbnailer.indexUsable(full, durationSec: 600))
+        let startOnly = stride(from: 0.0, through: 120, by: 2).map { $0 }        // 61 entries, first 20 %
+        XCTAssertFalse(KeyframeThumbnailer.indexUsable(startOnly, durationSec: 600))
+        XCTAssertFalse(KeyframeThumbnailer.indexUsable([0, 300, 590], durationSec: 600), "too few entries")
+        XCTAssertTrue(KeyframeThumbnailer.indexUsable([0, 10, 20], durationSec: 0), "unknown duration: count only")
+        XCTAssertFalse(KeyframeThumbnailer.indexUsable([0], durationSec: 0))
+        let edge = stride(from: 0.0, through: 480, by: 2).map { $0 }            // last = 0.8 × 600
+        XCTAssertTrue(KeyframeThumbnailer.indexUsable(edge, durationSec: 600))
+    }
+
+    /// P2 #2: the gate's byte ceiling, with an injected counter.
+    func testGateByteCeilingInterruptsAndReports() {
+        let gate = ThumbInterruptGate()
+        var counter: Int64 = 0
+        let lock = NSLock()
+        gate.armBytes(limit: 16) { lock.lock(); defer { lock.unlock() }; return counter }
+        XCTAssertFalse(gate.shouldInterrupt)
+        XCTAssertFalse(gate.byteLimitHit)
+        lock.lock(); counter = 15; lock.unlock()
+        XCTAssertFalse(gate.shouldInterrupt)
+        lock.lock(); counter = 16; lock.unlock()
+        XCTAssertTrue(gate.shouldInterrupt)
+        XCTAssertTrue(gate.byteLimitHit)
+        XCTAssertFalse(gate.aborted, "a byte stop is not a close")
+        gate.disarmBytes()
+        XCTAssertFalse(gate.shouldInterrupt)
+        XCTAssertTrue(gate.byteLimitHit, "kept until the next arm")
+        gate.armBytes(limit: 100) { 0 }
+        XCTAssertFalse(gate.byteLimitHit)
+    }
+
+    // MARK: Review r1 (fixture)
+
+    /// P2 #2: on a Cue-less MKV (`test-nocues.mkv`: the fixture with its Cues element turned into
+    /// an EBML Void and its SeekHead entry renamed, duration kept) the priming seek is a linear
+    /// scan; it stops at the 16 MB cap, the index covers only the start, and the open refuses
+    /// `noIndex`. Make the file next to the fixture with:
+    /// `python3 -c "d=bytearray(open('test-long.mkv','rb').read());I=bytes([0x1C,0x53,0xBB,0x6B]);s=d.find(I);c=d.rfind(I);b=d[c+4];l=8-b.bit_length()+1;z=int.from_bytes(d[c+4:c+4+l],'big')&((1<<(7*l))-1);T=4+l+z;d[c]=0xEC;d[c+1]=1;d[c+2:c+9]=(T-9).to_bytes(7,'big');d[s+3]=0x6C;open('test-nocues.mkv','wb').write(d)"`
+    func testCuelessFileStopsAtThePrimingCapAndRefusesNoIndex() async throws {
+        try await requireFixture()
+        let url = Self.sibling("test-nocues.mkv")
+        var req = URLRequest(url: url)
+        req.httpMethod = "HEAD"
+        req.timeoutInterval = 2
+        let ok = (try? await URLSession.shared.data(for: req)).map { ($0.1 as? HTTPURLResponse)?.statusCode == 200 } ?? false
+        if !ok { print("[ThumbsTest] SKIPPED: \(url.absoluteString) missing (recipe in the test's comment)") }
+        try XCTSkipUnless(ok, "CUE-LESS PRIMING TEST SKIPPED: \(url.absoluteString) did not answer (recipe in the test's comment)")
+        let t = KeyframeThumbnailer(url: url, headers: [:])
+        defer { t.close() }
+        let start = Date()
+        let r = await t.open()
+        guard case .refused(let reason) = r else { return XCTFail("a Cue-less file must refuse") }
+        XCTAssertEqual(reason, .noIndex)
+        print(String(format: "[ThumbsTest] cue-less open: refused noIndex after %lldKB read, %lldKB charged, %.2f s",
+                     t.bytesRead / 1024, t.bytesCharged / 1024, Date().timeIntervalSince(start)))
+        // The cap plus what avio had buffered when the poll fired.
+        XCTAssertLessThan(t.bytesRead, KeyframeThumbnailer.primingByteCap + 2 * 1024 * 1024)
+        XCTAssertGreaterThan(t.bytesRead, KeyframeThumbnailer.primingByteCap / 2, "the scan never reached the cap")
+    }
+
+    /// P2 #2: with Cues (the fixture) a 1-byte priming cap does not refuse a file whose Cues come
+    /// back in the first read: the index spans the file, which is the test that counts.
+    func testPrimingCapKeepsAnIndexThatSpansTheFile() async throws {
+        try await requireFixture()
+        let t = KeyframeThumbnailer(url: Self.fixture, headers: [:], primingByteCap: 1)
+        defer { t.close() }
+        guard case .ready(let facts) = await t.open() else { return XCTFail("Cues loaded, the open must succeed") }
+        XCTAssertTrue(KeyframeThumbnailer.indexUsable(facts.keyframeIndex, durationSec: facts.durationSec))
+        guard case .frame = await t.frame(at: 300, urgent: true) else { return XCTFail("no frame after a capped priming") }
+    }
+
+    /// P1: a reopen with the first open's facts skips priming, still decodes, and charges
+    /// at least a range per frame.
+    func testReopenWithKnownFactsDecodes() async throws {
+        try await requireFixture()
+        let first = KeyframeThumbnailer(url: Self.fixture, headers: [:])
+        guard case .ready(let facts) = await first.open() else { first.close(); return XCTFail("open refused") }
+        first.close()
+        let t = KeyframeThumbnailer(url: Self.fixture, headers: [:], knownFacts: facts)
+        defer { t.close() }
+        guard case .ready(let again) = await t.open() else { return XCTFail("reopen refused") }
+        XCTAssertEqual(again.keyframeIndex, facts.keyframeIndex)
+        let afterOpen = t.bytesCharged
+        guard case .frame(_, let kf, _, _, _, let charged) = await t.frame(at: 300, urgent: true) else {
+            return XCTFail("no frame after reopen")
+        }
+        XCTAssertLessThanOrEqual(kf, 300.05)
+        XCTAssertGreaterThan(kf, 290)
+        XCTAssertGreaterThanOrEqual(charged, Int64(KeyframeThumbnailer.requestBytes(width: 1920)))
+        XCTAssertEqual(t.bytesCharged - afterOpen, charged)
+        print(String(format: "[ThumbsTest] reopen read=%lldKB charged open=%lldKB frame=%lldKB",
+                     t.bytesRead / 1024, afterOpen / 1024, charged / 1024))
     }
 
     func testFrameAt120StampsTheKeyframeBefore() async throws {
@@ -82,7 +205,7 @@ final class KeyframeThumbnailerTests: XCTestCase {
 
     func testMissingFileIsHTTPRefused() async throws {
         try await requireFixture()
-        let t = KeyframeThumbnailer(url: URL(string: "http://127.0.0.1:8000/no-such-file.mkv")!, headers: [:])
+        let t = KeyframeThumbnailer(url: Self.sibling("no-such-file.mkv"), headers: [:])
         defer { t.close() }
         guard case .refused(let reason) = await t.open() else { return XCTFail("a 404 must refuse") }
         XCTAssertEqual(reason, .httpRefused)
