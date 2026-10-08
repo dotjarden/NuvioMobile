@@ -133,15 +133,24 @@ final class KeyframeThumbnailerTests: XCTestCase {
         XCTAssertGreaterThan(t.bytesRead, KeyframeThumbnailer.primingByteCap / 2, "the scan never reached the cap")
     }
 
-    /// P2 #2: with Cues (the fixture) a 1-byte priming cap does not refuse a file whose Cues come
-    /// back in the first read: the index spans the file, which is the test that counts.
-    func testPrimingCapKeepsAnIndexThatSpansTheFile() async throws {
+    /// P2 #2, review r2 P3 #5: a 1-byte priming cap fires on the fixture (the read that loads the
+    /// tail Cues still goes through: the gate polls before each read, so the overshoot is one
+    /// read), the index it kept spans the file, and a frame decodes afterwards on the same
+    /// context, through the `error` / `eof_reached` reset that follows a byte stop.
+    func testFrameDecodesAfterThePrimingCapFired() async throws {
         try await requireFixture()
         let t = KeyframeThumbnailer(url: Self.fixture, headers: [:], primingByteCap: 1)
         defer { t.close() }
         guard case .ready(let facts) = await t.open() else { return XCTFail("Cues loaded, the open must succeed") }
+        XCTAssertTrue(t.primingCapHit, "the 1-byte cap never fired: the test proves nothing")
         XCTAssertTrue(KeyframeThumbnailer.indexUsable(facts.keyframeIndex, durationSec: facts.durationSec))
-        guard case .frame = await t.frame(at: 300, urgent: true) else { return XCTFail("no frame after a capped priming") }
+        guard case .frame(_, let kf, _, _, _, _) = await t.frame(at: 300, urgent: true) else {
+            return XCTFail("no frame after the priming cap fired")
+        }
+        XCTAssertLessThanOrEqual(kf, 300.05)
+        XCTAssertGreaterThan(kf, 290)
+        // And a second seek on the same context.
+        guard case .frame = await t.frame(at: 120, urgent: true) else { return XCTFail("no second frame") }
     }
 
     /// P1: a reopen with the first open's facts skips priming, still decodes, and charges
