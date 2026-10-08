@@ -46713,6 +46713,10 @@
     "Off After a Crash": {},
     "Off after a crash in an earlier playback": {},
     "Try Native Player": {},
+    "Seek Preview Frames (A/B)": {},
+    "Harvest Only": {},
+    "Harvest + Decode": {},
+    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which downloads up to 150 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {},
     "Try with mpv": {}
   },
   "version": "1.0"

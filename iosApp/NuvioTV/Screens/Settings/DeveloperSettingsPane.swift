@@ -124,6 +124,8 @@ struct DeveloperSettingsPane: View {
     @AppStorage("debug.harvestIntervalSec") private var harvestIntervalSec = 0
     /// Set by the harvest's crash guard (review r1 P2 #3); picking any value clears it.
     @AppStorage(HarvestCrashSentinel.disabledKey) private var harvestDisabledByCrash = false
+    /// Player P3: where the seek preview gets its pictures, both engines (`SeekPreviewMode`).
+    @AppStorage(SeekPreviewMode.defaultsKey) private var seekPreviewMode = SeekPreviewMode.defaultMode.rawValue
     /// The Thumbnail Harvest picker's value: -2 stands for "Off After a Crash" while the guard
     /// holds; choosing anything (that entry included, as a no-op) writes through.
     private var harvestSelection: Binding<Int> {
@@ -250,6 +252,14 @@ struct DeveloperSettingsPane: View {
                 default: return String(localized: "\(seconds) s")
                 }
             }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Seek Preview Frames (A/B)"),
+            selection: $seekPreviewMode,
+            options: SeekPreviewMode.allCases.map(\.rawValue),
+            descriptionID: .devSeekPreviewMode,
+            label: { raw in SeekPreviewMode.parse(raw).displayName }
         )
 
         SettingsToggleRow(

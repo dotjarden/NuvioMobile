@@ -203,6 +203,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devScrubCurve = "dev.scrubCurve"
     case devScrubSpeed = "dev.scrubSpeed"
     case devHarvestInterval = "dev.harvestInterval"
+    case devSeekPreviewMode = "dev.seekPreviewMode"
     case devCollectionProbe = "dev.collectionProbe"
     case devCollectionProbeClear = "dev.collectionProbeClear"
     case devCollectionAB = "dev.collectionAB"
@@ -395,6 +396,7 @@ enum SettingsDescriptions {
         case .devScrubCurve: return LocalizedStringResource("An A/B switch for how a swipe moves the position. Auto moves it at a steady rate that scales with the video's length; Flick moves it further the faster you swipe.")
         case .devScrubSpeed: return LocalizedStringResource("An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.")
         case .devHarvestInterval: return LocalizedStringResource("An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none. If the app closes while saving one, saving stops on this Apple TV until you pick a value here.")
+        case .devSeekPreviewMode: return LocalizedStringResource("An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which downloads up to 150 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.")
         case .devTrailerBuffer: return LocalizedStringResource("An A/B switch that sets how many seconds of trailer are buffered before playing. Auto is the normal behavior.")
         case .devTrailerLetterbox: return LocalizedStringResource("An A/B switch that skips the check for black bars around trailers. Leave it off unless asked.")
         case .devCollectionProbe: return LocalizedStringResource("Records how long each focus step takes on collection rows. Turn it on only when asked.")
@@ -418,7 +420,7 @@ enum SettingsDescriptions {
         case .playerMatchFrameRate: return LocalizedStringResource("Also set in tvOS Settings › Video and Audio › Match Content.")
         case .playerStreamingBuffer: return LocalizedStringResource("Applies to the next playback.")
         case .playerNetworkReadahead: return LocalizedStringResource("Applies to the next playback.")
-        case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval:
+        case .playerHoldMode, .playerEdgeClick, .devHoldTick, .devHoldRamp, .devCommitExactDelay, .devScrubCurve, .devScrubSpeed, .devHarvestInterval, .devSeekPreviewMode:
             return LocalizedStringResource("Applies to the next playback.")
         case .servicesDebridPrepare: return LocalizedStringResource("Debrid services limit how many links you can make in a period. Preparing links ahead can use that allowance even if you never press Play, so use a lower number when you can.")
         case .devTrailerMaxFps: return LocalizedStringResource("Takes effect on next launch.")
