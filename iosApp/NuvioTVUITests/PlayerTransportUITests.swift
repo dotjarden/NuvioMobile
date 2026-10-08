@@ -478,7 +478,9 @@ final class PlayerTransportUITests: XCTestCase {
     /// the keyframe thumbnailer's pre-warm (it opens after 20 s of healthy play, then passes of up
     /// to 8 frames every 10 s). Ten frames within 60 s of playback.
     func testDecodePrewarmGrows() throws {
-        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
+        // Review r1 P1: the budget now charges a whole range per request (open about 3 MB, 288 KB per
+        // fixture keyframe), past the 116 MB fixture's 2.3 MB (2 %); 20 MB lets the pass run.
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode", "-debug.thumbBudgetMB", "20"])
         let ok = waitBar(app, timeout: 60) {
             (Int($0["decoded"] ?? "") ?? 0) >= 10 && (Int($0["thumbs"] ?? "") ?? 0) >= 10
         }
@@ -500,13 +502,17 @@ final class PlayerTransportUITests: XCTestCase {
         let target = injectAndReadTarget(app)
         let start = Date()
         XCTAssertGreaterThanOrEqual(target - (Double(before["pos"] ?? "") ?? 0), 25, "scrub moved too little: \(barProbeText(app))")
-        let framed = waitBar(app, timeout: 1.5) {
+        // Review r1 P3 #11: the window includes the thumbnailer's lazy open (the first scrub opens
+        // it), so it is 3 s, the urgent frame deadline; 1.11 s was measured. Over 1.5 s is logged
+        // as SLOW so a loaded simulator can be told apart from a missed scrub.
+        let framed = waitBar(app, timeout: 3.0) {
             guard $0["mode"] == "scrubbing", $0["frame"] == "1", let f = Double($0["fsec"] ?? "") else { return false }
             return abs(f - target) <= 5
         }
         let elapsed = Date().timeIntervalSince(start)
         let p = bar(app)
         print("[DecodeLeg] scrub target=\(target) framed=\(framed) after \(String(format: "%.2f", elapsed)) s: \(barProbeText(app))")
+        if framed, elapsed > 1.5 { print("[DecodeLeg] SLOW: framed after \(String(format: "%.2f", elapsed)) s (open included)") }
         XCTAssertTrue(framed, "no decoded frame near the scrub target \(target): \(barProbeText(app))")
         XCTAssertGreaterThanOrEqual(Int(p["decoded"] ?? "") ?? 0, 1, barProbeText(app))
         remote.press(.menu)

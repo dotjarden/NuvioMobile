@@ -46716,7 +46716,7 @@
     "Seek Preview Frames (A/B)": {},
     "Harvest Only": {},
     "Harvest + Decode": {},
-    "last decode %d ms": {},
+    "last decode %ld ms": {},
     "%@ MB read": {},
     "decode off: %@": {},
     "no seek index": {},
@@ -46725,7 +46725,7 @@
     "store full": {},
     "Dolby Vision profile 5": {},
     "not supported for this file": {},
-    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which downloads up to 150 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {},
+    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which can download about 200 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {},
     "Try with mpv": {}
   },
   "version": "1.0"

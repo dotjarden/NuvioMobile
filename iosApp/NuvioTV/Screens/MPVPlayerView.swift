@@ -195,6 +195,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main only; created lazily (`shouldOpen`), closed in `destroyPlayer` or when it stops.
     private var thumbnailer: KeyframeThumbnailer?
     private var thumbOpened = false
+    /// What the first open learned; a reopen after an idle close reuses it (review r1 P1).
+    private var thumbFacts: ThumbFileFacts?
+    /// Bytes charged by thumbnailers already closed (idle closes); the budget counts across reopens.
+    private var thumbBytesClosed: Int64 = 0
     private var thumbByteBudget: Int64 = ThumbScheduler.byteBudget(fileSize: nil)
     /// The last store snapshot (critique C1): what the scheduler reads, never the actor itself.
     private var storeMirror = SeekPreviewSnapshot.empty
@@ -726,7 +730,14 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if isLeavingPlayer { closeFailover() }
+        if isLeavingPlayer {
+            closeFailover()
+            // r1 P3 #6: no job runs out its pass and no connection stays open under the next screen.
+            thumbScrubWork?.cancel(); thumbScrubWork = nil
+            thumbs.cancel()
+            thumbs.stop(.modeOff)
+            closeThumbnailer()
+        }
         pollTimer?.invalidate()
         pollTimer = nil
         stopHoldTimer()
@@ -1985,11 +1996,11 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         if seekPreviewMode.allowsDecode {
             if let ms = thumbLastDecodeMs {
-                parts.append(String(format: String(localized: "last decode %d ms"), Int(ms.rounded())))
+                parts.append(String(format: String(localized: "last decode %ld ms"), Int(ms.rounded())))
             }
-            if let t = thumbnailer, t.bytesRead > 0 {
+            if thumbBytesCharged > 0 {
                 parts.append(String(format: String(localized: "%@ MB read"),
-                                    String(format: "%.1f", Double(t.bytesRead) / 1_048_576)))
+                                    String(format: "%.1f", Double(thumbBytesCharged) / 1_048_576)))
             }
             if let reason = thumbs.stopped ?? thumbs.prewarmStopped, let words = Self.thumbStopWords(reason) {
                 parts.append(String(format: String(localized: "decode off: %@"), words))
@@ -2026,11 +2037,25 @@ final class MPVTVPlayerViewController: UIViewController {
         if thumbs.shouldOpen(inputs) { openThumbnailer() }
         if let job = thumbs.next(inputs) {
             startThumbJob(job)
-        } else if thumbs.takePassEnded(), thumbs.inFlight == nil {
+        } else if thumbs.inFlight == nil, thumbs.takePassEnded() {       // r1 P3 #5: in flight first
             thumbnailer?.releaseDecoder()
         }
-        if thumbs.stopped != nil, thumbnailer != nil { closeThumbnailer() }
+        if thumbs.stopped != nil, thumbnailer != nil {
+            closeThumbnailer()
+        } else if thumbnailer != nil, thumbOpened, thumbReleaseWork == nil,
+                  thumbs.idleCloseWanted(scrubbing: isScrubbing) {
+            // Review r1 P1: the pre-warm stopped and nothing is pending: drop the connection.
+            #if DEBUG
+            NSLog("%@", String(format: "[Thumbs] idle close reason=%@ charged=%.1fMB",
+                               thumbs.prewarmStopped?.rawValue ?? "-", Double(thumbBytesCharged) / 1_048_576))
+            #endif
+            closeThumbnailer()
+            thumbs.noteIdleClosed()
+        }
     }
+
+    /// What the byte budget has charged across every thumbnailer of this file (review r1 P1).
+    private var thumbBytesCharged: Int64 { thumbBytesClosed + (thumbnailer?.bytesCharged ?? 0) }
 
     private func thumbInputs() -> ThumbScheduler.Inputs {
         let snap = cachedProps()
@@ -2043,7 +2068,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 || ThumbScheduler.cacheReachesEnd(positionSec: position, cacheSec: cacheHealthSec, durationSec: snap.duration),
             cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil, scrubbing: isScrubbing,
             recentInput: now - lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
-            store: storeMirror, bytesRead: thumbnailer?.bytesRead ?? 0, byteBudget: thumbByteBudget,
+            store: storeMirror, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
             scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened)
     }
 
@@ -2067,12 +2092,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// to the media host itself, so the credentials go too (spec §5, not the `subAdd` path).
     private func openThumbnailer() {
         guard thumbnailer == nil, let scheme = context.url.scheme?.lowercased() else { return }
-        guard ["http", "https", "file"].contains(scheme) else {
+        // r1 P3 #7: a playlist (HLS, DASH) is refused before avformat fetches it and probes a
+        // segment; anything else still goes through the open's container check.
+        let ext = context.url.pathExtension.lowercased()
+        guard ["http", "https", "file"].contains(scheme), !["m3u8", "m3u", "mpd"].contains(ext) else {
             thumbs.stop(.container)
             rebuildPreviewSummary()
             return
         }
-        let t = KeyframeThumbnailer(url: context.url, headers: context.requestHeaders)
+        let t = KeyframeThumbnailer(url: context.url, headers: context.requestHeaders, knownFacts: thumbFacts)
         thumbnailer = t
         Task { @MainActor [weak self] in
             let result = await t.open()
@@ -2080,6 +2108,11 @@ final class MPVTVPlayerViewController: UIViewController {
             switch result {
             case .ready(let facts):
                 self.thumbOpened = true
+                guard self.thumbFacts == nil else {             // a reopen: budget and index are set
+                    self.driveThumbs()
+                    return
+                }
+                self.thumbFacts = facts
                 self.thumbByteBudget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
                 #if DEBUG
                 let overrideMB = UserDefaults.standard.integer(forKey: "debug.thumbBudgetMB")
@@ -2105,6 +2138,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func closeThumbnailer() {
         thumbReleaseWork?.cancel(); thumbReleaseWork = nil
+        if let t = thumbnailer { thumbBytesClosed += t.bytesCharged }
         thumbnailer?.close()
         thumbnailer = nil
         thumbOpened = false
@@ -2126,7 +2160,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 outcome = ThumbScheduler.Outcome(insert: inserted.outcome, keyframeSec: kf)
                 self.thumbLastDecodeMs = took
                 #if DEBUG
-                NSLog("%@", String(format: "[Thumbs] decode at=%.1f kf=%.1f took=%.0fms dec=%.0fms tm=%.1fms bytes=%lldKB job=%@ outcome=%@",
+                NSLog("%@", String(format: "[Thumbs] decode at=%.1f kf=%.1f took=%.0fms dec=%.0fms tm=%.1fms charged=%lldKB job=%@ outcome=%@",
                                    job.sec, kf, took, dec, tm, bytes / 1024, job.name, inserted.outcome.rawValue))
                 #endif
                 // The viewer is still scrubbing near this keyframe: refresh the card.
@@ -2147,8 +2181,9 @@ final class MPVTVPlayerViewController: UIViewController {
             #if DEBUG
             if let reason = self.thumbs.stopped ?? self.thumbs.prewarmStopped, !self.loggedThumbStop {
                 self.loggedThumbStop = true
-                NSLog("%@", String(format: "[Thumbs] stop reason=%@ decoded=%ld read=%.1fMB", reason.rawValue,
-                                   self.thumbs.decoded, Double(t.bytesRead) / 1_048_576))
+                NSLog("%@", String(format: "[Thumbs] stop reason=%@ decoded=%ld read=%.1fMB charged=%.1fMB", reason.rawValue,
+                                   self.thumbs.decoded, Double(t.bytesRead) / 1_048_576,
+                                   Double(self.thumbBytesCharged) / 1_048_576))
             }
             #endif
             self.rebuildPreviewSummary()
@@ -2165,6 +2200,7 @@ final class MPVTVPlayerViewController: UIViewController {
             guard let self else { return }
             self.thumbReleaseWork = nil
             if self.thumbs.inFlight == nil { self.thumbnailer?.releaseDecoder() }
+            self.driveThumbs()                  // r1 P1: an idle close waits for this release
         }
         thumbReleaseWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
