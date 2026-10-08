@@ -10,13 +10,15 @@ final class IFrameFragmentTests: XCTestCase {
     private func be(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF)] }
 
     /// moof{ mfhd, traf{ tfhd, tfdt, trun(data_offset + per-sample size [+ duration]) } } + mdat.
-    private func fragment(sizes: [UInt32], durations: Bool, dataOffsetOK: Bool = true) -> Data {
+    private func fragment(sizes: [UInt32], durations: Bool, dataOffsetOK: Bool = true,
+                          withDataOffset: Bool = true) -> Data {
         let mfhd = box("mfhd", be(0) + be(7))
         let tfhd = box("tfhd", be(0x0002_0000) + be(1))          // default-base-is-moof, track 1
         let tfdt = box("tfdt", be(0) + be(1000))
-        var flags: UInt32 = 0x1 | 0x200
+        var flags: UInt32 = withDataOffset ? (0x1 | 0x200) : 0x200
         if durations { flags |= 0x100 }
-        var trunPayload = be(flags) + be(UInt32(sizes.count)) + be(0)   // data_offset patched below
+        var trunPayload = be(flags) + be(UInt32(sizes.count))
+        if withDataOffset { trunPayload += be(0) }                    // data_offset patched below
         for s in sizes { if durations { trunPayload += be(40) }; trunPayload += be(s) }
         let trun = box("trun", trunPayload)
         let traf = box("traf", tfhd + tfdt + trun)
@@ -24,7 +26,7 @@ final class IFrameFragmentTests: XCTestCase {
         let payload = (0..<sizes.reduce(0, +)).map { UInt8($0 & 0xFF) }
         let mdat = box("mdat", payload)
         var d = Data(moof + mdat)
-        if dataOffsetOK {
+        if dataOffsetOK && withDataOffset {
             // data_offset lives 16 bytes into the trun box; trun starts at moof+8+mfhd+8(traf hdr)+tfhd+tfdt.
             let trunStart = 8 + mfhd.count + 8 + tfhd.count + tfdt.count
             IFrameFragment.write32(&d, at: trunStart + 16, UInt32(moof.count + 8))
@@ -73,6 +75,24 @@ final class IFrameFragmentTests: XCTestCase {
     func testSingleSampleIsUnchanged() throws {
         let seg = fragment(sizes: [6], durations: false)
         XCTAssertEqual(IFrameFragment.firstSample(of: seg), seg)
+    }
+
+    /// Review r1 P2 #3: a trun whose data_offset is not `moofSize + 8` (here 0) is refused by both
+    /// cuts, so the server answers 404 rather than serving the wrong bytes.
+    func testWrongDataOffsetYieldsNil() {
+        let seg = fragment(sizes: [5, 7, 9], durations: false, dataOffsetOK: false)
+        XCTAssertNil(IFrameFragment.firstSample(of: seg))
+        XCTAssertNil(IFrameFragment.cutAfterFirstSample(of: seg))
+        XCTAssertNil(IFrameFragment.body(for: seg, mode: .trim))
+    }
+
+    /// Review r1 P2 #3: a trun without a data_offset (data at the moof start) is refused too.
+    func testMissingDataOffsetYieldsNil() {
+        let seg = fragment(sizes: [5, 7, 9], durations: true, withDataOffset: false)
+        XCTAssertNil(IFrameFragment.firstSample(of: seg))
+        XCTAssertNil(IFrameFragment.cutAfterFirstSample(of: seg))
+        // The same segment with the right data_offset still trims (the check, not the shape, refused it).
+        XCTAssertNotNil(IFrameFragment.firstSample(of: fragment(sizes: [5, 7, 9], durations: true)))
     }
 
     func testMalformedYieldsNil() {

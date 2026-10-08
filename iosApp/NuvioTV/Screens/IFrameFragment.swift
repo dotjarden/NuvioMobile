@@ -58,6 +58,7 @@ nonisolated enum IFrameFragment {
               let traf = child(seg, in: 8..<moofSize, type: "traf"),
               let trunRange = child(seg, in: (traf.lowerBound + 8)..<traf.upperBound, type: "trun"),
               let trun = parseTrun(seg, range: trunRange), trun.firstSampleSize > 0,
+              firstSampleStartsTheMdat(seg, trun: trun, moofSize: moofSize),
               moofSize + 8 + trun.firstSampleSize <= seg.count else { return nil }
         return seg.subdata(in: 0..<(moofSize + 8 + trun.firstSampleSize))
     }
@@ -70,7 +71,8 @@ nonisolated enum IFrameFragment {
         guard let traf = child(seg, in: 8..<moofSize, type: "traf"),
               let trunRange = child(seg, in: (traf.lowerBound + 8)..<traf.upperBound, type: "trun"),
               let trun = parseTrun(seg, range: trunRange) else { return nil }
-        guard trun.sampleCount >= 1, trun.firstSampleSize > 0 else { return nil }
+        guard trun.sampleCount >= 1, trun.firstSampleSize > 0,
+              firstSampleStartsTheMdat(seg, trun: trun, moofSize: moofSize) else { return nil }
         let mdatPayloadStart = moofSize + 8
         guard mdatPayloadStart + trun.firstSampleSize <= seg.count else { return nil }
 
@@ -90,7 +92,7 @@ nonisolated enum IFrameFragment {
         var trunBox = seg.subdata(in: trun.offset..<(trun.offset + trun.headerSize + trun.entrySize))
         write32(&trunBox, at: 0, UInt32(newTrunSize))
         write32(&trunBox, at: 12, 1)
-        if let field = trun.dataOffsetField {
+        if let field = trun.dataOffsetField {          // always present (checked above)
             write32(&trunBox, at: field - trun.offset, UInt32(newMoofSize + 8))
         }
         out.append(trunBox)
@@ -106,6 +108,16 @@ nonisolated enum IFrameFragment {
         out.append(mdatHead)
         out.append(seg.subdata(in: mdatPayloadStart..<(mdatPayloadStart + trun.firstSampleSize)))
         return out
+    }
+
+    /// Review r1 P2 #3: both cuts copy the first sample from the start of the `mdat` payload, which
+    /// holds only when the `trun` carries a `data_offset` equal to `moofSize + 8` (movenc's
+    /// single-track segments today). An absent `data_offset` (data at the moof start under
+    /// `default-base-is-moof`) or any other value would put the wrong bytes in the fragment, so the
+    /// server answers 404 for that I-frame instead.
+    static func firstSampleStartsTheMdat(_ seg: Data, trun: Trun, moofSize: Int) -> Bool {
+        guard let field = trun.dataOffsetField else { return false }
+        return Int(be32(seg, field)) == moofSize + 8
     }
 
     // MARK: - Box walking
