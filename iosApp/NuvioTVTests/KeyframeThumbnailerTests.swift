@@ -51,8 +51,8 @@ final class KeyframeThumbnailerTests: XCTestCase {
         XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: true, container: mkv, consumed: 8 * 1024), 1)
         XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mp4, consumed: 0), 7)
         XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: true, container: mp4, consumed: 0), 3)
-        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mkv, consumed: 1536 * 1024), 8,
-                       "three open ranges crossed")
+        XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: mkv, consumed: 1536 * 1024), 5,
+                       "bytes an open read through are already in consumed and are not charged again as requests (r3 P3 #2)")
         XCTAssertEqual(KeyframeThumbnailer.openRequests(reopen: false, container: "", consumed: -1), 5)
         XCTAssertEqual(KeyframeThumbnailer.reopenFirstFrameRequests, 3)
     }

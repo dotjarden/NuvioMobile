@@ -139,11 +139,13 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
     /// What the budget counts as an open's requests: the measured seeks above plus one request per
     /// open range the consumed bytes crossed (`find_stream_info` reading on, a long header).
     /// An upper bound: a crossed range is counted again on top of the bytes it delivered.
+    /// The charge for an open is `consumed + requests × range`; a range the open read right
+    /// through is already in `consumed`, so it is not counted a second time as a request
+    /// (review r3 P3 #2).
     static func openRequests(reopen: Bool, container: String, consumed: Int64) -> Int {
         let seeks = reopen ? reopenRequests : firstOpenRequests
         let tail = container.contains("mov") ? mp4TailIndexRequests : 0
-        let crossed = Int(max(consumed, 0) / Int64(openRequestBytes))
-        return seeks + tail + crossed
+        return seeks + tail
     }
 
     /// A range up to this size is sent in full into the socket buffers and the host closes the
@@ -520,6 +522,9 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
         let ts = Int64(((max(sec, 0) + startSec) / tb).rounded(.down))
         let seekRC = av_seek_frame(fmt, videoIndex, ts, AVSEEK_FLAG_BACKWARD)
         if seekRC < 0 { return readFailure(seekRC) }
+        // Heuristic (review r3 P3 #3): avio may satisfy a short seek by reading through the
+        // current request, so this offset is not always the start of a new one; the error leans
+        // toward reporting a request as left open, which only costs an early close.
         httpAtSeek = httpOffset()
 
         // The first video key packet after the seek (matroskadec lands on the cue at or before
