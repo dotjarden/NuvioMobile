@@ -100,10 +100,13 @@ nonisolated struct ThumbScheduler {
 
     static let mib: Int64 = 1024 * 1024
 
-    /// Decision 4: `min(2 % of the file, 150 MB)`, 40 MB when the size is unknown.
+    /// Decision 4 with review r2 P3 #2: 2 % of the file between 16 MB and 150 MB, never more than
+    /// a tenth of the file; 40 MB when the size is unknown. The 16 MB floor pays one open (about
+    /// 3 MB charged) and a pre-warm pass on a TV episode; the tenth keeps a tiny file from spending
+    /// more on previews than on itself (the 116 MB smoke fixture gets 11.6 MB).
     static func byteBudget(fileSize: Int64?) -> Int64 {
         guard let size = fileSize, size > 0 else { return 40 * mib }
-        return min(size / 50, 150 * mib)
+        return min(max(min(size / 50, 150 * mib), 16 * mib), size / 10)
     }
 
     /// Scrub jobs may overrun the pre-warm budget by 50 MB.

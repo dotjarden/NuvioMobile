@@ -478,9 +478,10 @@ final class PlayerTransportUITests: XCTestCase {
     /// the keyframe thumbnailer's pre-warm (it opens after 20 s of healthy play, then passes of up
     /// to 8 frames every 10 s). Ten frames within 60 s of playback.
     func testDecodePrewarmGrows() throws {
-        // Review r1 P1: the budget now charges a whole range per request (open about 3 MB, 288 KB per
-        // fixture keyframe), past the 116 MB fixture's 2.3 MB (2 %); 20 MB lets the pass run.
-        let app = try launch(extra: ["-debug.seekPreviewMode", "decode", "-debug.thumbBudgetMB", "20"])
+        // Review r2 P3 #2: no budget override. The 116 MB fixture's budget is a tenth of it (11.6 MB
+        // under the 16 MB floor): an open of about 3 MB plus 288 KB per keyframe leaves room for
+        // the ten frames (`-debug.thumbBudgetMB` stays for experiments).
+        let app = try launch(extra: ["-debug.seekPreviewMode", "decode"])
         let ok = waitBar(app, timeout: 60) {
             (Int($0["decoded"] ?? "") ?? 0) >= 10 && (Int($0["thumbs"] ?? "") ?? 0) >= 10
         }

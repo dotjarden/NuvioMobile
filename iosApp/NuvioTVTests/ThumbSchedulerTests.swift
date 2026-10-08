@@ -163,7 +163,12 @@ final class ThumbSchedulerTests: XCTestCase {
         XCTAssertNil(t.next(inputs(now: 100.4) { $0.bytesRead = T.scrubCeiling(budget: budget) }))
         XCTAssertEqual(t.stopped, .byteBudget)
         XCTAssertEqual(T.byteBudget(fileSize: nil), 40 * T.mib)
-        XCTAssertEqual(T.byteBudget(fileSize: 122_000_000), 2_440_000)
+        // r2 P3 #2: the 16 MB floor, capped at a tenth of the file.
+        XCTAssertEqual(T.byteBudget(fileSize: 121_896_911), 12_189_691, "the smoke fixture: a tenth")
+        XCTAssertEqual(T.byteBudget(fileSize: 300 * T.mib), 16 * T.mib, "a TV episode: the floor")
+        XCTAssertEqual(T.byteBudget(fileSize: 2_000 * T.mib), 40 * T.mib, "2 %")
+        XCTAssertEqual(T.byteBudget(fileSize: 10 * T.mib), T.mib, "a tiny file: a tenth")
+        XCTAssertEqual(T.byteBudget(fileSize: 0), 40 * T.mib, "unknown")
         XCTAssertEqual(T.byteBudget(fileSize: 60_000 * T.mib), 150 * T.mib)
         XCTAssertEqual(T.scrubCeiling(budget: budget), 90 * T.mib)
     }
