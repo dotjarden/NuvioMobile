@@ -7,9 +7,36 @@ import Foundation
 /// The `trun` is rewritten to `sample_count = 1` with the first entry kept, every enclosing box
 /// size (`traf`, `moof`) shrinks by the dropped entries, `data_offset` (relative to the moof start
 /// under `default_base_moof`) is recomputed, and the `mdat` carries the first sample's bytes only.
-/// Pure: no I/O, no AVFoundation; a malformed input yields nil and the caller serves the whole
-/// segment instead.
-enum IFrameFragment {
+/// Pure: no I/O, no AVFoundation; a malformed input yields nil and the server answers 404 for that
+/// I-frame. It never serves the whole segment (10 to 28 MB on a 4K remux; the spike saw that break a
+/// remux mid-play, P3 critique C20).
+nonisolated enum IFrameFragment {
+    /// How `iframe-NNNNN.m4s` is cut from its segment. `trim` (every build's default) is the shape the
+    /// device spike saw AVKit scan with; `cut` is Apple's byte-range shape, kept for DEBUG A/B only
+    /// (`-debug.iframeMode cut`). The spike's third mode, the whole segment, is gone.
+    enum ServeMode: String, CaseIterable, Sendable {
+        case trim, cut
+
+        static let defaultMode: ServeMode = .trim
+
+        /// The DEBUG override: nil or empty → the default; an unknown value → the default plus the
+        /// raw string, so the server can log once that it was ignored.
+        static func parse(_ raw: String?) -> (mode: ServeMode, ignored: String?) {
+            guard let raw, !raw.isEmpty else { return (defaultMode, nil) }
+            if let mode = ServeMode(rawValue: raw) { return (mode, nil) }
+            return (defaultMode, raw)
+        }
+    }
+
+    /// The I-frame resource for one segment, or nil when the segment cannot be cut (the server
+    /// answers 404). Never the input segment itself unless it already holds a single sample.
+    static func body(for seg: Data, mode: ServeMode) -> Data? {
+        switch mode {
+        case .trim: return firstSample(of: seg)
+        case .cut: return cutAfterFirstSample(of: seg)
+        }
+    }
+
     struct Trun {
         var offset: Int          // box start in the fragment
         var size: Int

@@ -83,6 +83,16 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private var _subtitleSlots = 1
     let masterName = "master.m3u8"
     let mediaName = "media.m3u8"
+    /// Player P3: publish the `EXT-X-I-FRAMES-ONLY` rendition (`SeekPreviewMode.allowsIFrames`,
+    /// sampled once by the coordinator, so a change applies to the next playback). False = the
+    /// pre-P3 master byte for byte, and `iframe.m3u8` / `iframe-NNNNN.m4s` answer 404.
+    let iFrames: Bool
+    /// DEBUG `-debug.iframeIndependentMaster` (device item 7, the paused-scrub re-check): the master
+    /// also carries `EXT-X-INDEPENDENT-SEGMENTS`. Off by default and in Release: the media playlist's
+    /// segments can start on an HEVC CRA with leading pictures, so the claim is false there (C19).
+    let independentMaster: Bool
+    /// How `iframe-NNNNN.m4s` is cut (trim in every build; DEBUG `-debug.iframeMode cut` for A/B).
+    private let iFrameServeMode: IFrameFragment.ServeMode
 
     // JIT serve tuning.
     /// Max time to block a not-yet-produced segment. CoreMedia KILLS a variant after ~6s of silence on
@@ -116,6 +126,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
          subtitles: [SubtitleRendition] = [],
          subtitleFlags: [SubtitleRenditionFlags] = [],
          stripSdh: Bool = false,
+         iFrames: Bool = false,
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
@@ -129,6 +140,21 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.subtitles = subtitles
         self.subtitleFlags = subtitleFlags
         self.stripSdh = stripSdh
+        self.iFrames = iFrames
+        var independentMaster = false
+        var serveMode = IFrameFragment.ServeMode.defaultMode
+        #if DEBUG
+        independentMaster = iFrames && UserDefaults.standard.bool(forKey: "debug.iframeIndependentMaster")
+        let parsed = IFrameFragment.ServeMode.parse(UserDefaults.standard.string(forKey: "debug.iframeMode"))
+        serveMode = parsed.mode
+        if let ignored = parsed.ignored {
+            print("[HLS] iframeMode \"\(ignored)\" ignored (trim|cut), using \(serveMode.rawValue)")
+        }
+        print("[HLS] master iframes=\(iFrames ? 1 : 0) independent=\(independentMaster ? 1 : 0)"
+              + (iFrames ? " iframePlaylist independent=1 mode=\(serveMode.rawValue)" : ""))
+        #endif
+        self.independentMaster = independentMaster
+        self.iFrameServeMode = serveMode
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -242,12 +268,13 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             lock.lock(); let signaling = _signaling; let slots = _subtitleSlots; lock.unlock()
             let master = map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
                                             bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
-                                            subtitleFlags: subtitleFlags)
+                                            subtitleFlags: subtitleFlags, iFrames: iFrames,
+                                            independentSegments: independentMaster)
             return Self.expandSubtitleSlots(master, slots: slots)
         case mediaName:
             return map.mediaPlaylist()
         case SegmentMap.iFramePlaylistName:
-            return map.iFramePlaylist()
+            return iFrames ? map.iFramePlaylist() : nil
         default:
             // aud-T.m3u8 — an audio rendition: same segment grid as the video playlist, its own
             // init map and segment names.
@@ -458,6 +485,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         // spike showed AVKit prefetching the next three at load, and a 404 there switched the whole
         // rendition off); one outside the window answers 404 and AVKit shows no preview there.
         if let idx = SegmentMap.iFrameSegmentIndex(name) {
+            guard iFrames else {
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
+                     on: connection, requestPath: name)
+                return
+            }
             serveIFrame(name: name, idx: idx, rangeHeader: rangeHeader, isHead: isHead, on: connection,
                         deadline: Date().addingTimeInterval(blockTimeout), live: live)
             return
@@ -547,11 +579,9 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// repositions, exactly once.
     private enum JITMode { case poll, repositioned }
 
-    /// Serve a media file if it exists; otherwise wait (async re-scheduling, no thread held) up to
-    /// `deadline`, then 503 — ALWAYS answering inside CoreMedia's ~6s no-response window. A request
-    /// outside the producing window on arrival — far forward seek OR backward seek into an unproduced
-    /// hole — repositions the remux once and waits; a `.poll` request whose window moves away fast-503s
-    /// (a newer seek won). Past the last segment → 404; abandoned connection → stop immediately.
+    /// `iframe-NNNNN.m4s`: the produced segment's first sample (see `IFrameFragment`). A segment not
+    /// produced yet but inside the producing window is polled until `deadline`; outside it, 404. Never
+    /// moves the remux frontier.
     private func serveIFrame(name: String, idx: Int, rangeHeader: String?, isHead: Bool,
                              on connection: NWConnection, deadline: Date, live: ConnLive) {
         guard live.alive else { connection.cancel(); return }
@@ -562,24 +592,19 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
         let segURL = rootDir.appendingPathComponent(String(format: "seg-%05d.m4s", idx))
         if let data = try? Data(contentsOf: segURL, options: .mappedIfSafe) {
-            // Spike A/B (`-debug.iframeMode whole|cut|trim`, DEBUG): "whole" serves the entire
-            // segment (a fragment AVFoundation already decodes as media); "cut" keeps the original
-            // moof and ends the resource after the first sample's bytes (Apple's byte-range shape);
-            // "trim" rewrites the trun to one sample.
-            // Default "trim": the device spike (10-08) showed AVKit scans with the trimmed
-            // fragments, and serving whole 10–28 MB segments made a remux fail mid-play.
-            var mode = "trim"
-            #if DEBUG
-            if let m = UserDefaults.standard.string(forKey: "debug.iframeMode"), !m.isEmpty { mode = m }
-            #endif
-            let body: Data
-            switch mode {
-            case "cut": body = IFrameFragment.cutAfterFirstSample(of: data) ?? data
-            case "whole": body = data
-            default: body = IFrameFragment.firstSample(of: data) ?? data
+            // Trim in every build (C20): a segment the trimmer cannot cut answers 404 and never goes
+            // out whole, which is the shape the spike saw break a remux mid-play.
+            let mode = iFrameServeMode
+            guard let body = IFrameFragment.body(for: data, mode: mode) else {
+                #if DEBUG
+                print("[HLS] iframe \(name) not cut (mode=\(mode.rawValue), seg \(data.count)b) → 404")
+                #endif
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not cut".utf8),
+                     on: connection, requestPath: name)
+                return
             }
             #if DEBUG
-            NSLog("[HLS] iframe %@ from seg (%d → %d bytes, mode=%@)", name, data.count, body.count, mode)
+            NSLog("[HLS] iframe %@ from seg (%d → %d bytes, mode=%@)", name, data.count, body.count, mode.rawValue)
             #endif
             serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             return
@@ -598,6 +623,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
     }
 
+    /// Serve a media file if it exists; otherwise wait (async re-scheduling, no thread held) up to
+    /// `deadline`, then 503 — ALWAYS answering inside CoreMedia's ~6s no-response window. A request
+    /// outside the producing window on arrival — far forward seek OR backward seek into an unproduced
+    /// hole — repositions the remux once and waits; a `.poll` request whose window moves away fast-503s
+    /// (a newer seek won). Past the last segment → 404; abandoned connection → stop immediately.
     private func serveSegmentJIT(name: String, rangeHeader: String?, isHead: Bool,
                                  on connection: NWConnection, deadline: Date,
                                  mode: JITMode?, live: ConnLive) {

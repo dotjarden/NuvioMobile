@@ -151,11 +151,13 @@ nonisolated struct SegmentMap: Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
     /// The `EXT-X-I-FRAMES-ONLY` rendition (player P3): one entry per segment, named
     /// `iframe-NNNNN.m4s`, which `LocalHLSServer` serves as the segment's first sample (the boundary
     /// keyframe) trimmed into a one-sample fragment. Each EXTINF spans the time to the next I-frame,
     /// which on this grid is the segment duration. No BYTERANGE: every entry is a whole resource.
+    /// `EXT-X-INDEPENDENT-SEGMENTS` is true here (each fragment is one intra sample) and only here:
+    /// the media playlist's segments are cut on any key packet, HEVC CRA included, so an open-GOP
+    /// segment's leading pictures reference the previous one (P3 critique C19).
     static let iFramePlaylistName = "iframe.m3u8"
     static let iFramePrefix = "iframe-"
 
@@ -163,6 +165,7 @@ nonisolated struct SegmentMap: Sendable {
         var lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:7",
+            "#EXT-X-INDEPENDENT-SEGMENTS",
             "#EXT-X-TARGETDURATION:\(targetDurationSec)",
             "#EXT-X-PLAYLIST-TYPE:VOD",
             "#EXT-X-MEDIA-SEQUENCE:1",
@@ -183,6 +186,7 @@ nonisolated struct SegmentMap: Sendable {
         return Int(name.dropFirst(iFramePrefix.count).dropLast(4))
     }
 
+    /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
     /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
     /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
     func masterPlaylist(signaling: VideoSignaling,
@@ -191,7 +195,11 @@ nonisolated struct SegmentMap: Sendable {
                         mediaName: String = "media.m3u8",
                         subtitles: [SubtitleRendition] = [],
                         subtitleFlags: [SubtitleRenditionFlags] = [],
-                        iFrames: Bool = true) -> String {
+                        iFrames: Bool = false,
+                        independentSegments: Bool = false) -> String {
+        // `iFrames` (P3, `SeekPreviewMode.allowsIFrames`) adds the I-frame rendition line;
+        // `independentSegments` (DEBUG `-debug.iframeIndependentMaster`, device item 7 only, C19)
+        // adds the master-level tag. Both false = byte for byte the pre-P3 master.
         // CODECS lists every codec the variant can carry — video plus the union of the audio
         // renditions' tokens (mixed groups, e.g. "hvc1…,ec-3,mp4a.40.2", are the standard form).
         var codecTokens: [String] = []
@@ -218,6 +226,7 @@ nonisolated struct SegmentMap: Sendable {
         }
 
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
+        if independentSegments { lines.append("#EXT-X-INDEPENDENT-SEGMENTS") }
         // Demuxed audio (info-panel W3): the variant is video-only; every playable source track is
         // its own AUDIO rendition with a URI, so the system Audio tab lists them all and switching is
         // AVPlayer's own seamless rendition change. Only the active track's segments exist at any
@@ -255,8 +264,8 @@ nonisolated struct SegmentMap: Sendable {
         }
         lines.append(streamInf)
         lines.append(mediaName)
-        // The I-frame rendition (P3): video codec only, same resolution and range; AVKit draws the
-        // transport bar's scrub previews from it and uses it for FF/RW scan. A bandwidth of its own
+        // The I-frame rendition (P3): video codec only, same resolution and range; AVKit uses it for
+        // FF/RW scan (the spike found tvOS 27's paused scrub never requests it). A bandwidth of its own
         // is required by the spec; one keyframe per ~4 s segment is a small fraction of the variant.
         if iFrames {
             var iframeInf = "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=\(max(bandwidth / 8, 1))"

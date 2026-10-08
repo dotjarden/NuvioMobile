@@ -95,7 +95,7 @@ final class IFrameFragmentTests: XCTestCase {
         XCTAssertEqual(SegmentMap.iFrameSegmentIndex("iframe-00003.m4s"), 3)
         XCTAssertNil(SegmentMap.iFrameSegmentIndex("seg-00003.m4s"))
         let sig = VideoSignaling(codecs: "hvc1.2.4.L153.B0", supplementalCodecs: nil, videoRange: "PQ", width: 3840, height: 2160, frameRate: 23.976)
-        let master = map.masterPlaylist(signaling: sig, bandwidth: 40_000_000)
+        let master = map.masterPlaylist(signaling: sig, bandwidth: 40_000_000, iFrames: true)
         let line = try XCTUnwrap(master.split(separator: "\n").first { $0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") })
         XCTAssertTrue(line.contains("CODECS=\"hvc1.2.4.L153.B0\""))
         XCTAssertTrue(line.contains("VIDEO-RANGE=PQ"))
@@ -103,4 +103,134 @@ final class IFrameFragmentTests: XCTestCase {
         XCTAssertTrue(line.hasSuffix("URI=\"iframe.m3u8\""))
         XCTAssertFalse(map.masterPlaylist(signaling: sig, bandwidth: 1, iFrames: false).contains("I-FRAME"))
     }
+
+    // MARK: - P3 Wave 1 B: gating, INDEPENDENT-SEGMENTS, no whole-segment fallback
+
+    private func fiveSegmentMap() throws -> SegmentMap {
+        let kf: [Int64] = stride(from: 0, to: 20_000, by: 2_000).map { Int64($0) }
+        return try XCTUnwrap(SegmentMap.build(keyframeTicks: kf, timeBaseNum: 1, timeBaseDen: 1000,
+                                              totalDurationSec: 20, segDurSec: 4))
+    }
+    private let hdrSig = VideoSignaling(codecs: "hvc1.2.4.L153.B0", supplementalCodecs: "dvh1.08.06/db4h",
+                                        videoRange: "PQ", width: 3840, height: 2160, frameRate: 23.976)
+
+    func testMasterWithoutIFramesIsThePreP3Master() throws {
+        let map = try fiveSegmentMap()
+        let off = map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000, iFrames: false)
+        XCTAssertFalse(off.contains("I-FRAME"))
+        XCTAssertFalse(off.contains("INDEPENDENT-SEGMENTS"))
+        // The default is off, so an un-migrated caller gets the pre-P3 master too.
+        XCTAssertEqual(map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000), off)
+        // With the rendition on, the ONLY difference is the I-frame line (no master-level tag).
+        let on = map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000, iFrames: true)
+        XCTAssertFalse(on.contains("INDEPENDENT-SEGMENTS"))
+        let onLines = on.split(separator: "\n", omittingEmptySubsequences: false)
+        XCTAssertEqual(onLines.filter { $0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") }.count, 1)
+        XCTAssertEqual(onLines.filter { !$0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") }.joined(separator: "\n"), off)
+        // The pre-P3 shape: header, then the stream line and the media URI.
+        XCTAssertTrue(off.hasPrefix("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-STREAM-INF:"))
+        XCTAssertTrue(off.hasSuffix("\nmedia.m3u8\n"))
+    }
+
+    func testMasterIndependentSegmentsOnlyWhenAsked() throws {
+        let map = try fiveSegmentMap()
+        let master = map.masterPlaylist(signaling: hdrSig, bandwidth: 1, iFrames: true, independentSegments: true)
+        let lines = master.split(separator: "\n")
+        XCTAssertEqual(lines[0], "#EXTM3U")
+        XCTAssertEqual(lines[1], "#EXT-X-VERSION:7")
+        XCTAssertEqual(lines[2], "#EXT-X-INDEPENDENT-SEGMENTS")   // third line (C19)
+        XCTAssertEqual(lines.filter { $0 == "#EXT-X-INDEPENDENT-SEGMENTS" }.count, 1)
+    }
+
+    func testIFramePlaylistIsIndependent() throws {
+        let pl = try fiveSegmentMap().iFramePlaylist()
+        let lines = pl.split(separator: "\n")
+        XCTAssertEqual(lines[1], "#EXT-X-VERSION:7")
+        XCTAssertEqual(lines[2], "#EXT-X-INDEPENDENT-SEGMENTS")
+        XCTAssertTrue(lines.contains("#EXT-X-I-FRAMES-ONLY"))
+        // The media playlist never claims it: its segments can open on a CRA with leading pictures.
+        XCTAssertFalse(try fiveSegmentMap().mediaPlaylist().contains("INDEPENDENT-SEGMENTS"))
+    }
+
+    func testServeModeParse() {
+        XCTAssertEqual(IFrameFragment.ServeMode.defaultMode, .trim)
+        XCTAssertEqual(IFrameFragment.ServeMode.parse(nil).mode, .trim)
+        XCTAssertNil(IFrameFragment.ServeMode.parse(nil).ignored)
+        XCTAssertEqual(IFrameFragment.ServeMode.parse("").mode, .trim)
+        XCTAssertEqual(IFrameFragment.ServeMode.parse("cut").mode, .cut)
+        XCTAssertEqual(IFrameFragment.ServeMode.parse("trim").mode, .trim)
+        // The spike's "whole" mode is gone: ignored, trim served, and reported for the DEBUG log.
+        let whole = IFrameFragment.ServeMode.parse("whole")
+        XCTAssertEqual(whole.mode, .trim)
+        XCTAssertEqual(whole.ignored, "whole")
+        XCTAssertEqual(IFrameFragment.ServeMode.allCases, [.trim, .cut])
+    }
+
+    /// C20: a segment the trimmer cannot parse yields nil (the server answers 404), in both modes,
+    /// never the whole segment.
+    func testUncuttableSegmentNeverServesWhole() {
+        var short = fragment(sizes: [5, 7], durations: false)
+        short.removeLast(8)                                   // mdat shorter than the first sample
+        let notMoof = Data([0, 0, 0, 8] + Array("free".utf8))
+        var noTrun = fragment(sizes: [5, 7], durations: false)
+        let trunType = 8 + 16 + 8 + 16 + 16 + 4             // moof hdr, mfhd, traf hdr, tfhd, tfdt, trun size
+        XCTAssertEqual(IFrameFragment.boxType(noTrun, at: trunType - 4), "trun")
+        noTrun.replaceSubrange(trunType ..< trunType + 4, with: Array("xxxx".utf8))
+        for seg in [short, notMoof, noTrun, Data()] {
+            for mode in IFrameFragment.ServeMode.allCases {
+                XCTAssertNil(IFrameFragment.body(for: seg, mode: mode), "\(mode) \(seg.count)b")
+            }
+        }
+        // A good multi-sample segment is cut, and the result is never the segment itself.
+        let good = fragment(sizes: [5, 7, 9], durations: false)
+        for mode in IFrameFragment.ServeMode.allCases {
+            let body = IFrameFragment.body(for: good, mode: mode)
+            XCTAssertNotNil(body, "\(mode)")
+            XCTAssertLessThan(body?.count ?? .max, good.count, "\(mode)")
+        }
+    }
+
+    private func server(iFrames: Bool, map: SegmentMap) -> LocalHLSServer {
+        LocalHLSServer(rootDir: FileManager.default.temporaryDirectory, map: map, signaling: hdrSig,
+                       bandwidth: 40_000_000, iFrames: iFrames,
+                       producingInfo: { (1, nil) }, requestReposition: { _ in })
+    }
+
+    func testServerGatesTheRendition() throws {
+        UserDefaults.standard.removeObject(forKey: "debug.iframeIndependentMaster")
+        let map = try fiveSegmentMap()
+        let off = server(iFrames: false, map: map)
+        XCTAssertFalse(off.iFrames)
+        XCTAssertFalse(off.independentMaster)
+        XCTAssertNil(off.renderedPlaylist(named: SegmentMap.iFramePlaylistName))
+        let offMaster = try XCTUnwrap(off.renderedMasterPlaylist())
+        XCTAssertFalse(offMaster.contains("I-FRAME"))
+        XCTAssertFalse(offMaster.contains("INDEPENDENT-SEGMENTS"))
+        XCTAssertEqual(offMaster, map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000))
+
+        let on = server(iFrames: true, map: map)
+        XCTAssertFalse(on.independentMaster)                  // DEBUG key unset → off
+        let iframe = try XCTUnwrap(on.renderedPlaylist(named: SegmentMap.iFramePlaylistName))
+        XCTAssertTrue(iframe.contains("#EXT-X-INDEPENDENT-SEGMENTS"))
+        let onMaster = try XCTUnwrap(on.renderedMasterPlaylist())
+        XCTAssertTrue(onMaster.contains("#EXT-X-I-FRAME-STREAM-INF:"))
+        XCTAssertFalse(onMaster.contains("INDEPENDENT-SEGMENTS"))
+    }
+
+    #if DEBUG
+    func testDebugIndependentMasterKey() throws {
+        let key = "debug.iframeIndependentMaster"
+        UserDefaults.standard.set(true, forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let map = try fiveSegmentMap()
+        let on = server(iFrames: true, map: map)
+        XCTAssertTrue(on.independentMaster)
+        XCTAssertEqual(try XCTUnwrap(on.renderedMasterPlaylist()).split(separator: "\n")[2],
+                       "#EXT-X-INDEPENDENT-SEGMENTS")
+        // The key never adds the tag when the rendition is off (Off stays the pre-P3 master).
+        let off = server(iFrames: false, map: map)
+        XCTAssertFalse(off.independentMaster)
+        XCTAssertFalse(try XCTUnwrap(off.renderedMasterPlaylist()).contains("INDEPENDENT-SEGMENTS"))
+    }
+    #endif
 }
