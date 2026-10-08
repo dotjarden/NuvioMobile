@@ -61,6 +61,14 @@ nonisolated struct SeekPreviewSnapshot: Equatable, Sendable {
     var acceptsDecode: Bool
     /// `thumbnail(near:)`'s default tolerance at this moment.
     var tolerance: Double
+    /// Review r1 P2 #4: taken inside the actor, one higher for every snapshot the store hands out
+    /// (0 = `empty`). Harvest inserts, decode inserts and `setKeyframeSpacing` publish from
+    /// separate tasks whose main-actor hops are not ordered with the actor, so the controller keeps
+    /// only a snapshot newer than its mirror (`supersedes`).
+    var version: UInt64 = 0
+
+    /// True when this snapshot was taken after `other` (an older one arriving late is dropped).
+    func supersedes(_ other: SeekPreviewSnapshot) -> Bool { version > other.version }
 
     static let empty = SeekPreviewSnapshot(count: 0, bytes: 0, harvest: 0, decode: 0, stamps: [],
                                            acceptsDecode: true, tolerance: 10)
@@ -118,6 +126,8 @@ actor SeekPreviewStore {
     private var lastDecoded: (seq: UInt64, image: CGImage)?
     /// The thumbnailer's median keyframe gap; folds the GOP into the lookup tolerance.
     private var keyframeSpacing: Double?
+    /// The last `SeekPreviewSnapshot.version` handed out (review r1 P2 #4).
+    private var snapshotVersion: UInt64 = 0
 
     init(streamKey: String, codec: PreviewFrameCodec = JPEGPreviewCodec(),
          maxEntries: Int = defaultMaxEntries, maxBytes: Int = defaultMaxBytes) {
@@ -163,8 +173,10 @@ actor SeekPreviewStore {
 
     func snapshot() -> SeekPreviewSnapshot {
         let c = counts
+        snapshotVersion += 1
         return SeekPreviewSnapshot(count: entries.count, bytes: bytes, harvest: c.harvest, decode: c.decode,
-                                   stamps: stamps(), acceptsDecode: acceptsDecode, tolerance: defaultTolerance())
+                                   stamps: stamps(), acceptsDecode: acceptsDecode, tolerance: defaultTolerance(),
+                                   version: snapshotVersion)
     }
 
     /// Inserts by the merge rules above; returns the outcome and the snapshot after it.

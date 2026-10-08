@@ -416,12 +416,45 @@ final class SeekPreviewStoreTests: XCTestCase {
         let s = store()
         let r = await s.insert(img(4), at: 7, origin: .decode)
         XCTAssertEqual(r.snapshot, SeekPreviewSnapshot(count: 1, bytes: 40, harvest: 0, decode: 1, stamps: [7],
-                                                       acceptsDecode: true, tolerance: 10))
+                                                       acceptsDecode: true, tolerance: 10, version: r.snapshot.version))
         let invalid = await s.insert(img(), at: -3, origin: .decode)
         XCTAssertEqual(invalid.outcome, .invalid)
         XCTAssertEqual(invalid.snapshot.count, 1)
         let cleared = await s.removeAll()
-        XCTAssertEqual(cleared, .empty)
+        XCTAssertEqual(cleared.count, 0); XCTAssertEqual(cleared.bytes, 0); XCTAssertEqual(cleared.stamps, [])
+        XCTAssertTrue(cleared.supersedes(.empty))
+    }
+
+    // Review r1 P2 #4: every snapshot the actor hands out (insert, spacing, caps, removeAll,
+    // snapshot()) carries a higher version than the one before; `.empty` is 0.
+    func testSnapshotVersionIncreasesOnEveryOperation() async {
+        let s = store()
+        var versions: [UInt64] = []
+        versions.append(await s.insert(img(4), at: 7, origin: .decode).snapshot.version)
+        versions.append(await s.setKeyframeSpacing(4).version)
+        versions.append(await s.insert(img(4), at: 20, origin: .harvest).snapshot.version)
+        versions.append(await s.insert(img(), at: -1, origin: .decode).snapshot.version)   // invalid still counts
+        versions.append(await s.setCaps(maxEntries: 50, maxBytes: 10_000).version)
+        versions.append(await s.snapshot().version)
+        versions.append(await s.removeAll().version)
+        XCTAssertEqual(SeekPreviewSnapshot.empty.version, 0)
+        XCTAssertGreaterThan(versions[0], 0)
+        XCTAssertEqual(versions, versions.sorted())
+        XCTAssertEqual(Set(versions).count, versions.count)
+    }
+
+    // Review r1 P2 #4: the controller's rule, pure: an older snapshot arriving after a newer one
+    // is ignored, so the mirror never loses a stamp.
+    func testOlderSnapshotIsIgnoredByTheMirrorRule() async {
+        let s = store()
+        let older = await s.insert(img(4), at: 7, origin: .decode).snapshot
+        let newer = await s.insert(img(4), at: 30, origin: .harvest).snapshot
+        var mirror = SeekPreviewSnapshot.empty
+        for snap in [newer, older] where snap.supersedes(mirror) { mirror = snap }   // out of order
+        XCTAssertEqual(mirror, newer)
+        XCTAssertEqual(mirror.stamps, [7, 30])
+        XCTAssertFalse(older.supersedes(newer))
+        XCTAssertFalse(newer.supersedes(newer))
     }
 
     // P3-12

@@ -1966,6 +1966,9 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main. The one place store state reaches the controller (critique C1): the scheduler's
     /// mirror, the probe's `thumbs=`, and the Info row, for harvest and decode inserts alike.
     private func applyStoreSnapshot(_ snapshot: SeekPreviewSnapshot) {
+        // Review r1 P2 #4: an older snapshot landing after a newer one would drop a stamp from the
+        // mirror (the scheduler would re-decode that slot); keep the newest only.
+        guard snapshot.supersedes(storeMirror) else { return }
         storeMirror = snapshot
         state.transport.previewFrames = snapshot.count
         rebuildPreviewSummary()
