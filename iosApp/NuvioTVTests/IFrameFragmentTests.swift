@@ -1,0 +1,96 @@
+import XCTest
+@testable import NuvioTV
+
+/// Player P3 spike: the I-frame rendition trims a remuxed segment to its first sample.
+final class IFrameFragmentTests: XCTestCase {
+    private func box(_ type: String, _ payload: [UInt8]) -> [UInt8] {
+        let size = UInt32(8 + payload.count)
+        return be(size) + Array(type.utf8) + payload
+    }
+    private func be(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF)] }
+
+    /// moof{ mfhd, traf{ tfhd, tfdt, trun(data_offset + per-sample size [+ duration]) } } + mdat.
+    private func fragment(sizes: [UInt32], durations: Bool, dataOffsetOK: Bool = true) -> Data {
+        let mfhd = box("mfhd", be(0) + be(7))
+        let tfhd = box("tfhd", be(0x0002_0000) + be(1))          // default-base-is-moof, track 1
+        let tfdt = box("tfdt", be(0) + be(1000))
+        var flags: UInt32 = 0x1 | 0x200
+        if durations { flags |= 0x100 }
+        var trunPayload = be(flags) + be(UInt32(sizes.count)) + be(0)   // data_offset patched below
+        for s in sizes { if durations { trunPayload += be(40) }; trunPayload += be(s) }
+        let trun = box("trun", trunPayload)
+        let traf = box("traf", tfhd + tfdt + trun)
+        let moof = box("moof", mfhd + traf)
+        let payload = (0..<sizes.reduce(0, +)).map { UInt8($0 & 0xFF) }
+        let mdat = box("mdat", payload)
+        var d = Data(moof + mdat)
+        if dataOffsetOK {
+            // data_offset lives 16 bytes into the trun box; trun starts at moof+8+mfhd+8(traf hdr)+tfhd+tfdt.
+            let trunStart = 8 + mfhd.count + 8 + tfhd.count + tfdt.count
+            IFrameFragment.write32(&d, at: trunStart + 16, UInt32(moof.count + 8))
+        }
+        return d
+    }
+
+    func testTrimsToFirstSample() throws {
+        let seg = fragment(sizes: [5, 7, 9], durations: false)
+        let out = try XCTUnwrap(IFrameFragment.firstSample(of: seg))
+        // Two entries of 4 bytes dropped.
+        XCTAssertEqual(out.count, seg.count - 8 - (7 + 9))
+        let moofSize = Int(IFrameFragment.be32(out, 0))
+        XCTAssertEqual(IFrameFragment.boxType(out, at: 0), "moof")
+        XCTAssertEqual(IFrameFragment.boxType(out, at: moofSize), "mdat")
+        XCTAssertEqual(Int(IFrameFragment.be32(out, moofSize)), 8 + 5)
+        let traf = try XCTUnwrap(IFrameFragment.child(out, in: 8..<moofSize, type: "traf"))
+        let trunR = try XCTUnwrap(IFrameFragment.child(out, in: (traf.lowerBound + 8)..<traf.upperBound, type: "trun"))
+        let trun = try XCTUnwrap(IFrameFragment.parseTrun(out, range: trunR))
+        XCTAssertEqual(trun.sampleCount, 1)
+        XCTAssertEqual(trun.firstSampleSize, 5)
+        XCTAssertEqual(Int(IFrameFragment.be32(out, try XCTUnwrap(trun.dataOffsetField))), moofSize + 8)
+        // The mdat payload is the first sample's bytes.
+        XCTAssertEqual(Array(out.suffix(5)), [0, 1, 2, 3, 4])
+        // Every box size adds up to the fragment.
+        XCTAssertEqual(moofSize + 8 + 5, out.count)
+    }
+
+    func testTrimsWithPerSampleDurations() throws {
+        let seg = fragment(sizes: [11, 3], durations: true)
+        let out = try XCTUnwrap(IFrameFragment.firstSample(of: seg))
+        XCTAssertEqual(out.count, seg.count - 8 - 3)
+        XCTAssertEqual(Array(out.suffix(11)), (0..<11).map { UInt8($0) })
+    }
+
+    func testSingleSampleIsUnchanged() throws {
+        let seg = fragment(sizes: [6], durations: false)
+        XCTAssertEqual(IFrameFragment.firstSample(of: seg), seg)
+    }
+
+    func testMalformedYieldsNil() {
+        XCTAssertNil(IFrameFragment.firstSample(of: Data([0, 0, 0, 8] + Array("free".utf8))))
+        var seg = fragment(sizes: [5, 7], durations: false)
+        seg.removeLast(8)                                    // mdat shorter than the first sample
+        XCTAssertNil(IFrameFragment.firstSample(of: seg))
+    }
+
+    func testIFramePlaylistAndMasterLine() throws {
+        // 1/1000 time base, keyframes every 2 s over 20 s, 4 s segments → 5 segments.
+        let kf: [Int64] = stride(from: 0, to: 20_000, by: 2_000).map { Int64($0) }
+        let map = try XCTUnwrap(SegmentMap.build(keyframeTicks: kf, timeBaseNum: 1, timeBaseDen: 1000,
+                                                 totalDurationSec: 20, segDurSec: 4))
+        let pl = map.iFramePlaylist()
+        XCTAssertTrue(pl.contains("#EXT-X-I-FRAMES-ONLY\n"))
+        XCTAssertTrue(pl.contains("#EXT-X-MAP:URI=\"init.mp4\""))
+        XCTAssertEqual(pl.components(separatedBy: "iframe-").count - 1, map.count)
+        XCTAssertTrue(pl.hasSuffix("#EXT-X-ENDLIST\n"))
+        XCTAssertEqual(SegmentMap.iFrameSegmentIndex("iframe-00003.m4s"), 3)
+        XCTAssertNil(SegmentMap.iFrameSegmentIndex("seg-00003.m4s"))
+        let sig = VideoSignaling(codecs: "hvc1.2.4.L153.B0", supplementalCodecs: nil, videoRange: "PQ", width: 3840, height: 2160, frameRate: 23.976)
+        let master = map.masterPlaylist(signaling: sig, bandwidth: 40_000_000)
+        let line = try XCTUnwrap(master.split(separator: "\n").first { $0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") })
+        XCTAssertTrue(line.contains("CODECS=\"hvc1.2.4.L153.B0\""))
+        XCTAssertTrue(line.contains("VIDEO-RANGE=PQ"))
+        XCTAssertTrue(line.contains("RESOLUTION=3840x2160"))
+        XCTAssertTrue(line.hasSuffix("URI=\"iframe.m3u8\""))
+        XCTAssertFalse(map.masterPlaylist(signaling: sig, bandwidth: 1, iFrames: false).contains("I-FRAME"))
+    }
+}

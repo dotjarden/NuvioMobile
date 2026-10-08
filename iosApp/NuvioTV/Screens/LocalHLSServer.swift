@@ -246,6 +246,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return Self.expandSubtitleSlots(master, slots: slots)
         case mediaName:
             return map.mediaPlaylist()
+        case SegmentMap.iFramePlaylistName:
+            return map.iFramePlaylist()
         default:
             // aud-T.m3u8 — an audio rendition: same segment grid as the video playlist, its own
             // init map and segment names.
@@ -447,6 +449,25 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         // falls through to the JIT path below.)
         if name.hasSuffix(".vtt"), SubtitleRendition.parseEmbeddedSegmentName(name) == nil {
             serveSubtitle(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            return
+        }
+
+        // iframe-NNNNN.m4s (P3): the first sample of seg-NNNNN.m4s as a one-sample fragment. Served
+        // only from a segment already on disk: an I-frame request must never block the connection
+        // or move the remux frontier (AVKit asks for a spread of them while the finger scrubs). A
+        // segment not produced yet answers 404 and AVKit simply shows no preview there.
+        if let idx = SegmentMap.iFrameSegmentIndex(name) {
+            let segURL = rootDir.appendingPathComponent(String(format: "seg-%05d.m4s", idx))
+            guard idx >= 1, idx <= map.count, let data = try? Data(contentsOf: segURL, options: .mappedIfSafe) else {
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not produced".utf8),
+                     on: connection, requestPath: name)
+                return
+            }
+            let body = IFrameFragment.firstSample(of: data) ?? data
+            #if DEBUG
+            NSLog("[HLS] iframe %@ from seg (%d → %d bytes)", name, data.count, body.count)
+            #endif
+            serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             return
         }
 

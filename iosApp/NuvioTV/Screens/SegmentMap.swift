@@ -152,6 +152,37 @@ nonisolated struct SegmentMap: Sendable {
     }
 
     /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
+    /// The `EXT-X-I-FRAMES-ONLY` rendition (player P3): one entry per segment, named
+    /// `iframe-NNNNN.m4s`, which `LocalHLSServer` serves as the segment's first sample (the boundary
+    /// keyframe) trimmed into a one-sample fragment. Each EXTINF spans the time to the next I-frame,
+    /// which on this grid is the segment duration. No BYTERANGE: every entry is a whole resource.
+    static let iFramePlaylistName = "iframe.m3u8"
+    static let iFramePrefix = "iframe-"
+
+    func iFramePlaylist(initName: String = "init.mp4") -> String {
+        var lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-TARGETDURATION:\(targetDurationSec)",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            "#EXT-X-MEDIA-SEQUENCE:1",
+            "#EXT-X-I-FRAMES-ONLY",
+            "#EXT-X-MAP:URI=\"\(initName)\"",
+        ]
+        for seg in segments {
+            lines.append(String(format: "#EXTINF:%.6f,", seg.durationSec))
+            lines.append("\(Self.iFramePrefix)\(String(format: "%05d", seg.number)).m4s")
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// `iframe-NNNNN.m4s` → segment number, or nil.
+    static func iFrameSegmentIndex(_ name: String) -> Int? {
+        guard name.hasPrefix(iFramePrefix), name.hasSuffix(".m4s") else { return nil }
+        return Int(name.dropFirst(iFramePrefix.count).dropLast(4))
+    }
+
     /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
     /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
     func masterPlaylist(signaling: VideoSignaling,
@@ -159,7 +190,8 @@ nonisolated struct SegmentMap: Sendable {
                         bandwidth: Int,
                         mediaName: String = "media.m3u8",
                         subtitles: [SubtitleRendition] = [],
-                        subtitleFlags: [SubtitleRenditionFlags] = []) -> String {
+                        subtitleFlags: [SubtitleRenditionFlags] = [],
+                        iFrames: Bool = true) -> String {
         // CODECS lists every codec the variant can carry — video plus the union of the audio
         // renditions' tokens (mixed groups, e.g. "hvc1…,ec-3,mp4a.40.2", are the standard form).
         var codecTokens: [String] = []
@@ -223,6 +255,20 @@ nonisolated struct SegmentMap: Sendable {
         }
         lines.append(streamInf)
         lines.append(mediaName)
+        // The I-frame rendition (P3): video codec only, same resolution and range; AVKit draws the
+        // transport bar's scrub previews from it and uses it for FF/RW scan. A bandwidth of its own
+        // is required by the spec; one keyframe per ~4 s segment is a small fraction of the variant.
+        if iFrames {
+            var iframeInf = "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=\(max(bandwidth / 8, 1))"
+            if signaling.width > 0, signaling.height > 0 {
+                iframeInf += ",RESOLUTION=\(signaling.width)x\(signaling.height)"
+            }
+            if !signaling.codecs.isEmpty { iframeInf += ",CODECS=\"\(signaling.codecs)\"" }
+            if let supp = signaling.supplementalCodecs { iframeInf += ",SUPPLEMENTAL-CODECS=\"\(supp)\"" }
+            if let range = signaling.videoRange { iframeInf += ",VIDEO-RANGE=\(range)" }
+            iframeInf += ",URI=\"\(Self.iFramePlaylistName)\""
+            lines.append(iframeInf)
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 }
