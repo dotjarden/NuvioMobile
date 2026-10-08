@@ -566,15 +566,17 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             // segment (a fragment AVFoundation already decodes as media); "cut" keeps the original
             // moof and ends the resource after the first sample's bytes (Apple's byte-range shape);
             // "trim" rewrites the trun to one sample.
-            var mode = "whole"
+            // Default "trim": the device spike (10-08) showed AVKit scans with the trimmed
+            // fragments, and serving whole 10–28 MB segments made a remux fail mid-play.
+            var mode = "trim"
             #if DEBUG
             if let m = UserDefaults.standard.string(forKey: "debug.iframeMode"), !m.isEmpty { mode = m }
             #endif
             let body: Data
             switch mode {
-            case "trim": body = IFrameFragment.firstSample(of: data) ?? data
             case "cut": body = IFrameFragment.cutAfterFirstSample(of: data) ?? data
-            default: body = data
+            case "whole": body = data
+            default: body = IFrameFragment.firstSample(of: data) ?? data
             }
             #if DEBUG
             NSLog("[HLS] iframe %@ from seg (%d → %d bytes, mode=%@)", name, data.count, body.count, mode)
