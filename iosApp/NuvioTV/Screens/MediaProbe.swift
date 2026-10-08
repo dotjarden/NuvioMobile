@@ -198,7 +198,7 @@ nonisolated enum MediaProbe {
         return String(cString: cName)
     }
 
-    private static func hdrFormat(_ trc: AVColorTransferCharacteristic) -> HDRFormat {
+    static func hdrFormat(_ trc: AVColorTransferCharacteristic) -> HDRFormat {
         switch trc {
         case AVCOL_TRC_SMPTE2084: return .hdr10
         case AVCOL_TRC_ARIB_STD_B67: return .hlg
@@ -207,7 +207,7 @@ nonisolated enum MediaProbe {
         }
     }
 
-    private static func dolbyVision(_ parPtr: UnsafeMutablePointer<AVCodecParameters>) -> DolbyVisionInfo? {
+    static func dolbyVision(_ parPtr: UnsafeMutablePointer<AVCodecParameters>) -> DolbyVisionInfo? {
         let par = parPtr.pointee
         guard let sd = av_packet_side_data_get(par.coded_side_data, par.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF),
               let data = sd.pointee.data,
@@ -244,7 +244,7 @@ private nonisolated func mediaProbeShouldInterrupt(_ opaque: UnsafeMutableRawPoi
 }
 
 /// One-time `avformat_network_init()` so avformat can open http(s) sources.
-private nonisolated enum MediaProbeNetwork {
+nonisolated enum MediaProbeNetwork {
     private static let initialized: Void = {
         avformat_network_init()
         return ()
