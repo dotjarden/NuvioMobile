@@ -169,15 +169,19 @@ final class ThumbSchedulerTests: XCTestCase {
     }
 
     // Review r1 P1: once the pre-warm has stopped and nothing is pending, the controller closes the
-    // thumbnailer; healthy play never reopens it, the next scrub miss does.
+    // thumbnailer; healthy play never reopens it, the next scrub miss does. Review r2 P2 #1: after
+    // that scrub it stays open for a minute of no scrub activity, unless the host is still sending.
     func testIdleCloseAfterPrewarmStopAndScrubReopens() {
         var t = T(enabled: true)
         let budget = 40 * T.mib
-        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "pre-warm still running")
+        func idle(_ now: TimeInterval, scrubbing: Bool = false, leftOpen: Bool = false) -> Bool {
+            t.idleCloseWanted(now: now, scrubbing: scrubbing, requestLeftOpen: leftOpen)
+        }
+        XCTAssertFalse(idle(100), "pre-warm still running")
         XCTAssertNil(t.next(inputs { $0.bytesRead = budget }))
         XCTAssertEqual(t.prewarmStopped, .byteBudget)
-        XCTAssertTrue(t.idleCloseWanted(scrubbing: false))
-        XCTAssertFalse(t.idleCloseWanted(scrubbing: true), "not while the viewer scrubs")
+        XCTAssertTrue(idle(100), "no scrub since the open: the close follows the pre-warm stop")
+        XCTAssertFalse(idle(100, scrubbing: true), "not while the viewer scrubs")
         t.noteIdleClosed()
         // Long healthy play: no reopen.
         for k in 0..<60 {
@@ -185,18 +189,52 @@ final class ThumbSchedulerTests: XCTestCase {
         }
         // A scrub miss reopens, once.
         t.noteScrubMiss(target: 300, now: 170)
-        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "a scrub is pending")
+        XCTAssertFalse(idle(170), "a scrub is pending")
         XCTAssertTrue(t.shouldOpen(inputs(now: 170.01) { $0.opened = false; $0.bytesRead = budget }))
         XCTAssertFalse(t.shouldOpen(inputs(now: 170.02) { $0.opened = false; $0.bytesRead = budget }))
         let job = t.next(inputs(now: 170.1) { $0.bytesRead = budget })
         XCTAssertEqual(job, .scrub(300))
         t.noteStarted(.scrub(300), now: 170.1)
-        XCTAssertFalse(t.idleCloseWanted(scrubbing: false), "a job is in flight")
+        XCTAssertFalse(idle(170.2), "a job is in flight")
         t.noteFinished(.scrub(300), result: .stored(keyframeSec: 300), now: 170.5)
-        XCTAssertTrue(t.idleCloseWanted(scrubbing: false))
+        t.noteScrubEnded(now: 171)
+        // r2 P2 #1: kept open after the scrub session.
+        XCTAssertFalse(idle(172), "a scrub just ended: keep the thumbnailer")
+        XCTAssertFalse(idle(230.9), "59.9 s after the scrub ended")
+        XCTAssertTrue(idle(172, leftOpen: true), "the host is still sending: close at once")
+        XCTAssertTrue(idle(231), "60 s with no scrub activity")
         // A file-level stop is the controller's plain close, not an idle close.
         t.stop(.httpRefused)
-        XCTAssertFalse(t.idleCloseWanted(scrubbing: false))
+        XCTAssertFalse(idle(300))
+    }
+
+    // Review r2 P2 #1: scrubs, plays and scrubs again inside a minute: one open, no idle close;
+    // every scrub activity (miss, job, end) restarts the minute; the reopen's session counts too.
+    func testIdleCloseWaitsSixtySecondsFromTheLastScrubActivity() {
+        var t = T(enabled: true)
+        let budget = 40 * T.mib
+        func idle(_ now: TimeInterval, leftOpen: Bool = false) -> Bool {
+            t.idleCloseWanted(now: now, scrubbing: false, requestLeftOpen: leftOpen)
+        }
+        XCTAssertNil(t.next(inputs { $0.bytesRead = budget }))
+        XCTAssertTrue(idle(100))
+        // The thumbnailer is still open (the controller closes on its next tick); a miss lands first.
+        t.noteScrubMiss(target: 200, now: 100.5)
+        XCTAssertEqual(t.next(inputs(now: 100.6) { $0.bytesRead = budget }), .scrub(200))
+        t.noteStarted(.scrub(200), now: 100.6)
+        t.noteFinished(.scrub(200), result: .stored(keyframeSec: 200), now: 101)
+        t.noteScrubEnded(now: 102)
+        XCTAssertFalse(idle(150))
+        // Second session at 150 s, all store hits (no job): the scrub end still counts.
+        t.noteScrubEnded(now: 155)
+        XCTAssertFalse(idle(161), "60 s from 102 passed, but the session at 155 restarted the minute")
+        XCTAssertFalse(idle(214.9))
+        XCTAssertTrue(idle(215))
+        t.noteIdleClosed()
+        // After the close and before any scrub, a close is wanted again (nothing to keep it for).
+        XCTAssertTrue(idle(216))
+        // The default is a minute.
+        XCTAssertEqual(T.Config().idleCloseAfterScrubSec, 60)
     }
 
     // 12

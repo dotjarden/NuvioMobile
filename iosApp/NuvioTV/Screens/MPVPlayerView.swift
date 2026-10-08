@@ -2042,12 +2042,15 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         if thumbs.stopped != nil, thumbnailer != nil {
             closeThumbnailer()
-        } else if thumbnailer != nil, thumbOpened, thumbReleaseWork == nil,
-                  thumbs.idleCloseWanted(scrubbing: isScrubbing) {
-            // Review r1 P1: the pre-warm stopped and nothing is pending: drop the connection.
+        } else if let t = thumbnailer, thumbOpened, thumbReleaseWork == nil,
+                  thumbs.idleCloseWanted(now: inputs.now, scrubbing: isScrubbing,
+                                         requestLeftOpen: t.lastRequestLeftOpen) {
+            // Review r1 P1, r2 P2 #1: the pre-warm stopped and nothing is pending: drop the
+            // connection now if the host may still be sending, else after a minute with no scrub.
             #if DEBUG
-            NSLog("%@", String(format: "[Thumbs] idle close reason=%@ charged=%.1fMB",
-                               thumbs.prewarmStopped?.rawValue ?? "-", Double(thumbBytesCharged) / 1_048_576))
+            NSLog("%@", String(format: "[Thumbs] idle close reason=%@ leftOpen=%d charged=%.1fMB",
+                               thumbs.prewarmStopped?.rawValue ?? "-", t.lastRequestLeftOpen ? 1 : 0,
+                               Double(thumbBytesCharged) / 1_048_576))
             #endif
             closeThumbnailer()
             thumbs.noteIdleClosed()

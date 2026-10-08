@@ -32,6 +32,9 @@ nonisolated struct ThumbScheduler {
         var quietAfterSeekSec = 3.0, quietAfterScrubSec = 2.0
         /// A stored stamp this close to a keyframe means that keyframe is already in the store.
         var duplicateWindowSec = 1.0
+        /// Review r2 P2 #1: after a scrub session the thumbnailer stays open this long with no scrub
+        /// activity before the idle close (a reopen costs a connect, the header and three requests).
+        var idleCloseAfterScrubSec = 60.0
     }
 
     enum Job: Equatable {
@@ -154,6 +157,9 @@ nonisolated struct ThumbScheduler {
 
     private var pendingScrub: (target: Double, dueAt: TimeInterval)?
     private var lastScrubEnd: TimeInterval = -.infinity
+    /// Review r2 P2 #1: the last scrub miss, scrub job start or finish, or scrub end (nil = none
+    /// since the last idle close).
+    private var lastScrubActivity: TimeInterval?
     private var lastSeekLanded: TimeInterval = -.infinity
     private var lastClock: TimeInterval?
     // Pre-warm pass.
@@ -181,6 +187,7 @@ nonisolated struct ThumbScheduler {
     mutating func noteScrubMiss(target: Double, now: TimeInterval) {
         guard enabled, stopped == nil, target.isFinite else { return }
         pendingScrub = (max(target, 0), now + config.scrubDebounceSec)
+        lastScrubActivity = now
     }
 
     /// True when a scrub lookup result should ask the decoder: no frame, or one more than 5 s off.
@@ -193,6 +200,7 @@ nonisolated struct ThumbScheduler {
     mutating func noteScrubEnded(now: TimeInterval) {
         lastScrubEnd = now
         pendingScrub = nil
+        lastScrubActivity = now
     }
 
     mutating func noteSeekLanded(now: TimeInterval) {
@@ -215,17 +223,26 @@ nonisolated struct ThumbScheduler {
         endPass()
     }
 
-    /// Review r1 P1: nothing more will run until the viewer scrubs (the pre-warm stopped, no job,
-    /// no pending scrub, not scrubbing). The controller then closes the thumbnailer, so no
-    /// connection to the host stays open, and calls `noteIdleClosed`.
-    func idleCloseWanted(scrubbing: Bool) -> Bool {
-        enabled && stopped == nil && prewarmStopped != nil && inFlight == nil && pendingScrub == nil && !scrubbing
+    /// Review r1 P1, r2 P2 #1: nothing more will run until the viewer scrubs (the pre-warm
+    /// stopped, no job, no pending scrub, not scrubbing), and one of:
+    /// - no scrub since the thumbnailer opened (the close that follows the pre-warm stop);
+    /// - the last request is still open at the host (`requestLeftOpen`: 4K ranges, an open range);
+    /// - `idleCloseAfterScrubSec` passed since the last scrub activity.
+    /// So a viewer who scrubs, plays and scrubs again within a minute keeps the open thumbnailer.
+    /// The controller then closes it and calls `noteIdleClosed`.
+    func idleCloseWanted(now: TimeInterval, scrubbing: Bool, requestLeftOpen: Bool) -> Bool {
+        guard enabled, stopped == nil, prewarmStopped != nil, inFlight == nil, pendingScrub == nil, !scrubbing else {
+            return false
+        }
+        guard let last = lastScrubActivity else { return true }
+        return requestLeftOpen || now - last >= config.idleCloseAfterScrubSec
     }
 
     /// The thumbnailer was closed while idle: the next scrub miss opens it again (with the facts
     /// the first open learned, so only the connect and the header are paid).
     mutating func noteIdleClosed() {
         openRequested = false
+        lastScrubActivity = nil
     }
 
     /// True once per pass that issued at least one job, after it ended (release the decoder).
@@ -263,11 +280,12 @@ nonisolated struct ThumbScheduler {
 
     mutating func noteStarted(_ job: Job, now: TimeInterval) {
         inFlight = job
-        if case .scrub = job { pendingScrub = nil }
+        if case .scrub = job { pendingScrub = nil; lastScrubActivity = now }
     }
 
     mutating func noteFinished(_ job: Job, result: Outcome, now: TimeInterval) {
         if inFlight == job { inFlight = nil }
+        if job.isScrub { lastScrubActivity = now }
         switch result {
         case .stored(let kf):
             decoded += 1
