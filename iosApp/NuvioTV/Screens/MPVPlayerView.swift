@@ -1999,7 +1999,8 @@ final class MPVTVPlayerViewController: UIViewController {
                 parts.append(String(format: String(localized: "last decode %ld ms"), Int(ms.rounded())))
             }
             if thumbBytesCharged > 0 {
-                parts.append(String(format: String(localized: "%@ MB read"),
+                // r2 P3 #3: the budget's charge (an upper bound on the wire), not what a proxy counts.
+                parts.append(String(format: String(localized: "%@ MB used"),
                                     String(format: "%.1f", Double(thumbBytesCharged) / 1_048_576)))
             }
             if let reason = thumbs.stopped ?? thumbs.prewarmStopped, let words = Self.thumbStopWords(reason) {

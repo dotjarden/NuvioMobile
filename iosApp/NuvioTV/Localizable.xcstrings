@@ -46717,7 +46717,7 @@
     "Harvest Only": {},
     "Harvest + Decode": {},
     "last decode %ld ms": {},
-    "%@ MB read": {},
+    "%@ MB used": {},
     "decode off: %@": {},
     "no seek index": {},
     "the server refused": {},
