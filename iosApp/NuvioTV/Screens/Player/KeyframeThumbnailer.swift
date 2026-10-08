@@ -432,7 +432,7 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
                 pb.pointee.error = 0
                 pb.pointee.eof_reached = 0
                 #if DEBUG
-                NSLog("%@", String(format: "[Thumbs] priming stopped at the %.0f MB cap, index=%d last=%.0fs of %.0fs",
+                NSLog("%@", String(format: "[Thumbs] priming stopped at the %.0f MB cap, index=%ld last=%.0fs of %.0fs",
                                    Double(primingCap) / 1_048_576, index.count, index.last ?? 0, durationSec))
                 #endif
             }
@@ -460,7 +460,7 @@ nonisolated final class KeyframeThumbnailer: @unchecked Sendable {
             openMs: Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6)
         #if DEBUG
         let budget = ThumbScheduler.byteBudget(fileSize: facts.sizeBytes)
-        NSLog("%@", String(format: "[Thumbs] open took=%.0fms container=%@ index=%d size=%.0fMB budget=%.1fMB hdr=%@ read=%.0fKB range=%ldKB reopen=%ld",
+        NSLog("%@", String(format: "[Thumbs] open took=%.0fms container=%@ index=%ld size=%.0fMB budget=%.1fMB hdr=%@ read=%.0fKB range=%ldKB reopen=%ld",
                            facts.openMs, container, index.count, Double(size > 0 ? size : 0) / 1_048_576,
                            Double(budget) / 1_048_576, facts.hdr.rawValue, Double(currentAvioBytes()) / 1024,
                            requestBytes / 1024, knownFacts == nil ? 0 : 1))

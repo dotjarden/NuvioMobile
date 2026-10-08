@@ -195,7 +195,7 @@ final class KeyframeThumbnailerTests: XCTestCase {
             CGImageDestinationFinalize(dest)
             print("[ThumbsTest] wrote \(NSTemporaryDirectory())thumb120.png")
         }
-        print(String(format: "[ThumbsTest] open=%.0fms index=%d openRead=%lldKB kf=%.3f took=%.1fms dec=%.1fms bytes=%lldKB",
+        print(String(format: "[ThumbsTest] open=%.0fms index=%ld openRead=%lldKB kf=%.3f took=%.1fms dec=%.1fms bytes=%lldKB",
                      facts.openMs, facts.keyframeIndex.count, afterOpen / 1024, kf, took, dec, bytes / 1024))
         // A second request inside the same GOP lands on the same keyframe (the duplicate path).
         guard case .frame(_, let kf2, _, _, _, _) = await t.frame(at: 121, urgent: false) else {

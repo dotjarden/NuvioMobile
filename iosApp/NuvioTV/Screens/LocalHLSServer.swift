@@ -604,7 +604,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 return
             }
             #if DEBUG
-            NSLog("[HLS] iframe %@ from seg (%d → %d bytes, mode=%@)", name, data.count, body.count, mode.rawValue)
+            NSLog("[HLS] iframe %@ from seg (%ld → %ld bytes, mode=%@)", name, data.count, body.count, mode.rawValue)
             #endif
             serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             return

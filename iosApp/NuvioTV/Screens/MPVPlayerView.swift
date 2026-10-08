@@ -2049,7 +2049,7 @@ final class MPVTVPlayerViewController: UIViewController {
             // Review r1 P1, r2 P2 #1: the pre-warm stopped and nothing is pending: drop the
             // connection now if the host may still be sending, else after a minute with no scrub.
             #if DEBUG
-            NSLog("%@", String(format: "[Thumbs] idle close reason=%@ leftOpen=%d charged=%.1fMB",
+            NSLog("%@", String(format: "[Thumbs] idle close reason=%@ leftOpen=%ld charged=%.1fMB",
                                thumbs.prewarmStopped?.rawValue ?? "-", t.lastRequestLeftOpen ? 1 : 0,
                                Double(thumbBytesCharged) / 1_048_576))
             #endif
