@@ -1274,6 +1274,8 @@ struct FolderDetailView: View {
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
+    /// BUG-148 / BUG-144 / BUG-161 / UX-16 (3): the shared immersive depth (see `body`).
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
     /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
     /// P2 §2.1: the device-local per-folder Grid choices (`FolderLayoutStore`).
@@ -1363,8 +1365,27 @@ struct FolderDetailView: View {
                                    editing: $editing)
             }
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        // BUG-148 / BUG-144 / BUG-161 / UX-16 (3) (Steven, beta.19-rc3 verdict 2026-10-06, follow-up
+        // 10-14): a folder is an immersive screen, like Detail. Before this only Detail pushed the
+        // depth, so (a) a one-row Stage folder never hid the tab bar (the strip's link hides it on a
+        // page turn, and one row has none) and the risen folder logo sat in the bar's band; (b) the
+        // Classic grid got the bar back drawn over its posters after Back from a Detail, when
+        // Detail's pop took the depth to 0; (c) Rail = Hide While Browsing kept the rail on screen
+        // inside a collection (`RailVisibilityRule.shown` hides on `immersive`; Always Visible is
+        // unaffected). One balanced pair here covers both layouts: a Rows ↔ Grid switch swaps the
+        // CHILD page, never this view, so it cannot push twice. A Detail pushed over the folder
+        // fires this `onDisappear` (UX-14) and its own `onAppear`, in either order; the depth may
+        // touch 0 for that one transaction (Detail → More Like This → Detail does the same), and
+        // `popImmersive`'s guard keeps an unmatched pop from going negative. Back from Detail
+        // re-pushes here, so the bar stays hidden over the grid.
+        .onAppear {
+            tabBarVisibility.pushImmersive()
+            model.start()
+        }
+        .onDisappear {
+            tabBarVisibility.popImmersive()
+            model.stop()
+        }
         // Review r1 (B P3-9): see `FolderDetailViewModel.buildsStripState`.
         .onChange(of: homeLayout == .stage, initial: true) { _, stage in
             model.buildsStripState = stage

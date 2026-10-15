@@ -5062,6 +5062,22 @@ struct CatalogRowView: View {
     /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
     /// last.
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    /// BUG-157: read for `shortRowCompensation` only.
+    @Environment(\.pinnedRowIsLast) private var isLastRow
+
+    /// BUG-157 (rc14 BUG-122's shape, `ContinueWatchingRow.shortRowCompensation`): a landscape-shape
+    /// catalog on a portrait Classic page is a SHORT row (203 pt cards under the poster regime's
+    /// reaches). If Home publishes the short-row floor on it, this cancels the floor's layout growth
+    /// so only the focusable frames grow, never the spacing to the next row. 0 for every row today:
+    /// Home floors only its LAST catalog row (where this returns 0 by contract), and a uniform row's
+    /// natural label already equals the floor.
+    private var shortRowCompensation: CGFloat {
+        let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let natural = cardTopReach + rowArtworkHeight + caption + cardBottomReach
+        return PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                            naturalLabel: natural,
+                                                            isLastRow: isLastRow)
+    }
 
     /// Wave 4 item 6: the RESTING artwork height of this row's cards, handed to the pinned title's
     /// slide clamp so the title's intrusion is a fraction of the card rather than a fixed 46pt of
@@ -5071,7 +5087,19 @@ struct CatalogRowView: View {
     /// CONSTANT across the inline-trailer morph ("the height never changes so the row never
     /// breathes vertically"), so one number describes the row in both states. The caption slot
     /// (`style.showTitle`) is excluded: it sits BELOW the art and cannot be intruded on from above.
-    @Environment(\.posterStyle) private var posterStyle
+    @Environment(\.posterStyle) private var inheritedPosterStyle
+    /// BUG-157 (Steven, beta.19-rc3 follow-up 2026-10-14): an add-on catalog whose items say
+    /// `posterShape: "landscape"` drew portrait cards, because nothing on tvOS read the shape the
+    /// shared parser keeps per item. tvOS decides it per ROW (`PosterStyle.landscapeSection`: a
+    /// strict majority of the row's items), so one row never mixes card shapes, and turns this row
+    /// to landscape cards the same way the global Landscape Posters toggle does (an OR: the toggle
+    /// still forces every row). Every read in this view goes through this, and the row hands it
+    /// down (`.environment(\.posterStyle, posterStyle)` in `body`), so `InlineTrailerCard`,
+    /// `PosterCard` and the See All card follow from any host: Classic, the Stage strip, Discover,
+    /// the folder Rows page, Search. The image stays `item.poster`, as upstream draws it.
+    private var posterStyle: PosterStyle {
+        inheritedPosterStyle.resolved(forSectionItems: section.items)
+    }
     private var rowArtworkHeight: CGFloat {
         posterStyle.landscapeCatalogRows ? Theme.Size.landscapeHeight : posterStyle.height
     }
@@ -5088,6 +5116,16 @@ struct CatalogRowView: View {
     /// scrolling into a `ScrollViewReader` whose `ScrollView` no longer exists. Tracking the task
     /// lets a new expansion supersede the old one and lets `.onDisappear` cancel it outright.
     @State private var expansionScrollTask: Task<Void, Never>?
+
+    /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): the card whose inline trailer tile
+    /// is showing, reported by `InlineTrailerCard` through `InlineTrailerTileShowingKey`. That card's
+    /// link gets `CardSystemLiftStyle.lift` in its environment, which switches the `.borderless`
+    /// system focus treatment off (`CardFocusButtonStyle`) and lets the artwork draw its own lift
+    /// (`CardArtworkFocusLift`): the system effect's standing platter/specular edge, hidden under
+    /// an opaque poster, read as a thin doubled white outline around the landscape tile once the
+    /// portrait card had faded out under it (Zoom ON, accent ring OFF only). One card per row shows
+    /// a tile at a time. A row re-render per tile edge, the same cost `focusedItemId` already pays.
+    @State private var tileShowingItemId: String?
 
     // ── BUG-92: the first card's bleed, clipped at the row's leading edge ────────────────────────
     //
@@ -5201,6 +5239,16 @@ struct CatalogRowView: View {
                                 }
                             }
                             .focused($focusedItemId, equals: item.id)
+                            // BUG-158: see `tileShowingItemId`. Set on the whole link so both the
+                            // button style and the artwork lift read it.
+                            .environment(\.cardSystemLiftStyle, tileShowingItemId == item.id ? .lift : .highlight)
+                            .onPreferenceChange(InlineTrailerTileShowingKey.self) { showing in
+                                if let showing {
+                                    tileShowingItemId = showing
+                                } else if tileShowingItemId == item.id {
+                                    tileShowingItemId = nil
+                                }
+                            }
                             // Mirrors Detail's hero trailer: the card's mute glyph isn't reachable by
                             // the focus engine, so play/pause is the toggle. Nil unless *this* focused
                             // card is the one playing — an unconditional handler would swallow
@@ -5243,7 +5291,9 @@ struct CatalogRowView: View {
                     }
                     // ALWAYS positive — the reach lives inside the buttons' labels, the row's
                     // frame contains it whole, and nothing pokes outside the focus section.
-                    .padding(.vertical, Theme.Spacing.lg)
+                    // BUG-146: `lg` top and bottom everywhere but the Stage strip, whose top is
+                    // `sm` (see `StripShelfPadding` and `StripGeometry.shelfTopPadding`).
+                    .stripShelfPadding()
                     // BUG-92: clip ONLY the leading edge, and only by what a focused card's lift +
                     // ring can legitimately put outside its own frame. `.scrollClipDisabled()`
                     // below exists so a focused card's bleed can land over its LEFT NEIGHBOUR,
@@ -5314,6 +5364,12 @@ struct CatalogRowView: View {
             }
         }
         .focusSection()
+        // BUG-157: see `shortRowCompensation` (0 unless Home floors a short catalog row). After
+        // `.focusSection()` and before the settle tracker, as on Continue Watching.
+        .padding(.bottom, -shortRowCompensation)
+        // BUG-157: the cards read the row's resolved style (see `posterStyle`). Identical to the
+        // inherited value for every row that is not a landscape-shape catalog.
+        .environment(\.posterStyle, posterStyle)
         // Settle re-reveal (2026-08-30): publishes this row's frame while it holds focus, so a
         // rest that parks its title under the pinned clip edge can be corrected once the scroll
         // settles. Inert in classic mode and while unfocused — see `pinnedRowSettleTracking`.

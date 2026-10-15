@@ -174,13 +174,23 @@ nonisolated struct StripGeometry: Equatable, Sendable {
                              screenHeight: i.screenHeight)
     }
 
-    /// `CatalogRowView` without pinned reaches: heading, `md` 16, the shelf's `lg` 24 top padding,
-    /// the art, the caption chrome when titles show (`PinnedRowTitle.cardLockupCaptionChrome`), and
-    /// the shelf's `lg` 24 bottom padding.
+    /// `CatalogRowView` without pinned reaches: heading, `md` 16, the shelf's STRIP top padding
+    /// (`shelfTopPadding`, `sm` 12), the art, the caption chrome when titles show
+    /// (`PinnedRowTitle.cardLockupCaptionChrome`), and the shelf's `lg` 24 bottom padding.
     static func catalogRowHeight(art: CGFloat, titles: Bool, titleHeight: CGFloat) -> CGFloat {
-        titleHeight + Theme.Spacing.md + Theme.Spacing.lg + art
+        titleHeight + Theme.Spacing.md + shelfTopPadding + art
             + (titles ? PinnedRowTitle.cardLockupCaptionChrome : 0) + Theme.Spacing.lg
     }
+
+    /// BUG-146 (Steven, beta.19-rc3 verdict 2026-10-06; his 65" photo read the Stage heading as
+    /// floating about a third of a poster above its row): the gap between a strip row's heading and
+    /// its posters is `md` 16 + this, not `md` + `lg` (16 + 24 = 40) as on Classic Home. Only the
+    /// shelf's TOP padding shrinks, and only inside the strip (`StripShelfPadding`, keyed on
+    /// `\.stripFocusMemory` like `StripHeadingLineLimit`), so Classic's pinned rows keep their reach
+    /// budget (BUG-87/89) byte for byte. The focus lift is not paid out of this band: it is the
+    /// page's own `focusLift` above the row, and a lifted card grows 20 pt up into a 28 pt gap
+    /// (16 + 12), so it still clears the heading by 8 pt (0 lift with No Zoom).
+    nonisolated static let shelfTopPadding: CGFloat = Theme.Spacing.sm
 
     /// `CollectionRowView` without pinned reaches, at its tallest tile (a poster-shaped folder with
     /// its per-folder caption): heading, `md` 16, `sm` 12 top padding, the poster, `sm` 12 caption
@@ -248,6 +258,30 @@ extension StripGeometry.Inputs {
                              folderCaptionHeight: Theme.Font.uiFont(for: .caption2).lineHeight.rounded(.up),
                              synopsisLineHeight: Theme.Font.synopsisLineHeight,
                              leadingInset: leadingInset)
+    }
+}
+
+// MARK: - Shelf padding (BUG-146)
+
+/// BUG-146: a row's horizontal shelf takes `StripGeometry.shelfTopPadding` (12) on top inside the
+/// strip and `lg` (24) everywhere else; the bottom stays `lg`. Keyed on `\.stripFocusMemory`, which
+/// only `StripPager` sets (Stage Home, the folder Rows page, Discover), the same test
+/// `StripHeadingLineLimit` uses. `catalogRowHeight` assumes exactly this, so every strip row that
+/// draws a shelf (catalog rows, the loading and message rows) goes through it.
+struct StripShelfPadding: ViewModifier {
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.top, stripFocusMemory != nil ? StripGeometry.shelfTopPadding : Theme.Spacing.lg)
+            .padding(.bottom, Theme.Spacing.lg)
+    }
+}
+
+extension View {
+    /// BUG-146: see `StripShelfPadding`. Replaces `.padding(.vertical, Theme.Spacing.lg)` on a shelf.
+    func stripShelfPadding() -> some View {
+        modifier(StripShelfPadding())
     }
 }
 

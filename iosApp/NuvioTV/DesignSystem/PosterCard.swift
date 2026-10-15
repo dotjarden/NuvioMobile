@@ -221,6 +221,18 @@ struct CardFocusButtonStyle: ViewModifier {
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     /// Whether this button's label supplies its own ring-mode lift - see `CardButtonLift`.
     let lift: CardButtonLift
+    /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): `.lift` while the inline trailer
+    /// tile is showing on this card (set by `CatalogRowView` on the whole link, so this modifier
+    /// and `CardArtworkFocusLift` below read the same value). The bare `.borderless` branch is the
+    /// only one that still wears the SYSTEM focus treatment, and that treatment draws its standing
+    /// platter/specular edge at the LABEL's bounds (the BUG-54 mechanism): under the resting poster
+    /// it is hidden by the opaque art, but once the portrait card fades out under the landscape
+    /// trailer tile the edge shows around the tile as a thin doubled white outline (Zoom ON only;
+    /// still and ring mode use custom styles and never get the system treatment). While the tile
+    /// shows, the system effect is switched off here and the artwork draws its own lift instead.
+    /// A modifier flag, not a style swap: changing the `ButtonStyle` type mid-focus would re-create
+    /// the button and drop focus (and the playing trailer with it).
+    @Environment(\.cardSystemLiftStyle) private var liftStyle
 
     func body(content: Content) -> some View {
         switch CardButtonStyleKind.resolve(noZoomOnFocus: noZoomOnFocus,
@@ -237,6 +249,7 @@ struct CardFocusButtonStyle: ViewModifier {
         case .borderless:
             content
                 .buttonStyle(.borderless)
+                .focusEffectDisabled(liftStyle == .lift)
         }
     }
 }
@@ -641,6 +654,23 @@ struct CardFocusTreatment: ViewModifier {
 /// draws the identical edge.
 let stillHighlight = Color.white.opacity(0.85)  // shared with FolderTile/CastCard's no-zoom rings
 
+/// BUG-158 + D9 (Steven's 10-09 photos, corrected 10-14; master plan §3): whether a card samples
+/// its poster colour at all. `focus_ring_poster_color` still governs the ACCENT ring (and No Zoom
+/// with the accent ring on), but in still mode with the accent ring OFF the neutral ring now wears
+/// the poster's colour whenever the store has one, independent of that setting (white
+/// `stillHighlight` only when the art has no colour). Pure so the table is unit-testable.
+///
+/// | zoom | accent ring | poster-colour setting | ring drawn                     |
+/// | on   | off         | any                   | none (system lift)             |
+/// | on   | on          | on / off              | accent in poster colour / accent |
+/// | off  | on          | on / off              | accent in poster colour / accent |
+/// | off  | off         | any                   | poster colour, else white      |
+nonisolated enum FocusRingTintSampling {
+    static func samples(settingOn: Bool, accentRing: Bool, noZoom: Bool) -> Bool {
+        (settingOn && (accentRing || noZoom)) || (noZoom && !accentRing)
+    }
+}
+
 /// BUG-31 (beta.12 device pass): "No Zoom on Focus" only ever reached the content cards —
 /// utility tiles that keep the whole-tile system lift (the See All tile, episode cards, the
 /// detail-page trailer thumbnail) applied `.hoverEffect(.highlight)` unconditionally, so with
@@ -725,6 +755,30 @@ extension View {
     }
 }
 
+/// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): how a Zoom-ON, ring-OFF card lifts.
+/// `.highlight` is the default every card has always worn (the system treatment: `.borderless`'s
+/// lift + parallax + specular, and `.hoverEffect(.highlight)` on the artwork). `.lift` is what
+/// `CatalogRowView` puts in the environment of a card whose inline trailer tile is showing: the
+/// system treatment is switched OFF on the button (`CardFocusButtonStyle`) and the artwork draws
+/// ring mode's own scale + shadow (`CardArtworkFocusLift`), because the system effect's standing
+/// platter/specular edge, hidden under an opaque poster, showed around the landscape tile as a thin
+/// doubled white outline once the portrait card faded out under it (Zoom ON only).
+enum CardSystemLiftStyle: Equatable {
+    case highlight
+    case lift
+}
+
+private struct CardSystemLiftStyleKey: EnvironmentKey {
+    static let defaultValue: CardSystemLiftStyle = .highlight
+}
+
+extension EnvironmentValues {
+    var cardSystemLiftStyle: CardSystemLiftStyle {
+        get { self[CardSystemLiftStyleKey.self] }
+        set { self[CardSystemLiftStyleKey.self] = newValue }
+    }
+}
+
 /// BUG-54 (beta.11 device regression, found by Christian): the system focus treatment, back on the
 /// ARTWORK container — where beta.10 had it — instead of the whole lockup.
 ///
@@ -776,39 +830,57 @@ struct CardArtworkFocusLift: ViewModifier {
     /// (`PlainLabelRing.smallLabelRise(height:)`) — see that function for why a 52pt capsule
     /// cannot share the 20pt flat rise every taller card class uses.
     var rise: CGFloat? = nil
+    /// BUG-158: `.highlight` (platter + specular edge) for resting cards; `InlineTrailerCard` puts
+    /// `.lift` (scale + shadow, no standing edge) in the environment once its tile is showing.
+    @Environment(\.cardSystemLiftStyle) private var liftStyle
 
     func body(content: Content) -> some View {
         switch mode {
         case .systemLift:
-            content
-                .compositingGroup()
-                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
-                // the lift can't fall back to a system rect that extends past the artwork.
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
-                .hoverEffect(.highlight)
+            switch liftStyle {
+            case .highlight:
+                content
+                    .compositingGroup()
+                    // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
+                    // the lift can't fall back to a system rect that extends past the artwork.
+                    .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
+                    .hoverEffect(.highlight)
+            case .lift:
+                // BUG-158: the card's own lift while the trailer tile shows: the same fill + shadow
+                // + scale ring mode draws (`.manualScale` below), with no system hover effect at
+                // all, because `CardFocusButtonStyle` has switched the button's system treatment
+                // off for this state and a `.hoverEffect` here would be a second system effect
+                // with its own platter.
+                manualLift(content)
+            }
         case .manualScale:
-            content
-                // BUG-64: the system lift is not just a scale — it carries a platter and a drop
-                // shadow, so a ring card that only scaled read as a flat mechanical zoom next to
-                // the native lift's sense of depth. Same fill+shadow still mode uses, so all three
-                // treatments share one depth cue. A plain `RoundedRectangle` rather than
-                // `CardArtworkShape`: down here the attached view's bounds ARE the artwork, so
-                // there is no caption slot to carve out of the shape.
-                .background {
-                    if isFocused {
-                        RoundedRectangle(cornerRadius: cornerRadius)
-                            .fill(Color.black)
-                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
-                    }
-                }
-                // BUG-111: `rise ?? cardFocusLiftRise` — nil (every pre-existing call site) keeps
-                // the flat 20pt every other card class always rose by; `CompanyChip` is the first
-                // caller to supply its own.
-                .scaleEffect(isFocused ? cardLiftScale(artworkHeight: artworkHeight, rise: rise ?? cardFocusLiftRise) : 1)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+            manualLift(content)
         case .still:
             content
         }
+    }
+
+    /// Ring mode's lift (BUG-93), shared with the BUG-158 trailer-tile state above.
+    private func manualLift(_ content: Content) -> some View {
+        content
+            // BUG-64: the system lift is not just a scale — it carries a platter and a drop
+            // shadow, so a ring card that only scaled read as a flat mechanical zoom next to
+            // the native lift's sense of depth. Same fill+shadow still mode uses, so all three
+            // treatments share one depth cue. A plain `RoundedRectangle` rather than
+            // `CardArtworkShape`: down here the attached view's bounds ARE the artwork, so
+            // there is no caption slot to carve out of the shape.
+            .background {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .fill(Color.black)
+                        .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+                }
+            }
+            // BUG-111: `rise ?? cardFocusLiftRise` — nil (every pre-existing call site) keeps
+            // the flat 20pt every other card class always rose by; `CompanyChip` is the first
+            // caller to supply its own.
+            .scaleEffect(isFocused ? cardLiftScale(artworkHeight: artworkHeight, rise: rise ?? cardFocusLiftRise) : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 }
 
@@ -939,7 +1011,9 @@ struct PosterCard: View {
     /// ring can draw (`ringInset`'s rule: accent ring on, or No Zoom's still ring). With neither,
     /// the focused card only lifts and there is nothing to colour, so nothing is sampled.
     private var samplesPosterColor: Bool {
-        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+        // BUG-158 / D9: still mode's neutral ring takes the poster colour regardless of the setting.
+        FocusRingTintSampling.samples(settingOn: ringTakesPosterColor, accentRing: accentFocusRing,
+                                      noZoom: noZoomOnFocus)
     }
 
     /// The art the card is showing, in `CachedAsyncImage`'s order (primary, then fallback).
@@ -1212,7 +1286,9 @@ struct LandscapeCard: View {
 
     /// rc14 FEAT-46 — see `PosterCard`'s copies of these three.
     private var samplesPosterColor: Bool {
-        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+        // BUG-158 / D9: still mode's neutral ring takes the poster colour regardless of the setting.
+        FocusRingTintSampling.samples(settingOn: ringTakesPosterColor, accentRing: accentFocusRing,
+                                      noZoom: noZoomOnFocus)
     }
 
     private var ringTintSources: [String?] { [imageURL, fallbackImageURL] }

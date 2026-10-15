@@ -1825,7 +1825,9 @@ nonisolated enum InlineTrailerTileTint {
         guard focused else { return .none }
         let wearsPosterColor = settingOn && hasPosterColor
         if accentRing { return wearsPosterColor ? .poster : .accent }
-        if noZoom { return wearsPosterColor ? .poster : .still }
+        // BUG-158 / D9: still mode (accent ring off) wears the poster colour whenever the store has
+        // one, independent of `focus_ring_poster_color`; white (`.still`) only for colourless art.
+        if noZoom { return hasPosterColor ? .poster : .still }
         return .none
     }
 }
@@ -2156,10 +2158,14 @@ struct InlineTrailerCard: View {
 
     /// Landscape rows prefer the wide banner; a poster fallback is cropped to 16:9 by the tile's
     /// aspect-fill, which reads better than an empty slot.
+    ///
+    /// BUG-157 (Steven, 10-10): an item the add-on tags `posterShape: landscape` ships its landscape
+    /// art AS `poster` (upstream draws exactly that field), so it comes first for such an item.
     static func landscapeArtworkURL(_ item: MetaPreview) -> String? {
+        let poster: String? = item.poster
+        if item.posterShape == PosterShape.landscape, let poster, !poster.isEmpty { return poster }
         let banner: String? = item.banner
         if let banner, !banner.isEmpty { return banner }
-        let poster: String? = item.poster
         return poster
     }
 
@@ -2185,7 +2191,9 @@ struct InlineTrailerCard: View {
     /// `PosterCard.samplesPosterColor`: the setting is on AND a ring can draw (the accent ring, or No
     /// Zoom's still ring). With neither, the focused card only lifts and there is nothing to colour.
     private var samplesPosterColor: Bool {
-        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+        // BUG-158 / D9: No Zoom with the accent ring off samples the poster colour regardless of the setting.
+        FocusRingTintSampling.samples(settingOn: ringTakesPosterColor, accentRing: accentFocusRing,
+                                      noZoom: noZoomOnFocus)
     }
 
     /// `PosterCard.posterTint`: nil unless sampling AND focused. Store peek first (a read, never a
@@ -2306,6 +2314,12 @@ struct InlineTrailerCard: View {
         // a plain poster was). The explicit content shape keeps the whole label hit-testable in
         // both states without touching layout, focus or the tile's own non-interactivity.
         .contentShape(Rectangle())
+        // BUG-158 (Steven, 10-09 photos, corrected 10-14): tell the row (the owner of the card's
+        // link and its `cardFocusButtonStyle`) that the trailer tile is showing, so it can switch
+        // the SYSTEM focus treatment off for this card and let the artwork draw its own lift
+        // (`CardSystemLiftStyle.lift`). The button sits above this view, so an environment write
+        // here could never reach it; a preference can.
+        .preference(key: InlineTrailerTileShowingKey.self, value: model.tileVisible ? item.id : nil)
         .onChange(of: isFocused) { _, focused in
             if focused { configureModel() }
             model.focusChanged(focused, item: item)
@@ -2652,15 +2666,32 @@ struct InlineTrailerTitleOverlay: View {
     let item: MetaPreview
     let tileWidth: CGFloat
     let tileHeight: CGFloat
-    private let url: URL?
+    /// BUG-149 (Steven, beta.19-rc3 verdict 2026-10-06): the tile resolved its logo only through
+    /// `heroLogoURL` (the item's own `logo`, else metahub for `tt…` ids), so a TMDB-id item with no
+    /// preview `logo` showed its name as text while the Stage above drew the same title's logo from
+    /// `TitleLogoStore`. The overlay now observes the store too. Only the one playing tile mounts
+    /// this view, so the store's whole-dictionary publish is cheap here.
+    @ObservedObject private var logoStore = TitleLogoStore.shared
     @State private var image: UIImage?
 
     init(item: MetaPreview, tileWidth: CGFloat, tileHeight: CGFloat) {
         self.item = item
         self.tileWidth = tileWidth
         self.tileHeight = tileHeight
-        self.url = heroLogoURL(for: item)
-        _image = State(initialValue: ArtworkStore.cached(url))
+        _image = State(initialValue: ArtworkStore.cached(
+            Self.resolvedLogoURL(storeURL: TitleLogoStore.shared.logoURL(for: item),
+                                 fallbackURL: heroLogoURL(for: item))))
+    }
+
+    /// BUG-149: store result first (the TMDB logo the Stage uses), then the item's own `logo` /
+    /// metahub guess, else nil (the name as text). Pure so the order is unit-testable.
+    static func resolvedLogoURL(storeURL: String?, fallbackURL: URL?) -> URL? {
+        if let storeURL, !storeURL.isEmpty, let url = URL(string: storeURL) { return url }
+        return fallbackURL
+    }
+
+    private var url: URL? {
+        Self.resolvedLogoURL(storeURL: logoStore.logoURL(for: item), fallbackURL: heroLogoURL(for: item))
     }
 
     var body: some View {
@@ -2703,6 +2734,13 @@ struct InlineTrailerTitleOverlay: View {
         }
         .frame(width: tileWidth, height: tileHeight, alignment: .bottomLeading)
         .accessibilityHidden(true) // the button label already carries the item name
+        // BUG-149: kick the TMDB logo lookup (once per key, the store guards re-entrancy); items
+        // that already carry a `logo` skip it.
+        .task(id: TitleLogoStore.key(for: item)) {
+            if TitleLogoStore.isLookupCandidate(item.logo) {
+                logoStore.lookupIfNeeded([item])
+            }
+        }
         .task(id: url) {
             guard let url else {
                 image = nil
@@ -2722,3 +2760,13 @@ struct InlineTrailerTitleOverlay: View {
 
 // MARK: - Mute indicator
 
+
+
+/// BUG-158: the id of the card whose inline trailer tile is showing, reported up to `CatalogRowView`
+/// (nil otherwise). One card per row shows a tile at a time, so the row keeps a single id.
+struct InlineTrailerTileShowingKey: PreferenceKey {
+    static let defaultValue: String? = nil
+    static func reduce(value: inout String?, nextValue: () -> String?) {
+        if let next = nextValue() { value = next }
+    }
+}

@@ -1941,3 +1941,67 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertTrue(PinnedRowTitle.resolveZoomReachHold(defaults))
     }
 }
+
+/// BUG-159 (was BUG-154; Steven, beta.19-rc3 follow-up 2026-10-08, photos 2 and 3): the Show Hero ON
+/// folder hero now carries the hero-off panel's "Aventure · 8 sources" line at the bottom of FEAT-29's
+/// merged box (`HeroFolderBoxLayout`). The box is the exact sum the three-slot column consumes, so the
+/// one invariant that matters is that the split never changes it, at any compression the pinned hero
+/// can reach; the title heroes' synopsis budget (rt4) is not involved at all.
+final class HeroFolderBoxLayoutTests: XCTestCase {
+
+    private let epsilon: CGFloat = 0.001
+
+    /// The pinned carousel box at a given compression, as `HomeHeroForeground.nuvioLayout` sums it.
+    private func pinnedBox(compression: CGFloat) -> CGFloat {
+        let give = PinnedRowGeometry.HeroSlotGive.split(compression: compression, showsCTA: true, folderHero: true)
+        return (Theme.Size.heroLogoSlotHeightPinned - give.logo) + Theme.Size.heroPinnedSlotGap
+            + Theme.Size.heroMetaSlotHeight + Theme.Size.heroPinnedSlotGap
+            + (Theme.Size.heroSynopsisSlotHeightPinned - give.synopsis)
+    }
+
+    /// The classic (in-scroll) box, `classicLayout`'s fixed sum.
+    private var classicBox: CGFloat {
+        Theme.Size.heroLogoSlotHeight + Theme.Spacing.md + Theme.Size.heroMetaSlotHeight
+            + Theme.Spacing.md + Theme.Size.heroSynopsisSlotHeight
+    }
+
+    func testTheSplitNeverChangesTheBoxHeight() {
+        for compression in stride(from: CGFloat(0), through: 120, by: 2.5) {
+            let box = pinnedBox(compression: compression)
+            for hasLine in [true, false] {
+                let split = HeroFolderBoxLayout.split(boxHeight: box, hasLine: hasLine)
+                XCTAssertEqual(split.logo + split.line, box, accuracy: epsilon,
+                               "compression \(compression) hasLine \(hasLine)")
+            }
+        }
+        let classic = HeroFolderBoxLayout.split(boxHeight: classicBox, hasLine: true)
+        XCTAssertEqual(classic.logo + classic.line, classicBox, accuracy: epsilon)
+    }
+
+    func testTheFolderLineIsOneMetaSlotAtEveryShippingCompression() {
+        // Medium (0), Steven's Large (68.33) and the panel-less carousel's worst case all keep the
+        // line: the wordmark keeps well over `minLogo` there.
+        for compression: CGFloat in [0, 34, 68.33] {
+            let split = HeroFolderBoxLayout.split(boxHeight: pinnedBox(compression: compression), hasLine: true)
+            XCTAssertEqual(split.line, Theme.Size.heroMetaSlotHeight, accuracy: epsilon, "compression \(compression)")
+            XCTAssertGreaterThanOrEqual(split.logo, HeroFolderBoxLayout.minLogo)
+        }
+        let classic = HeroFolderBoxLayout.split(boxHeight: classicBox, hasLine: true)
+        XCTAssertEqual(classic.line, Theme.Size.heroMetaSlotHeight, accuracy: epsilon)
+    }
+
+    func testNoLineKeepsTheWholeBoxForTheWordmark() {
+        let box = pinnedBox(compression: 0)
+        let split = HeroFolderBoxLayout.split(boxHeight: box, hasLine: false)
+        XCTAssertEqual(split.logo, box, accuracy: epsilon)
+        XCTAssertEqual(split.line, 0, accuracy: epsilon)
+    }
+
+    func testATooShortBoxDropsTheLineRatherThanSqueezingTheWordmark() {
+        let tight = HeroFolderBoxLayout.minLogo + Theme.Size.heroMetaSlotHeight - 1
+        let split = HeroFolderBoxLayout.split(boxHeight: tight, hasLine: true)
+        XCTAssertEqual(split.line, 0, accuracy: epsilon)
+        XCTAssertEqual(split.logo, tight, accuracy: epsilon)
+        XCTAssertEqual(HeroFolderBoxLayout.split(boxHeight: -5, hasLine: true).logo, 0, accuracy: epsilon)
+    }
+}

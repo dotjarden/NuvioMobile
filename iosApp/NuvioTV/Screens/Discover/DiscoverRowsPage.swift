@@ -707,7 +707,8 @@ private struct DiscoverFailedRow: View {
                 .buttonStyle(.chip)
                 .focused($chipFocused)
             }
-            .padding(.vertical, Theme.Spacing.lg)
+            // BUG-146: 12 on top inside the strip (Discover always is), see `StripShelfPadding`.
+            .stripShelfPadding()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()

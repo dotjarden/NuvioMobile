@@ -1749,7 +1749,12 @@ struct DetailView: View {
             // (the data keeps w500; the w500 file is the automatic fallback) and decodes it for the
             // 600×180 box it is drawn in, instead of upscaling a 500 px logo about 2.4× on 4K.
             CachedAsyncImage(string: logoUrl, contentMode: .fit,
-                             decodeSize: .points(width: 600, height: 180), upgrade: .logo, failure: {
+                             decodeSize: .points(width: 600, height: 180), upgrade: .logo,
+                             // BUG-152 (Steven, beta.19-rc3 verdict 2026-10-06): the title while the
+                             // logo downloads instead of a grey shimmer block.
+                             loading: {
+                Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
+            }, failure: {
                 Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
             })
             .frame(maxWidth: 600, maxHeight: 180, alignment: .leading)

@@ -72,7 +72,8 @@ struct UpcomingRow: View {
                     }
                 }
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).
-                .padding(.vertical, Theme.Spacing.lg)
+                // BUG-146: 12 on top inside the Stage strip, `lg` on Classic (`StripShelfPadding`).
+                .stripShelfPadding()
             }
             .scrollClipDisabled()
             // BUG-118: see `RowEdgeEffectStyleModifier`.

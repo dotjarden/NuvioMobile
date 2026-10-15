@@ -429,6 +429,27 @@ struct StageStripHome: View {
         let restoresFocus = cover.pushed || cover.resume
         // H9: the Stage rail route declines while Home is covered by a push or the stream picker.
         railRouteBox.covered = restoresFocus
+        // BUG-156 (P2; Steven, beta.19-rc3 follow-ups 2026-10-09 and 10-14: "Home doesn't come back
+        // to where I was after a collection"): the strip relied on the focus engine's restoration
+        // alone when a pushed folder page or Detail popped. The engine restores the VIEW it last
+        // focused; when that view was replaced while Home was covered (the In Row trailer's morphed
+        // card collapsing back to a poster when the cover tore the trailer down is one), or the
+        // pager had moved its mounted window, it falls back to its default candidate instead. So
+        // the push edge captures the strip row (`currentRowKey`, a row change during the cover
+        // cannot redirect it), and the pop edge asks the pager for that row's remembered card
+        // through the rail route's rungs (`StageController.restoreAfterUncover`), once per pop. The
+        // Continue Watching picker lifting is not a pop and restores nothing here (its cover keeps
+        // the strip mounted and focus where it was).
+        if cover.pushed != railRouteBox.wasPushed {
+            railRouteBox.wasPushed = cover.pushed
+            if cover.pushed {
+                railRouteBox.pushOriginRow = stage.currentRowKey
+                stage.cancelUncoverRestore()
+            } else if !cover.resume, let row = railRouteBox.pushOriginRow {
+                railRouteBox.pushOriginRow = nil
+                stage.restoreAfterUncover(rowKey: row)
+            }
+        }
         stage.setCovered(restoresFocus || (shell ?? tabBarVisibility.homeSurfaceCovered),
                          restoresFocus: restoresFocus)
         // §7: any cover stops the background trailer; lifting one lets the next rest arm it again.
@@ -490,6 +511,10 @@ final class StageRailRouteBox {
     var savedRow: String?
     /// A push or the Continue Watching picker covers Home (`StageCover`).
     var covered = false
+    /// BUG-156: the last `StageCover.pushed` `syncCover` saw (edge detection) and the strip row the
+    /// push left from (captured on the push edge, consumed on the pop edge).
+    var wasPushed = false
+    var pushOriginRow: String?
 }
 
 /// Before any strip row exists: a copy of `HomeView`'s private `placeholder` (loading, error, the

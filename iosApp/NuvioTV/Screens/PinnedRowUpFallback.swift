@@ -68,6 +68,14 @@ extension EnvironmentValues {
 /// keeps the environment value's type simple and gives it a name reviewers can trace.
 struct PinnedRowFocusOwnership {
     let report: (_ rowKey: String, _ owns: Bool) -> Void
+    /// BUG-156 (Steven, beta.19-rc3 follow-ups 2026-10-09 and 10-14: "Home does not come back to
+    /// where I was after a collection"): the card id the row's OWN `@FocusState` just focused, so
+    /// Classic Home can remember a card per row (`HomeReturnFocusMemory`) and put focus back on it
+    /// when a pushed folder / Detail / See All page pops. The row's binding ids are the ids a
+    /// `PinnedRowFocusRequest.itemId` resolves against (catalog item ids, folder ids, the See All
+    /// key), which a `MetaPreview` report cannot give for a folder or a See All tile. nil by default
+    /// (Search, Library, the strip, which records through `StripFocusMemory` instead).
+    var noteFocusedItem: ((_ rowKey: String, _ itemId: String) -> Void)? = nil
 }
 
 private struct PinnedRowFocusOwnershipKey: EnvironmentKey {
@@ -109,6 +117,11 @@ private struct PinnedRowUpFallbackTarget: ViewModifier {
                 }
                 .onChange(of: focus.wrappedValue != nil) { _, owns in
                     ownership.report(rowKey, owns)
+                }
+                // BUG-156: Classic Home's per-row card memory (see `noteFocusedItem`). A handler
+                // call into Home's reference box, never a Home state write (the BUG-126 rule).
+                .onChange(of: focus.wrappedValue) { _, id in
+                    if let id { ownership.noteFocusedItem?(rowKey, id) }
                 }
                 // F5: `onChange(of:)` with the default `initial: false` only fires on a value change
                 // AFTER this row is already observing it — a row the `LazyVStack` culls and later

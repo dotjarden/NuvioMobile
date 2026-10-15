@@ -202,7 +202,11 @@ struct DetailCinematicHero<Actions: View>: View {
                 CachedAsyncImage(string: logoURL, contentMode: .fit,
                                  decodeSize: .points(width: DetailCinematicLayout.logoMaxWidth,
                                                      height: DetailCinematicLayout.logoSlotHeight),
-                                 upgrade: .logo, failure: { titleFallback })
+                                 upgrade: .logo,
+                                 // BUG-152 (Steven, beta.19-rc3 verdict 2026-10-06): the title while the
+                                 // logo downloads, not the shimmer (a grey block in this 600×180 slot).
+                                 loading: { titleFallback },
+                                 failure: { titleFallback })
                     .frame(maxWidth: DetailCinematicLayout.logoMaxWidth,
                            maxHeight: DetailCinematicLayout.logoSlotHeight,
                            alignment: .bottomLeading)

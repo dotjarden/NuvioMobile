@@ -797,6 +797,9 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_upfallback")
+                // BUG-156 (invisible, harness-readable): Classic's remembered card and the last
+                // pop-restore event. A leaf with its own sink, so it never re-renders this body.
+                HomeReturnDebugLabel()
                 // FEAT-30 / H9 (invisible, harness-readable): which navigation chrome this build is
                 // rendering under (`mode=tabs|rail`), the rail's visibility, the leading inset Always
                 // Visible adds to every tab root (36 or 0), and the top compensation applied. `comp`
@@ -1288,9 +1291,18 @@ struct HomeView: View {
         // a scroll view the user cannot see — see `PinnedRowSettle.hostCovered`. `homePath.count`
         // going 0 -> nonzero is a push; back to 0 is every pop landing on Home's root, at which point
         // `setCovered(false)` re-arms a fresh settle judged against the focus the pop just restored.
-        .onChange(of: homePath.count) { _, count in
+        .onChange(of: homePath.count) { oldCount, count in
+            // BUG-156: the push edge records the row + card it leaves from, BEFORE the settle and
+            // hero covers react (focus is still on the origin here).
+            if oldCount == 0, count > 0 { notePushFromHome() }
             PinnedRowSettle.setCovered(count > 0)
             syncHeroFocusCover()
+            // BUG-156: every pop back to Home's root puts focus back on that card. After
+            // `setCovered(false)`: its re-armed settle is judged against the focused row's latest
+            // measurement when it resolves, and the restored row's own focus report starts a fresh
+            // epoch (`PinnedRowSettle.report` → `invalidateEpoch`), so it settles the restored row
+            // rather than undoing the landing.
+            if oldCount > 0, count == 0 { restoreRowAfterPop() }
         }
         // beta.19-rc1 verdict (M5, BUG-138): the other two covers the hero focus freeze honours —
         // the Continue Watching stream-picker cover and the shell (a tab switch, a cross-stack
@@ -1554,9 +1566,17 @@ struct HomeView: View {
                     // square/landscape tiles make its label frame short. Catalog rows are uniform
                     // (their label IS the plan's link frame) and stay unfloored. See
                     // `pinnedShortRowLinkFrameFloor` for why a short label parks low.
+                    //
+                    // BUG-157 (Steven, 10-10/10-14): and on a CATALOG row the add-on tags as
+                    // landscape (`posterShape`), which `CatalogRowView` now draws as 16:9 cards on
+                    // a portrait page: a short label on the poster regime's reaches, the same class.
+                    // Not when the global Landscape Posters toggle is on (every row is then the
+                    // landscape regime and no row is short).
                     .environment(\.rowCardLinkFrameFloor,
                                  pinned && (row.id == model.rows.last?.id
-                                            || (pinnedShortRowFloor && Self.isCollectionRow(row)))
+                                            || (pinnedShortRowFloor
+                                                && (Self.isCollectionRow(row)
+                                                    || Self.isLandscapeShapeCatalogRow(row, style: posterStyle))))
                                      ? pinnedLastRowLinkFrameFloor : 0)
                 }
             }
@@ -1702,6 +1722,12 @@ struct HomeView: View {
         // preview-gated claim in `reportRowFocus` could.
         .environment(\.pinnedRowFocusOwnership, PinnedRowFocusOwnership(report: { key, owns in
             handleRowFocusOwnership(key, owns: owns)
+        }, noteFocusedItem: { key, itemId in
+            // BUG-156: a box write (the BUG-126 rule: a card hop never re-renders Home).
+            upInput.returnFocus.remember(rowKey: key, itemId: itemId)
+            #if DEBUG
+            HomeReturnDebug.shared.setFoc(rowKey: key, itemId: itemId)
+            #endif
         }))
         // BUG-37: names this exact view (the rows viewport, whose top edge is the pinned clip
         // edge) so a pinned row title can always resolve the rect it must stay inside, even if
@@ -1976,6 +2002,9 @@ struct HomeView: View {
             // a row hop never re-renders Home), and never cleared on release, unlike
             // `focusedRowKey`, so it still names the row while the rail holds focus.
             upInput.lastOwnedRowKey = rowKey
+            #if DEBUG
+            HomeReturnDebug.shared.setOwn(rowKey)
+            #endif
             if focusedRowKey != rowKey {
                 let origin = focusedRowKey
                 // beta.18 verdict (BUG-126): one frame-timing window per row hop (no-op unless
@@ -1999,6 +2028,9 @@ struct HomeView: View {
             }
         } else if focusedRowKey == rowKey {
             focusedRowKey = nil
+            #if DEBUG
+            HomeReturnDebug.shared.setOwn(nil)
+            #endif
             // rc14: when the hero's focus gain arrives before this release (the two are separate
             // SwiftUI updates with no guaranteed order), `revealTopAfterUpIntoHero` reads this
             // stamp on the hero side; when it arrives after, the hero-side check already saw the
@@ -2297,6 +2329,67 @@ struct HomeView: View {
     private func requestRowFocus(_ key: String) {
         rowFocusRequestSeq &+= 1
         rowFocusRequest = PinnedRowFocusRequest(rowKey: key, generation: rowFocusRequestSeq)
+    }
+
+    /// BUG-156: the `homePath` 0 → 1 edge. Classic only (the Stage strip restores through its own
+    /// pager, `StageStripHome.syncCover`).
+    private func notePushFromHome() {
+        upInput.returnGeneration &+= 1
+        guard !isStageLayout else {
+            upInput.returnFocus.notePush(focusedRowKey: nil, lastOwnedRowKey: nil,
+                                         sinceRowRelease: nil, heroFocused: true)
+            return
+        }
+        let sinceRelease = upInput.lastRowReleasedAt.map { ProcessInfo.processInfo.systemUptime - $0 }
+        upInput.returnFocus.notePush(focusedRowKey: focusedRowKey,
+                                     lastOwnedRowKey: upInput.lastOwnedRowKey,
+                                     sinceRowRelease: sinceRelease,
+                                     heroFocused: heroFocused)
+        let origin = upInput.returnFocus.origin
+        logHomeReturn("push row=\(origin?.rowKey ?? "-") item=\(origin?.itemId ?? "-")")
+    }
+
+    /// BUG-156: the pop back to Home's root (`homePath` → 0). Puts focus back on the row + card the
+    /// push left from, through `PinnedRowFocusRequest` (which every Classic row applies to its OWN
+    /// `@FocusState`, `pinnedRowUpFallbackTarget`), in three rungs: next runloop and 0.3 s on the
+    /// remembered card, 0.7 s on the row's first card; the request expires at 1.0 s so a row that
+    /// mounts later cannot re-apply it (F5). A rung stands down once the row owns focus, and the
+    /// row's anti-theft guard (`focus.wrappedValue == nil`) means a row the engine already restored
+    /// is never yanked to another card. Declines while the Continue Watching picker covers Home.
+    private func restoreRowAfterPop() {
+        guard !isStageLayout, let origin = upInput.returnFocus.takeOrigin() else { return }
+        upInput.returnGeneration &+= 1
+        let generation = upInput.returnGeneration
+        for (index, delay) in HomeReturnFocusMemory.rungDelays.enumerated() {
+            let rung = index + 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard generation == upInput.returnGeneration, homePath.isEmpty, resume == nil else { return }
+                if focusedRowKey == origin.rowKey {
+                    logHomeReturn("restore row=\(origin.rowKey) item=\(origin.itemId ?? "-") rung=\(rung) landed=1")
+                    upInput.returnGeneration &+= 1
+                    return
+                }
+                rowFocusRequestSeq &+= 1
+                rowFocusRequest = HomeReturnFocusMemory.request(for: origin, rung: rung,
+                                                               generation: rowFocusRequestSeq)
+                logHomeReturn("restore row=\(origin.rowKey) item=\(rowFocusRequest.forceFirst ? "first" : (origin.itemId ?? "-")) rung=\(rung) landed=0 from=\(focusedRowKey ?? (heroFocused ? "hero" : "-"))")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry) {
+            guard generation == upInput.returnGeneration else { return }   // landed, or newer
+            upInput.returnGeneration &+= 1
+            if rowFocusRequest.rowKey == origin.rowKey { rowFocusRequest = .none }
+            logHomeReturn("restore row=\(origin.rowKey) \(focusedRowKey == origin.rowKey ? "landed=1 late" : "expired")")
+        }
+    }
+
+    /// BUG-156's `[HomeReturn]` line (behind the Home scroll probe, like `[HomeScrollProbe]`) and the
+    /// DEBUG `debug_homeReturn ret=` readout.
+    private func logHomeReturn(_ event: String) {
+        if HomeGeometryProbe.enabled { NSLog("[HomeReturn] %@", event) }
+        #if DEBUG
+        HomeReturnDebug.shared.setRet(event)
+        #endif
     }
 
     /// BUG-112 review fixes F1/F2: the single place every attempt retires, however it ends —
@@ -2763,6 +2856,13 @@ struct HomeView: View {
     private static func isCollectionRow(_ row: HomeRow) -> Bool {
         if case .collection = row { return true }
         return false
+    }
+
+    /// BUG-157: a catalog row whose items the add-on tags as landscape (`PosterStyle.landscapeSection`),
+    /// on a page whose global style is portrait, so `CatalogRowView` draws it as a short 16:9 row.
+    private static func isLandscapeShapeCatalogRow(_ row: HomeRow, style: PosterStyle) -> Bool {
+        guard case .catalog(let section) = row, !style.landscapeCatalogRows else { return false }
+        return PosterStyle.landscapeSection(items: section.items)
     }
 
     /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because
@@ -5244,7 +5344,8 @@ struct ContinueWatchingRow: View {
                         }
                     }
                     // Always positive — the reach lives inside the buttons (see CatalogRowView).
-                    .padding(.vertical, Theme.Spacing.lg)
+                    // BUG-146: 12 on top inside the Stage strip, `lg` on Classic (`StripShelfPadding`).
+                    .stripShelfPadding()
                 }
                 .scrollClipDisabled()
                 // Review r1 (A P2-3): the strip's restore path; absent outside the strip.
@@ -6461,13 +6562,8 @@ struct HomeHeroForeground: View {
     private var nuvioLayout: some View {
         Group {
             if isCollectionHero(item) && showsCTA {
-                HeroLogo(item: item, image: textPresentation.logo,
-                         maxHeight: Theme.Size.heroFolderLogoHeightOverride
-                            ?? Theme.Size.heroFolderLogoSlotHeight,
-                         ink: textPresentation.logoInk)
-                    .frame(height: logoSlotHeight + slotGap + Theme.Size.heroMetaSlotHeight
-                                   + slotGap + synopsisSlotHeight,
-                           alignment: .leading)
+                folderBox(height: logoSlotHeight + slotGap + Theme.Size.heroMetaSlotHeight
+                                  + slotGap + synopsisSlotHeight)
             } else {
                 // rc14 (BUG-119, Steven 2026-09-13 + rc13 verdict): in the CTA-less PANEL form a
                 // focused collection folder keeps the three-slot column — wordmark, then the
@@ -6514,14 +6610,9 @@ struct HomeHeroForeground: View {
     private var classicLayout: some View {
         Group {
             if isCollectionHero(item) {
-                HeroLogo(item: item, image: textPresentation.logo,
-                         maxHeight: Theme.Size.heroFolderLogoHeightOverride
-                            ?? Theme.Size.heroFolderLogoSlotHeight,
-                         ink: textPresentation.logoInk)
-                    .frame(height: Theme.Size.heroLogoSlotHeight + Theme.Spacing.md
-                                   + Theme.Size.heroMetaSlotHeight + Theme.Spacing.md
-                                   + Theme.Size.heroSynopsisSlotHeight,
-                           alignment: .leading)
+                folderBox(height: Theme.Size.heroLogoSlotHeight + Theme.Spacing.md
+                                  + Theme.Size.heroMetaSlotHeight + Theme.Spacing.md
+                                  + Theme.Size.heroSynopsisSlotHeight)
             } else {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     HeroLogo(item: item, image: textPresentation.logo, ink: textPresentation.logoInk)
@@ -6547,6 +6638,43 @@ struct HomeHeroForeground: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// FEAT-29's merged folder box, `height` tall (the exact sum the three-slot column would have
+    /// consumed, so the hero's total height never moves).
+    ///
+    /// BUG-159 (was BUG-154; Steven, beta.19-rc3 follow-up 2026-10-08, photos 2 and 3): with Show
+    /// Hero ON a focused collection folder showed the wordmark and "Open Folder" and nothing else,
+    /// while the Show Hero OFF panel read "Aventure · 8 sources" (rc14's BUG-119
+    /// `folderHeroDescription`, which `HomeRowPreviews.folder` already puts in the preview's
+    /// `description`). A folder has no synopsis, so the box's own bottom `heroMetaSlotHeight` carries
+    /// that one line in `Theme.Font.meta` and the wordmark takes the rest (`HeroFolderBoxLayout`).
+    /// The line budget for TITLE heroes (rt4) is untouched: this is the folder branch only. A
+    /// preview with no description (none ships one today) keeps the full-height wordmark.
+    @ViewBuilder
+    private func folderBox(height: CGFloat) -> some View {
+        let line = synopsis.trimmingCharacters(in: .whitespacesAndNewlines)
+        let split = HeroFolderBoxLayout.split(boxHeight: height, hasLine: !line.isEmpty)
+        VStack(alignment: .leading, spacing: 0) {
+            HeroLogo(item: item, image: textPresentation.logo,
+                     maxHeight: min(Theme.Size.heroFolderLogoHeightOverride
+                                        ?? Theme.Size.heroFolderLogoSlotHeight,
+                                    split.logo),
+                     ink: textPresentation.logoInk)
+                .frame(height: split.logo, alignment: .leading)
+            if split.line > 0 {
+                Text(line)
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: split.line, alignment: .bottomLeading)
+                    .accessibilityIdentifier("hero_folder_line")
+                    // Wave H: a late description must not animate (see the synopsis slots).
+                    .animation(nil, value: line)
+            }
+        }
+        .frame(height: height, alignment: .top)
     }
 
     private var synopsis: String {
@@ -6671,6 +6799,25 @@ struct TrailerListenerDebugLabel: View {
 /// media type — "collection" included — and a real title misclassified here would lose its hero
 /// trailer and enrichment). The predicate requires BOTH the dotted type and the id scheme; a
 /// catalog would have to ship that exact pair, which nothing does.
+/// BUG-159 (Steven, beta.19-rc3 follow-up 2026-10-08): how `HomeHeroForeground.folderBox` splits
+/// FEAT-29's merged folder box between the wordmark and the one-line folder description
+/// (`HomeView.folderHeroDescription`). Pure, so the "the box never changes height" invariant is
+/// asserted in `PinnedRowGeometryTests` rather than reasoned about.
+nonisolated enum HeroFolderBoxLayout {
+    /// `logo + line == boxHeight` always. With a line, the line takes `heroMetaSlotHeight` (the
+    /// meta slot's own height, so it reads at the meta line's size) unless the box is so short that
+    /// would leave the wordmark under `minLogo`, in which case the line is dropped rather than the
+    /// wordmark squeezed: the wordmark is the folder's identity, the line is its caption.
+    static let minLogo: CGFloat = 48
+
+    static func split(boxHeight: CGFloat, hasLine: Bool) -> (logo: CGFloat, line: CGFloat) {
+        let box = max(0, boxHeight)
+        let line = Theme.Size.heroMetaSlotHeight
+        guard hasLine, box - line >= minLogo else { return (box, 0) }
+        return (box - line, line)
+    }
+}
+
 let collectionHeroType = "nuvio.folder"
 let collectionHeroIdScheme = "nuvio-folder://"
 
@@ -6897,6 +7044,11 @@ final class HomeRowInputBox {
     var lastOwnedRowKey: String?
     /// H9: where Classic's rail route returns focus (captured when the rail arms).
     var railReturnTarget: HomeRailReturnTarget?
+    /// BUG-156: the card each row last focused and the row + card a push left from. Written from
+    /// the rows' focus reports and the `homePath` edges; handlers only, never rendered.
+    var returnFocus = HomeReturnFocusMemory()
+    /// BUG-156: stales the rungs of an older pop restore (a new push, a newer pop).
+    var returnGeneration = 0
 }
 
 /// H9 (P4 §2.5): Classic Home's rail return target — the hero CTA, or a row (its first card).
@@ -6904,3 +7056,106 @@ nonisolated enum HomeRailReturnTarget: Equatable, Sendable {
     case hero
     case row(String)
 }
+
+/// BUG-156 (P2; Steven, beta.19-rc3 follow-ups 2026-10-09 and 10-14): "after leaving a folder, Home
+/// doesn't come back to where I was". Classic Home kept no focused-card id at all and relied on the
+/// focus engine's own restoration when a pushed folder page, Detail or See All grid popped, and that
+/// restoration loses the card whenever the focused view it remembers was replaced while Home was
+/// covered (the In Row trailer's morphed card collapsing back to a poster when the push tore the
+/// trailer down is one such replacement), so the engine falls back to its default candidate.
+///
+/// This is the pure half: the card each row last focused (from the row's own `@FocusState`, via
+/// `PinnedRowFocusOwnership.noteFocusedItem`), the origin a push left from (captured on the
+/// `homePath` 0 → 1 edge, so a row change during the cover cannot redirect it), and the request the
+/// pop issues. `HomeView.restoreRowAfterPop` runs the rungs. A push from the hero CTA records no
+/// origin: native restoration handles the CTA, and a row request there would steal it.
+nonisolated struct HomeReturnFocusMemory: Equatable, Sendable {
+    struct Origin: Equatable, Sendable {
+        let rowKey: String
+        let itemId: String?
+    }
+
+    /// How long after a row released focus a push still counts as "from that row" when the release
+    /// report beat the `homePath` change (the two are separate SwiftUI updates with no set order).
+    static let releaseGrace: TimeInterval = 0.3
+
+    private(set) var itemByRow: [String: String] = [:]
+    private(set) var origin: Origin?
+
+    mutating func remember(rowKey: String, itemId: String) {
+        itemByRow[rowKey] = itemId
+    }
+
+    /// The push edge. `focusedRowKey` is the row that owns focus right now; when it is already nil
+    /// (its release arrived first), `lastOwnedRowKey` counts only if that release is younger than
+    /// `releaseGrace`. The hero CTA holding focus means the push came from the hero: no origin.
+    mutating func notePush(focusedRowKey: String?, lastOwnedRowKey: String?,
+                           sinceRowRelease: TimeInterval?, heroFocused: Bool) {
+        guard !heroFocused else {
+            origin = nil
+            return
+        }
+        let row = focusedRowKey
+            ?? (sinceRowRelease.map { $0 >= 0 && $0 < Self.releaseGrace } == true ? lastOwnedRowKey : nil)
+        origin = row.map { Origin(rowKey: $0, itemId: itemByRow[$0]) }
+    }
+
+    /// The pop edge: the origin to restore, once. A second pop without a push returns nil.
+    mutating func takeOrigin() -> Origin? {
+        defer { origin = nil }
+        return origin
+    }
+
+    /// The restore rungs: the remembered card on the first two, the row's first card on the last
+    /// (that card is what the earlier rungs could not reach: an id gone from the row, an unrealized
+    /// card). The same shape as the strip's rungs (`StripPager.requestRowFocus`).
+    static let rungDelays: [TimeInterval] = [0, 0.3, 0.7]
+    static let expiry: TimeInterval = 1.0
+
+    static func request(for origin: Origin, rung: Int, generation: Int) -> PinnedRowFocusRequest {
+        let last = rung >= rungDelays.count
+        return PinnedRowFocusRequest(rowKey: origin.rowKey, generation: generation,
+                                     itemId: last ? nil : origin.itemId, forceFirst: last)
+    }
+}
+
+#if DEBUG
+/// BUG-156: the `debug_homeReturn` readout (`own=<rowKey> foc=<rowKey>/<itemId> ret=<last restore
+/// event>`; `ret` is free text and comes last). A
+/// LEAF observing its own sink, so a card hop re-renders this label and never Home's body.
+@MainActor
+final class HomeReturnDebug: ObservableObject {
+    static let shared = HomeReturnDebug()
+    @Published private(set) var foc = "-"
+    @Published private(set) var ret = "-"
+    /// The row that owns focus right now (`handleRowFocusOwnership`), "-" while none does (the hero
+    /// CTA, the tab bar, a pushed page).
+    @Published private(set) var own = "-"
+
+    func setOwn(_ rowKey: String?) {
+        let next = rowKey ?? "-"
+        if own != next { own = next }
+    }
+
+    func setFoc(rowKey: String, itemId: String) {
+        let next = "\(rowKey)/\(itemId)"
+        if foc != next { foc = next }
+    }
+
+    func setRet(_ event: String) {
+        if ret != event { ret = event }
+    }
+}
+
+struct HomeReturnDebugLabel: View {
+    @ObservedObject private var debug = HomeReturnDebug.shared
+
+    var body: some View {
+        Text(verbatim: "debug_homeReturn own=\(debug.own) foc=\(debug.foc) ret=\(debug.ret)")
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .accessibilityIdentifier("debug_homeReturn")
+            .allowsHitTesting(false)
+    }
+}
+#endif

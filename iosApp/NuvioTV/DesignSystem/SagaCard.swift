@@ -94,7 +94,10 @@ struct SagaCard: View {
     /// the card draws (`artworkURL`, then its fallback), not the title logo composited over it:
     /// the ring frames the picture.
     private var samplesPosterColor: Bool {
-        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+        // BUG-158 / D9: still mode's neutral ring takes the poster colour regardless of the setting
+        // (the same table `PosterCardView` / `LandscapeCard` / the trailer tile read).
+        FocusRingTintSampling.samples(settingOn: ringTakesPosterColor, accentRing: accentFocusRing,
+                                      noZoom: noZoomOnFocus)
     }
 
     private var ringTintSources: [String?] { [SagaCardArt.artworkURL(for: item), sagaFallbackURL] }

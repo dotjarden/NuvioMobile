@@ -159,8 +159,46 @@ final class StageController: ObservableObject {
 
     /// S4 / R2: put focus on `rowKey` (its card `itemId`, else its remembered card, else its first),
     /// through the pager's retry rungs (§3.3).
-    func requestFocus(rowKey: String, itemId: String?) {
-        pagerHandle.requestFocus(rowKey: rowKey, itemId: itemId, reason: "external")
+    func requestFocus(rowKey: String, itemId: String?, reason: String = "external") {
+        pagerHandle.requestFocus(rowKey: rowKey, itemId: itemId, reason: reason)
+    }
+
+    /// BUG-156: stales a pending `restoreAfterUncover` (a new push went over Home).
+    private var uncoverRestoreGeneration = 0
+
+    /// BUG-156 (Steven, beta.19-rc3 follow-ups 2026-10-09 / 10-14): after a pushed folder page or
+    /// Detail pops, put focus back on `rowKey`'s remembered card (`memory`), through the pager's
+    /// rungs (reason `uncover` on the `[StageStrip] restore` lines). The pop runs `StageStripHome`'s
+    /// cover sync in the same update the strip reappears in, and the pager re-installs its handle
+    /// only in its own `.onAppear`, which can come after; so the request waits for the handle,
+    /// polling every 0.1 s for up to 1 s, and goes out on the next runloop at the earliest (the
+    /// rail route's `restore` runs once the strip is on screen, which is why it never needed this).
+    /// The pager's anti-theft guard keeps a row the engine already restored on its card.
+    func restoreAfterUncover(rowKey: String) {
+        uncoverRestoreGeneration &+= 1
+        let generation = uncoverRestoreGeneration
+        attemptUncoverRestore(rowKey: rowKey, generation: generation, attempt: 0)
+    }
+
+    /// A new push: a pop restore still waiting for the pager must not fire under it.
+    func cancelUncoverRestore() {
+        uncoverRestoreGeneration &+= 1
+    }
+
+    private func attemptUncoverRestore(rowKey: String, generation: Int, attempt: Int) {
+        let delay: TimeInterval = attempt == 0 ? 0 : 0.1
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, generation == self.uncoverRestoreGeneration else { return }
+            guard self.pagerHandle.isInstalled else {
+                if attempt < 10 {
+                    self.attemptUncoverRestore(rowKey: rowKey, generation: generation, attempt: attempt + 1)
+                } else {
+                    StageStripProbe.shared.log("restore row=\(rowKey) rung=0 landed=0 reason=uncover nopager")
+                }
+                return
+            }
+            self.requestFocus(rowKey: rowKey, itemId: self.memory.itemId(for: rowKey), reason: "uncover")
+        }
     }
 
     /// A strip row took focus (Home: the pager's `onRowChange`, which also fires when focus comes

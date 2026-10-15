@@ -45,6 +45,11 @@ struct CachedAsyncImage<Failure: View>: View {
     /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): optional hook run once per loaded
     /// image (see `onImageLoaded`). nil = zero cost; every existing call site leaves it nil.
     private var onLoaded: (@MainActor (UIImage) -> Void)?
+    /// BUG-152 (Steven, beta.19-rc3 verdict 2026-10-06): what to show while the file downloads.
+    /// nil = the `ShimmerView` every call site has always had. Detail's logo slot passes the title
+    /// text so a cold logo never reads as a grey/black block. Type-erased so `CachedAsyncImage`
+    /// keeps its single `Failure` generic parameter.
+    private var loadingContent: (() -> AnyView)?
 
     @StateObject private var loader = CachedImageLoader()
     /// 1.0 until (and unless) `ArtworkLetterbox` measures real bars in the loaded image.
@@ -94,6 +99,31 @@ struct CachedAsyncImage<Failure: View>: View {
         self.failureContent = failure
     }
 
+    /// BUG-152: the `loading:` flavour of the `url:` init. Same designated init, then the loading
+    /// builder is stored; every call site without `loading:` keeps the shimmer.
+    init<Loading: View>(url: URL?, fallbackURL: URL? = nil, contentMode: ContentMode = .fill,
+                        decodeSize: ArtworkDecodeSize = .legacy, upgrade: ArtworkURLUpgrade.Role? = nil,
+                        releasesWhenHidden: Bool = false, cropsBakedLetterboxBars: Bool = false,
+                        @ViewBuilder loading: @escaping () -> Loading,
+                        @ViewBuilder failure: @escaping () -> Failure) {
+        self.init(url: url, fallbackURL: fallbackURL, contentMode: contentMode, decodeSize: decodeSize,
+                  upgrade: upgrade, releasesWhenHidden: releasesWhenHidden,
+                  cropsBakedLetterboxBars: cropsBakedLetterboxBars, failure: failure)
+        self.loadingContent = { AnyView(loading()) }
+    }
+
+    /// BUG-152: the `loading:` flavour of the `string:` init (see above).
+    init<Loading: View>(string: String?, fallback: String? = nil, contentMode: ContentMode = .fill,
+                        decodeSize: ArtworkDecodeSize = .legacy, upgrade: ArtworkURLUpgrade.Role? = nil,
+                        releasesWhenHidden: Bool = false, cropsBakedLetterboxBars: Bool = false,
+                        @ViewBuilder loading: @escaping () -> Loading,
+                        @ViewBuilder failure: @escaping () -> Failure) {
+        self.init(string: string, fallback: fallback, contentMode: contentMode, decodeSize: decodeSize,
+                  upgrade: upgrade, releasesWhenHidden: releasesWhenHidden,
+                  cropsBakedLetterboxBars: cropsBakedLetterboxBars, failure: failure)
+        self.loadingContent = { AnyView(loading()) }
+    }
+
     /// `[upgraded(url), url, fallback]` (see `candidateURLs`), computed once per init rather than per
     /// body evaluation.
     private static func makeCandidates(url: URL?, fallback: URL?, upgrade: ArtworkURLUpgrade.Role?) -> [URL] {
@@ -137,6 +167,8 @@ struct CachedAsyncImage<Failure: View>: View {
             } else if url == nil {
                 // Nothing to load — flat surface rather than an endless shimmer.
                 Theme.Palette.surface
+            } else if let loadingContent {
+                loadingContent()
             } else {
                 ShimmerView()
             }

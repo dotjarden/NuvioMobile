@@ -53,6 +53,42 @@ struct PosterStyle: Equatable {
     }
 }
 
+// MARK: - Per-row landscape shape (BUG-157)
+
+extension PosterStyle {
+    /// BUG-157 (Steven, beta.19-rc3 follow-up 2026-10-14): whether a catalog row whose items carry
+    /// these shapes draws landscape (16:9) cards. True when STRICTLY more than half of the items are
+    /// landscape: an add-on that tags its catalog tags every item, and one stray tag (or a TMDB
+    /// enrichment that dropped it) never flips a whole row. A tie, an empty row and `square` (tvOS
+    /// has no square card; it reads as a poster) stay portrait. Upstream decides per CARD
+    /// (`HomePosterCard`); tvOS keeps one shape per row so the row's height, the pinned title and
+    /// the inline trailer morph stay one geometry.
+    nonisolated static func landscapeSection<S: Sequence>(_ isLandscape: S) -> Bool where S.Element == Bool {
+        var landscape = 0
+        var total = 0
+        for flag in isLandscape {
+            total += 1
+            if flag { landscape += 1 }
+        }
+        return total > 0 && landscape * 2 > total
+    }
+
+    /// `landscapeSection` over a row's items (`MetaPreview.posterShape`, from the add-on's
+    /// `posterShape` field).
+    static func landscapeSection(items: [MetaPreview]) -> Bool {
+        landscapeSection(items.lazy.map { $0.posterShape == PosterShape.landscape })
+    }
+
+    /// BUG-157: this style for a row of `items`: `landscapeCatalogRows` turns on when the row is a
+    /// landscape-shape catalog, and is left as it is otherwise (the global toggle wins either way).
+    func resolved(forSectionItems items: [MetaPreview]) -> PosterStyle {
+        guard !landscapeCatalogRows, Self.landscapeSection(items: items) else { return self }
+        var copy = self
+        copy.landscapeCatalogRows = true
+        return copy
+    }
+}
+
 #if DEBUG
 /// Home Stage & Strip (P1 §8, #11): DEBUG-only launch overrides read by `PosterStyle.init(from:)`.
 ///

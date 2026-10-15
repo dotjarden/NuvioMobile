@@ -38,12 +38,17 @@ final class DiscoveryStubServer {
     private(set) var requestLog: [String] = []
 
     private let document: Document
+    /// Extra `GET` routes, matched by path PREFIX in order, each answering 200 with its JSON body.
+    /// BUG-157 (Batch A, 2026-10-15): lets a leg serve a tiny add-on (manifest + one catalog) from
+    /// the same loopback stub. Empty by default, so the discovery legs are unchanged.
+    private let routes: [(prefix: String, body: String)]
     private let lock = NSLock()
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "nuvio.uitests.discovery-stub")
 
-    init(document: Document = Document()) {
+    init(document: Document = Document(), routes: [(prefix: String, body: String)] = []) {
         self.document = document
+        self.routes = routes
     }
 
     /// Binds an ephemeral loopback port; returns once the listener is ready (or throws).
@@ -103,6 +108,9 @@ final class DiscoveryStubServer {
             if method == "GET", path == "/.well-known/nuvio" {
                 status = "200 OK"
                 body = self.document.json(origin: self.origin)
+            } else if method == "GET", let route = self.routes.first(where: { path.hasPrefix($0.prefix) }) {
+                status = "200 OK"
+                body = route.body
             } else {
                 status = "404 Not Found"
                 body = "{\"error\":\"stub: no such route\"}"

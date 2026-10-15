@@ -38,7 +38,7 @@ struct StripLoadingRow: View {
                         .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous))
                 }
             }
-            .padding(.vertical, Theme.Spacing.lg)
+            .stripShelfPadding()  // BUG-146: the strip's 12 pt top, as the loaded row
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -55,7 +55,7 @@ struct StripMessageRow: View {
             Text(message)
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textSecondary)
-                .padding(.vertical, Theme.Spacing.lg)
+                .stripShelfPadding()  // BUG-146: the strip's 12 pt top, as the loaded row
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
