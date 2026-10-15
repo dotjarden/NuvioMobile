@@ -308,6 +308,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private var propSnapshot = PropSnapshot()
     /// Coalesces track-list refresh requests (many property events can arrive in a burst).
     private var trackRefreshPending = false
+    #if DEBUG
+    /// Elapsed playback time of the last `[Mem]` line (−1 = none yet); see `logStartupStatsIfNeeded`.
+    private var lastMemLogElapsed: Double = -1
+    #endif
     /// Uptime when FILE_LOADED fired — drives the first-90s `[MPVStats]` diagnostics.
     private var fileLoadedUptime: TimeInterval = 0
     /// Times playback entered paused-for-cache (buffering underruns), for diagnostics.
@@ -1775,6 +1779,18 @@ final class MPVTVPlayerViewController: UIViewController {
     private func logStartupStatsIfNeeded() {
         guard fileLoadedUptime > 0 else { return }
         let elapsed = ProcessInfo.processInfo.systemUptime - fileLoadedUptime
+        #if DEBUG
+        // One `[Mem]` line a minute for the whole playback (device rig 2026-10-15: the Info row's RSS
+        // is unreadable by the rig on HDR titles and hidden in Off mode, so the comparison between
+        // Seek Preview modes needs a logged number).
+        if elapsed - lastMemLogElapsed >= 60 || lastMemLogElapsed < 0 {
+            lastMemLogElapsed = elapsed
+            let snap = storeMirror
+            print(String(format: "[Mem] +%.0fs rss=%ld MB mode=%@ store=%ld harvest=%ld decode=%ld",
+                         elapsed, ProcessMemory.footprintMB(), seekPreviewMode.rawValue,
+                         snap.count, snap.harvest, snap.decode))
+        }
+        #endif
         guard elapsed < 90 else { return }
         let underruns = cacheWaitCount
         eventQueue.async { [weak self] in
@@ -2007,7 +2023,13 @@ final class MPVTVPlayerViewController: UIViewController {
                 parts.append(String(format: String(localized: "decode off: %@"), words))
             }
         }
+        #if DEBUG
+        // Debug builds keep the row in Off mode (and before the first harvest) so the RSS stays
+        // readable; release builds hide an empty row as before.
+        if parts.isEmpty { parts.append(seekPreviewMode.allowsHarvest ? "—" : String(localized: "off")) }
+        #else
         guard !parts.isEmpty else { return }
+        #endif
         var text = parts.joined(separator: " · ")
         #if DEBUG
         // Jargon: debug builds only (review r1 P3 #9).
