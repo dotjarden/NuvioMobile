@@ -528,6 +528,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // included (critique C22). Decode adds the keyframe thumbnailer beside the harvest.
         if !seekPreviewMode.allowsHarvest { harvest = HarvestScheduler(intervalSec: 0) }
         thumbs = ThumbScheduler(enabled: seekPreviewMode.allowsDecode)
+        #if DEBUG
+        rebuildPreviewSummary()   // the DEBUG row exists from the start (Off mode has no store events)
+        #endif
         let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
         if bufferMB > 0 { demuxerMaxBytes = Int64(bufferMB) * 1024 * 1024 }
 
@@ -1783,12 +1786,16 @@ final class MPVTVPlayerViewController: UIViewController {
         // One `[Mem]` line a minute for the whole playback (device rig 2026-10-15: the Info row's RSS
         // is unreadable by the rig on HDR titles and hidden in Off mode, so the comparison between
         // Seek Preview modes needs a logged number).
-        if elapsed - lastMemLogElapsed >= 60 || lastMemLogElapsed < 0 {
+        // The first line comes from the `< 0` arm (first tick, ~+5 s), then one every 60 s.
+        if lastMemLogElapsed < 0 || elapsed - lastMemLogElapsed >= 60 {
             lastMemLogElapsed = elapsed
             let snap = storeMirror
             print(String(format: "[Mem] +%.0fs rss=%ld MB mode=%@ store=%ld harvest=%ld decode=%ld",
                          elapsed, ProcessMemory.footprintMB(), seekPreviewMode.rawValue,
                          snap.count, snap.harvest, snap.decode))
+            // Review P2: nothing else rebuilds the Info row in Off mode (no harvest, no decode), and
+            // its RSS would otherwise only refresh on store events; rebuild it on the same cadence.
+            rebuildPreviewSummary()
         }
         #endif
         guard elapsed < 90 else { return }

@@ -84,15 +84,16 @@ nonisolated enum PlayerEngineRouter {
 
     // MARK: - Criteria
 
-    /// avformat reports comma-joined demuxer names (e.g. "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2").
+    /// The MP4/MOV family of avformat's comma-joined demuxer names ("mov,mp4,m4a,3gp,3g2,mj2").
     private static func isMP4Container(_ container: String) -> Bool {
         let c = container.lowercased()
         return c.contains("mp4") || c.contains("mov")
     }
 
+    /// avformat reports comma-joined demuxer names (e.g. "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2").
     private static func isNativeContainer(_ container: String) -> Bool {
         let c = container.lowercased()
-        return c.contains("matroska") || c.contains("webm") || c.contains("mp4") || c.contains("mov")
+        return c.contains("matroska") || c.contains("webm") || isMP4Container(c)
     }
 
     /// Audio codecs AVPlayer can play directly (the remux stream-copies these).
