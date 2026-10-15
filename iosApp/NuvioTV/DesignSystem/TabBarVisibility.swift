@@ -33,7 +33,12 @@ import SwiftUI
 @MainActor
 final class TabBarVisibility: ObservableObject {
     private var detailDepth = 0 {
-        didSet { recompute() }
+        didSet {
+            // See `popImmersive`: a drop to 0 publishes on the next turn, a rise publishes now
+            // (and cancels a pending zero publish, so 1 → 0 → 1 never shows the bar).
+            if detailDepth > 0 { pendingZeroPublish = false }
+            if detailDepth > 0 || !pendingZeroPublish { recompute() }
+        }
     }
 
     /// Called from an immersive pushed screen's `.onAppear` (currently `DetailView`).
@@ -48,7 +53,21 @@ final class TabBarVisibility: ObservableObject {
     /// exists to diagnose BUG-66, so a phantom count is worse than none (Codex beta.14 r4).
     func popImmersive() {
         guard detailDepth > 0 else { return }
+        // Set BEFORE the write so the depth's `didSet` skips the immediate publish for this drop.
+        if detailDepth == 1 { pendingZeroPublish = true }
         detailDepth -= 1
+        // Batch A (review r1 P3-5): a folder page popping its depth as a Detail pushes over it can
+        // cross 1 → 0 → 1 inside one update cycle (SwiftUI orders the two views' appear/disappear
+        // freely). The depth write above is immediate; the hide → show → hide publish it would
+        // cause is deferred one runloop turn and dropped if the depth is back above 0 by then
+        // (BUG-66's bar blip class). `recompute()` is idempotent, so a real pop publishes once.
+        if detailDepth == 0 {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.pendingZeroPublish else { return }
+                self.pendingZeroPublish = false
+                self.recompute()
+            }
+        }
         TabBarProbe.recordPop(depthAfter: detailDepth)
         // beta.18 verdict (BUG-66): `r=pop` — what the bar tracks once the last immersive screen
         // is gone (hardware checklist step 3). No-op unless the geometry probe is armed.
@@ -130,6 +149,8 @@ final class TabBarVisibility: ObservableObject {
     /// in-flight system transition, on every tab switch. See `tabBarImmersiveHide()` and
     /// `MainTabView.tabBarVisibility` for the other two pieces of this fix.
     @Published private(set) var immersiveHidden: Bool = false
+    /// `popImmersive`'s deferred zero publish is still owed.
+    private var pendingZeroPublish = false
 }
 
 private struct TabBarVisibilityKey: EnvironmentKey {

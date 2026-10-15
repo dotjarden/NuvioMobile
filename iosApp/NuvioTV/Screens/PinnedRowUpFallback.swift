@@ -32,6 +32,12 @@ nonisolated struct PinnedRowFocusRequest: Equatable, Sendable {
     /// remembered card exists (that card is what the earlier rungs could not reach). false
     /// everywhere Classic builds a request.
     var forceFirst: Bool = false
+    /// BUG-156 (review r1 P2-3): the request may move focus to `itemId` even when the row ALREADY
+    /// holds focus on another card. Only Classic's pop restore sets it, on the rungs that run before
+    /// any press can arrive (the engine's own restoration landing in the right row on the wrong
+    /// card, the morphed-trailer case BUG-156 names); false everywhere else, so the anti-theft
+    /// guard in `applyIfMatching` keeps protecting a card the viewer moved to.
+    var forceCard: Bool = false
 
     static let none = PinnedRowFocusRequest(rowKey: nil, generation: 0)
 
@@ -165,10 +171,12 @@ private struct PinnedRowUpFallbackTarget: ViewModifier {
     private func applyIfMatching(_ request: PinnedRowFocusRequest) {
         // The anti-theft guard: a request that arrives while this row ALREADY holds focus (a late
         // retry rung whose earlier rung landed) must not yank the user off whichever card they are on.
-        guard focus.wrappedValue == nil,
-              let target = PinnedRowFocusRequest.target(for: request, rowKey: rowKey, firstId: firstId,
+        // BUG-156: `forceCard` (the pop restore's early rungs only) may retarget the card inside a row
+        // that holds focus, but never a row that does not match.
+        guard let target = PinnedRowFocusRequest.target(for: request, rowKey: rowKey, firstId: firstId,
                                                         remembered: memory?.itemId(for: rowKey))
         else { return }
+        guard focus.wrappedValue == nil || (request.forceCard && focus.wrappedValue != target) else { return }
         focus.wrappedValue = target
     }
 }

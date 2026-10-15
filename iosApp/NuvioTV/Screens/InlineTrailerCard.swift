@@ -2364,6 +2364,15 @@ struct InlineTrailerCard: View {
     private var expandedTile: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and LandscapeCard
             trailerSurface
+                // BUG-158 (review r1 P2-1): in the `.lift` state (Zoom ON, accent ring OFF, a
+                // portrait row, this tile showing) the button's system treatment is off and the
+                // base card's hover effect is disabled, so the TILE draws ring mode's own scale +
+                // shadow (`CardArtworkFocusLift.manualScale`, the same 20 pt rise) at its own
+                // frame. Off in every other state: `isFocused` false means no scale, no shadow.
+                .modifier(CardArtworkFocusLift(mode: .manualScale,
+                                               isFocused: isFocused && liftStyle == .lift,
+                                               artworkHeight: artworkHeight,
+                                               cornerRadius: posterStyle.cornerRadius))
 
             if showsOverlayTitle {
                 Text(item.name)
@@ -2378,8 +2387,9 @@ struct InlineTrailerCard: View {
         // R2: opacity follows the STAGE (dissolve in at `.reveal`, out on the way back to `.none`),
         // animated by the model's stage transactions.
         .opacity(model.tileVisible ? 1 : 0)
-        // No focus scale of its own: the system `.borderless` lift moves the whole button label
-        // (base card + this tile) as one object (HIG revamp).
+        // No focus scale of its own in the `.highlight` state: the system `.borderless` lift moves
+        // the whole button label (base card + this tile) as one object (HIG revamp). In the `.lift`
+        // state (BUG-158) the surface above draws the lift instead.
         .allowsHitTesting(false)
     }
 
@@ -2618,6 +2628,9 @@ struct InlineTrailerCard: View {
     }
 
     private var fadesBaseCard: Bool { !posterStyle.landscapeCatalogRows }
+
+    /// BUG-158: `.lift` while this card's tile shows in a portrait row (set by `CatalogRowView`).
+    @Environment(\.cardSystemLiftStyle) private var liftStyle
 
     /// The faded portrait card takes its title with it, so the tile carries a replacement in the
     /// same slot. Landscape rows keep their own title (nothing is faded there).

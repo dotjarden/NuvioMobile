@@ -168,7 +168,14 @@ struct CachedAsyncImage<Failure: View>: View {
                 // Nothing to load — flat surface rather than an endless shimmer.
                 Theme.Palette.surface
             } else if let loadingContent {
-                loadingContent()
+                // BUG-152 (review r1 P3-7): the loader seeds a memory-cached head in `.onAppear`,
+                // one body after this one, so a cached logo would flash the title text for a frame.
+                // Nothing is drawn for that frame instead (the image lands next).
+                if ArtworkStore.cached(candidateURLs.first, decode: chain.request) == nil {
+                    loadingContent()
+                } else {
+                    Color.clear
+                }
             } else {
                 ShimmerView()
             }

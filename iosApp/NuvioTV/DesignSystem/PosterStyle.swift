@@ -82,10 +82,27 @@ extension PosterStyle {
     /// BUG-157: this style for a row of `items`: `landscapeCatalogRows` turns on when the row is a
     /// landscape-shape catalog, and is left as it is otherwise (the global toggle wins either way).
     func resolved(forSectionItems items: [MetaPreview]) -> PosterStyle {
-        guard !landscapeCatalogRows, Self.landscapeSection(items: items) else { return self }
+        guard !landscapeCatalogRows, Self.landscapeSectionCached(items: items) else { return self }
         var copy = self
         copy.landscapeCatalogRows = true
         return copy
+    }
+
+    /// Review r1 (P3-11): `CatalogRowView` reads its resolved style many times per body and per card
+    /// hop, and every read bridged up to 100 `posterShape` reads into Kotlin. A row's items are an
+    /// immutable snapshot, so the answer is memoised on (count, first id, last id) — two bridge
+    /// reads — in a small main-thread table that is cleared when it grows past 512 rows.
+    @MainActor private static var landscapeByRow: [String: Bool] = [:]
+
+    @MainActor
+    static func landscapeSectionCached(items: [MetaPreview]) -> Bool {
+        guard let first = items.first, let last = items.last else { return false }
+        let key = "\(items.count)|\(first.id)|\(last.id)"
+        if let hit = landscapeByRow[key] { return hit }
+        if landscapeByRow.count > 512 { landscapeByRow.removeAll(keepingCapacity: true) }
+        let value = landscapeSection(items: items)
+        landscapeByRow[key] = value
+        return value
     }
 }
 

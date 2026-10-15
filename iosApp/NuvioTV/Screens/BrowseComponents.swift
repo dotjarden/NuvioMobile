@@ -5068,9 +5068,9 @@ struct CatalogRowView: View {
     /// BUG-157 (rc14 BUG-122's shape, `ContinueWatchingRow.shortRowCompensation`): a landscape-shape
     /// catalog on a portrait Classic page is a SHORT row (203 pt cards under the poster regime's
     /// reaches). If Home publishes the short-row floor on it, this cancels the floor's layout growth
-    /// so only the focusable frames grow, never the spacing to the next row. 0 for every row today:
-    /// Home floors only its LAST catalog row (where this returns 0 by contract), and a uniform row's
-    /// natural label already equals the floor.
+    /// so only the focusable frames grow, never the spacing to the next row. Non-zero only on a
+    /// landscape-shape catalog row that Home floors (`isLandscapeShapeCatalogRow`); 0 on Home's LAST
+    /// row (by contract) and on every uniform row, whose natural label already equals the floor.
     private var shortRowCompensation: CGFloat {
         let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let natural = cardTopReach + rowArtworkHeight + caption + cardBottomReach
@@ -5118,13 +5118,15 @@ struct CatalogRowView: View {
     @State private var expansionScrollTask: Task<Void, Never>?
 
     /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): the card whose inline trailer tile
-    /// is showing, reported by `InlineTrailerCard` through `InlineTrailerTileShowingKey`. That card's
-    /// link gets `CardSystemLiftStyle.lift` in its environment, which switches the `.borderless`
-    /// system focus treatment off (`CardFocusButtonStyle`) and lets the artwork draw its own lift
-    /// (`CardArtworkFocusLift`): the system effect's standing platter/specular edge, hidden under
-    /// an opaque poster, read as a thin doubled white outline around the landscape tile once the
-    /// portrait card had faded out under it (Zoom ON, accent ring OFF only). One card per row shows
-    /// a tile at a time. A row re-render per tile edge, the same cost `focusedItemId` already pays.
+    /// is showing, reported by `InlineTrailerCard` through `InlineTrailerTileShowingKey`. In a
+    /// portrait row that card's link gets `CardSystemLiftStyle.lift` in its environment, which
+    /// switches the `.borderless` system focus treatment off (`CardFocusButtonStyle`), disables the
+    /// base artwork's hover effect (`CardArtworkFocusLift`) and lets the trailer tile draw its own
+    /// lift (`InlineTrailerCard.expandedTile`): the system effect's standing platter/specular edge,
+    /// hidden under an opaque poster, read as a thin doubled white outline around the landscape
+    /// tile once the portrait card had faded out under it (Zoom ON, accent ring OFF only). One card
+    /// per row shows a tile at a time. A row re-render per tile edge, the same cost `focusedItemId`
+    /// already pays.
     @State private var tileShowingItemId: String?
 
     // ── BUG-92: the first card's bleed, clipped at the row's leading edge ────────────────────────
@@ -5239,9 +5241,16 @@ struct CatalogRowView: View {
                                 }
                             }
                             .focused($focusedItemId, equals: item.id)
-                            // BUG-158: see `tileShowingItemId`. Set on the whole link so both the
-                            // button style and the artwork lift read it.
-                            .environment(\.cardSystemLiftStyle, tileShowingItemId == item.id ? .lift : .highlight)
+                            // BUG-158: see `tileShowingItemId`. Set on the whole link so the button
+                            // style, the artwork and the tile read it. Portrait rows only: in a
+                            // landscape row the base card never fades, the system lift raises card
+                            // and tile as one object and no edge shows (review r1 P2-1).
+                            .environment(\.cardSystemLiftStyle,
+                                         tileShowingItemId == item.id && !posterStyle.landscapeCatalogRows ? .lift : .highlight)
+                            // A lift SwiftUI draws itself needs an explicit zIndex to sit above the
+                            // row neighbours (the FEAT-14/BUG-36 rule in PosterCard); the system
+                            // lift gets its own compositor layer and needs none.
+                            .zIndex(tileShowingItemId == item.id ? 1 : 0)
                             .onPreferenceChange(InlineTrailerTileShowingKey.self) { showing in
                                 if let showing {
                                     tileShowingItemId = showing

@@ -1798,6 +1798,16 @@ struct HomeView: View {
                                 proxy: ScrollViewProxy,
                                 source: String = "press",
                                 enforceConsumedGuard: Bool = true) {
+        // BUG-156 (review r1 P2-4): the viewer moved; a pop restore still running its rungs must
+        // not pull focus back to the origin row (the BUG-112 F1/F5 stale-request class). Any
+        // direction, before the Up-only guard below.
+        if source == "press", upInput.returnPending {
+            upInput.returnPending = false
+            upInput.returnGeneration &+= 1
+            // The request is shared with the Up fallback; only clear it when no Up attempt owns it.
+            if activeUpFallbackTarget == nil { rowFocusRequest = .none }
+            logHomeReturn("restore cancelled by press dir=\(direction)")
+        }
         guard direction == .up, pinned else { return }
         // rc14: every Up input is stamped before any guard, consumed or not — the stamp is what
         // lets `revealTopAfterUpIntoHero` tell an Up that landed on the hero from a hero focus
@@ -2359,14 +2369,33 @@ struct HomeView: View {
     private func restoreRowAfterPop() {
         guard !isStageLayout, let origin = upInput.returnFocus.takeOrigin() else { return }
         upInput.returnGeneration &+= 1
+        upInput.returnPending = true
         let generation = upInput.returnGeneration
         for (index, delay) in HomeReturnFocusMemory.rungDelays.enumerated() {
             let rung = index + 1
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 guard generation == upInput.returnGeneration, homePath.isEmpty, resume == nil else { return }
                 if focusedRowKey == origin.rowKey {
+                    // Review r1 (P2-3): the engine's own restoration can land in the RIGHT row on
+                    // the WRONG card (the morphed trailer card collapsed to a poster while Home
+                    // was covered, so its view identity is gone and the engine took its default
+                    // candidate). The row's memory holds the card it is on now; when that is not
+                    // the origin card, the early rungs re-target the card with `forceCard` (the
+                    // anti-theft guard lets a forced request through only inside the matching row).
+                    // No press can have arrived: a press retires the attempt (`handleRowsMove`).
+                    let current = upInput.returnFocus.itemByRow[origin.rowKey]
+                    if let wanted = origin.itemId, current != wanted, !HomeReturnFocusMemory.isLastRung(rung) {
+                        rowFocusRequestSeq &+= 1
+                        var request = HomeReturnFocusMemory.request(for: origin, rung: rung,
+                                                                   generation: rowFocusRequestSeq)
+                        request.forceCard = true
+                        rowFocusRequest = request
+                        logHomeReturn("restore row=\(origin.rowKey) item=\(wanted) rung=\(rung) landed=0 card=\(current ?? "-") force=1")
+                        return
+                    }
                     logHomeReturn("restore row=\(origin.rowKey) item=\(origin.itemId ?? "-") rung=\(rung) landed=1")
                     upInput.returnGeneration &+= 1
+                    upInput.returnPending = false
                     return
                 }
                 rowFocusRequestSeq &+= 1
@@ -2378,6 +2407,7 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry) {
             guard generation == upInput.returnGeneration else { return }   // landed, or newer
             upInput.returnGeneration &+= 1
+            upInput.returnPending = false
             if rowFocusRequest.rowKey == origin.rowKey { rowFocusRequest = .none }
             logHomeReturn("restore row=\(origin.rowKey) \(focusedRowKey == origin.rowKey ? "landed=1 late" : "expired")")
         }
@@ -7042,6 +7072,9 @@ final class HomeRowInputBox {
     /// cleared on release (unlike `focusedRowKey`), so it still names the Left origin's row while
     /// the rail holds focus.
     var lastOwnedRowKey: String?
+    /// BUG-156 (review r1 P2-4): a pop restore is between its first rung and its landing / expiry;
+    /// the first directional press retires it (`handleRowsMove`).
+    var returnPending = false
     /// H9: where Classic's rail route returns focus (captured when the rail arms).
     var railReturnTarget: HomeRailReturnTarget?
     /// BUG-156: the card each row last focused and the row + card a push left from. Written from
@@ -7112,8 +7145,11 @@ nonisolated struct HomeReturnFocusMemory: Equatable, Sendable {
     static let rungDelays: [TimeInterval] = [0, 0.3, 0.7]
     static let expiry: TimeInterval = 1.0
 
+    /// The last rung lands on the row's first card (nothing left to force onto).
+    static func isLastRung(_ rung: Int) -> Bool { rung >= rungDelays.count }
+
     static func request(for origin: Origin, rung: Int, generation: Int) -> PinnedRowFocusRequest {
-        let last = rung >= rungDelays.count
+        let last = isLastRung(rung)
         return PinnedRowFocusRequest(rowKey: origin.rowKey, generation: generation,
                                      itemId: last ? nil : origin.itemId, forceFirst: last)
     }

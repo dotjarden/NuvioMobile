@@ -758,11 +758,13 @@ extension View {
 /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): how a Zoom-ON, ring-OFF card lifts.
 /// `.highlight` is the default every card has always worn (the system treatment: `.borderless`'s
 /// lift + parallax + specular, and `.hoverEffect(.highlight)` on the artwork). `.lift` is what
-/// `CatalogRowView` puts in the environment of a card whose inline trailer tile is showing: the
-/// system treatment is switched OFF on the button (`CardFocusButtonStyle`) and the artwork draws
-/// ring mode's own scale + shadow (`CardArtworkFocusLift`), because the system effect's standing
-/// platter/specular edge, hidden under an opaque poster, showed around the landscape tile as a thin
-/// doubled white outline once the portrait card faded out under it (Zoom ON only).
+/// `CatalogRowView` puts in the environment of a PORTRAIT-row card whose inline trailer tile is
+/// showing: the system treatment is switched OFF on the button (`CardFocusButtonStyle`), the
+/// artwork's hover effect is disabled (`CardArtworkFocusLift`), and the trailer tile itself draws
+/// ring mode's scale + shadow (`InlineTrailerCard.expandedTile`), because the system effect's
+/// standing platter/specular edge, hidden under an opaque poster, showed around the landscape tile
+/// as a thin doubled white outline once the portrait card faded out under it (Zoom ON only).
+/// Landscape rows keep `.highlight`: their base card never fades, so the edge stays hidden.
 enum CardSystemLiftStyle: Equatable {
     case highlight
     case lift
@@ -837,22 +839,18 @@ struct CardArtworkFocusLift: ViewModifier {
     func body(content: Content) -> some View {
         switch mode {
         case .systemLift:
-            switch liftStyle {
-            case .highlight:
-                content
-                    .compositingGroup()
-                    // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
-                    // the lift can't fall back to a system rect that extends past the artwork.
-                    .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
-                    .hoverEffect(.highlight)
-            case .lift:
-                // BUG-158: the card's own lift while the trailer tile shows: the same fill + shadow
-                // + scale ring mode draws (`.manualScale` below), with no system hover effect at
-                // all, because `CardFocusButtonStyle` has switched the button's system treatment
-                // off for this state and a `.hoverEffect` here would be a second system effect
-                // with its own platter.
-                manualLift(content)
-            }
+            content
+                .compositingGroup()
+                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
+                // the lift can't fall back to a system rect that extends past the artwork.
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
+                // BUG-158: the hover effect is a VALUE switch, never a structural one (review r1
+                // P2-2: a `switch` here put `content` in two positions and rebuilt the artwork,
+                // loader included, at both tile edges). With `.lift` the artwork wears no system
+                // effect at all; the trailer TILE draws the lift (`InlineTrailerCard.expandedTile`),
+                // because in a portrait row the base card is at opacity 0 under it and in a
+                // landscape row a lifted base card would show around the unlifted tile.
+                .hoverEffect(.highlight, isEnabled: liftStyle == .highlight)
         case .manualScale:
             manualLift(content)
         case .still:
