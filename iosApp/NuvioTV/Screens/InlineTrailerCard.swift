@@ -2382,6 +2382,12 @@ struct InlineTrailerCard: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: artworkWidth, alignment: .leading)
+                    // BUG-158 (review r2 P2-4): the tile's manual lift (`.lift`) drops its bottom
+                    // edge by the rise into this title's gap, so the title drops with it, exactly
+                    // as `PosterCard`'s caption does under its own lift (`CardCaptionFocusDrop`).
+                    .modifier(CardCaptionFocusDrop(mode: .manualScale,
+                                                   isFocused: isFocused && liftStyle == .lift,
+                                                   artworkHeight: artworkHeight))
             }
         }
         // R2: opacity follows the STAGE (dissolve in at `.reveal`, out on the way back to `.none`),

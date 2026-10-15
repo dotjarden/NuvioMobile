@@ -178,16 +178,22 @@ final class BatchAFolderUITests: XCTestCase {
         shot("classic-1-grid")
         XCTAssertFalse(probe(app, "folder_header_state").hasSuffix("<absent>"), "the Classic folder grid did not open")
         XCTAssertFalse(tabBarShown(app), "the tab bar is on screen over the Classic folder grid")
-        // Into the grid's first poster, then Detail.
-        if focusedLabel(app) == "<none>" {
+        // Into the grid's first poster, then Detail. The grid's posters arrive from the network;
+        // wait for a focused poster (not the chips, not "<none>"), then Select, retrying once if
+        // the Detail probe has not appeared (third run: one Select landed on a still-loading grid).
+        for _ in 0..<4 where focusedLabel(app) == "<none>" || focusedLabel(app) == "All" {
             remote.press(.down)
             pause(1.5)
         }
         note("classic-2-grid-focus", focusedLabel(app))
-        remote.press(.select)
-        pause(6)
+        var detailOpened = false
+        for attempt in 0..<2 where !detailOpened {
+            remote.press(.select)
+            pause(attempt == 0 ? 6 : 8)
+            detailOpened = !probe(app, "debug_bridge").hasSuffix("<absent>")
+        }
         shot("classic-3-detail")
-        XCTAssertFalse(probe(app, "debug_bridge").hasSuffix("<absent>"), "Select on the grid did not open a Detail page")
+        XCTAssertTrue(detailOpened, "Select on the grid did not open a Detail page (focus=\(focusedLabel(app)))")
         remote.press(.menu)
         pause(3)
         shot("classic-4-back-on-grid")
@@ -221,11 +227,19 @@ final class BatchAFolderUITests: XCTestCase {
         XCTAssertTrue(inFolder.contains("shown=0"), "BUG-161: the rail stays on screen inside the collection (\(inFolder))")
         remote.press(.menu)
         pause(4)
-        let back = probe(app, "rail_state")
+        var back = probe(app, "rail_state")
         note("rail-2-home", back)
-        // Back on Home at row 0 the rail shows again (unless Home itself reads scrolled down, which
-        // a pinned first row does not).
-        XCTAssertTrue(back.contains("shown=1"), "the rail did not return on Home (\(back))")
+        // Home comes back on the folder's row (BUG-156's restore pages the strip there), and Hide
+        // While Browsing keeps the rail off below row 0 by design; the immersive clear is what the
+        // rail returning at the top proves (second run: `shown=0` right after the pop, `shown=1`
+        // once the strip is back on row 0).
+        for _ in 0..<4 where !back.contains("shown=1") {
+            remote.press(.up)
+            pause(2)
+            back = probe(app, "rail_state")
+        }
+        note("rail-3-top", back)
+        XCTAssertTrue(back.contains("shown=1"), "the rail did not return on Home at the top (\(back))")
     }
 
     // MARK: - BUG-157: landscape-shape catalog
@@ -304,13 +318,21 @@ final class BatchAFolderUITests: XCTestCase {
         let field = app.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10), "the manifest URL field is missing")
         if !field.hasFocus { _ = moveFocus(.down, until: field, max: 4) }
+        // Never Select blind on the Add-ons list: a Select on an add-on row toggles it off (the
+        // second run disabled the fixture's Cinemeta this way and every later Home leg lost its
+        // catalog rows). Only the focused field opens the keyboard.
+        guard field.hasFocus else {
+            note("landscape-skip", "the manifest field never took focus; focus=\(focusedLabel(app))")
+            throw XCTSkip("the Add-ons manifest field never took focus on this run")
+        }
         remote.press(.select)            // fullscreen keyboard
         pause(3)
         // `app.typeText` needs the keyboard (or the field) to hold focus; on a run where the
         // full-screen keyboard did not come up, skip rather than fail the whole leg (the device
         // pass with Steven's add-on is the real check for BUG-157).
-        let keyboardUp = app.keys.count > 0 || field.hasFocus
-            || app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch.exists
+        // Only the full-screen keyboard's keys count: a focused row elsewhere still fails
+        // `typeText` with "Neither element nor any descendant has keyboard focus" (second run).
+        let keyboardUp = app.keys.count > 0
         if !keyboardUp {
             note("landscape-skip", "no keyboard focus after Select on the manifest field; focus=\(focusedLabel(app))")
             throw XCTSkip("the Add-ons manifest field did not take keyboard focus on this run")

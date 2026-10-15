@@ -210,6 +210,9 @@ final class StageController: ObservableObject {
     /// Focus left the strip (tab bar, rail, sidebar), #17: the background trailer stops at once.
     func stripFocusLost() {
         stripOwnsFocus = false
+        // BUG-156 (review r2 P3-6): focus left the strip (tab bar, rail) on the viewer's own move; a
+        // pop restore still waiting for the pager must not pull it back.
+        cancelUncoverRestore()
         StageStripProbe.shared.log("strip focus lost row=\(currentRowKey ?? "-")")
         stopBackgroundTrailer(reason: "focusLost")
     }

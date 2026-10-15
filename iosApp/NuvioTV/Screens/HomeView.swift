@@ -1144,6 +1144,9 @@ struct HomeView: View {
             // between-cards focus hop).
             .onChange(of: heroFocused) { _, focused in
                 if focused { focusModel.cancelAndRevert() }
+                // BUG-156 (review r2 P2-5): the hero taking focus is the viewer's doing (a push
+                // from a row never restores to the hero); retire a pending pop restore.
+                if focused { retireReturnRestore(reason: "hero") }
                 // rc13 (BUG-114): stale any pending `handleHeroUp` retry. Focus moving off the CTA
                 // (or back onto it) means the scroll that retry was going to finish is no longer
                 // the newest thing the user asked for. This is a counter bump only — emphatically
@@ -1670,6 +1673,8 @@ struct HomeView: View {
             HomeUpSwipeCatcher(onUnconsumedSwipeUp: { handleUpSwipe(pinned: pinned, proxy: proxy) },
                                onAnySwipeUp: {
                                    upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime
+                                   // BUG-156 (review r2 P2-5): an Up swipe retires a pop restore.
+                                   retireReturnRestore(reason: "swipe-up")
                                    // beta.18 verdict (BUG-112): symmetric trigger — whichever of
                                    // (hero focus gain, input stamp) arrives second runs the gate.
                                    _ = revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "swipe-any")
@@ -1725,6 +1730,12 @@ struct HomeView: View {
         }, noteFocusedItem: { key, itemId in
             // BUG-156: a box write (the BUG-126 rule: a card hop never re-renders Home).
             upInput.returnFocus.remember(rowKey: key, itemId: itemId)
+            // Review r2 (P2-1): a forced card landing inside a row that already owned focus fires
+            // no ownership change, so the request is retired here, on the (row, card) match. One
+            // state write per pop at most, never on an ordinary hop (the request is `.none` then).
+            if rowFocusRequest.forceCard, rowFocusRequest.rowKey == key, rowFocusRequest.itemId == itemId {
+                rowFocusRequest = .none
+            }
             #if DEBUG
             HomeReturnDebug.shared.setFoc(rowKey: key, itemId: itemId)
             #endif
@@ -1801,13 +1812,7 @@ struct HomeView: View {
         // BUG-156 (review r1 P2-4): the viewer moved; a pop restore still running its rungs must
         // not pull focus back to the origin row (the BUG-112 F1/F5 stale-request class). Any
         // direction, before the Up-only guard below.
-        if source == "press", upInput.returnPending {
-            upInput.returnPending = false
-            upInput.returnGeneration &+= 1
-            // The request is shared with the Up fallback; only clear it when no Up attempt owns it.
-            if activeUpFallbackTarget == nil { rowFocusRequest = .none }
-            logHomeReturn("restore cancelled by press dir=\(direction)")
-        }
+        if source == "press" { retireReturnRestore(reason: "press dir=\(direction)") }
         guard direction == .up, pinned else { return }
         // rc14: every Up input is stamped before any guard, consumed or not — the stamp is what
         // lets `revealTopAfterUpIntoHero` tell an Up that landed on the hero from a hero focus
@@ -2383,19 +2388,24 @@ struct HomeView: View {
                     // the origin card, the early rungs re-target the card with `forceCard` (the
                     // anti-theft guard lets a forced request through only inside the matching row).
                     // No press can have arrived: a press retires the attempt (`handleRowsMove`).
+                    // Review r2 (P2-2): a forced write of an id no view in the row carries would
+                    // drop focus (the BUG-47 class: Continue Watching re-keys its card after a
+                    // play), so the card must still be in the row; (P2-3): the engine's own
+                    // restoration can land after 0.3 s, so every rung may force, not only the
+                    // first two (the last rung's `forceFirst` is for a row with no focus at all).
                     let current = upInput.returnFocus.itemByRow[origin.rowKey]
-                    if let wanted = origin.itemId, current != wanted, !HomeReturnFocusMemory.isLastRung(rung) {
+                    if let wanted = origin.itemId, current != wanted,
+                       rowContainsItem(rowKey: origin.rowKey, itemId: wanted) == true {
                         rowFocusRequestSeq &+= 1
-                        var request = HomeReturnFocusMemory.request(for: origin, rung: rung,
-                                                                   generation: rowFocusRequestSeq)
+                        var request = PinnedRowFocusRequest(rowKey: origin.rowKey, generation: rowFocusRequestSeq,
+                                                            itemId: wanted)
                         request.forceCard = true
                         rowFocusRequest = request
                         logHomeReturn("restore row=\(origin.rowKey) item=\(wanted) rung=\(rung) landed=0 card=\(current ?? "-") force=1")
                         return
                     }
                     logHomeReturn("restore row=\(origin.rowKey) item=\(origin.itemId ?? "-") rung=\(rung) landed=1")
-                    upInput.returnGeneration &+= 1
-                    upInput.returnPending = false
+                    endReturnRestore(origin: origin)
                     return
                 }
                 rowFocusRequestSeq &+= 1
@@ -2406,10 +2416,45 @@ struct HomeView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry) {
             guard generation == upInput.returnGeneration else { return }   // landed, or newer
-            upInput.returnGeneration &+= 1
-            upInput.returnPending = false
-            if rowFocusRequest.rowKey == origin.rowKey { rowFocusRequest = .none }
             logHomeReturn("restore row=\(origin.rowKey) \(focusedRowKey == origin.rowKey ? "landed=1 late" : "expired")")
+            endReturnRestore(origin: origin)
+        }
+    }
+
+    /// BUG-156 (review r2 P2-1): the one place a pop restore ends on its own terms (landed, expired).
+    /// A forced card write moves focus INSIDE a row that already owns it, so the row's ownership
+    /// `.onChange` never fires and nothing else would clear the request; left alive, the row's F5
+    /// `.onAppear` re-apply could pull focus back later (a Detail opened from the hero CTA, then
+    /// Back). The Up fallback shares the request and keeps its own when it owns one.
+    private func endReturnRestore(origin: HomeReturnFocusMemory.Origin) {
+        upInput.returnGeneration &+= 1
+        upInput.returnPending = false
+        if rowFocusRequest.rowKey == origin.rowKey, activeUpFallbackTarget == nil { rowFocusRequest = .none }
+    }
+
+    /// BUG-156 (review r1 P2-4, r2 P2-5): the viewer moved on their own (a directional press on the
+    /// rows, an Up swipe, the hero taking focus); a restore still running its rungs must not pull
+    /// focus back to the origin row. A Down swipe inside the 0.7 s rung window is the documented
+    /// residual: it reaches no handler Home owns (the catcher sees Up only) and cannot be told from
+    /// the engine's own restoration landing, which the rungs exist to correct.
+    private func retireReturnRestore(reason: String) {
+        guard upInput.returnPending else { return }
+        upInput.returnPending = false
+        upInput.returnGeneration &+= 1
+        if activeUpFallbackTarget == nil { rowFocusRequest = .none }
+        logHomeReturn("restore cancelled by \(reason)")
+    }
+
+    /// BUG-156 (review r2 P2-2): whether the row `rowKey` still carries the card `itemId` (a catalog
+    /// row's item ids, a collection row's folder ids). nil for a row Home does not model this way
+    /// (Continue Watching, Upcoming), where a forced write is never issued.
+    private func rowContainsItem(rowKey: String, itemId: String) -> Bool? {
+        guard let row = model.rows.first(where: { $0.id == rowKey }) else { return nil }
+        switch row {
+        case .catalog(let section):
+            return section.items.contains { $0.id == itemId }
+        case .collection(let collection):
+            return collection.folders.contains { $0.id == itemId }
         }
     }
 
@@ -2892,7 +2937,9 @@ struct HomeView: View {
     /// on a page whose global style is portrait, so `CatalogRowView` draws it as a short 16:9 row.
     private static func isLandscapeShapeCatalogRow(_ row: HomeRow, style: PosterStyle) -> Bool {
         guard case .catalog(let section) = row, !style.landscapeCatalogRows else { return false }
-        return PosterStyle.landscapeSection(items: section.items)
+        // Review r2 (P3-8): the same memoised answer `CatalogRowView` draws from, so the floor and
+        // the cards can never disagree on a reload that keeps a row's ends.
+        return PosterStyle.landscapeSectionCached(items: section.items)
     }
 
     /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because

@@ -171,7 +171,10 @@ struct CachedAsyncImage<Failure: View>: View {
                 // BUG-152 (review r1 P3-7): the loader seeds a memory-cached head in `.onAppear`,
                 // one body after this one, so a cached logo would flash the title text for a frame.
                 // Nothing is drawn for that frame instead (the image lands next).
-                if ArtworkStore.cached(candidateURLs.first, decode: chain.request) == nil {
+                // Review r2 (P3-9): a cached placeholder (a smaller decode, another candidate's
+                // art) is seeded the same way, so it skips the text too.
+                if ArtworkStore.cached(candidateURLs.first, decode: chain.request) == nil,
+                   ArtworkStore.cachedPlaceholder(for: candidateURLs, decode: chain.request) == nil {
                     loadingContent()
                 } else {
                     Color.clear
