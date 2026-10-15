@@ -4697,36 +4697,36 @@
         }
       }
     },
-    "Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Default: Always Visible.": {
+    "Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Hidden keeps it off screen until you press Left from the first card or Menu. Default: Always Visible.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Immer sichtbar lässt die Seitenleiste auf dem Bildschirm und rückt die Seiten etwas nach rechts, um Platz für sie zu schaffen. Beim Stöbern ausblenden schiebt sie weg, während du scrollst oder einen Titel öffnest, und holt sie oben auf einer Seite zurück. Standard: Immer sichtbar."
+            "value": "Immer sichtbar lässt die Seitenleiste auf dem Bildschirm und rückt die Seiten etwas nach rechts, um Platz für sie zu schaffen. Beim Stöbern ausblenden schiebt sie weg, während du scrollst oder einen Titel öffnest, und holt sie oben auf einer Seite zurück. Ausgeblendet lässt sie verborgen, bis du von der ersten Karte aus nach links oder Menü drückst. Standard: Immer sichtbar."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Siempre visible mantiene la barra lateral en pantalla y desplaza un poco las páginas a la derecha para dejarle espacio. Ocultar al navegar la retira mientras te desplazas o abres un título, y la vuelve a mostrar en la parte superior de una página. Por defecto: Siempre visible."
+            "value": "Siempre visible mantiene la barra lateral en pantalla y desplaza un poco las páginas a la derecha para dejarle espacio. Ocultar al navegar la retira mientras te desplazas o abres un título, y la vuelve a mostrar en la parte superior de una página. Oculta la mantiene fuera de la pantalla hasta que pulsas Izquierda desde la primera tarjeta o Menú. Por defecto: Siempre visible."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Toujours visible garde la barre latérale à l’écran et décale un peu les pages vers la droite pour lui faire de la place. Masquer pendant la navigation l’escamote quand vous faites défiler ou ouvrez un titre, et la fait revenir en haut d’une page. Par défaut : Toujours visible."
+            "value": "Toujours visible garde la barre latérale à l’écran et décale un peu les pages vers la droite pour lui faire de la place. Masquer pendant la navigation l’escamote quand vous faites défiler ou ouvrez un titre, et la fait revenir en haut d’une page. Masquée la garde hors de l’écran jusqu’à ce que vous appuyiez sur Gauche depuis la première carte ou sur Menu. Par défaut : Toujours visible."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sempre visibile tiene la barra laterale sullo schermo e sposta un po’ le pagine a destra per farle spazio. Nascondi durante la navigazione la fa scorrere via mentre scorri o apri un titolo e la riporta in cima a una pagina. Predefinito: Sempre visibile."
+            "value": "Sempre visibile tiene la barra laterale sullo schermo e sposta un po’ le pagine a destra per farle spazio. Nascondi durante la navigazione la fa scorrere via mentre scorri o apri un titolo e la riporta in cima a una pagina. Nascosta la tiene fuori dallo schermo finché non premi Sinistra dalla prima scheda o Menu. Predefinito: Sempre visibile."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Luôn hiển thị giữ thanh bên trên màn hình và dịch các trang sang phải một chút để chừa chỗ cho nó. Ẩn khi duyệt sẽ trượt thanh bên đi khi bạn cuộn hoặc mở một tựa, và đưa nó trở lại ở đầu trang. Mặc định: Luôn hiển thị."
+            "value": "Luôn hiển thị giữ thanh bên trên màn hình và dịch các trang sang phải một chút để chừa chỗ cho nó. Ẩn khi duyệt sẽ trượt thanh bên đi khi bạn cuộn hoặc mở một tựa, và đưa nó trở lại ở đầu trang. Ẩn sẽ giữ thanh bên ngoài màn hình cho đến khi bạn nhấn Trái từ thẻ đầu tiên hoặc nhấn Menu. Mặc định: Luôn hiển thị."
           }
         }
       }
@@ -17110,6 +17110,40 @@
         }
       }
     },
+    "Hidden": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausgeblendet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oculta"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nascosta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ẩn"
+          }
+        }
+      }
+    },
     "Hide": {
       "localizations": {
         "de": {
@@ -25278,6 +25312,40 @@
         }
       }
     },
+    "Open Last Profile at Launch": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letztes Profil beim Start öffnen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir el último perfil al iniciar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrir le dernier profil au lancement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apri l’ultimo profilo all’avvio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mở hồ sơ gần nhất khi khởi động"
+          }
+        }
+      }
+    },
     "Open Search Sources": {
       "localizations": {
         "de": {
@@ -28198,6 +28266,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bản Profile 7 FEL chứa dữ liệu tăng cường mà chuyển đổi 8.1 phải bỏ. Bật để giữ các tệp đó trên trình phát mpv (phát dưới dạng HDR10, không bỏ gì) thay vì Dolby Vision native. Bản MEL chuyển đổi không mất dữ liệu và luôn phát native."
+          }
+        }
+      }
+    },
+    "Profiles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profile"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Perfiles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profils"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profili"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hồ sơ"
           }
         }
       }
@@ -35611,6 +35713,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tự bỏ qua các đoạn tóm tắt, không cần bạn nhấn Bỏ qua. Mặc định tắt."
+          }
+        }
+      }
+    },
+    "Skips the profile picker and opens the profile you used last. Profiles with a PIN still ask for it. Default: Off.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt die Profilauswahl und öffnet das zuletzt verwendete Profil. Profile mit PIN fragen weiterhin danach. Standard: Aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Omite el selector de perfiles y abre el último perfil que usaste. Los perfiles con PIN lo siguen pidiendo. Por defecto: Desactivado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ignore le choix du profil et ouvre le dernier profil utilisé. Les profils protégés par un code PIN le demandent toujours. Par défaut : Désactivé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta la scelta del profilo e apre l’ultimo profilo usato. I profili con PIN lo chiedono comunque. Predefinito: Disattivato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bỏ qua màn hình chọn hồ sơ và mở hồ sơ bạn dùng gần nhất. Hồ sơ có PIN vẫn yêu cầu nhập PIN. Mặc định: Tắt."
           }
         }
       }

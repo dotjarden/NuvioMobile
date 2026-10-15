@@ -23,7 +23,7 @@ import UIKit   // UIFocusHeading only
 nonisolated enum NavigationChrome {
     /// Kept from FEAT-30 so the stored choice survives the rename.
     static let styleKey = "sidebar_style"
-    /// New with the rail: Always Visible / Hide While Browsing.
+    /// New with the rail: Always Visible / Hide While Browsing / Hidden (FEAT-62).
     static let railVisibilityKey = "rail_visibility"
     /// FEAT-30's stored value. Reads as Rail, and `migrateLegacy` rewrites it once.
     static let legacySidebarValue = "sidebar"
@@ -36,6 +36,11 @@ nonisolated enum NavigationChrome {
     enum RailVisibility: String, Equatable, Sendable {
         case always
         case whileBrowsing = "browsing"
+        /// FEAT-62 (Steven, beta.19-rc3 follow-up 2026-10-08: "hide it on the first line, show it on
+        /// Left/Back"): the rail is off screen at rest everywhere, Home's row 0 included, and only a
+        /// reveal shows it (Left from the first card, through the failed-move arm, or Menu). It hides
+        /// again as soon as focus leaves it. Reserves no width, like Hide While Browsing.
+        case hidden
     }
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
@@ -76,11 +81,15 @@ nonisolated enum NavigationChrome {
         style(defaults) == .rail
     }
 
-    /// "browsing" reads as Hide While Browsing; anything else is Always Visible (the default).
+    /// "browsing" reads as Hide While Browsing, "hidden" as Hidden (FEAT-62); anything else is
+    /// Always Visible (the default).
     static func railVisibility(raw: String?) -> RailVisibility {
         guard let raw else { return .always }
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailVisibility.whileBrowsing.rawValue
-            ? .whileBrowsing : .always
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case RailVisibility.whileBrowsing.rawValue: return .whileBrowsing
+        case RailVisibility.hidden.rawValue: return .hidden
+        default: return .always
+        }
     }
 
     static func railVisibility(_ defaults: UserDefaults = .standard) -> RailVisibility {
@@ -256,14 +265,16 @@ nonisolated enum RailVisibilityRule {
     static let searchTab = 1
 
     /// `!railMode` → hidden; holds focus → shown; root cover → hidden; revealed → shown; Always
-    /// Visible → shown, except on Search while its keyboard holds focus (B4); then (Hide While
-    /// Browsing, R7) immersive → hidden; Search → hidden; scrolled down → hidden; otherwise shown.
+    /// Visible → shown, except on Search while its keyboard holds focus (B4); Hidden (FEAT-62) →
+    /// hidden (only the focus and reveal terms above ever show it); then (Hide While Browsing, R7)
+    /// immersive → hidden; Search → hidden; scrolled down → hidden; otherwise shown.
     static func shown(_ i: Inputs) -> Bool {
         guard i.railMode else { return false }
         if i.holdsFocus { return true }
         if i.rootCoverActive { return false }
         if i.revealed { return true }
         if i.visibility == .always { return !keyboardHidesRail(selectedTab: i.selectedTab, keyboardFocused: i.keyboardFocused) }
+        if i.visibility == .hidden { return false }
         if i.immersive { return false }
         if i.selectedTab == searchTab { return false }
         if i.scrolledDown { return false }
@@ -277,7 +288,8 @@ nonisolated enum RailVisibilityRule {
     }
 
     /// B4: the shell's reserved leading safe area. Always Visible's extra (36 pt on a standard
-    /// screen), 0 while Search's keyboard holds focus unless `holdInset` (the A/B knob).
+    /// screen), 0 while Search's keyboard holds focus unless `holdInset` (the A/B knob). Hide While
+    /// Browsing and Hidden (FEAT-62) never reserve width: 0.
     static func reservedLeadingInset(sideSafeArea: CGFloat,
                                      visibility: NavigationChrome.RailVisibility,
                                      selectedTab: Int,

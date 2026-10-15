@@ -25,6 +25,7 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(NavigationChrome.Style.rail.rawValue, "rail")
         XCTAssertEqual(NavigationChrome.RailVisibility.always.rawValue, "always")
         XCTAssertEqual(NavigationChrome.RailVisibility.whileBrowsing.rawValue, "browsing")
+        XCTAssertEqual(NavigationChrome.RailVisibility.hidden.rawValue, "hidden")
     }
 
     func testStyleResolution() {
@@ -42,6 +43,8 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(NavigationChrome.railVisibility(raw: "always"), .always)
         XCTAssertEqual(NavigationChrome.railVisibility(raw: nil), .always)
         XCTAssertEqual(NavigationChrome.railVisibility(raw: "garbage"), .always)
+        XCTAssertEqual(NavigationChrome.railVisibility(raw: "hidden"), .hidden, "FEAT-62")
+        XCTAssertEqual(NavigationChrome.railVisibility(raw: " Hidden "), .hidden, "a hand-typed launch argument")
     }
 
     func testModeReadsTheKeys() {
@@ -57,6 +60,9 @@ final class NavigationChromeTests: XCTestCase {
 
             defaults.set("browsing", forKey: NavigationChrome.railVisibilityKey)
             XCTAssertFalse(NavigationChrome.reservesWidth(defaults))
+
+            defaults.set("hidden", forKey: NavigationChrome.railVisibilityKey)
+            XCTAssertFalse(NavigationChrome.reservesWidth(defaults), "FEAT-62: Hidden reserves nothing")
 
             defaults.set("sidebar", forKey: NavigationChrome.styleKey)
             XCTAssertTrue(NavigationChrome.isRail(defaults))
@@ -196,6 +202,8 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(inset(.always, tab: 1, kb: true, hold: true), 36, "the A/B knob holds the inset")
         XCTAssertEqual(inset(.whileBrowsing, tab: 1, kb: true), 0)
         XCTAssertEqual(inset(.whileBrowsing, tab: 0, kb: false), 0)
+        XCTAssertEqual(inset(.hidden, tab: 0, kb: false), 0, "FEAT-62")
+        XCTAssertEqual(inset(.hidden, tab: 1, kb: true, hold: true), 0)
     }
 
     func testKeyboardHidesRailOnlyOnSearch() {

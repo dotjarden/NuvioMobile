@@ -76,10 +76,17 @@ struct SearchView: View {
     }
 }
 
-/// The typed text, observed only by `SearchFieldLayer` (and read by `SearchContent` through a
-/// binding). Never `@State`: see `SearchView`.
+/// The typed text, observed only by `SearchFieldLayer`. Never `@State`: see `SearchView`.
+/// BUG-155: `SearchContent` no longer reads it either (it reads the view model's debounced
+/// `displayQuery` and `queryIsEmpty`); it only WRITES it, when a Recent or suggestion chip is picked.
 final class SearchQueryBox: ObservableObject {
-    @Published var text = ""
+    @Published var text = "" {
+        didSet {
+            #if DEBUG
+            if text != oldValue { SearchPerfProbe.keystroke() }
+            #endif
+        }
+    }
 }
 
 /// Owns Search's state for the life of the tab. Deliberately publishes nothing, so `SearchView`'s
@@ -102,8 +109,18 @@ private struct SearchFieldLayer: View {
     let owner: SearchViewOwner
     @ObservedObject var queryBox: SearchQueryBox
 
+    #if DEBUG
+    private static let legacyLiveQuery = SearchPerfProbe.legacy
+    #else
+    private static let legacyLiveQuery = false
+    #endif
+
     var body: some View {
-        SearchContent(model: owner.model, owner: owner, query: $queryBox.text)
+        // BUG-155: this body runs on every keystroke (it carries the field's binding); the
+        // content under it must not. `SearchContent` gets no live text, so its stored inputs are
+        // unchanged and SwiftUI skips its body. The DEBUG `-debug.searchLegacy` A/B hands it the
+        // binding again, which is the pre-fix behaviour.
+        SearchContent(model: owner.model, owner: owner, liveQuery: Self.legacyLiveQuery ? $queryBox.text : nil)
             .searchable(text: $queryBox.text, prompt: Text("Search movies & shows"))
             // The iPhone keyboard's return key. The remote's inline keyboard has none.
             .onSubmit(of: .search) {
@@ -129,13 +146,20 @@ private struct SearchContent: View {
     @ObservedObject var model: SearchViewModel
     /// A plain reference, never observed.
     let owner: SearchViewOwner
-    @Binding var query: String
+    /// BUG-155: nil (the fix): the page reads the view model's debounced `displayQuery` and its
+    /// `queryIsEmpty` edge, so a keystroke changes none of this view's inputs and its body is
+    /// skipped. Non-nil only under DEBUG `-debug.searchLegacy YES`: the live field text, as before
+    /// the fix, re-running this whole body on every keystroke (Steven's caret one letter behind).
+    var liveQuery: Binding<String>?
     /// Held for the keyboard flag only (Rail mode sets it; B4).
     @Environment(\.navigationChrome) private var navigationChrome
     /// A5: the tab tree's placement, resolved once per tree in `MainTabView` (review r2 P3-1).
     @Environment(\.discoverPlacementResolved) private var discoverPlacement
 
     var body: some View {
+        #if DEBUG
+        let _ = SearchPerfProbe.bodyEvaluated()
+        #endif
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 if queryIsEmpty {
@@ -166,15 +190,30 @@ private struct SearchContent: View {
         }
         #if DEBUG
         .overlay(alignment: .topLeading) { searchStateProbe }
+        .overlay(alignment: .bottomLeading) { searchPerfProbe }
         #endif
     }
 
+    /// BUG-155: the view model's synchronous empty / non-empty edge (the live text under the
+    /// legacy A/B).
     private var queryIsEmpty: Bool {
-        trimmedQuery.isEmpty
+        guard let liveQuery else { return model.queryIsEmpty }
+        return liveQuery.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// BUG-155: the debounced query the results answer (the live text under the legacy A/B).
     private var trimmedQuery: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let liveQuery else { return model.displayQuery }
+        return liveQuery.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A Recent or suggestion chip puts its text in the field (and so through `queryChanged`).
+    private func setQuery(_ text: String) {
+        if let liveQuery {
+            liveQuery.wrappedValue = text
+        } else {
+            owner.queryBox.text = text
+        }
     }
 
     private var topResultIdentity: String? {
@@ -193,7 +232,7 @@ private struct SearchContent: View {
                     model.recordSearch(trimmedQuery)
                     owner.historyOnOpen.submitted(trimmedQuery)
                 } else {
-                    query = text
+                    setQuery(text)
                 }
             }
         }
@@ -282,7 +321,7 @@ private struct SearchContent: View {
                     HStack(spacing: Theme.Spacing.md) {
                         ForEach(model.history, id: \.self) { item in
                             FilterChip(title: item, systemImage: "clock.arrow.circlepath", isActive: false) {
-                                query = item
+                                setQuery(item)
                             }
                             .contextMenu {
                                 Button(role: .destructive) {
@@ -322,6 +361,17 @@ private struct SearchContent: View {
             .opacity(0.011)
             .allowsHitTesting(false)
             .accessibilityIdentifier("search_state")
+    }
+
+    /// BUG-155: `SearchPerfProbe.probeLine` (`search_perf keys= maxBody= inflight= legacy= q= first=
+    /// last= cancelled=`). Rendered whenever this body runs, which with the fix is on the model's
+    /// publishes (results), never on a keystroke.
+    private var searchPerfProbe: some View {
+        Text(verbatim: SearchPerfProbe.probeLine)
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("debug_search_perf")
     }
 
     static func stateLine(query: String, mode: SearchRowsMode, rows: Int, people: Int,

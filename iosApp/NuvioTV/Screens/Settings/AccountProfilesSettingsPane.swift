@@ -10,6 +10,8 @@ struct AccountProfilesSettingsPane: View {
     @EnvironmentObject private var auth: AuthViewModel
     /// Active backend (official vs self-hosted) for the Server section.
     @StateObject private var server = ActiveServerObserver()
+    /// FEAT-65: "Open Last Profile at Launch" (the shared `rememberLastProfileEnabled` flag).
+    @StateObject private var lastProfile = RememberLastProfileModel()
 
     /// Drives the shared sign-in/sign-out confirmation alert owned by SettingsView.
     @Binding var confirmingSignOut: Bool
@@ -40,6 +42,19 @@ struct AccountProfilesSettingsPane: View {
                 }
             }
 
+            // FEAT-65 (Steven, beta.19-rc3 follow-up 2026-10-08: open straight into his profile).
+            // Off by default; a PIN profile still shows the picker. The decision is
+            // `ProfileAutoEnter`, applied once per cold launch by `ContentView`.
+            SettingsSection(String(localized: "Profiles")) {
+                SettingsToggleRow(
+                    title: String(localized: "Open Last Profile at Launch"),
+                    subtitle: String(localized: "Skips the profile picker and opens the profile you used last. Profiles with a PIN still ask for it. Default: Off."),
+                    isOn: Binding(get: { lastProfile.enabled }, set: { lastProfile.set($0) }),
+                    descriptionID: .accountRememberLastProfile
+                )
+                .accessibilityIdentifier("account_row_remember_last_profile")
+            }
+
             SettingsSection(String(localized: "Server")) {
                 serverSection
             }
@@ -48,6 +63,7 @@ struct AccountProfilesSettingsPane: View {
                 remoteSetupSection
             }
         }
+        .onAppear { lastProfile.start() }
     }
 
     /// The Server section: which backend this Apple TV talks to, plus the self-hosted discovery

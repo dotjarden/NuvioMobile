@@ -14,7 +14,10 @@ import SharedCore
 /// no longer lives here: it is a stage page of its own (`DiscoverPlacement`), so the Discover
 /// watcher and its selection calls are gone.
 ///
-/// Queries are debounced (350 ms) so we don't fire a request on every keystroke.
+/// Queries are debounced (350 ms) so we don't fire a request on every keystroke. BUG-155: the
+/// typed text itself is never published (`queryIsEmpty` / `displayQuery`), so a keystroke re-renders
+/// nothing under the field, and a superseded query's fetches are cancelled in shared
+/// (`CatalogInflightRequests`); `SearchPerfProbe` measures both in DEBUG.
 @MainActor
 final class SearchViewModel: ObservableObject {
     /// FEAT-10: which search-capable catalogs the user has switched OFF in Settings →
@@ -78,6 +81,16 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var lastFanOut: String?
     /// Recent searches for this profile (most recent first).
     @Published private(set) var history: [String] = []
+    /// BUG-155 (Steven, beta.19-rc3 follow-ups 2026-10-14: the caret one letter behind the text):
+    /// `SearchContent` no longer reads the live field text, which re-ran its whole body on every
+    /// keystroke. It reads these two instead. `queryIsEmpty` flips synchronously in `queryChanged`,
+    /// and only on the empty / non-empty EDGE (the idle page must swap in the moment the field
+    /// empties, the results page the moment the first letter lands); a letter typed into a
+    /// non-empty field publishes nothing.
+    @Published private(set) var queryIsEmpty = true
+    /// BUG-155: the trimmed query the debounce last searched (`activeQuery`), "" with an empty
+    /// field. What the results page shows and the quoted suggestion chip records.
+    @Published private(set) var displayQuery = ""
     // A5: where Discover lives is NOT read here. `SearchView` reads the tab tree's once-per-tree
     // value (`\.discoverPlacementResolved`, review r2 P3-1), so the entry row and `Tab(value: 6)`
     // always agree; a synced flip applies at the next remount, like the tab bar.
@@ -106,6 +119,10 @@ final class SearchViewModel: ObservableObject {
     var debugHoldPhase: String { rowsHold.phaseToken }
     private var lastSearchAddonSignature: String?
     private var debounce: Task<Void, Never>?
+    #if DEBUG
+    /// BUG-155 probe: any publish closes the keystroke's body-count window (`SearchPerfProbe`).
+    private var perfSink: AnyCancellable?
+    #endif
     private var started = false
 
     /// H2 hardening (BUG-47), mirrors `CatalogGridViewModel.stopped`: `FlowWatcher.cancel()`'s
@@ -131,6 +148,12 @@ final class SearchViewModel: ObservableObject {
         guard !started else { return }
         started = true
         stopped = false
+        #if DEBUG
+        SearchPerfProbe.applyLegacySwitch()
+        if perfSink == nil {
+            perfSink = objectWillChange.sink { _ in SearchPerfProbe.closeKeyWindow() }
+        }
+        #endif
         refreshDefaults()
 
         searchWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
@@ -207,6 +230,9 @@ final class SearchViewModel: ObservableObject {
         }
         lastSearchState = state
         let incoming = SearchResultsAdapter.rows(from: state, mode: rowsMode)
+        #if DEBUG
+        SearchPerfProbe.emission(hasRows: !incoming.isEmpty, isLoading: state.isLoading)
+        #endif
         // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`); the
         // repository starts every search with empty results.
         rows = rowsHold.rows(
@@ -410,6 +436,13 @@ final class SearchViewModel: ObservableObject {
     func queryChanged(_ text: String) {
         debounce?.cancel()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // BUG-155: publish the edge only, never the text (see `queryIsEmpty`).
+        if queryIsEmpty != trimmed.isEmpty {
+            queryIsEmpty = trimmed.isEmpty
+            #if DEBUG
+            if !trimmed.isEmpty { SearchPerfProbe.sessionStarted() }
+            #endif
+        }
 
         guard !trimmed.isEmpty else {
             // `.reset()` is the nuclear account/profile-teardown variant (it also wipes the
@@ -419,6 +452,7 @@ final class SearchViewModel: ObservableObject {
             cancelHoldTick()
             activeQuery = nil
             activeRequestId = nil
+            if !displayQuery.isEmpty { displayQuery = "" }
             rows = []
             adoptExtras(from: nil)
             emptyState = nil
@@ -428,7 +462,11 @@ final class SearchViewModel: ObservableObject {
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled, let self else { return }
+            #if DEBUG
+            SearchPerfProbe.fired(query: trimmed)
+            #endif
             self.activeQuery = trimmed
+            if self.displayQuery != trimmed { self.displayQuery = trimmed }
             self.lastSearchAddonSignature = self.addonManifestSignature
             self.activeRequestId = SearchRepository.shared.search(
                 query: trimmed,

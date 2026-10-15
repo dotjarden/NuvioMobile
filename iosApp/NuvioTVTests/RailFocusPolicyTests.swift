@@ -166,6 +166,45 @@ final class RailFocusPolicyTests: XCTestCase {
         XCTAssertTrue(shown())
     }
 
+    // MARK: Hidden (FEAT-62, Steven 2026-10-08: "hide it on the first line, show it on Left/Back")
+
+    func testHiddenIsOffScreenAtRestOnEveryTab() {
+        for tab in 0...6 {
+            XCTAssertFalse(shown(visibility: .hidden, selectedTab: tab), "tab \(tab) at rest")
+        }
+        XCTAssertFalse(shown(visibility: .hidden, selectedTab: 0), "Home's row 0 included")
+    }
+
+    func testHiddenShowsWhileARailItemHoldsFocus() {
+        XCTAssertTrue(shown(holdsFocus: true, visibility: .hidden))
+        XCTAssertTrue(shown(holdsFocus: true, rootCoverActive: true, visibility: .hidden),
+                      "focus still wins over the root cover (BUG-47)")
+    }
+
+    func testHiddenShowsWhenRevealedAndHidesAgainOnceTheRevealEnds() {
+        XCTAssertTrue(shown(revealed: true, visibility: .hidden), "Left from the first card, or Menu")
+        XCTAssertFalse(shown(revealed: false, visibility: .hidden), "Right / exit to content")
+        XCTAssertFalse(shown(revealed: true, rootCoverActive: true, visibility: .hidden))
+    }
+
+    func testHiddenIgnoresImmersiveScrollAndSearch() {
+        for immersive in [false, true] {
+            for scrolled in [false, true] {
+                for keyboard in [false, true] {
+                    XCTAssertFalse(shown(immersive: immersive, scrolledDown: scrolled, visibility: .hidden,
+                                         selectedTab: RailVisibilityRule.searchTab, keyboardFocused: keyboard))
+                    XCTAssertTrue(shown(revealed: true, immersive: immersive, scrolledDown: scrolled,
+                                        visibility: .hidden, selectedTab: RailVisibilityRule.searchTab,
+                                        keyboardFocused: keyboard))
+                }
+            }
+        }
+    }
+
+    func testHiddenNeverShowsOutsideRailMode() {
+        XCTAssertFalse(shown(railMode: false, holdsFocus: true, revealed: true, visibility: .hidden))
+    }
+
     // MARK: The chrome model
 
     /// #8 / R4: a same-value `.scroll` write after a `.page` write leaves `.page` (Stage's page write

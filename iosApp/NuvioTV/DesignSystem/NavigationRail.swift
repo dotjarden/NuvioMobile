@@ -799,6 +799,13 @@ struct NavigationRail: View {
         let scrolledDown = chrome.scrolledDownByTab[selectedTab] ?? false
         // Retire any settle in flight: whatever it was going to conclude is about to be restated.
         restingGeneration &+= 1
+        // FEAT-62: Hidden has nothing to slide. `RailVisibilityRule.shown` ignores the resting
+        // mirror for it, so the mirror is parked at its neutral value, unanimated, and no settle
+        // is scheduled: a scroll crossing must never retarget `slideAnimation` under a reveal.
+        if visibility == .hidden {
+            if !restingShown { restingShown = true }
+            return
+        }
         if seeded {
             slideAnimation = nil
             restingShown = !scrolledDown

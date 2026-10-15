@@ -65,7 +65,7 @@ struct ContentView: View {
     /// for ONE purpose — it is part of the rebuild key below. `NavigationChrome.isRail()` is what
     /// the shell's own call sites read.
     @AppStorage(NavigationChrome.styleKey) private var navigationStyle = "tabs"
-    /// H9: the rail's visibility (`"always"` default / `"browsing"`), also a rebuild-key input only.
+    /// H9: the rail's visibility (`"always"` default / `"browsing"` / FEAT-62's `"hidden"`), also a rebuild-key input only.
     /// It changes the `Tab` closures structurally (Always Visible's inset), so it may only switch
     /// across a remount (T3 / BUG-66, the same reasoning as the style).
     @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = "always"
@@ -97,6 +97,34 @@ struct ContentView: View {
     @State private var debugDeepLinkConsumed = false
     #endif
     @Environment(\.scenePhase) private var scenePhase
+    /// FEAT-65: the "Open Last Profile at Launch" decision runs at most once per PROCESS, at the
+    /// first time the auth gate turns `.main` (a restored session at cold launch). A `static`, not
+    /// `@State`: nothing about the view's identity may re-arm it. Also consumed by any visit to the
+    /// Welcome gate, so a sign-out → sign-in (or a first sign-in after a signed-out cold launch)
+    /// always shows the picker instead of jumping into whatever profile payload is on disk.
+    @MainActor private static var profileAutoEnterConsumed = false
+
+    /// FEAT-65 (Steven, beta.19-rc3 follow-up 2026-10-08): skip the "Who's watching?" picker and
+    /// enter the profile used last, when Settings › Account & Profiles › Open Last Profile at
+    /// Launch is on (upstream's `rememberLastProfileEnabled`, rule in `ProfileAutoEnter`). Does
+    /// exactly what the picker's own tap does (`ProfileSelectionView.perform(.select)` →
+    /// `model.select(profile)`, then `onSelected` = `appTheme.reseedNow(); entered = true`), so the
+    /// pull, the periodic sync, the theme reseed and the deep-link replay all run as they would
+    /// from a tap. "Switch Profile" sets `entered = false` and never comes back here: the latch is
+    /// already consumed.
+    private func autoEnterRememberedProfileIfNeeded() {
+        guard !entered else { return }
+        let consumed = Self.profileAutoEnterConsumed
+        Self.profileAutoEnterConsumed = true
+        // Idempotent; loads a guest's cached payload synchronously so the decision reads it (the
+        // picker's own `onAppear` calls it too).
+        profiles.start()
+        guard let profile = profiles.rememberedStartupProfile(alreadyFiredThisLaunch: consumed) else { return }
+        print("[ProfileSelect] auto-enter profile \(profile.profileIndex)")
+        profiles.select(profile)
+        appTheme.reseedNow()
+        entered = true
+    }
 
     var body: some View {
         Group {
@@ -188,6 +216,8 @@ struct ContentView: View {
             #endif
         }
         .onChange(of: auth.gate) { _, newGate in
+            if newGate == .welcome { Self.profileAutoEnterConsumed = true }
+            if newGate == .main { autoEnterRememberedProfileIfNeeded() }
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main {
                 entered = false

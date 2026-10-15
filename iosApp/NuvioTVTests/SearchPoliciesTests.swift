@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 import SharedCore
 @testable import NuvioTV
@@ -437,5 +438,36 @@ final class SearchRowsHoldRequestIdTests: XCTestCase {
         XCTAssertFalse(hold.isFollowingIncoming)
         XCTAssertEqual(hold.rows(current: [1, 2], incoming: [9, 8], isLoading: false, now: 10.4, relation: .otherQuery), [9, 8])
         XCTAssertTrue(hold.isFollowingIncoming)
+    }
+}
+
+/// BUG-155 (Steven, beta.19-rc3 follow-ups 2026-10-14: the caret one letter behind the typed text):
+/// the view model publishes the empty / non-empty EDGE of the query synchronously and never the
+/// text, so a letter typed into a non-empty field re-renders nothing under the search field.
+/// Stays on the non-empty side: clearing the field calls into the shared `SearchRepository`, which
+/// a unit test does not need, and every pending debounce is cancelled by the next call or by
+/// `deinit` well before its 350 ms.
+@MainActor
+final class SearchQueryEdgeTests: XCTestCase {
+    func testFirstLetterFlipsTheEdgeSynchronously() {
+        let model = SearchViewModel()
+        XCTAssertTrue(model.queryIsEmpty)
+        model.queryChanged("d")
+        XCTAssertFalse(model.queryIsEmpty, "the results page must appear on the first letter, not after the debounce")
+        XCTAssertEqual(model.displayQuery, "", "the shown query is the debounced one")
+    }
+
+    func testFurtherLettersPublishNothing() {
+        let model = SearchViewModel()
+        model.queryChanged("d")
+        var publishes = 0
+        let sink = model.objectWillChange.sink { _ in publishes += 1 }
+        model.queryChanged("du")
+        model.queryChanged("dun")
+        model.queryChanged("dune")
+        model.queryChanged("dune ")
+        XCTAssertEqual(publishes, 0, "a keystroke in a non-empty field must not publish (BUG-155)")
+        XCTAssertFalse(model.queryIsEmpty)
+        sink.cancel()
     }
 }

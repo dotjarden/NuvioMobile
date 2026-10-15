@@ -20,6 +20,9 @@ final class ProfilesViewModel: ObservableObject {
     /// True when signed in with a real Nuvio account (PIN + avatar catalog need the cloud).
     /// Fed by a watcher on `AuthRepository.state` (the exported StateFlow has no sync `.value`).
     @Published private(set) var isCloudAccount = false
+    /// FEAT-65: the shared `rememberLastProfileEnabled` flag ("Open Last Profile at Launch"),
+    /// mirrored from the same `ProfileRepository.state` watcher as the profiles.
+    @Published private(set) var rememberLastProfile = false
 
     private var watcher: FlowWatcher?
     private var avatarsWatcher: FlowWatcher?
@@ -32,6 +35,7 @@ final class ProfilesViewModel: ObservableObject {
             guard let self, let state = emitted as? ProfileState else { return }
             self.profiles = state.profiles
             self.activeProfile = state.activeProfile
+            self.rememberLastProfile = state.rememberLastProfileEnabled
         }
         avatarsWatcher = FlowWatcherKt.watch(AvatarRepository.shared.avatars) { [weak self] emitted in
             guard let self, let items = emitted as? [AvatarCatalogItem] else { return }
@@ -71,6 +75,23 @@ final class ProfilesViewModel: ObservableObject {
         // same way; a profile switch re-targets the loop, sign-out cancels it via cancelAccountSync.
         SyncManager.shared.startPeriodicNuvioSyncPull(profileId: profile.profileIndex)
         print("[ProfileSelect] full pull requested — tap complete")
+    }
+
+    /// FEAT-65: the profile to enter without the picker at cold launch, or nil to show the picker.
+    /// Reads the repository's state SYNCHRONOUSLY (call `start()` first so a guest's cached
+    /// payload is loaded; a real account's cache is keyed to its user by `AuthViewModel`'s
+    /// `ensureLoaded` before the gate turns `.main`). The rule is `ProfileAutoEnter.decision`.
+    func rememberedStartupProfile(alreadyFiredThisLaunch: Bool) -> NuvioProfile? {
+        guard let state = ProfileRepository.shared.state.value_ as? ProfileState else { return nil }
+        let enabled = ProfileAutoEnter.debugEnabledOverride() ?? state.rememberLastProfileEnabled
+        let activeId = ProfileRepository.shared.activeProfileId
+        let active = state.profiles.first { $0.profileIndex == activeId }
+        guard ProfileAutoEnter.decision(enabled: enabled,
+                                        everSelected: state.hasEverSelectedProfile,
+                                        activeProfileExists: active != nil,
+                                        pinEnabled: active?.pinEnabled ?? false,
+                                        alreadyFiredThisLaunch: alreadyFiredThisLaunch) else { return nil }
+        return active
     }
 
     func createProfile(
@@ -152,5 +173,33 @@ final class ProfilesViewModel: ObservableObject {
         watcher?.cancel()
         avatarsWatcher?.cancel()
         authWatcher?.cancel()
+    }
+}
+
+/// FEAT-65: the Settings row's model for "Open Last Profile at Launch". A watcher on
+/// `ProfileRepository.state` only, deliberately NOT a second `ProfilesViewModel`: that one's
+/// `start()` reloads the cached payload and fans `onProfilesCached()` out, a side effect a Settings
+/// pane must not have. The write goes through the shared setter, which persists the flag in the
+/// profile payload (device-local, like upstream).
+@MainActor
+final class RememberLastProfileModel: ObservableObject {
+    @Published private(set) var enabled = false
+    private var watcher: FlowWatcher?
+
+    func start() {
+        guard watcher == nil else { return }
+        watcher = FlowWatcherKt.watch(ProfileRepository.shared.state) { [weak self] emitted in
+            guard let self, let state = emitted as? ProfileState else { return }
+            self.enabled = state.rememberLastProfileEnabled
+        }
+    }
+
+    func set(_ value: Bool) {
+        print("[ProfileSelect] remember last profile -> \(value)")
+        ProfileRepository.shared.setRememberLastProfileEnabled(enabled: value)
+    }
+
+    deinit {
+        watcher?.cancel()
     }
 }

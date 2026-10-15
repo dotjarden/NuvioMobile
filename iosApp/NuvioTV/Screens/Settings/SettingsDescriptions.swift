@@ -26,6 +26,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case accountConnectServer = "account.connectServer"
     case accountUseOfficialServer = "account.useOfficialServer"
     case accountRemoteSetup = "account.remoteSetup"
+    case accountRememberLastProfile = "account.rememberLastProfile"
 
     // MARK: Services
     case servicesTrakt = "services.trakt"
@@ -224,6 +225,7 @@ enum SettingsDescriptions {
         case .accountSignInOut: return LocalizedStringResource("Signs you in to, or out of, your Nuvio account. Signing in syncs your library and watch progress across devices. Either way, the local data on this Apple TV is cleared first.")
         case .accountConnectServer: return LocalizedStringResource("Points this Apple TV at a self-hosted Nuvio backend instead of the official one. Switching servers signs you out and clears local data on this Apple TV.")
         case .accountUseOfficialServer: return LocalizedStringResource("Switches back to the official Nuvio server at api.nuvio.tv. You are signed out and local data on this Apple TV is cleared.")
+        case .accountRememberLastProfile: return LocalizedStringResource("Skips the profile picker and opens the profile you used last. Profiles with a PIN still ask for it. Default: Off.")
         case .accountRemoteSetup: return LocalizedStringResource("Starts a small web page on your home network so you can manage add-ons, Home rows, API keys and badge packs from a phone or laptop. Nothing changes until you confirm it here on the TV.")
 
         // Services
@@ -253,7 +255,7 @@ enum SettingsDescriptions {
         case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Off by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.")
-        case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Default: Always Visible.")
+        case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Hidden keeps it off screen until you press Left from the first card or Menu. Default: Always Visible.")
         case .appearanceDiscoverPlacement: return LocalizedStringResource("Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")
         case .appearancePosterSize: return LocalizedStringResource("Sets how large posters appear in rows and grids. Larger posters leave less room for the description at the top of Home.")

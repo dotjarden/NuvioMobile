@@ -7,13 +7,17 @@ import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.home.HomeCatalogParser
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.stableKey
+import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 const val CATALOG_PAGE_SIZE = 100
 private const val DUPLICATE_CATALOG_PAGE_ADVANCE_LIMIT = 3
@@ -29,44 +33,123 @@ data class CatalogPaginationState(
     val consecutiveDuplicatePages: Int = 0,
 )
 
-private val inflightMutex = Mutex()
-private val inflightRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CatalogData"))
-private val inflightRequests = mutableMapOf<CatalogFetchKey, CompletableDeferred<String>>()
+/**
+ * BUG-155 (P2; Steven, beta.19-rc3 follow-ups 2026-10-14: search-as-you-type lags, results "take a
+ * while to land"). Catalog GETs are shared between callers asking for the same URL at once (Home,
+ * Discover and Search can all want the same page), and each shared fetch runs in its own scope so
+ * one caller's cancellation cannot fail the others. Before this fix that also meant NOBODY could
+ * cancel it: a search superseded by the next keystroke cancelled its awaiting coroutine, but the
+ * HTTP request itself ran on to its 60 s timeout, one per search-capable catalog, letter after
+ * letter, and the live query's requests queued behind the dead ones.
+ *
+ * Now every shared fetch counts its waiters. A waiter that leaves before the result (cancelled)
+ * drops the count, and when the LAST waiter leaves the fetch is cancelled and forgotten, all under
+ * one mutex, so a caller joining in between either keeps the old fetch alive (it joined first) or
+ * starts a fresh one (it joined after the removal). A search that is cancelled while Home still
+ * waits on the same URL never kills Home's request.
+ */
+internal class CatalogInflightRequests<K : Any>(
+    private val scope: CoroutineScope,
+    private val fetch: suspend (K) -> String,
+    /** DEBUG A/B (`-debug.searchLegacy YES` on tvOS): false restores the pre-BUG-155 behaviour. */
+    private val cancelAbandoned: () -> Boolean = { true },
+) {
+    private class Entry(val deferred: CompletableDeferred<String>) {
+        var waiters = 0
+        var job: Job? = null
+    }
 
-private suspend fun deduplicatedHttpGetText(
-    url: String,
-    forceRefresh: Boolean,
-): String {
-    val requestKey = CatalogFetchKey(
-        url = url,
-        forceRefresh = forceRefresh,
-    )
-    val deferred = inflightMutex.withLock {
-        inflightRequests[requestKey] ?: CompletableDeferred<String>().also { created ->
-            inflightRequests[requestKey] = created
-            inflightRequestScope.launch {
-                try {
-                    created.complete(
-                        fetchAddonResponseText(
-                            url = url,
-                            forceRefresh = forceRefresh,
-                        ),
-                    )
-                } catch (error: Throwable) {
-                    created.completeExceptionally(error)
-                } finally {
-                    inflightMutex.withLock {
-                        if (inflightRequests[requestKey] === created) {
-                            inflightRequests.remove(requestKey)
+    private val mutex = Mutex()
+    private val entries = mutableMapOf<K, Entry>()
+    private val inflight = atomic(0)
+    private val cancelled = atomic(0)
+
+    /** Shared fetches currently running (entries in the map). */
+    val inflightCount: Int get() = inflight.value
+
+    /** Fetches cancelled because their last waiter left, since launch. */
+    val cancelledCount: Int get() = cancelled.value
+
+    suspend fun get(key: K): String {
+        val entry = mutex.withLock {
+            val existing = entries[key] ?: Entry(CompletableDeferred()).also { created ->
+                entries[key] = created
+                inflight.incrementAndGet()
+                created.job = scope.launch {
+                    try {
+                        created.deferred.complete(fetch(key))
+                    } catch (error: Throwable) {
+                        created.deferred.completeExceptionally(error)
+                    } finally {
+                        // A cancelled fetch was already removed below; NonCancellable so a
+                        // contended lock cannot skip the removal of a finished one.
+                        withContext(NonCancellable) {
+                            mutex.withLock { removeIfCurrent(key, created) }
                         }
+                    }
+                }
+            }
+            existing.waiters += 1
+            existing
+        }
+        try {
+            return entry.deferred.await()
+        } finally {
+            // Runs on success, failure and cancellation alike. Only a waiter that leaves while the
+            // result is still pending can make the fetch abandoned.
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    entry.waiters -= 1
+                    if (entry.waiters <= 0 && !entry.deferred.isCompleted && cancelAbandoned()) {
+                        removeIfCurrent(key, entry)
+                        entry.job?.cancel()
+                        cancelled.incrementAndGet()
                     }
                 }
             }
         }
     }
 
-    return deferred.await()
+    /** Call with [mutex] held. */
+    private fun removeIfCurrent(key: K, entry: Entry) {
+        if (entries[key] === entry) {
+            entries.remove(key)
+            inflight.decrementAndGet()
+        }
+    }
 }
+
+private val inflightRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CatalogData"))
+private val cancelAbandonedCatalogFetches = atomic(true)
+private val catalogInflightRequests = CatalogInflightRequests<CatalogFetchKey>(
+    scope = inflightRequestScope,
+    fetch = { key -> fetchAddonResponseText(url = key.url, forceRefresh = key.forceRefresh) },
+    cancelAbandoned = { cancelAbandonedCatalogFetches.value },
+)
+
+/**
+ * BUG-155 counters for the tvOS DEBUG `[SearchPerf]` probe (`SearchPerfProbe.swift`): how many
+ * shared catalog fetches are running and how many were cancelled because every caller left. Two
+ * atomic reads, no flag. [cancelAbandonedFetches] is the A/B switch the DEBUG launch argument
+ * `-debug.searchLegacy YES` flips off; release builds never touch it.
+ */
+object CatalogInflightStats {
+    val inflight: Int get() = catalogInflightRequests.inflightCount
+    val cancelled: Int get() = catalogInflightRequests.cancelledCount
+    var cancelAbandonedFetches: Boolean
+        get() = cancelAbandonedCatalogFetches.value
+        set(value) { cancelAbandonedCatalogFetches.value = value }
+}
+
+private suspend fun deduplicatedHttpGetText(
+    url: String,
+    forceRefresh: Boolean,
+): String = catalogInflightRequests.get(
+    CatalogFetchKey(
+        url = url,
+        forceRefresh = forceRefresh,
+    ),
+)
 
 suspend fun fetchCatalogPage(
     manifestUrl: String,

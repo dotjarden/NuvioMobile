@@ -85,10 +85,13 @@ struct AppearanceSettingsPane: View {
         (NavigationChrome.Style.tabs.rawValue, String(localized: "Top Tabs")),
         (NavigationChrome.Style.rail.rawValue, String(localized: "Rail")),
     ]
-    /// H9 Rail row options. Values are the raw `rail_visibility` strings.
+    /// H9 Rail row options. Values are the raw `rail_visibility` strings. FEAT-62 (Steven,
+    /// beta.19-rc3 follow-up 2026-10-08: "hide it on the first line, show it on Left/Back") adds
+    /// Hidden: off screen at rest, revealed by Left from the first card or Menu.
     private static let railVisibilityOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailVisibility.always.rawValue, String(localized: "Always Visible")),
         (NavigationChrome.RailVisibility.whileBrowsing.rawValue, String(localized: "Hide While Browsing")),
+        (NavigationChrome.RailVisibility.hidden.rawValue, String(localized: "Hidden")),
     ]
     /// FEAT-31 row options. Values are `Theme.AppFontFamily.rawValue`, so the picker never drifts
     /// from the type the storage key actually feeds.
