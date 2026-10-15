@@ -1144,9 +1144,13 @@ struct HomeView: View {
             // between-cards focus hop).
             .onChange(of: heroFocused) { _, focused in
                 if focused { focusModel.cancelAndRevert() }
-                // BUG-156 (review r2 P2-5): the hero taking focus is the viewer's doing (a push
-                // from a row never restores to the hero); retire a pending pop restore.
-                if focused { retireReturnRestore(reason: "hero") }
+                // BUG-156 (review r2 P2-5, corrected on the device 2026-10-15): the hero taking
+                // focus is the viewer's doing only when an Up INPUT preceded it (`lastUpInputAt`,
+                // stamped by every Up press and swipe). On the Living Room ATV the engine's own
+                // deferred restoration landed on the hero CTA 15 ms AFTER rung 2 had put focus on
+                // the origin card, with no input at all (`upFallback … reason=staleInput`); that
+                // landing re-grabs the origin once instead of retiring the restore.
+                if focused { heroGainedDuringReturnRestore() }
                 // rc13 (BUG-114): stale any pending `handleHeroUp` retry. Focus moving off the CTA
                 // (or back onto it) means the scroll that retry was going to finish is no longer
                 // the newest thing the user asked for. This is a counter bump only — emphatically
@@ -2375,6 +2379,8 @@ struct HomeView: View {
         guard !isStageLayout, let origin = upInput.returnFocus.takeOrigin() else { return }
         upInput.returnGeneration &+= 1
         upInput.returnPending = true
+        upInput.returnOrigin = origin
+        upInput.returnRegrabs = 0
         let generation = upInput.returnGeneration
         for (index, delay) in HomeReturnFocusMemory.rungDelays.enumerated() {
             let rung = index + 1
@@ -2405,7 +2411,10 @@ struct HomeView: View {
                         return
                     }
                     logHomeReturn("restore row=\(origin.rowKey) item=\(origin.itemId ?? "-") rung=\(rung) landed=1")
-                    endReturnRestore(origin: origin)
+                    // Device pass 2026-10-15: the attempt stays armed until `expiry` (the engine's
+                    // default-candidate restoration can still fire after a landed rung; the hero
+                    // re-grab needs `returnPending`); only the request is cleared here.
+                    if rowFocusRequest.rowKey == origin.rowKey, activeUpFallbackTarget == nil { rowFocusRequest = .none }
                     return
                 }
                 rowFocusRequestSeq &+= 1
@@ -2429,8 +2438,37 @@ struct HomeView: View {
     private func endReturnRestore(origin: HomeReturnFocusMemory.Origin) {
         upInput.returnGeneration &+= 1
         upInput.returnPending = false
+        upInput.returnOrigin = nil
         if rowFocusRequest.rowKey == origin.rowKey, activeUpFallbackTarget == nil { rowFocusRequest = .none }
     }
+
+    /// BUG-156 (device pass 2026-10-15): the hero gained focus while a pop restore is pending. An Up
+    /// input inside `heroInputGrace` means the viewer went there: retire. No input means the focus
+    /// engine's late restoration chose its default candidate (the CTA) over the card our rung had
+    /// already landed on: ask the origin row for its card once more (`regrab`), through the normal
+    /// request (the row holds no focus, so the anti-theft guard lets it in). Once per restore.
+    private static let heroInputGrace: TimeInterval = 1.0
+    private func heroGainedDuringReturnRestore() {
+        guard upInput.returnPending else { return }
+        let sinceUp = ProcessInfo.processInfo.systemUptime - upInput.lastUpInputAt
+        if upInput.lastUpInputAt >= 0, sinceUp < Self.heroInputGrace {
+            retireReturnRestore(reason: "hero sinceUp=\(Int(sinceUp * 1000))")
+            return
+        }
+        // The engine fired its default-candidate restoration TWICE on the device (0.59 s and
+        // 0.98 s after the pop), so one re-grab was not enough; up to `heroRegrabLimit` inside the
+        // restore's life (`HomeReturnFocusMemory.expiry`), each one logged.
+        guard let origin = upInput.returnOrigin, upInput.returnRegrabs < Self.heroRegrabLimit else {
+            retireReturnRestore(reason: "hero again")
+            return
+        }
+        upInput.returnRegrabs += 1
+        rowFocusRequestSeq &+= 1
+        rowFocusRequest = PinnedRowFocusRequest(rowKey: origin.rowKey, generation: rowFocusRequestSeq,
+                                                itemId: origin.itemId)
+        logHomeReturn("restore regrab row=\(origin.rowKey) item=\(origin.itemId ?? "-") from=hero n=\(upInput.returnRegrabs)")
+    }
+    private static let heroRegrabLimit = 3
 
     /// BUG-156 (review r1 P2-4, r2 P2-5): the viewer moved on their own (a directional press on the
     /// rows, an Up swipe, the hero taking focus); a restore still running its rungs must not pull
@@ -2440,6 +2478,7 @@ struct HomeView: View {
     private func retireReturnRestore(reason: String) {
         guard upInput.returnPending else { return }
         upInput.returnPending = false
+        upInput.returnOrigin = nil
         upInput.returnGeneration &+= 1
         if activeUpFallbackTarget == nil { rowFocusRequest = .none }
         logHomeReturn("restore cancelled by \(reason)")
@@ -7122,6 +7161,11 @@ final class HomeRowInputBox {
     /// BUG-156 (review r1 P2-4): a pop restore is between its first rung and its landing / expiry;
     /// the first directional press retires it (`handleRowsMove`).
     var returnPending = false
+    /// BUG-156 (device pass 2026-10-15): the live restore's origin, for the hero re-grab; nil outside
+    /// an attempt. `returnRegrabbed` latches the one re-grab per attempt.
+    var returnOrigin: HomeReturnFocusMemory.Origin?
+    /// Re-grabs issued for the live attempt (`heroRegrabLimit`).
+    var returnRegrabs = 0
     /// H9: where Classic's rail route returns focus (captured when the rail arms).
     var railReturnTarget: HomeRailReturnTarget?
     /// BUG-156: the card each row last focused and the row + card a push left from. Written from
@@ -7190,7 +7234,9 @@ nonisolated struct HomeReturnFocusMemory: Equatable, Sendable {
     /// (that card is what the earlier rungs could not reach: an id gone from the row, an unrealized
     /// card). The same shape as the strip's rungs (`StripPager.requestRowFocus`).
     static let rungDelays: [TimeInterval] = [0, 0.3, 0.7]
-    static let expiry: TimeInterval = 1.0
+    /// Device pass 2026-10-15: the engine's own restoration fired 0.98 s after the pop on the
+    /// Living Room ATV; the attempt (and its hero re-grab) lives 1.5 s.
+    static let expiry: TimeInterval = 1.5
 
     /// The last rung lands on the row's first card (nothing left to force onto).
     static func isLastRung(_ rung: Int) -> Bool { rung >= rungDelays.count }
