@@ -178,7 +178,17 @@ final class BatchASearchPerfUITests: XCTestCase {
         let maxBody = Self.intToken(line, "maxBody") ?? Int.max
         XCTAssertLessThanOrEqual(maxBody, 1, "SearchContent must not re-evaluate on a keystroke (BUG-155): \(line)")
         let cancelled = Self.intToken(line, "cancelled") ?? -1
-        XCTAssertGreaterThanOrEqual(cancelled, 1, "a superseded query's catalog fetches must be cancelled: \(line)")
+        let first = Self.intToken(line, "first") ?? Int.max
+        // A fetch can only be cancelled while it is still in flight when the next letter's debounce
+        // fires (≥ 350 ms after it). When the guest's one catalog answers faster than that (two
+        // runs on 2026-10-15: `first=48`, `first=51`), nothing is ever in flight to cancel and
+        // `cancelled=0` is correct; the fix is then proven by `maxBody` (0 bodies per keystroke
+        // against legacy's 1) and by the unit tests of `CatalogInflightRequests`.
+        if first >= 350 {
+            XCTAssertGreaterThanOrEqual(cancelled, 1, "a superseded query's catalog fetches must be cancelled: \(line)")
+        } else {
+            note("fix_cancel_note", "catalog answered in \(first) ms (< 350 ms debounce): no fetch was in flight to cancel; cancelled=\(cancelled)")
+        }
         let last = Self.intToken(line, "last") ?? Int.max
         XCTAssertGreaterThanOrEqual(last, 0, "the probe's last must be a time: \(line)")
         XCTAssertLessThan(last, 4000, "the final query must settle within 4 s of its debounce: \(line)")

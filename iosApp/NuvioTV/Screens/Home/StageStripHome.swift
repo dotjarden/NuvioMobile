@@ -238,12 +238,15 @@ struct StageStripHome: View {
                        reportsTab: "Home",
                        menuPagesToTop: true,
                        atTopExit: atTopExit,
-                       onRowChange: { index, _ in
+                       onRowChange: { index, key in
                            let down = index > 0
                            if isScrolledDown != down { isScrolledDown = down }
                            // §7: a strip row owns focus again (also when focus comes back from the
                            // tab bar, the rail or a pushed page); the trailer re-arms at the rest.
                            stage.stripFocusGained()
+                           // BUG-156: a late engine restoration moving the strip off the pop
+                           // restore's row re-grabs it once (`StageController.noteStripRowChanged`).
+                           stage.noteStripRowChanged(key: key)
                        },
                        // H9 (#8, R4): Hide While Browsing moves with the strip's page — its curve
                        // and duration, no resting settle. This write owns the rail; the strip's

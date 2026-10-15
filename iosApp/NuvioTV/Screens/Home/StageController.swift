@@ -166,6 +166,40 @@ final class StageController: ObservableObject {
     /// BUG-156: stales a pending `restoreAfterUncover` (a new push went over Home).
     private var uncoverRestoreGeneration = 0
 
+    /// BUG-156 (device pass 2026-10-15, Living Room ATV): the pop restore's target while it is live.
+    /// On hardware the engine's OWN deferred restoration landed ~35 ms AFTER our rung 2 had put
+    /// focus on the right card (`[StageStrip] focus → …` then `PRESS … src=vfocus-up`): it moved
+    /// focus to the row above and the strip paged there, with no rung left to answer. The strip's
+    /// next row change inside `uncoverRegrabWindow` of the request that is NOT the target row
+    /// re-requests the target once (`reason=uncover-regrab`); a second move is the viewer's.
+    private struct UncoverRestoreTarget {
+        let rowKey: String
+        let itemId: String?
+        let issuedAt: TimeInterval
+        var regrabbed = false
+    }
+    private var uncoverRestoreTarget: UncoverRestoreTarget?
+    private static let uncoverRegrabWindow: TimeInterval = 1.2
+
+    /// The strip's row changed (the pager's `onRowChange`, Home only). See `uncoverRestoreTarget`.
+    func noteStripRowChanged(key: String) {
+        guard var target = uncoverRestoreTarget else { return }
+        let age = ProcessInfo.processInfo.systemUptime - target.issuedAt
+        guard age < Self.uncoverRegrabWindow else {
+            uncoverRestoreTarget = nil
+            return
+        }
+        if key == target.rowKey { return }
+        guard !target.regrabbed else {
+            uncoverRestoreTarget = nil
+            return
+        }
+        target.regrabbed = true
+        uncoverRestoreTarget = target
+        StageStripProbe.shared.log("restore regrab row=\(target.rowKey) item=\(target.itemId ?? "-") from=\(key) age=\(Int(age * 1000)) reason=uncover")
+        requestFocus(rowKey: target.rowKey, itemId: target.itemId, reason: "uncover-regrab")
+    }
+
     /// BUG-156 (Steven, beta.19-rc3 follow-ups 2026-10-09 / 10-14): after a pushed folder page or
     /// Detail pops, put focus back on `rowKey`'s remembered card (`memory`), through the pager's
     /// rungs (reason `uncover` on the `[StageStrip] restore` lines). The pop runs `StageStripHome`'s
@@ -183,6 +217,7 @@ final class StageController: ObservableObject {
     /// A new push: a pop restore still waiting for the pager must not fire under it.
     func cancelUncoverRestore() {
         uncoverRestoreGeneration &+= 1
+        uncoverRestoreTarget = nil
     }
 
     private func attemptUncoverRestore(rowKey: String, generation: Int, attempt: Int) {
@@ -197,7 +232,10 @@ final class StageController: ObservableObject {
                 }
                 return
             }
-            self.requestFocus(rowKey: rowKey, itemId: self.memory.itemId(for: rowKey), reason: "uncover")
+            let itemId = self.memory.itemId(for: rowKey)
+            self.uncoverRestoreTarget = UncoverRestoreTarget(rowKey: rowKey, itemId: itemId,
+                                                             issuedAt: ProcessInfo.processInfo.systemUptime)
+            self.requestFocus(rowKey: rowKey, itemId: itemId, reason: "uncover")
         }
     }
 
