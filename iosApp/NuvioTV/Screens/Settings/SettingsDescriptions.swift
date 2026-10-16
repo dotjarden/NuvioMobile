@@ -131,6 +131,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case playerAutoSkipCredits = "player.autoSkipCredits"
     case playerEpisodeShuffle = "player.episodeShuffle"
     case playerPauseInfoCard = "player.pauseInfoCard"
+    case playerLoadingScreen = "player.loadingScreen"
     case playerHoldMode = "player.holdMode"
     case playerEdgeClick = "player.edgeClick"
     case playerShowClock = "player.showClock"
@@ -325,7 +326,8 @@ enum SettingsDescriptions {
         case .playerAutoSkipOutro: return LocalizedStringResource("Skips outros and anime endings by itself, without you pressing Skip. Off by default.")
         case .playerAutoSkipCredits: return LocalizedStringResource("Skips movie end credits by itself but keeps post-credits scenes. Off by default.")
         case .playerEpisodeShuffle: return LocalizedStringResource("Adds a Shuffle button to series pages. Off by default.")
-        case .playerPauseInfoCard: return LocalizedStringResource("Shows the title, source and time left after you have been paused for a while. This only works in the mpv player. On by default.")
+        case .playerPauseInfoCard: return LocalizedStringResource("Shows the title, source and time left after you have been paused for a while. Works in both players. On by default.")
+        case .playerLoadingScreen: return LocalizedStringResource("Shows the poster, the title and what the player is doing (connecting, preparing, buffering) while a video starts, in both players. Off shows a plain spinner. On by default.")
         case .playerMatchFrameRate: return LocalizedStringResource("Switches the TV to the video's own frame rate and dynamic range while it plays. Off by default.")
         case .playerEnhancedRenderer: return LocalizedStringResource("Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default.")
         case .playerNativeDolbyVision: return LocalizedStringResource("Plays Dolby Vision and HDR10 files in Apple's own player for true Dolby Vision on Apple TV 4K. Everything else stays on the mpv player. On by default.")

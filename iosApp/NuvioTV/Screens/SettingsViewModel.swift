@@ -87,6 +87,9 @@ final class SettingsViewModel: ObservableObject {
     /// Upstream ecb69a88 (mobile "pause overlay toggle"): gates the mpv player's own
     /// "metadata card after a sustained pause" overlay. Read out of the existing `playerWatcher`.
     @Published private(set) var pauseOverlayEnabled = true
+    /// P4 B24: Settings › Playback › Loading Screen (`PlayerSettingsUiState.showLoadingOverlay`,
+    /// shared and synced; default on). Read out of the existing `playerWatcher`.
+    @Published private(set) var showLoadingOverlay = true
     /// Orivio batch, item 1 (Settings → Playback → Auto-Play Source): whether playing a title
     /// starts the first source in the Sources order by itself (`StreamAutoPlayMode.firstStream`).
     /// `false` covers manual and the synced-from-mobile regex mode (tvOS has no UI for that one).
@@ -179,6 +182,7 @@ final class SettingsViewModel: ObservableObject {
             self.preferredAudioLanguage = state.preferredAudioLanguage
             self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
             self.pauseOverlayEnabled = state.pauseOverlayEnabled
+            self.showLoadingOverlay = state.showLoadingOverlay
             self.autoPlayBestSource = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
             self.autoPlayCachedOnly = state.streamAutoPlayCachedOnly
             self.preloadNextEpisodeSources = state.preloadNextEpisodeSources
@@ -369,6 +373,11 @@ final class SettingsViewModel: ObservableObject {
     /// Upstream ecb69a88: gates the mpv player's "metadata card after a sustained pause" overlay.
     func setPauseOverlayEnabled(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setPauseOverlayEnabled(enabled: enabled)
+    }
+
+    /// P4 B24: the loading screen both players draw while a video starts.
+    func setShowLoadingOverlay(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setShowLoadingOverlay(enabled: enabled)
     }
 
     // MARK: - Auto-Play Source / Sources (Orivio batch)

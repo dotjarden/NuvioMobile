@@ -43,13 +43,22 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.episodeShuffleAvailable }, set: { model.setEpisodeShuffleAvailable($0) }),
                 descriptionID: .playerEpisodeShuffle
             )
-            // Upstream ecb69a88: gates the mpv player's "metadata card after a sustained pause"
-            // overlay (MPVPlayerView.swift). The native AVPlayer engine doesn't have it.
+            // Upstream ecb69a88: gates the "metadata card after a sustained pause" overlay. Both
+            // engines draw it since P4 B16 (mpv: `MPVPlayerView.swift`; native: `NativePlayerScreen`
+            // via `NativePauseCardRule`, once the system bar has hidden).
             SettingsToggleRow(
                 title: String(localized: "Pause Info Card"),
-                subtitle: String(localized: "Show the title, source and time remaining after a short pause (mpv player)"),
+                subtitle: String(localized: "Show the title, source and time remaining after a short pause"),
                 isOn: Binding(get: { model.pauseOverlayEnabled }, set: { model.setPauseOverlayEnabled($0) }),
                 descriptionID: .playerPauseInfoCard
+            )
+            // P4 B24: the loading screen both engines draw while a video starts. Shared and synced
+            // with the phone app's loading overlay setting (`show_loading_overlay`); on by default.
+            SettingsToggleRow(
+                title: String(localized: "Loading Screen"),
+                subtitle: String(localized: "Show the poster and what is happening while a video starts"),
+                isOn: Binding(get: { model.showLoadingOverlay }, set: { model.setShowLoadingOverlay($0) }),
+                descriptionID: .playerLoadingScreen
             )
             SettingsPickerRow(
                 title: String(localized: "Hold Left/Right"),
