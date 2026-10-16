@@ -115,8 +115,11 @@ nonisolated enum PlaybackFailureClassifier {
     static let coreMediaDecodeCodes: Set<Int> = [-12927, -12642, -12644, -12645]
 
     /// Walks `NSUnderlyingErrorKey`. On the loopback origin any URL-loading error means our own
-    /// server failed to deliver (`.noMedia`): the remote host was reachable, the remux opened it.
-    static func fromNSError(_ error: Error?, origin: Origin) -> Verdict {
+    /// server failed to deliver: before playback started that is `.noMedia` (the remote host was
+    /// reachable, the remux opened it, and nothing usable came out). `midPlay`: once playback has
+    /// started it is our engine's limit (r1 P3: e.g. a seek past the remux frontier that the JIT
+    /// server fast-503s), so `.local`, never remembered.
+    static func fromNSError(_ error: Error?, origin: Origin, midPlay: Bool = false) -> Verdict {
         var current = error.map { $0 as NSError }
         var depth = 0
         var fallback = Verdict(.unknown)
@@ -124,7 +127,7 @@ nonisolated enum PlaybackFailureClassifier {
             switch e.domain {
             case NSURLErrorDomain:
                 if e.code == NSURLErrorCancelled { return Verdict(.cancelled) }
-                if origin == .loopback { return Verdict(.noMedia) }
+                if origin == .loopback { return Verdict(midPlay ? .local : .noMedia) }
                 if remoteNetworkURLCodes.contains(e.code) { return Verdict(.network) }
             case AVFoundationErrorDomain where avFoundationDecodeCodes.contains(e.code),
                  "CoreMediaErrorDomain" where coreMediaDecodeCodes.contains(e.code):
@@ -136,6 +139,26 @@ nonisolated enum PlaybackFailureClassifier {
             depth += 1
         }
         return fallback
+    }
+
+    // MARK: Native engine stages
+
+    /// r1 P3: `RemuxSession` / coordinator failure stages that are limits of our own engine, not
+    /// evidence against the link (mpv plays these files): `.local`, never remembered.
+    static let engineInternalStages: Set<String> = [
+        "no segment map", "no usable keyframe index", "server bind failed", "alloc input ctx",
+        "packet_alloc", "output context", "audio output context", "audio transcoder init",
+    ]
+    static func isEngineInternalStage(_ stage: String) -> Bool {
+        engineInternalStages.contains(stage) || stage.hasPrefix("DV P7 converter init")
+    }
+
+    /// A native pre-playback or remux failure: an engine-internal stage → `.local`, then the
+    /// remux's FFmpeg code if it has one, else "no segments produced" → `.noMedia`, else `.unknown`.
+    static func fromNativeStage(_ stage: String, errorCode: Int32?, atOpen: Bool) -> Verdict {
+        if isEngineInternalStage(stage) { return Verdict(.local) }
+        if let errorCode { return fromAVError(errorCode, atOpen: atOpen) }
+        return Verdict(stage == "no segments produced" ? .noMedia : .unknown)
     }
 
     /// No usable network path at the moment of failure → `.offline`, whatever else was seen.

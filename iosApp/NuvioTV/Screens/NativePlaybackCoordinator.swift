@@ -1123,7 +1123,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         // Failed AFTER playback started — e.g. a forward seek past the linear remux
                         // frontier that the JIT server fast-503'd until AVPlayer gave up. Hand to mpv
                         // (which seeks anywhere via its own demuxer) at the current/target position.
-                        self.classifyFailure(PlaybackFailureClassifier.fromNSError(item.error, origin: .loopback))
+                        self.classifyFailure(PlaybackFailureClassifier.fromNSError(item.error, origin: .loopback, midPlay: true))
                         self.fallbackMidPlay("item failed mid-play")
                     }
                     return
@@ -1712,17 +1712,15 @@ final class NativePlaybackCoordinator: ObservableObject {
             // never appear, so JIT requests would block until playback stalls. Hand to mpv now rather
             // than wait for the stall watchdog.
             print("[NativePlayer] remux failed MID-PLAY at \(stage) — handing to mpv")
-            classifyFailure(remux?.lastErrorCode.map { PlaybackFailureClassifier.fromAVError($0) } ?? .init(.unknown))
+            classifyFailure(PlaybackFailureClassifier.fromNativeStage(stage, errorCode: remux?.lastErrorCode, atOpen: false))
             fallbackMidPlay("remux failed mid-play: \(stage)")
             return
         }
         if case .failed = phase { return }
         print("[NativePlayer] pre-playback failure: \(stage) — falling back to mpv")
-        if let code = remux?.lastErrorCode {
-            classifyFailure(PlaybackFailureClassifier.fromAVError(code, atOpen: remux?.lastErrorAtOpen ?? false))
-        } else {
-            classifyFailure(.init(stage == "no segments produced" || stage == "no segment map" ? .noMedia : .unknown))
-        }
+        // r1 P3: our engine's own limits (no keyframe index, no segment map, bind) are `.local`.
+        classifyFailure(PlaybackFailureClassifier.fromNativeStage(
+            stage, errorCode: remux?.lastErrorCode, atOpen: remux?.lastErrorAtOpen ?? false))
         phase = .failed(stage)
     }
 

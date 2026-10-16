@@ -99,6 +99,26 @@ final class PlaybackFailureClassifierTests: XCTestCase {
         XCTAssertEqual(C.applyingPath(C.Verdict(.http, http: 404), pathSatisfied: true), C.Verdict(.http, http: 404))
     }
 
+    /// r1 P3: our own engine's failures on the native path are `.local`, never link evidence.
+    func testNativeEngineFailuresAreLocal() {
+        let loop503 = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue,
+                              userInfo: [NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse)])
+        XCTAssertEqual(C.fromNSError(loop503, origin: .loopback, midPlay: true).kind, .local)
+        XCTAssertFalse(C.fromNSError(loop503, origin: .loopback, midPlay: true).kind.remembersLink)
+        XCTAssertEqual(C.fromNSError(loop503, origin: .loopback).kind, .noMedia)   // before start
+        XCTAssertEqual(C.fromNSError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled),
+                                     origin: .loopback, midPlay: true).kind, .cancelled)
+        for stage in ["no usable keyframe index", "no segment map", "server bind failed", "audio transcoder init",
+                      "DV P7 converter init (extradata not hvcC)"] {
+            XCTAssertEqual(C.fromNativeStage(stage, errorCode: nil, atOpen: false).kind, .local, stage)
+            XCTAssertEqual(C.fromNativeStage(stage, errorCode: C.httpNotFound, atOpen: false).kind, .local, stage)
+        }
+        XCTAssertEqual(C.fromNativeStage("no segments produced", errorCode: nil, atOpen: false).kind, .noMedia)
+        XCTAssertEqual(C.fromNativeStage("avformat_open_input", errorCode: C.httpNotFound, atOpen: true),
+                       C.Verdict(.http, http: 404))
+        XCTAssertEqual(C.fromNativeStage("truncated remux (3/9 segments)", errorCode: nil, atOpen: false).kind, .unknown)
+    }
+
     /// r1 P3: subtitle-side lines never reach the ring; a file load clears it.
     func testLogRingKeepsOnlyMainStreamEvidence() {
         let ring = MPVLogRing()
