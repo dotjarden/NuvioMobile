@@ -116,6 +116,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
         /// The `[AutoPlay] pick` line's ranking facts for a candidate (`Policy.rankSummary`), so a
         /// device log shows why a link came first. Empty in tests unless a test sets it.
         var rankSummary: (StreamItem) -> String = { _ in "" }
+        /// P4 (BUG-143, C-6): is there a usable network path? A failure while offline is never
+        /// remembered against the link (live: `NetworkPathMonitor.shared.isSatisfied`).
+        var networkSatisfied: () -> Bool = { true }
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -284,7 +287,10 @@ final class FirstPlayAutoPlayController: ObservableObject {
             do {
                 outcome = try await resolve(candidate.stream)
             } catch {
-                outcome = .failed(reason: "resolve threw: \(error.localizedDescription)", rejectsLink: true)
+                // BUG-143: a network error thrown by the resolve is not the link's fault.
+                let kind = PlaybackFailureClassifier.fromNSError(error, origin: .remote).kind
+                outcome = .failed(reason: "resolve threw (\(kind.rawValue)): \(error.localizedDescription)",
+                                  rejectsLink: kind.remembersLink)
             }
             self?.finishResolve(attemptGeneration, candidate, outcome)
         }
@@ -293,8 +299,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(deadline, 0) * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            // BUG-143: a slow resolve is the debrid API or the network, not proof the link is dead.
             self?.finishResolve(attemptGeneration, candidate,
-                                .failed(reason: "resolve timed out after \(Int(deadline)) s", rejectsLink: true))
+                                .failed(reason: "resolve timed out after \(Int(deadline)) s (transient=1 skipped)", rejectsLink: false))
         }
     }
 
@@ -308,9 +315,13 @@ final class FirstPlayAutoPlayController: ObservableObject {
             succeed(candidate, resolved: resolved, url: url)
         case let .failed(reason, rejectsLink):
             autoPlayLog("[AutoPlay] attempt #\(attemptsUsed) failed key=\(candidate.streamKey): \(reason)")
-            if rejectsLink {
+            if rejectsLink, deps.networkSatisfied() {
                 deps.reject(candidate.streamKey, titleKey)
                 deps.invalidate(candidate.stream)
+            } else if rejectsLink {
+                // C-6: every debrid provider maps its own exceptions to `Error()`, so an offline TV
+                // would otherwise blacklist every cached link for 8 h.
+                autoPlayLog("[AutoPlay] reject key=\(candidate.streamKey) transient=1 offline=1 skipped")
             }
             tryNext(preferAddonId: candidate.addonId)
         }
@@ -520,7 +531,8 @@ extension FirstPlayAutoPlayController.Dependencies {
                 return FirstPlayAutoPlayController.Policy.rankSummary(
                     resolution: key.resolution, dynamicRange: key.dynamicRange, cached: key.cached, size: key.size
                 )
-            }
+            },
+            networkSatisfied: { NetworkPathMonitor.shared.isSatisfied }
         )
     }
 }

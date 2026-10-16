@@ -424,6 +424,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var startWatchdogTimer: Timer?
     /// Main thread: a failure was already reported (every path shares this one-shot).
     private var failoverReported = false
+    /// P4 (BUG-143): recent mpv warn/error lines, the evidence the failure classifier reads.
+    private let logRing = MPVLogRing()
     /// Main thread: the viewer is leaving (or the player is torn down) — report nothing further.
     private var failoverClosed = false
     private var healthyReported = false
@@ -3318,9 +3320,13 @@ final class MPVTVPlayerViewController: UIViewController {
         guard PlaybackEndPolicy.isEarlyEndFailure(
             position: snap.position, duration: snap.duration,
             secondsPlayed: played, launchSource: context.launchSource) else { return false }
+        // A dropped connection also ends a stream early: network evidence in the ring wins.
+        let ringVerdict = PlaybackFailureClassifier.fromMpvLog(logRing.snapshot, endFileError: nil, watchdogFired: false)
+        let earlyVerdict = ringVerdict.kind == .network || ringVerdict.kind == .http
+            ? ringVerdict : PlaybackFailureClassifier.Verdict(.endedEarly)
         if reportPlaybackFailure(
             reason: "stream ended early at \(Int(snap.position))/\(Int(snap.duration)) s",
-            startedPlaying: true, secondsPlayed: played, positionSec: snap.position) {
+            startedPlaying: true, secondsPlayed: played, positionSec: snap.position, verdict: earlyVerdict) {
             return true
         }
         return failoverReported
@@ -3329,7 +3335,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// The single exit for every failover signal. Returns true when the host was told.
     @discardableResult
     private func reportPlaybackFailure(reason: String, startedPlaying: Bool, secondsPlayed: Double,
-                                       positionSec: Double? = nil) -> Bool {
+                                       positionSec: Double? = nil,
+                                       verdict: PlaybackFailureClassifier.Verdict) -> Bool {
         guard let onPlaybackFailed else { return false }
         guard !failoverReported, !failoverClosed, !state.playbackFailoverSuppressed else {
             print("[Failover] mpv failure suppressed (\(reason)) reported=\(failoverReported) closed=\(failoverClosed) swapped=\(state.playbackFailoverSuppressed)")
@@ -3340,16 +3347,21 @@ final class MPVTVPlayerViewController: UIViewController {
         stopStartWatchdogTimer()
         var position = positionSec ?? cachedProps().position
         if !position.isFinite || position < 0 { position = max(0, state.positionSec) }
-        print("[Failover] mpv failure: \(reason) pos=\(Int(position)) played=\(Int(secondsPlayed)) started=\(startedPlaying)")
+        // BUG-143: no usable network path at the moment of failure → offline, whatever was seen.
+        let v = PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: NetworkPathMonitor.shared.isSatisfied)
+        print("[Failover] mpv failure: \(reason) pos=\(Int(position)) played=\(Int(secondsPlayed)) started=\(startedPlaying)"
+              + " kind=\(v.kind.rawValue) http=\(v.httpStatus.map(String.init) ?? "-")")
         onPlaybackFailed(PlaybackFailure(reason: reason, positionSec: position,
-                                         secondsPlayed: secondsPlayed, startedPlaying: startedPlaying))
+                                         secondsPlayed: secondsPlayed, startedPlaying: startedPlaying,
+                                         kind: v.kind, httpStatus: v.httpStatus))
         return true
     }
 
     /// (a) `MPV_END_FILE_REASON_ERROR`: mpv could not open or keep decoding the stream.
-    private func reportEndFileError(_ message: String) {
+    private func reportEndFileError(_ message: String, logs: [String]) {
         reportPlaybackFailure(reason: "mpv: \(message)", startedPlaying: failoverLoadedUptime != nil,
-                              secondsPlayed: failoverSecondsPlayed)
+                              secondsPlayed: failoverSecondsPlayed,
+                              verdict: PlaybackFailureClassifier.fromMpvLog(logs, endFileError: message, watchdogFired: false))
     }
 
     /// (b) Arm the start watchdog when `loadfile` is issued: nothing loading within the budget is a
@@ -3376,7 +3388,9 @@ final class MPVTVPlayerViewController: UIViewController {
         case .fired:
             stopStartWatchdogTimer()
             reportPlaybackFailure(reason: "no media within \(Int(startWatchdog.limitSeconds)) s",
-                                  startedPlaying: false, secondsPlayed: 0)
+                                  startedPlaying: false, secondsPlayed: 0,
+                                  verdict: PlaybackFailureClassifier.fromMpvLog(logRing.snapshot, endFileError: nil,
+                                                                                watchdogFired: true))
         }
     }
 
@@ -3401,7 +3415,8 @@ final class MPVTVPlayerViewController: UIViewController {
         guard WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) else { return false }
         let seconds = Int(durationSec.rounded())
         print("[Failover] mpv placeholder clip rejected: \(seconds) s on an auto flow")
-        reportPlaybackFailure(reason: "placeholder clip (\(seconds)s)", startedPlaying: true, secondsPlayed: 0)
+        reportPlaybackFailure(reason: "placeholder clip (\(seconds)s)", startedPlaying: true, secondsPlayed: 0,
+                              verdict: .init(.placeholder))
         eventQueue.async { [weak self] in self?.command("stop") }
         return true
     }
@@ -3575,9 +3590,11 @@ final class MPVTVPlayerViewController: UIViewController {
                 if endFile.reason == MPV_END_FILE_REASON_ERROR {
                     let message = String(cString: mpv_error_string(endFile.error))
                     print("[MPV] End file error: \(message)")
-                    // This block runs on `eventQueue`; the report is a main-thread affair.
+                    // This block runs on `eventQueue`; the report is a main-thread affair. The log
+                    // ring is copied here, in event order, so later lines cannot blur the evidence.
+                    let logs = self.logRing.snapshot
                     DispatchQueue.main.async { [weak self] in
-                        self?.reportEndFileError(message)
+                        self?.reportEndFileError(message, logs: logs)
                     }
                 }
             }
@@ -3586,6 +3603,10 @@ final class MPVTVPlayerViewController: UIViewController {
                 let level = String(cString: msg.pointee.level!)
                 let text = String(cString: msg.pointee.text!)
                 print("[MPV] \(level): \(text)", terminator: "")
+                if level == "warn" || level == "error" || level == "fatal" {
+                    let prefix = msg.pointee.prefix.map { String(cString: $0) } ?? "mpv"
+                    self.logRing.append("\(prefix): \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
+                }
                 #if DEBUG
                 NSLog("[MPV] %@: %@", level, text.trimmingCharacters(in: .newlines))   // reaches `log stream`
                 #endif

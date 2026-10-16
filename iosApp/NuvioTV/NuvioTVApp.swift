@@ -58,6 +58,7 @@ struct NuvioTVApp: App {
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
+        _ = NetworkPathMonitor.shared  // P4 BUG-143: start the path monitor so the first failure reads a real value
         // I1 (beta.19-rc1 verdict, BUG-134): seed the display scale non-view artwork code decodes with
         // (hero resolver, prefetch) while we are certainly on the main thread.
         ArtworkDecodeMath.seedScreenScale()

@@ -82,6 +82,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Classified cause of the failure behind `phase = .failed(...)` (P4, BUG-143). Nil until a
     /// producer classifies one; the screen passes it on as `PlaybackFailure.kind`.
     @Published private(set) var failureKind: PlaybackFailureKind?
+    /// The HTTP status behind a `.http` `failureKind`, when known (log / `PlaybackFailure.httpStatus`).
+    private(set) var failureHTTPStatus: Int?
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
@@ -1002,6 +1004,8 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
         guard signalingAttempt == 0, let servedURL else {
             print("[NativePlayer] failing over to mpv (item failed before playback started)")
+            // C-7: AVPlayer's errors here are about our loopback origin.
+            classifyFailure(PlaybackFailureClassifier.fromNSError(player.currentItem?.error, origin: .loopback))
             phase = .failed("item failed before start")
             return
         }
@@ -1091,7 +1095,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if !readied, rebuild != nil {
                         // A B17 rebuild that failed is our swap, not the link (C3): never the
                         // signaling retry, never remembered.
-                        self.failureKind = .local
+                        self.classifyFailure(.init(.local))
                         self.fallbackMidPlay("late subtitle rebuild failed")
                     } else if !readied {
                         self.handlePrePlaybackItemFailure(player: player)
@@ -1099,6 +1103,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         // Failed AFTER playback started — e.g. a forward seek past the linear remux
                         // frontier that the JIT server fast-503'd until AVPlayer gave up. Hand to mpv
                         // (which seeks anywhere via its own demuxer) at the current/target position.
+                        self.classifyFailure(PlaybackFailureClassifier.fromNSError(item.error, origin: .loopback))
                         self.fallbackMidPlay("item failed mid-play")
                     }
                     return
@@ -1107,7 +1112,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // rejection) with no state change to observe. Surface why every ~10s.
                     notReadyTicks += 1
                     if rebuild != nil, notReadyTicks >= 60 {   // 12 s without ready: the picture is frozen
-                        self.failureKind = .local
+                        self.classifyFailure(.init(.local))
                         self.fallbackMidPlay("late subtitle rebuild failed")
                         return
                     }
@@ -1193,6 +1198,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         // Sustained stall (~30s at 3s/tick) with NO remux progress: dead/stalled
                         // source. Hand to mpv at the current position rather than spin forever.
                         if waitingTicks >= 10 {
+                            self.classifyFailure(.init(.network))
                             self.fallbackMidPlay("stalled ~30s with no remux progress")
                             return
                         }
@@ -1686,11 +1692,17 @@ final class NativePlaybackCoordinator: ObservableObject {
             // never appear, so JIT requests would block until playback stalls. Hand to mpv now rather
             // than wait for the stall watchdog.
             print("[NativePlayer] remux failed MID-PLAY at \(stage) — handing to mpv")
+            classifyFailure(remux?.lastErrorCode.map { PlaybackFailureClassifier.fromAVError($0) } ?? .init(.unknown))
             fallbackMidPlay("remux failed mid-play: \(stage)")
             return
         }
         if case .failed = phase { return }
         print("[NativePlayer] pre-playback failure: \(stage) — falling back to mpv")
+        if let code = remux?.lastErrorCode {
+            classifyFailure(PlaybackFailureClassifier.fromAVError(code, atOpen: remux?.lastErrorAtOpen ?? false))
+        } else {
+            classifyFailure(.init(stage == "no segments produced" || stage == "no segment map" ? .noMedia : .unknown))
+        }
         phase = .failed(stage)
     }
 
@@ -1698,6 +1710,16 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// the linear remux frontier, or the source truncated). Flipping `phase` to `.failed` makes
     /// `NativePlayerScreen` call `onFallback(lastPositionSec, secondsPlayed)`, which re-presents mpv at the same
     /// position — mpv seeks anywhere via its own demuxer. No-op unless we are actually playing.
+    /// BUG-143: records the classified kind of the failure about to set `phase = .failed` (the
+    /// first classification wins), with the offline override applied.
+    private func classifyFailure(_ verdict: PlaybackFailureClassifier.Verdict) {
+        guard failureKind == nil else { return }
+        let v = PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: NetworkPathMonitor.shared.isSatisfied)
+        failureKind = v.kind
+        failureHTTPStatus = v.httpStatus
+        print("[Failover] native failure kind=\(v.kind.rawValue) http=\(v.httpStatus.map(String.init) ?? "-")")
+    }
+
     private func fallbackMidPlay(_ reason: String) {
         guard phase == .playing else { return }
         observeTask?.cancel()

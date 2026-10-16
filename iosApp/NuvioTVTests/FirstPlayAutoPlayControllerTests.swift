@@ -43,13 +43,14 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     /// Fake world for one controller: resolve plans per stream name, a rejected-link store, and
     /// everything the controller asked for, in order.
     private final class Harness {
-        enum Plan { case succeed, fail, failNotLinkFault, hang }
+        enum Plan { case succeed, fail, failNotLinkFault, hang, throwOffline }
 
         var plans: [String: Plan] = [:]
         var rejectedByTitle: [String: Set<String>] = [:]
         var cachedNames: Set<String> = []
         var cachedOnly = false
         var unresolvable: Set<String> = []
+        var networkSatisfied = true
         private(set) var resolveCalls: [String] = []
         private(set) var invalidated: [String] = []
         private(set) var consumed = 0
@@ -85,10 +86,13 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                     case .hang:
                         await withCheckedContinuation { self.hung.append($0) }
                         return .playable(stream, URL(string: "https://resolved.example/\(name)")!)
+                    case .throwOffline:
+                        throw URLError(.notConnectedToInternet)
                     }
                 },
                 resolveDeadline: resolveDeadline,
-                searchDeadline: searchDeadline
+                searchDeadline: searchDeadline,
+                networkSatisfied: { [unowned self] in self.networkSatisfied }
             )
             let controller = FirstPlayAutoPlayController(titleKey: "tt1", dependencies: deps)
             controller.events.sink { [unowned self] in self.events.append($0) }.store(in: &cancellables)
@@ -201,6 +205,33 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertTrue(harness.played.isEmpty)
     }
 
+    /// P4 (BUG-143): a resolve that throws a network error does not remember the link.
+    func testThrownNetworkErrorIsNotRemembered() async {
+        let harness = Harness()
+        harness.plans = ["NET": .throwOffline]
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("NET"), stream("OK")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.played.map { $0.name }, ["OK"])
+        XCTAssertNil(harness.rejectedByTitle["tt1"])
+        XCTAssertTrue(harness.invalidated.isEmpty)
+    }
+
+    /// P4 (C-6): a provider `Error()` (rejectsLink: true) while the TV is offline is not remembered.
+    func testOfflineResolveErrorIsNotRemembered() async {
+        let harness = Harness()
+        harness.plans = ["DOWN": .fail]
+        harness.networkSatisfied = false
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("DOWN"), stream("OK")]))
+        await waitUntil { !harness.played.isEmpty }
+        XCTAssertEqual(harness.played.map { $0.name }, ["OK"])
+        XCTAssertNil(harness.rejectedByTitle["tt1"])
+        XCTAssertTrue(harness.invalidated.isEmpty)
+    }
+
     func testResolveDeadlineMovesOnAndIgnoresTheLateAnswer() async {
         let harness = Harness()
         harness.plans = ["SLOW": .hang]
@@ -210,7 +241,8 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         await waitUntil { !harness.played.isEmpty }
 
         XCTAssertEqual(harness.played.map { $0.name }, ["FAST"])
-        XCTAssertEqual(harness.rejectedByTitle["tt1"], [stream("SLOW").playbackStreamKey])
+        // P4 (BUG-143): a timed-out resolve is transient — the walk moves on, the link is not remembered.
+        XCTAssertNil(harness.rejectedByTitle["tt1"])
 
         harness.releaseHung()
         try? await Task.sleep(nanoseconds: 50_000_000)

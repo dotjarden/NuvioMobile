@@ -217,9 +217,11 @@ enum PlaybackFailoverPolicy {
     }
 
     /// Remember the failed link only when it never got going: a source that played for five
-    /// minutes and then died is not a bad link.
+    /// minutes and then died is not a bad link. P4 (BUG-143): and only on positive evidence
+    /// against the link: a network, offline, cancelled or local-engine failure is not remembered
+    /// (the failover walk still moves on).
     static func shouldReject(_ failure: PlaybackFailure) -> Bool {
-        failure.secondsPlayed < healthySeconds
+        failure.secondsPlayed < healthySeconds && failure.kind.remembersLink
     }
 
     static func shouldKeep(secondsPlayed: Double) -> Bool {

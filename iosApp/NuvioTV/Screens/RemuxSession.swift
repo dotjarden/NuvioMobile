@@ -137,6 +137,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _segmentMap: SegmentMap?
     /// Container chapters on the served timeline (P4, A6-native), set with the segment map.
     private var _chapters: [RemuxChapter] = []
+    /// P4 (BUG-143): the AVERROR behind the last `fail(_:)` (nil = none / not an FFmpeg code), and
+    /// whether it came from opening the input (EIO there is a resolve failure).
+    private var _lastErrorCode: Int32?
+    private var _lastErrorAtOpen = false
     private var _hasAudio = false
     private var _audioCodecToken: String?
     private var _audioTracks: [RemuxAudioTrack] = []
@@ -238,6 +242,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// seconds on the playlist timeline (zero = the first video keyframe, [C-4]). Unsorted and
     /// untrimmed; the coordinator normalises them. Empty until the segment map exists.
     var chapters: [RemuxChapter] { lock.lock(); defer { lock.unlock() }; return _chapters }
+    var lastErrorCode: Int32? { lock.lock(); defer { lock.unlock() }; return _lastErrorCode }
+    var lastErrorAtOpen: Bool { lock.lock(); defer { lock.unlock() }; return _lastErrorAtOpen }
 
     /// Whether an audio track is muxed alongside video (single A/V representation).
     var hasAudio: Bool { lock.lock(); defer { lock.unlock() }; return _hasAudio }
@@ -329,11 +335,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             opaque: Unmanaged.passUnretained(interrupts).toOpaque())
         var inCtx: UnsafeMutablePointer<AVFormatContext>? = allocated
         // On failure avformat_open_input frees and nils the context it was given — no manual free.
-        guard avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts) == 0, let input = inCtx else {
-            return fail("avformat_open_input")
+        let openResult = avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts)
+        guard openResult == 0, let input = inCtx else {
+            return fail("avformat_open_input", code: openResult == 0 ? nil : openResult, atOpen: true)
         }
         defer { var p: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&p) }
-        guard avformat_find_stream_info(input, nil) >= 0 else { return fail("find_stream_info") }
+        let infoResult = avformat_find_stream_info(input, nil)
+        guard infoResult >= 0 else { return fail("find_stream_info", code: infoResult, atOpen: true) }
 
         var videoIn = -1, audioCopyIn = -1, audioTranscodeIn = -1
         var foundAudio: [RemuxAudioTrack] = []
@@ -945,7 +953,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                             interrupts.repositionPending = false
                             continue
                         }
-                        else { print("[Remux] read error \(r) at segment \(currentSeg)"); runEnd = .error }
+                        else {
+                            print("[Remux] read error \(r) at segment \(currentSeg)")
+                            lock.lock(); _lastErrorCode = r; _lastErrorAtOpen = false; lock.unlock()
+                            runEnd = .error
+                        }
                         break
                     }
                 }
@@ -1391,8 +1403,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         cb?(s)
     }
 
-    private func fail(_ stage: String) {
-        print("[Remux] failed at \(stage) — \(config.url.lastPathComponent)")
+    private func fail(_ stage: String, code: Int32? = nil, atOpen: Bool = false) {
+        if let code {
+            lock.lock(); _lastErrorCode = code; _lastErrorAtOpen = atOpen; lock.unlock()
+        }
+        print("[Remux] failed at \(stage)\(code.map { " (AVERROR \($0))" } ?? "") — \(config.url.lastPathComponent)")
         setState(.failed(stage))
     }
 

@@ -47,6 +47,23 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
         XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(failure(played: 2_400)))
     }
 
+    /// P4 (BUG-143): transient kinds are never remembered; link evidence is, under five minutes.
+    func testOnlyLinkEvidenceIsRemembered() {
+        func f(_ kind: PlaybackFailureKind, _ played: Double) -> PlaybackFailure {
+            var x = failure(played: played); x.kind = kind; return x
+        }
+        for kind in [PlaybackFailureKind.network, .offline, .cancelled] {
+            XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(f(kind, 0)), kind.rawValue)
+        }
+        for kind in [PlaybackFailureKind.http, .decode, .unknown] {
+            XCTAssertTrue(PlaybackFailoverPolicy.shouldReject(f(kind, 120)), kind.rawValue)
+        }
+        for kind in [PlaybackFailureKind.http, .decode, .placeholder, .endedEarly, .noMedia, .unknown,
+                     .network, .offline, .cancelled, .local] {
+            XCTAssertFalse(PlaybackFailoverPolicy.shouldReject(f(kind, 300)), kind.rawValue)
+        }
+    }
+
     func testFiveMinutesOfPlayIsHealthy() {
         XCTAssertFalse(PlaybackFailoverPolicy.shouldKeep(secondsPlayed: 299))
         XCTAssertTrue(PlaybackFailoverPolicy.shouldKeep(secondsPlayed: 300))

@@ -1058,9 +1058,14 @@ struct StreamPickerView: View {
             print("[Failover] failure for a context no longer presented — ignored")
             return
         }
-        print("[Failover] failure source=\(ctx.launchSource) attempt=\(ctx.attempt) played=\(Int(failure.secondsPlayed))s key=\(ctx.streamKey) reason=\(failure.reason)")
+        print("[Failover] failure source=\(ctx.launchSource) attempt=\(ctx.attempt) played=\(Int(failure.secondsPlayed))s key=\(ctx.streamKey) kind=\(failure.kind.rawValue) http=\(failure.httpStatus.map(String.init) ?? "-") reason=\(failure.reason)")
         if PlaybackFailoverPolicy.shouldKeep(secondsPlayed: failure.secondsPlayed), ctx.videoId == videoId {
             startOverHonoured = true
+        }
+        if !failure.kind.remembersLink, failure.secondsPlayed < PlaybackFailoverPolicy.healthySeconds {
+            // BUG-143: the link is fine (network / offline / cancelled / our own engine), and its
+            // debrid resolve is still good: neither remembered nor invalidated.
+            print("[Failover] reject key=\(ctx.streamKey) kind=\(failure.kind.rawValue) transient=1 skipped")
         }
         if PlaybackFailoverPolicy.shouldReject(failure) {
             RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
