@@ -135,6 +135,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _cancelled = false
     private var _signaling: VideoSignaling?
     private var _segmentMap: SegmentMap?
+    /// Container chapters on the served timeline (P4, A6-native), set with the segment map.
+    private var _chapters: [RemuxChapter] = []
     private var _hasAudio = false
     private var _audioCodecToken: String?
     private var _audioTracks: [RemuxAudioTrack] = []
@@ -232,6 +234,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// coordinator must fall back to mpv. `LocalHLSServer` synthesizes the VOD playlists from this and
     /// the remux cuts its fragments at the map's boundaries, so published == produced.
     var segmentMap: SegmentMap? { lock.lock(); defer { lock.unlock() }; return _segmentMap }
+    /// The container's chapters (libavformat, first/default edition as it flattens them), in
+    /// seconds on the playlist timeline (zero = the first video keyframe, [C-4]). Unsorted and
+    /// untrimmed; the coordinator normalises them. Empty until the segment map exists.
+    var chapters: [RemuxChapter] { lock.lock(); defer { lock.unlock() }; return _chapters }
 
     /// Whether an audio track is muxed alongside video (single A/V representation).
     var hasAudio: Bool { lock.lock(); defer { lock.unlock() }; return _hasAudio }
@@ -496,7 +502,26 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let map = buildSegmentMap(input: input, videoIndex: videoIn) else {
             return fail("no usable keyframe index")
         }
-        lock.lock(); _segmentMap = map; lock.unlock()
+        // Chapters (P4, A6-native): read once the map exists, because the origin is the map's.
+        let foundChapters: [RemuxChapter] = {
+            let vtb = input.pointee.streams[videoIn]!.pointee.time_base
+            let originSec = Double(map.boundaryTicks[0]) * Double(vtb.num) / Double(vtb.den)
+            var out: [RemuxChapter] = []
+            for i in 0..<Int(input.pointee.nb_chapters) {
+                guard let ch = input.pointee.chapters[i]?.pointee else { continue }
+                let sec = NativeChapterMarkers.seconds(start: ch.start, tbNum: ch.time_base.num,
+                                                       tbDen: ch.time_base.den, originSec: originSec)
+                out.append(RemuxChapter(title: Self.metadataValue(ch.metadata, "title") ?? "", sec: sec))
+            }
+            if !out.isEmpty {
+                let first = out[0], last = out[out.count - 1]
+                print("[Chapters] native n=\(out.count) origin=\(String(format: "%.3f", originSec)) "
+                      + "first=\"\(first.title)\"@\(String(format: "%.3f", first.sec)) "
+                      + "last=\"\(last.title)\"@\(String(format: "%.3f", last.sec))")
+            }
+            return out
+        }()
+        lock.lock(); _segmentMap = map; _chapters = foundChapters; lock.unlock()
         print("[Remux] segment map: \(map.count) segments, \(String(format: "%.1f", map.totalDurationSec))s, target=\(map.targetDurationSec)s")
 
         // --- Multi-run production with seek-anywhere ------------------------------------------------

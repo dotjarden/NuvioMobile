@@ -245,6 +245,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     private lazy var metadataTextItems = NativeNowPlayingMetadata.textItems(context: context)
     private var artworkMetadata: AVMetadataItem?
     private var artworkTask: Task<Void, Never>?
+    /// Container chapters on the served timeline (A6-native), trimmed at the duration; feeds the
+    /// panel's Chapters tab and the system bar's navigation markers.
+    @Published private(set) var chapters: [TransportChapter] = []
+    private var chapterGroups: [AVNavigationMarkersGroup] = []
 
     init(context: PlaybackContext) {
         self.context = context
@@ -572,6 +576,16 @@ final class NativePlaybackCoordinator: ObservableObject {
         item.preferredForwardBufferDuration = 24
         item.textStyleRules = NativeSubtitleStyle.rules(subtitleStyleInput)
         item.externalMetadata = metadataTextItems + (artworkMetadata.map { [$0] } ?? [])
+        item.navigationMarkerGroups = chapterGroups
+    }
+
+    /// Chapters tab pick: an exact seek to the chapter start, kept inside the file. The screen's
+    /// skip planner reads the next tick's jump as a user scrub, so it is never auto-skipped back.
+    func seek(toChapter sec: Double) {
+        guard let player else { return }
+        let target = PlayerChapters.clampedSeek(sec, durationSec: lastDurationSec > 0 ? lastDurationSec : durationSec)
+        print("[Chapters] native seek → \(String(format: "%.1f", target))s")
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     /// Fetches the Now Playing artwork once per coordinator (poster first, 400×600) and encodes it
@@ -599,6 +613,13 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
+        // Chapters (A6-native): libavformat's list, already on the playlist timeline; sorted,
+        // deduped and clamped like mpv's, then trimmed at the duration.
+        let raw = remux.chapters
+        chapters = PlayerChapters.trimmed(
+            PlayerChapters.parseIndexed(count: raw.count, title: { raw[$0].title }, time: { raw[$0].sec }),
+            durationSec: map.totalDurationSec)
+        chapterGroups = NativeChapterMarkers.groups(chapters, durationSec: map.totalDurationSec)
         // Audio menu data (D4): the worker published the full track list with its selection when it
         // inspected the streams — always before the map exists, so it's complete here.
         audioTracks = remux.audioTracks.map {

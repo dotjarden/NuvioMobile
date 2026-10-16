@@ -45,6 +45,16 @@ final class NativePlayerPanelAdapter {
         .sink { [weak self] in self?.rebuildSelections() }
         .store(in: &cancellables)
 
+        // Chapters tab (A6-native), same close-after-select rule as mpv.
+        model.onSelectChapter = { [weak coordinator, weak model] chapter in
+            coordinator?.seek(toChapter: chapter.sec)
+            model?.onClose?()
+        }
+        coordinator.$chapters
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.rebuildChapters() }
+            .store(in: &cancellables)
+
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
@@ -70,6 +80,16 @@ final class NativePlayerPanelAdapter {
         if model.info.rows != rows { model.info.rows = rows }
         if model.info.chips != chips { model.info.chips = chips }
         rebuildSelections()
+        rebuildChapters()
+    }
+
+    private func rebuildChapters() {
+        let list = coordinator.chapters
+        let current = PlayerChapters.index(at: coordinator.lastPositionSec, in: list)
+        let rows = list.enumerated().map { i, c in
+            PlayerPanelChapter(id: i, title: PlayerChapters.displayTitle(c, index: i), sec: c.sec, isCurrent: i == current)
+        }
+        if model.chapters != rows { model.chapters = rows }
     }
 
     // MARK: - Selections

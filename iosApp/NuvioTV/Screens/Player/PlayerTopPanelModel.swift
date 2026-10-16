@@ -28,7 +28,7 @@ struct PlayerPanelChip: Identifiable, Hashable {
     var id: String { text }
 }
 
-/// One row of the Chapters tab (mpv player). `id` is the chapter's index in the list.
+/// One row of the Chapters tab (both engines). `id` is the chapter's index in the list.
 struct PlayerPanelChapter: Identifiable, Equatable {
     let id: Int
     let title: String
@@ -65,7 +65,8 @@ final class PlayerTopPanelModel: ObservableObject {
     /// "Timing" row entirely. mpv sets this true (`MPVPlayerPanelAdapter`); the native AVPlayer
     /// adapter leaves it false until the delay mechanism lands (beta.15 §B3).
     @Published var supportsSubtitleDelay: Bool = false
-    /// Chapters tab rows; empty hides the tab (the native engine never fills it).
+    /// Chapters tab rows; empty hides the tab. mpv fills it from `chapter-list`, the native engine
+    /// from the remux's libavformat chapters (`NativePlayerPanelAdapter`, P4).
     @Published var chapters: [PlayerPanelChapter] = []
 
     /// nil = Off.

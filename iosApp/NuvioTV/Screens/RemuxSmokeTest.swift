@@ -1,5 +1,6 @@
 #if DEBUG
 import AVFoundation
+import AVKit
 import Foundation
 import SharedCore
 
@@ -158,6 +159,26 @@ nonisolated enum RemuxSmokeTest {
                             player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { done in
                                 print("[RemuxSmoke] seek completed=\(done) pos=\(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))")
                             }
+                        }
+                    }
+                }
+                // debug.remuxSmokeChapter=N (player P4, 1-based): 4 s after ready, seek to chapter N
+                // through the coordinator (the Chapters tab's path) and log where it landed 3 s later
+                // against the chapter's served-timeline start — the native chapter timeline check.
+                let chapterPick = UserDefaults.standard.integer(forKey: "debug.remuxSmokeChapter")
+                if chapterPick > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak coordinator] in
+                        guard let coordinator, let player = coordinator.player else { return }
+                        let list = coordinator.chapters
+                        print("[RemuxSmoke] chapters: " + list.map { "\($0.title)@\(String(format: "%.3f", $0.sec))" }.joined(separator: ", "))
+                        guard chapterPick <= list.count else { print("[RemuxSmoke] chapter \(chapterPick) missing"); return }
+                        let target = list[chapterPick - 1].sec
+                        coordinator.seek(toChapter: target)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            let pos = CMTimeGetSeconds(player.currentTime())
+                            print("[RemuxSmoke] chapter \(chapterPick) target=\(String(format: "%.3f", target)) landed=\(String(format: "%.3f", pos))"
+                                  + " (before playing on: \(String(format: "%.3f", pos - 3)))"
+                                  + " markers=\(player.currentItem?.navigationMarkerGroups.first?.timedNavigationMarkers?.count ?? 0)")
                         }
                     }
                 }
