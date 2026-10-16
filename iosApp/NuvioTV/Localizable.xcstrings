@@ -5242,36 +5242,36 @@
         }
       }
     },
-    "An A/B switch for how the mpv player copies a frame for the seek preview. Software for SDR copies it without the video renderer, which uses less memory over a long playback. Video Renderer is the old path. Applies to the next playback.": {
+    "An A/B switch for how the mpv player copies a frame for the seek preview. Video Renderer is the default. Software for SDR copies the frame without the video renderer, which can use less memory over a long playback; when it returns no frame, that playback falls back to the renderer. Applies to the next playback.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ein A/B-Schalter dafür, wie der mpv-Player ein Bild für die Suchvorschau kopiert. Software für SDR kopiert es ohne den Video-Renderer, was bei langer Wiedergabe weniger Speicher braucht. Video-Renderer ist der alte Weg. Gilt für die nächste Wiedergabe."
+            "value": "Ein A/B-Schalter dafür, wie der mpv-Player ein Bild für die Suchvorschau kopiert. Video-Renderer ist der Standard. Software für SDR kopiert das Bild ohne den Video-Renderer, was bei langer Wiedergabe weniger Speicher brauchen kann; liefert es kein Bild, wechselt diese Wiedergabe zum Renderer. Gilt für die nächste Wiedergabe."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Un interruptor A/B para cómo el reproductor mpv copia un fotograma para la vista previa de búsqueda. Software para SDR lo copia sin el renderizador de vídeo, lo que usa menos memoria en una reproducción larga. Renderizador de vídeo es el método anterior. Se aplica a la siguiente reproducción."
+            "value": "Un interruptor A/B para cómo el reproductor mpv copia un fotograma para la vista previa de búsqueda. Renderizador de vídeo es el predeterminado. Software para SDR copia el fotograma sin el renderizador de vídeo, lo que puede usar menos memoria en una reproducción larga; si no devuelve ningún fotograma, esa reproducción vuelve al renderizador. Se aplica a la siguiente reproducción."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Un interrupteur A/B pour la façon dont le lecteur mpv copie une image pour l’aperçu de recherche. Logiciel pour SDR la copie sans le moteur de rendu vidéo, ce qui utilise moins de mémoire sur une longue lecture. Moteur de rendu vidéo est l’ancienne méthode. S’applique à la prochaine lecture."
+            "value": "Un interrupteur A/B pour la façon dont le lecteur mpv copie une image pour l’aperçu de recherche. Moteur de rendu vidéo est l’option par défaut. Logiciel pour SDR copie l’image sans le moteur de rendu vidéo, ce qui peut utiliser moins de mémoire sur une longue lecture ; s’il ne renvoie aucune image, cette lecture repasse au moteur de rendu. S’applique à la prochaine lecture."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Un interruttore A/B per come il lettore mpv copia un fotogramma per l’anteprima di ricerca. Software per SDR lo copia senza il renderer video, usando meno memoria durante una riproduzione lunga. Renderer video è il metodo precedente. Si applica alla prossima riproduzione."
+            "value": "Un interruttore A/B per come il lettore mpv copia un fotogramma per l’anteprima di ricerca. Renderer video è il predefinito. Software per SDR copia il fotogramma senza il renderer video, il che può usare meno memoria durante una riproduzione lunga; se non restituisce alcun fotogramma, quella riproduzione torna al renderer. Si applica alla prossima riproduzione."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Công tắc A/B cho cách trình phát mpv sao chép một khung hình cho bản xem trước khi tua. Phần mềm cho SDR sao chép mà không qua trình kết xuất video, dùng ít bộ nhớ hơn khi phát lâu. Trình kết xuất video là cách cũ. Áp dụng cho lần phát tiếp theo."
+            "value": "Công tắc A/B cho cách trình phát mpv sao chép một khung hình cho bản xem trước khi tua. Trình kết xuất video là mặc định. Phần mềm cho SDR sao chép khung hình mà không qua trình kết xuất video, có thể dùng ít bộ nhớ hơn khi phát lâu; nếu không trả về khung hình nào, lần phát đó chuyển về trình kết xuất. Áp dụng cho lần phát tiếp theo."
           }
         }
       }
@@ -45677,6 +45677,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trình kết xuất video"
+          }
+        }
+      }
+    },
+    "Video Renderer (default)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video-Renderer (Standard)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renderizador de vídeo (predeterminado)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moteur de rendu vidéo (par défaut)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renderer video (predefinito)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trình kết xuất video (mặc định)"
           }
         }
       }

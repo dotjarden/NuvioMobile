@@ -407,12 +407,24 @@ nonisolated enum PreviewFrameScaler {
 /// the decoded frame and converts it in software instead. Software does not tone map, so it is
 /// used for SDR only: a known gamma that is neither PQ nor HLG, and no Dolby Vision colour matrix.
 /// Unknown gamma counts as HDR (keep the renderer path).
+/// P4-F3: on the Apple TV (`hwdec=videotoolbox`) the software path returned no frame at all, so
+/// the renderer is the default and a software miss moves the file to the renderer
+/// (`fallsBackToRenderer`).
 nonisolated enum HarvestScreenshotPath {
-    /// Developer › Harvest Screenshot Path (A/B), read in every build. Unset = on.
+    /// Developer › Harvest Screenshot Path (A/B), read in every build. Unset = off (Video Renderer).
     static let defaultsKey = "debug.harvestScreenshotSW"
+    static let defaultSoftware = false
 
     static func softwareEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: defaultsKey) == nil ? true : defaults.bool(forKey: defaultsKey)
+        defaults.object(forKey: defaultsKey) == nil ? defaultSoftware : defaults.bool(forKey: defaultsKey)
+    }
+
+    /// True when a capture taken on the software path must be retaken on the renderer, and the
+    /// file kept there: no frame, or an empty one. A renderer-path capture never falls back.
+    static func fallsBackToRenderer(onSoftware: Bool, frame: MPVHarvestCapture?) -> Bool {
+        guard onSoftware else { return false }
+        guard let frame else { return true }
+        return frame.width <= 0 || frame.height <= 0
     }
 
     static func useSoftware(enabled: Bool, gamma: String?, colormatrix: String?) -> Bool {

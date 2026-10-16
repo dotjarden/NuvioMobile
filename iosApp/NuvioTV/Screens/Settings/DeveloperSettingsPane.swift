@@ -126,9 +126,9 @@ struct DeveloperSettingsPane: View {
     @AppStorage(HarvestCrashSentinel.disabledKey) private var harvestDisabledByCrash = false
     /// Player P3: where the seek preview gets its pictures, both engines (`SeekPreviewMode`).
     @AppStorage(SeekPreviewMode.defaultsKey) private var seekPreviewMode = SeekPreviewMode.defaultMode.rawValue
-    /// Player P4 (P3-F9): how the mpv harvest copies a frame. Unset = on (Software for SDR), the
-    /// same default `HarvestScreenshotPath.softwareEnabled` reads.
-    @AppStorage(HarvestScreenshotPath.defaultsKey) private var harvestScreenshotSW = true
+    /// Player P4 (P3-F9): how the mpv harvest copies a frame. Unset = off (Video Renderer), the
+    /// same default `HarvestScreenshotPath.softwareEnabled` reads (P4-F3).
+    @AppStorage(HarvestScreenshotPath.defaultsKey) private var harvestScreenshotSW = HarvestScreenshotPath.defaultSoftware
     /// The Thumbnail Harvest picker's value: -2 stands for "Off After a Crash" while the guard
     /// holds; choosing anything (that entry included, as a no-op) writes through.
     private var harvestSelection: Binding<Int> {
@@ -260,9 +260,9 @@ struct DeveloperSettingsPane: View {
         SettingsPickerRow(
             title: String(localized: "Harvest Screenshot Path (A/B)"),
             selection: $harvestScreenshotSW,
-            options: [true, false],
+            options: [false, true],
             descriptionID: .devHarvestScreenshotPath,
-            label: { $0 ? String(localized: "Software for SDR") : String(localized: "Video Renderer") }
+            label: { $0 ? String(localized: "Software for SDR") : String(localized: "Video Renderer (default)") }
         )
 
         SettingsPickerRow(

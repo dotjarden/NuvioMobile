@@ -195,10 +195,13 @@ final class MPVTVPlayerViewController: UIViewController {
     private var harvestSyntheticSize = (width: 640, height: 360)
     #endif
     /// P3-F9: Developer › Harvest Screenshot Path (`HarvestScreenshotPath`), read once in
-    /// `viewDidLoad` in every build; on = `screenshot-sw` for SDR frames.
-    private var harvestScreenshotSW = true
+    /// `viewDidLoad` in every build; on = `screenshot-sw` for SDR frames (off by default, P4-F3).
+    private var harvestScreenshotSW = false
     /// `eventQueue` only: the `screenshot-sw` path last chosen (nil = none yet this file).
     private var harvestScreenshotSWApplied: Bool?
+    /// `eventQueue` only (P4-F3): the software path returned no frame for this file, so the
+    /// harvest stays on the renderer path until the controller goes (one `loadfile` per controller).
+    private var harvestSoftwareFailed = false
     /// `eventQueue` only: `[MPVStats] vo=` printed for this file.
     private var statsVOLogged = false
     /// Crash guard around `screenshot-raw` (review r1 P2 #3); `eventQueue` arms and clears it.
@@ -2003,6 +2006,25 @@ final class MPVTVPlayerViewController: UIViewController {
             CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
         }
         defer { harvestSentinel.clear() }
+        if harvestScreenshotSWApplied == true {
+            // Software path: a failure here says nothing about the format argument (P4-F3), so
+            // `harvestFormatArgWorks` is left alone.
+            let frame = screenshotRaw(withFormat: harvestFormatArgWorks != false)
+            guard HarvestScreenshotPath.fallsBackToRenderer(onSoftware: true, frame: frame) else { return frame }
+            // On the Apple TV (VideoToolbox frames) `screenshot-sw` returns no usable node: move
+            // this file to the renderer and take the capture there now, so it is not lost.
+            harvestSoftwareFailed = true
+            harvestFormatArgWorks = nil
+            applyHarvestScreenshotPath()
+            print("[Harvest] sw returned no frame → vo for this file")
+        }
+        return captureHarvestFrameOnRenderer()
+        #endif
+    }
+
+    /// `eventQueue` only, real captures on the renderer path (`screenshot-sw=no`). Only a failure
+    /// here may flip `harvestFormatArgWorks`.
+    private func captureHarvestFrameOnRenderer() -> MPVHarvestCapture? {
         if harvestFormatArgWorks != false {
             if let frame = screenshotRaw(withFormat: true) {
                 harvestFormatArgWorks = true
@@ -2020,7 +2042,6 @@ final class MPVTVPlayerViewController: UIViewController {
             harvestFormatArgWorks = nil
         }
         return frame
-        #endif
     }
 
     /// `eventQueue` only, real captures. P3-F9 fix candidate (i): `screenshot-sw=yes` for SDR
@@ -2029,12 +2050,13 @@ final class MPVTVPlayerViewController: UIViewController {
     private func applyHarvestScreenshotPath() {
         let gamma = getString("video-params/gamma")
         let matrix = getString("video-params/colormatrix")
-        let software = HarvestScreenshotPath.useSoftware(enabled: harvestScreenshotSW, gamma: gamma, colormatrix: matrix)
+        let software = HarvestScreenshotPath.useSoftware(enabled: harvestScreenshotSW && !harvestSoftwareFailed,
+                                                         gamma: gamma, colormatrix: matrix)
         guard software != harvestScreenshotSWApplied else { return }
         // mpv's default is `no`: only write it once `yes` has been written.
         if software || harvestScreenshotSWApplied == true { setMpvString("screenshot-sw", software ? "yes" : "no") }
         harvestScreenshotSWApplied = software
-        print("[Harvest] path=\(software ? "sw" : "vo") gamma=\(gamma ?? "-") matrix=\(matrix ?? "-") switch=\(harvestScreenshotSW ? "sw" : "vo")")
+        print("[Harvest] path=\(software ? "sw" : "vo") gamma=\(gamma ?? "-") matrix=\(matrix ?? "-") switch=\(harvestScreenshotSW ? "sw" : "vo")\(harvestSoftwareFailed ? " swFailed=1" : "")")
     }
 
     /// A `bgr0` frame (640 × 360 unless `debug.harvestSyntheticSize`) whose grey level follows

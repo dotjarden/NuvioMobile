@@ -16,13 +16,31 @@ final class HarvestScreenshotPathTests: XCTestCase {
         XCTAssertFalse(HarvestScreenshotPath.useSoftware(enabled: false, gamma: "bt.1886", colormatrix: "bt.709"), "switch off")
     }
 
-    func testSwitchDefaultsOn() {
+    /// P4-F3: the software path captured nothing on the Apple TV, so unset = Video Renderer.
+    func testSwitchDefaultsToRenderer() {
         let defaults = UserDefaults(suiteName: "HarvestScreenshotPathTests")!
         defaults.removePersistentDomain(forName: "HarvestScreenshotPathTests")
+        XCTAssertFalse(HarvestScreenshotPath.defaultSoftware)
+        XCTAssertFalse(HarvestScreenshotPath.softwareEnabled(defaults))
+        defaults.set(true, forKey: HarvestScreenshotPath.defaultsKey)
         XCTAssertTrue(HarvestScreenshotPath.softwareEnabled(defaults))
         defaults.set(false, forKey: HarvestScreenshotPath.defaultsKey)
         XCTAssertFalse(HarvestScreenshotPath.softwareEnabled(defaults))
         defaults.removePersistentDomain(forName: "HarvestScreenshotPathTests")
+    }
+
+    /// P4-F3: a software-path capture with no frame, or an empty one, is retaken on the renderer;
+    /// a good software frame is kept, and a renderer-path miss never "falls back".
+    func testSoftwareMissFallsBackToRenderer() {
+        let good = MPVHarvestCapture(width: 1920, height: 1080, format: "bgr0", thumb: nil)
+        let emptyW = MPVHarvestCapture(width: 0, height: 1080, format: "bgr0", thumb: nil)
+        let emptyH = MPVHarvestCapture(width: 1920, height: 0, format: "-", thumb: nil)
+        XCTAssertTrue(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: true, frame: nil))
+        XCTAssertTrue(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: true, frame: emptyW))
+        XCTAssertTrue(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: true, frame: emptyH))
+        XCTAssertFalse(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: true, frame: good))
+        XCTAssertFalse(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: false, frame: nil))
+        XCTAssertFalse(HarvestScreenshotPath.fallsBackToRenderer(onSoftware: false, frame: good))
     }
 
     func testSyntheticSizeParse() {
