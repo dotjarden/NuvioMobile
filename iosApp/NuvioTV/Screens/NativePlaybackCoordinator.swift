@@ -1,7 +1,9 @@
 import AVFoundation
+import AVKit
 import Combine
 import Foundation
 import SharedCore
+import UIKit
 
 // Phase 3 of the hybrid player: ties Phase 2's remux + loopback server to an AVPlayer for one
 // PlaybackContext. Starts the remux, begins playback progressively as soon as the first segment is
@@ -239,6 +241,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// The app subtitle style snapshot (A9), read once in `resolveLanguagePlan`; a Settings change
     /// applies from the next playback, like `stripSdh`.
     private var subtitleStyleInput = NativeSubtitleStyle.Input.default
+    /// `externalMetadata` for every item (A8): the text items, plus the artwork once it lands.
+    private lazy var metadataTextItems = NativeNowPlayingMetadata.textItems(context: context)
+    private var artworkMetadata: AVMetadataItem?
+    private var artworkTask: Task<Void, Never>?
 
     init(context: PlaybackContext) {
         self.context = context
@@ -283,6 +289,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        startArtworkFetch()
         launchRemux()
     }
 
@@ -449,6 +456,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func stop() {
         pollTask?.cancel(); pollTask = nil
+        artworkTask?.cancel(); artworkTask = nil
         observeTask?.cancel(); observeTask = nil
         subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
         subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
@@ -563,6 +571,25 @@ final class NativePlaybackCoordinator: ObservableObject {
         // don't exist yet, tripping CFNetwork's request timeout.
         item.preferredForwardBufferDuration = 24
         item.textStyleRules = NativeSubtitleStyle.rules(subtitleStyleInput)
+        item.externalMetadata = metadataTextItems + (artworkMetadata.map { [$0] } ?? [])
+    }
+
+    /// Fetches the Now Playing artwork once per coordinator (poster first, 400×600) and encodes it
+    /// off the main actor. When it lands after the item exists, the current item's metadata is
+    /// replaced once; later items pick it up in `decorate`.
+    private func startArtworkFetch() {
+        guard artworkTask == nil, let url = NativeNowPlayingMetadata.artworkURL(context: context) else { return }
+        artworkTask = Task { @MainActor [weak self] in
+            let request = ArtworkDecodeRequest(size: .points(width: 400, height: 600), fill: true, scale: 1)
+            guard let image = await ImageFallbackPlan.load(candidates: [url], request: request) else { return }
+            let jpeg = await Task.detached(priority: .utility) { image.jpegData(compressionQuality: 0.8) }.value
+            guard let self, !Task.isCancelled, let jpeg else { return }
+            self.artworkMetadata = NativeNowPlayingMetadata.artworkItem(jpeg: jpeg)
+            if let item = self.playerItem {
+                item.externalMetadata = self.metadataTextItems + [self.artworkMetadata!]
+            }
+            print("[NativePlayer] artwork attached (\(jpeg.count / 1024) KB)")
+        }
     }
 
     private static func fileSize(_ dir: URL, _ name: String) -> Int {
