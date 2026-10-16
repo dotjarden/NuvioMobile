@@ -305,6 +305,19 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertNotNil(back.prompt)
     }
 
+    /// r2 P2: a chip press during a B17 rebuild is not issued to AVPlayer (the rebuild's corrective
+    /// seek lands on the target); the screen calls `seekInterrupted()` at once. The chip must not
+    /// re-fire for that interval, nor auto-skip it, even on a tick that still reads inside it.
+    func testChipSeekDeferredToRebuildDoesNotRefire() {
+        var p = planner([interval(0, 90, "op")])
+        XCTAssertNotNil(tick(&p, 10, at: 0).prompt)
+        p.beginSeek(kind: .chip, targetSec: 90, fromSec: 10, now: 0.2)
+        p.seekInterrupted()
+        XCTAssertNil(p.seekInFlight)
+        XCTAssertEqual(tick(&p, 10.5, at: 1, types: [.intro]), SkipSegmentPlanner.Decision())
+        XCTAssertEqual(tick(&p, 90, at: 2, types: [.intro]), SkipSegmentPlanner.Decision())
+    }
+
     func testChipPressStillInsideAfterCompletionDoesNotFlashTheChip() {
         var p = planner([interval(0, 90, "op")])
         XCTAssertNotNil(tick(&p, 10, at: 0).prompt)

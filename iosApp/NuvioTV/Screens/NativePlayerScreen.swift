@@ -382,6 +382,13 @@ struct NativePlayerScreen: View {
     /// disappears cleanly at the end) and auto-skip the segment types chosen in Settings — same
     /// `SkipSegmentPlanner` rules as the mpv screen.
     private func updateSkipPrompt(position: Double, duration: Double) {
+        // r2 P2: no chip and no auto-skip while a B17 rebuild swaps the item (the new item is not
+        // ready for a seek). The planner is not evaluated either, so nothing is consumed; the
+        // rebuild restores the playhead and the next tick after it decides as usual.
+        if isRebuildingItem {
+            if skipPrompt != nil { skipPrompt = nil }
+            return
+        }
         // Synchronous read (ticks are ~3 s apart); auto-skip also requires Skip Intro.
         let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
         let autoSkipTypes: [AutoSkipSegmentType]? = settings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
@@ -401,6 +408,17 @@ struct NativePlayerScreen: View {
         coordinator.noteUserSeek(to: target)   // r1 P3: wins over a B17 rebuild's corrective seek
         // The chip can't re-fire while this is in flight: the planner offers no chip until then.
         if skipPrompt != nil { skipPrompt = nil }
+        // r2 P2: during a B17 rebuild the current item is the new one, not `readyToPlay` yet, and
+        // a completion-handler seek on such an item has historically raised
+        // NSInternalInconsistencyException. Don't issue it: `noteUserSeek` above already aims the
+        // rebuild's corrective seek at this target. Tell the planner the seek will not complete as
+        // issued (`seekInterrupted`: a chip press keeps its interval consumed, so the chip cannot
+        // re-fire), and the next tick judges the landing like any other jump.
+        if isRebuildingItem && player.currentItem?.status != .readyToPlay {
+            print("[NativePlayer] skip seek → \(String(format: "%.1f", target))s deferred to the late rebuild")
+            skipPlanner.seekInterrupted()
+            return
+        }
         Task { @MainActor in
             let finished = await player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                                              toleranceBefore: .zero, toleranceAfter: .zero)
