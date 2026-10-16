@@ -657,8 +657,16 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Called from the add-on watcher and the playback tick: once the fetch has completed and some
     /// file is not in the master, (re)start the 1 s debounce. At most one rebuild per session.
+    ///
+    /// r3 P2: both this and `applyLateSubtitles` wait for `playIssued`. `phase` turns `.playing`
+    /// before the first item is ready, so a slow add-on fetch landing while the first item loads
+    /// or during its resume seek could rebuild it then. `rebuildItem` captured
+    /// `wasPlaying = false` (no `play()` yet) and cancelled the observe task before its `play()`,
+    /// so `finishRebuild` never played: a frozen frame on "Buffering…", no tracker start. The
+    /// playback tick re-calls this every 200 ms, so a gated apply is deferred to the first tick
+    /// after `play()`, not lost (nothing is recorded in `servedAddonURLs` until the apply runs).
     private func checkLateSubtitles() {
-        guard server != nil, phase == .playing, !isRebuildingItem, lateRebuildsUsed == 0,
+        guard server != nil, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0,
               !pendingLateFiles.isEmpty else { return }
         lateDebounce?.cancel()
         lateDebounce = Task { @MainActor [weak self] in
@@ -670,7 +678,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func applyLateSubtitles() {
-        guard let server, phase == .playing, !isRebuildingItem, lateRebuildsUsed == 0 else { return }
+        guard let server, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0 else { return }
         let files = pendingLateFiles
         guard !files.isEmpty else { return }
         files.forEach { servedAddonURLs.insert($0.url) }
