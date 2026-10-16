@@ -184,7 +184,8 @@ nonisolated enum PlaybackFailureClassifier {
 /// codec/demuxer contexts are dropped; protocol lines (`tcp`/`tls`/`https`) are kept, whatever the
 /// main-stream URL is called (`Movie.2024.MULTi.SUB.1080p.mkv`, a `x.sub.example` host). The
 /// URL-less protocol lines of an in-core `sub-add <http url>` are dropped by the player's
-/// attribution window (`subtitleLoadBegan` / `subtitleLoadDrained`).
+/// attribution window (`subtitleLoadBegan` / `subtitleLoadDrained`): only protocol contexts
+/// (`protocolContexts`), so a main-stream `ffmpeg/demuxer` line drained there is kept.
 nonisolated final class MPVLogRing: @unchecked Sendable {
     static let capacity = 16
     private let lock = NSLock()
@@ -202,6 +203,8 @@ nonisolated final class MPVLogRing: @unchecked Sendable {
         "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "pgssub", "hdmv_pgs_subtitle", "sup", "libzvbi_teletextdec",
         "text", "eia_608", "cc_dec", "dfxp",
     ]
+    /// FFmpeg protocol context names: the only lines the `sub-add` attribution window drops.
+    static let protocolContexts: Set<String> = ["tcp", "tls", "http", "https", "crypto"]
     /// A subtitle file URL: the extension ends the URL path (query, whitespace, end, or a trailing
     /// period / comma / bracket before whitespace or the end). Not `.SUB.` inside a release name.
     private static let subtitleURLPattern =
@@ -231,16 +234,20 @@ nonisolated final class MPVLogRing: @unchecked Sendable {
     func append(prefix: String, text: String) {
         guard Self.isMainStreamEvidence(prefix: prefix, text: text) else { return }
         lock.lock()
-        let dropAsSubtitleLoad = attributingSubtitleLoad && prefix.lowercased().hasPrefix("ffmpeg")
+        let attributing = attributingSubtitleLoad
         lock.unlock()
+        // r3 P3: inside the window only protocol lines are the subtitle fetch's; a demuxer or
+        // decoder line there is still the stream's.
+        let dropAsSubtitleLoad = attributing && prefix.lowercased().hasPrefix("ffmpeg")
+            && Self.leadingContext(of: text).map(Self.protocolContexts.contains) == true
         guard !dropAsSubtitleLoad else { return }
         append("\(prefix): \(text)")
     }
 
-    /// Event queue: an in-core `sub-add` is about to run. Until `subtitleLoadDrained()`, FFmpeg
-    /// lines (its URL-less `tcp:` / `tls:` / `https:` lines) are the subtitle load's, not the
-    /// stream's. A main-stream FFmpeg line drained in the same window is lost too (rare: the window
-    /// is one synchronous command plus one drain).
+    /// Event queue: an in-core `sub-add` is about to run (the player drains the queue first, so
+    /// earlier lines are already in). Until `subtitleLoadDrained()`, FFmpeg protocol lines (its
+    /// URL-less `tcp:` / `tls:` / `https:` lines) are the subtitle load's, not the stream's. A
+    /// main-stream protocol line logged while the command blocks is lost too (the same outage).
     func subtitleLoadBegan() { lock.lock(); attributingSubtitleLoad = true; lock.unlock() }
     /// Event queue: the lines buffered during the `sub-add` have been drained.
     func subtitleLoadDrained() { lock.lock(); attributingSubtitleLoad = false; lock.unlock() }

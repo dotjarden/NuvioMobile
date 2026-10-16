@@ -1555,6 +1555,9 @@ final class MPVTVPlayerViewController: UIViewController {
             // r2 P3: the fetch's FFmpeg lines (URL-less `tcp:` / `tls:` lines) are buffered while
             // the command runs; drain them now, inside the attribution window, so a timed-out
             // subtitle fetch never reads as main-stream network evidence.
+            // r3 P3: drain once BEFORE opening the window, so lines queued before the command are
+            // judged as the main stream's; the window then holds only what `sub-add` produced.
+            self.drainEvents()
             self.logRing.subtitleLoadBegan()
             self.command("sub-add", args: [url, "auto", title, lang])
             self.drainEvents()

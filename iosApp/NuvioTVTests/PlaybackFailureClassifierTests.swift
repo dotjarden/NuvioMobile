@@ -161,8 +161,12 @@ final class PlaybackFailureClassifierTests: XCTestCase {
         ring.subtitleLoadBegan()
         ring.append(prefix: "ffmpeg", text: "tls: Error decoding the received TLS packet.")
         ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        ring.append(prefix: "ffmpeg", text: "crypto: Invalid key")
+        // r3 P3: a main-stream demuxer line drained inside the window is kept.
+        ring.append(prefix: "ffmpeg/demuxer", text: "matroska,webm: Read error at pos. 123")
         ring.subtitleLoadDrained()
-        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+        XCTAssertEqual(ring.snapshot, ["ffmpeg/demuxer: matroska,webm: Read error at pos. 123"])
+        ring.clear()
         // The same lines outside the window are the stream's.
         ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
         XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: true).kind, .network)
