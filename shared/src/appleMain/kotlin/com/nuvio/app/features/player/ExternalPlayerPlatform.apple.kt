@@ -118,7 +118,61 @@ private val iosExternalPlayerSpecs = listOf(
             }
         },
     ),
+    IosExternalPlayerSpec(
+        id = "senplayer",
+        name = "SenPlayer",
+        scheme = "senplayer",
+        // FEAT-56 (GitHub youngchris29-art/NuvioTV#5): SenPlayer's URL-scheme parameters are NOT
+        // published, so this is the device-test shape, built on the Outplayer/VidHub/Infuse
+        // `x-callback-url/play` grammar. Every parameter name below is UNVERIFIED against the
+        // app: `position` (seconds), `filename` and `name` (SenPlayer 5.9.1 notes mention
+        // "setting UA and name"), `sub`, and the `x-success`/`x-error` return (SenPlayer 6.1.1
+        // notes "returning current playback time when exiting playback"). `debug.senplayerMethod`
+        // bisects the handoff live from launch args without a rebuild, like VidHub's knob:
+        // "minimal" = url only, "noname" = everything except filename/name, unset = full.
+        buildUrl = { request ->
+            when (NSUserDefaults.standardUserDefaults.stringForKey("debug.senplayerMethod")) {
+                "minimal" -> buildString {
+                    append("senplayer://x-callback-url/play?url=")
+                    append(request.sourceUrl.urlQueryEncode())
+                }
+                "noname" -> buildSenPlayerUrl(request, includeName = false)
+                else -> buildSenPlayerUrl(request, includeName = true)
+            }
+        },
+    ),
 )
+
+private fun buildSenPlayerUrl(request: ExternalPlayerPlaybackRequest, includeName: Boolean): String =
+    buildString {
+        append("senplayer://x-callback-url/play?url=")
+        append(request.sourceUrl.urlQueryEncode())
+        if (request.resumePositionMs > 0) {
+            append("&position=")
+            append(request.resumePositionMs / 1000)
+        }
+        if (includeName) {
+            val title = request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode()
+            append("&filename=")
+            append(title)
+            append("&name=")
+            append(title)
+        }
+        request.subtitles?.forEach { subtitle ->
+            append("&sub=")
+            append(subtitle.url.urlQueryEncode())
+        }
+        // Same return contract as Infuse: a returned `position` lands in
+        // `ExternalPlaybackReturn.handleUrl` once Swift prepares a session for "senplayer".
+        request.callbackSuccessUrl?.let { callbackUrl ->
+            append("&x-success=")
+            append(callbackUrl.urlQueryEncode())
+        }
+        request.callbackErrorUrl?.let { callbackUrl ->
+            append("&x-error=")
+            append(callbackUrl.urlQueryEncode())
+        }
+    }
 
 actual object ExternalPlayerPlatform {
     actual fun defaultPlayerId(): String? = null
