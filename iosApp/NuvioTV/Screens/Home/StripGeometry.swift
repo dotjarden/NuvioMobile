@@ -21,6 +21,8 @@ nonisolated struct StripGeometry: Equatable, Sendable {
         var posterHeight: CGFloat
         var posterWidth: CGFloat
         var titlesShown: Bool
+        /// The GLOBAL Landscape Posters toggle (rows of 203 pt cards). BUG-162: never true for a
+        /// BUG-157 shape-landscape row, which is planned at the portrait height by construction.
         var landscapeCatalogRows: Bool
         var noZoom: Bool
         /// One `Theme.Font.sectionTitle` line: 38 system, ≈38.84 Open Sans.
@@ -274,7 +276,9 @@ extension StripGeometry.Inputs {
         StripGeometry.Inputs(posterHeight: style.height,
                              posterWidth: style.width,
                              titlesShown: style.showTitle,
-                             landscapeCatalogRows: style.landscapeCatalogRows,
+                             // BUG-162: the GLOBAL toggle's short rows only. A shape-landscape
+                             // row (BUG-157, `landscapeFromShape`) is a portrait-height row.
+                             landscapeCatalogRows: style.landscapeRowGeometry,
                              noZoom: noZoom,
                              titleHeight: Theme.Font.sectionTitleLineHeight,
                              folderCaptionHeight: Theme.Font.uiFont(for: .caption2).lineHeight.rounded(.up),

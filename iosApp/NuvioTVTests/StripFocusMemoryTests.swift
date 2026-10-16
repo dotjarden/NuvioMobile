@@ -66,6 +66,36 @@ final class StripFocusMemoryTests: XCTestCase {
         XCTAssertEqual(memory.rememberedRowCount, 1)
     }
 
+    /// BUG-156 (a): while a push covers the strip, a focus report (the In Row trailer's card collapsing
+    /// under the cover) must not replace the card the pop restores.
+    func testWritesAreIgnoredWhileFrozen() {
+        let memory = StripFocusMemory()
+        memory.remember(rowKey: "row3", itemId: "card2")
+        memory.setFrozen(true)
+        XCTAssertTrue(memory.isFrozen)
+        memory.remember(rowKey: "row3", itemId: "card3")
+        memory.remember(rowKey: "row4", itemId: "card1")
+        XCTAssertEqual(memory.itemId(for: "row3"), "card2", "the card the viewer left survives the cover")
+        XCTAssertNil(memory.itemId(for: "row4"))
+        memory.prune(keeping: ["row3"])
+        XCTAssertEqual(memory.rememberedRowCount, 1, "pruning still runs while frozen")
+        memory.setFrozen(false)
+        memory.remember(rowKey: "row3", itemId: "card5")
+        XCTAssertEqual(memory.itemId(for: "row3"), "card5", "uncovered, the viewer's moves record again")
+    }
+
+    /// The freeze follows `StageController.setCovered`: a push or the picker (`restoresFocus`) freezes,
+    /// a shell cover alone (another tab) does not, uncovering thaws.
+    func testStageCoverFreezesTheMemoryOnlyForAPush() {
+        let stage = StageController()
+        stage.setCovered(true, restoresFocus: true)
+        XCTAssertTrue(stage.memory.isFrozen)
+        stage.setCovered(false, restoresFocus: true)
+        XCTAssertFalse(stage.memory.isFrozen)
+        stage.setCovered(true, restoresFocus: false)
+        XCTAssertFalse(stage.memory.isFrozen, "a tab switch moves no card focus")
+    }
+
     func testDefaultFocusSwitch() {
         XCTAssertFalse(StripFocusMemory(drivesDefaultFocus: false).drivesDefaultFocus)
         // The test host passes no `-debug.stripFocusMemory`: memory drives default focus.

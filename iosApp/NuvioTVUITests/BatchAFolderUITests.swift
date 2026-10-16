@@ -12,7 +12,10 @@ import XCTest
 ///    inside a collection (`rail_state … shown=0`) and shows it again on Home.
 ///  - `testLandscapeShapeCatalogDrawsLandscapeCards` (BUG-157): a stub add-on whose catalog tags
 ///    every item `posterShape: "landscape"` draws cards wider than tall with the global Landscape
-///    Posters toggle off. Installs the add-on through the Add-ons tab and removes it again.
+///    Posters toggle off. Batch B (BUG-162/163): the cards are the portrait height, 16:9 wide, the
+///    heading sits right above them and the in-row trailer's picture shows. Installs the add-on
+///    through the DEBUG `-debug.addonManifestUrls` knob and removes it with
+///    `-debug.addonManifestRemoveMatching` (the Add-ons keyboard skipped the leg on most runs).
 ///
 /// Tab bar oracle (the `launchToHome` rule in `NuvioTVUITests`): the bar is SHOWN when its "Home"
 /// button exists with `frame.minY > 0`; a hidden bar removes its buttons from the tree, and a
@@ -247,7 +250,7 @@ final class BatchAFolderUITests: XCTestCase {
     private static let landscapeAddonName = "ZZ Landscape Stub"
 
     private static let landscapeManifest = """
-    {"id":"zz.batcha.landscape","version":"1.0.0","name":"\(landscapeAddonName)","description":"Batch A BUG-157 stub","resources":["catalog"],"types":["movie"],"idPrefixes":["zzland"],"catalogs":[{"type":"movie","id":"zzland","name":"ZZ Landscape Row"}]}
+    {"id":"zz.batcha.landscape","version":"1.0.0","name":"\(landscapeAddonName)","description":"Batch A BUG-157 stub","resources":["catalog","meta"],"types":["movie"],"idPrefixes":["zzland"],"catalogs":[{"type":"movie","id":"zzland","name":"ZZ Landscape Row"}]}
     """
 
     private static let landscapeCatalog: String = {
@@ -256,6 +259,12 @@ final class BatchAFolderUITests: XCTestCase {
         }
         return "{\"metas\":[\(metas.joined(separator: ","))]}"
     }()
+
+    /// BUG-163: the meta every stub id answers with (one route for every id; the card only needs a
+    /// trailer listed).
+    private static let landscapeMeta = """
+    {"meta":{"id":"zzland1","type":"movie","name":"ZZLand","posterShape":"landscape","poster":"https://images.metahub.space/background/medium/tt0111161/img","trailers":[{"source":"rNZ0xKaCdus","type":"Trailer"}]}}
+    """
 
     /// Copy of `TabBarScrollLinkTests.openTab`, with Discover in the list.
     private func openTab(_ app: XCUIApplication, named title: String) {
@@ -273,102 +282,179 @@ final class BatchAFolderUITests: XCTestCase {
         pause(2)
     }
 
-    private func removeLandscapeAddon(_ app: XCUIApplication) {
-        openTab(app, named: "Add-ons")
-        remote.press(.down)
-        pause(1)
-        guard walk(app, .down, untilFocusContains: Self.landscapeAddonName, max: 12, gap: 0.8) else {
-            note("cleanup", "the stub add-on row was not found; remove '\(Self.landscapeAddonName)' by hand")
-            return
+    /// BUG-162/163 (Batch B, B4): the stub add-on lives under `/zzland/`, so the DEBUG remove knob
+    /// can match a stale copy from an earlier run on another port.
+    private static let landscapeStubPath = "/zzland/"
+
+    /// Mean absolute RGB difference (0…255) between two screenshots inside `rect` (points), sampled
+    /// on a 24 × 14 grid. A playing video changes it; a still picture leaves it near 0.
+    private static func meanDifference(_ a: XCUIScreenshot, _ b: XCUIScreenshot, in rect: CGRect,
+                                       screenWidth: CGFloat) -> Double? {
+        guard let ia = a.image.cgImage, let ib = b.image.cgImage,
+              ia.width == ib.width, ia.height == ib.height, screenWidth > 0 else { return nil }
+        let scale = CGFloat(ia.width) / screenWidth
+        func pixels(_ image: CGImage) -> [UInt8]? {
+            let w = image.width, h = image.height
+            var data = [UInt8](repeating: 0, count: w * h * 4)
+            guard let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return data
         }
-        remote.press(.select, forDuration: 1.5)   // hold → context menu
-        pause(1.5)
-        let removeItem = app.buttons["Remove Add-on"]
-        if removeItem.exists {
-            _ = moveFocus(.down, until: removeItem, max: 3)
-            remote.press(.select)
-            pause(1.5)
-            let confirm = app.buttons["Remove"]
-            if confirm.exists {
-                if !moveFocus(.up, until: confirm, max: 3) { _ = moveFocus(.down, until: confirm, max: 3) }
-                remote.press(.select)
-                pause(2)
+        guard let pa = pixels(ia), let pb = pixels(ib) else { return nil }
+        let inset = rect.insetBy(dx: rect.width * 0.1, dy: rect.height * 0.1)
+        var total = 0.0
+        var count = 0
+        for gx in 0..<24 {
+            for gy in 0..<14 {
+                let x = Int((inset.minX + inset.width * CGFloat(gx) / 23) * scale)
+                let y = Int((inset.minY + inset.height * CGFloat(gy) / 13) * scale)
+                guard x >= 0, y >= 0, x < ia.width, y < ia.height else { continue }
+                let i = (y * ia.width + x) * 4
+                total += Double(abs(Int(pa[i]) - Int(pb[i])) + abs(Int(pa[i + 1]) - Int(pb[i + 1]))
+                                + abs(Int(pa[i + 2]) - Int(pb[i + 2]))) / 3
+                count += 1
             }
         }
-        note("cleanup", app.buttons.matching(NSPredicate(format: "label CONTAINS %@", Self.landscapeAddonName)).count == 0
-             ? "removed" : "still listed; remove '\(Self.landscapeAddonName)' by hand")
+        return count > 0 ? total / Double(count) : nil
     }
 
+    /// One `key=value` token out of a probe label.
+    private static func token(_ label: String, _ key: String) -> String? {
+        guard let range = label.range(of: key + "=") else { return nil }
+        return label[range.upperBound...].split(separator: " ").first.map(String.init)
+    }
+
+    /// BUG-157 + BUG-162 + BUG-163. Steven's setup (rc4 video): Stage Home, Medium+, Hide Titles ON,
+    /// No Zoom on Focus ON, trailers in the row. The stub add-on comes in through the DEBUG
+    /// `-debug.addonManifestUrls` knob (the Add-ons keyboard made this leg skip on most runs).
+    ///  1. the stub row's cards are landscape (BUG-157);
+    ///  2. they are as tall as the portrait card focused one row up, 16:9 wide (BUG-162 (a));
+    ///  3. the heading sits right above them, not ~120 pt up (BUG-162 (b));
+    ///  4. the trailer tile has the card's size (`debug_trailerTile outer=`) and reaches a stage;
+    ///  5. once `event=play host=card`, the card region MOVES between two screenshots (BUG-163: the
+    ///     audio played under a still picture). YouTube extraction can be blocked from this Mac
+    ///     (`LOGIN_REQUIRED`); then 5 is recorded as device-owed, not failed.
     func testLandscapeShapeCatalogDrawsLandscapeCards() throws {
         let stub = DiscoveryStubServer(routes: [
-            (prefix: "/manifest.json", body: Self.landscapeManifest),
-            (prefix: "/catalog/movie/zzland", body: Self.landscapeCatalog),
+            (prefix: "\(Self.landscapeStubPath)manifest.json", body: Self.landscapeManifest),
+            (prefix: "\(Self.landscapeStubPath)catalog/movie/zzland", body: Self.landscapeCatalog),
+            // BUG-163: a meta with one trailer, so the in-row trailer dwells (a title that lists no
+            // trailer never morphs). The smoke id replaces the key at extraction anyway.
+            (prefix: "\(Self.landscapeStubPath)meta/movie/", body: Self.landscapeMeta),
         ])
         try stub.start()
         defer { stub.stop() }
         // Stage with titles hidden: no pinned reaches and no caption, so a card button's frame is its
-        // artwork (XCUITest frames ignore the focus lift's scale; the ratio would survive it anyway).
-        let app = launch(["-home_layout", "stage", "-sidebar_style", "tabs", "-debug.posterHideTitles", "YES"])
+        // artwork (XCUITest frames ignore the focus lift's scale; No Zoom has none anyway).
+        let app = launch([
+            "-home_layout", "stage", "-sidebar_style", "tabs",
+            "-debug.posterHideTitles", "YES", "-debug.posterSizeOverride", "mediumPlus",
+            "-no_zoom_on_focus", "YES",
+            "-inline_trailers_enabled", "YES", "-trailer_playback_location", "poster",
+            "-trailer_start_delay", "1", "-hero_trailer_autoplay", "NO",
+            "-debug.trailerProbe", "YES", "-debug.trailerSmokeVideoId", "rNZ0xKaCdus",
+            "-debug.addonManifestRemoveMatching", Self.landscapeStubPath,
+            "-debug.addonManifestUrls", "\(stub.origin)\(Self.landscapeStubPath)manifest.json",
+        ])
+        defer {
+            // Cleanup: relaunch with the remove knob alone, so the fixture never keeps the stub.
+            app.terminate()
+            let cleanup = launch(["-debug.addonManifestRemoveMatching", Self.landscapeStubPath])
+            pause(10)
+            cleanup.terminate()
+        }
         pause(14)
 
-        // Install through the Add-ons tab (the field, then the Install button).
-        openTab(app, named: "Add-ons")
-        remote.press(.down)
-        pause(1)
-        let field = app.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the manifest URL field is missing")
-        if !field.hasFocus { _ = moveFocus(.down, until: field, max: 4) }
-        // Never Select blind on the Add-ons list: a Select on an add-on row toggles it off (the
-        // second run disabled the fixture's Cinemeta this way and every later Home leg lost its
-        // catalog rows). Only the focused field opens the keyboard.
-        guard field.hasFocus else {
-            note("landscape-skip", "the manifest field never took focus; focus=\(focusedLabel(app))")
-            throw XCTSkip("the Add-ons manifest field never took focus on this run")
+        // Walk the strip down to the stub row, keeping the last portrait frame seen on the way.
+        var portraitFrame: CGRect?
+        var found = false
+        for _ in 0..<16 {
+            // Hide Titles leaves the card buttons unlabelled: `debug_strip foc=<rowKey>/<itemId>`.
+            if probe(app, "debug_strip").contains("/zzland") { found = true; break }
+            let frame = focusedElement(app).frame
+            if frame.height > 0, frame.width / frame.height < 0.9 { portraitFrame = frame }
+            remote.press(.down)
+            pause(2.5)
         }
-        remote.press(.select)            // fullscreen keyboard
-        pause(3)
-        // `app.typeText` needs the keyboard (or the field) to hold focus; on a run where the
-        // full-screen keyboard did not come up, skip rather than fail the whole leg (the device
-        // pass with Steven's add-on is the real check for BUG-157).
-        // Only the full-screen keyboard's keys count: a focused row elsewhere still fails
-        // `typeText` with "Neither element nor any descendant has keyboard focus" (second run).
-        let keyboardUp = app.keys.count > 0
-        if !keyboardUp {
-            note("landscape-skip", "no keyboard focus after Select on the manifest field; focus=\(focusedLabel(app))")
-            throw XCTSkip("the Add-ons manifest field did not take keyboard focus on this run")
-        }
-        app.typeText("\(stub.origin)/manifest.json\n")
-        pause(2)
-        let install = app.buttons["Install"]
-        if !moveFocus(.down, until: install, max: 4) { _ = moveFocus(.up, until: install, max: 4) }
-        remote.press(.select)
-        pause(6)
-        let installed = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label CONTAINS %@", Self.landscapeAddonName)).firstMatch.exists
-        note("landscape-0-install", "installed=\(installed) requests=\(stub.requestLog.joined(separator: ", "))")
-        defer { removeLandscapeAddon(app) }
-        guard installed else {
-            XCTFail("the stub add-on did not install (requests: \(stub.requestLog))")
-            return
-        }
-
-        // Home: page down the strip until a stub card holds focus.
-        openTab(app, named: "Home")
-        pause(6)
-        let found = walk(app, .down, untilFocusContains: "ZZLand", max: 14, gap: 2.5)
         shot("landscape-1-row")
-        XCTAssertTrue(found, "no stub card took focus on Home (focus=\(focusedLabel(app)))")
+        note("landscape-0-requests", stub.requestLog.joined(separator: ", "))
+        XCTAssertTrue(found, "no stub card took focus on Home (strip=\(probe(app, "debug_strip")), requests=\(stub.requestLog))")
         guard found else { return }
         let focused = focusedElement(app).frame
         let neighbour = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ZZLand 2")).firstMatch
         let rest = neighbour.exists ? neighbour.frame : .zero
-        note("landscape-1-row", "focused=\(focused) neighbour=\(rest)")
-        // 16:9 is 1.78; a portrait poster is 0.67. Anything above 1.4 is a landscape card.
+        let heading = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ZZ Landscape Row")).firstMatch
+        let headingFrame = heading.exists ? heading.frame : .zero
+        note("landscape-1-row", "focused=\(focused) neighbour=\(rest) portrait=\(String(describing: portraitFrame)) heading=\(headingFrame)")
+
+        // 1. BUG-157: 16:9 is 1.78, a portrait poster 0.67.
         XCTAssertGreaterThan(focused.width / max(focused.height, 1), 1.4,
                              "BUG-157: the focused card of a landscape-shape catalog is not landscape (\(focused))")
         if rest.height > 0 {
             XCTAssertGreaterThan(rest.width / rest.height, 1.4,
                                  "BUG-157: a resting card of the landscape-shape row is not landscape (\(rest))")
+        }
+        // 2. BUG-162 (a): the portrait card's height, 16:9 wide.
+        XCTAssertEqual(focused.width, focused.height * 16 / 9, accuracy: 3,
+                       "BUG-162: the landscape card is not 16:9 at its height (\(focused))")
+        if let portraitFrame {
+            XCTAssertEqual(focused.height, portraitFrame.height, accuracy: 3,
+                           "BUG-162: the landscape card (\(focused)) is not as tall as the portrait card one row up (\(portraitFrame))")
+        } else {
+            XCTAssertGreaterThan(focused.height, 260, "BUG-162: the landscape card is still the 203 pt Continue Watching size (\(focused))")
+        }
+        // 3. BUG-162 (b): heading → card gap (12 heading gap + 12 shelf top in the strip, plus slack).
+        if headingFrame.height > 0 {
+            let gap = focused.minY - headingFrame.maxY
+            XCTAssertLessThan(gap, 48, "BUG-162: the row heading floats \(gap) pt above the landscape cards")
+        }
+
+        // 4. The tile: the card's size, and a stage.
+        var tileLabel: String?
+        for _ in 0..<40 {
+            let tile = app.descendants(matching: .any)["debug_trailerTile"].firstMatch
+            if tile.exists { tileLabel = tile.label; break }
+            pause(0.5)
+        }
+        note("landscape-2-tile", tileLabel ?? "debug_trailerTile <absent>; morph=\(probe(app, "debug_trailerMorph"))")
+        guard let tileLabel else {
+            note("landscape-video", "DEVICE-OWED: no trailer tile within 20 s (extraction unavailable on this host?)")
+            return
+        }
+        if let outer = Self.token(tileLabel, "outer") {
+            let parts = outer.split(separator: "x").compactMap { Double($0) }
+            if parts.count == 2 {
+                XCTAssertEqual(CGFloat(parts[0]), focused.width, accuracy: 3, "BUG-163: the tile is not the card's width (\(tileLabel))")
+                XCTAssertEqual(CGFloat(parts[1]), focused.height, accuracy: 3, "BUG-163: the tile is not the card's height (\(tileLabel))")
+            }
+        }
+        XCTAssertNotNil(Self.token(tileLabel, "stage"), "the tile reports no stage (\(tileLabel))")
+
+        // 5. The video shows: wait for playback, then compare two frames of the card region.
+        var playing = false
+        for _ in 0..<60 {
+            if probe(app, "debug_trailerMorph").contains("event=play host=card") { playing = true; break }
+            pause(0.5)
+        }
+        guard playing else {
+            note("landscape-video", "DEVICE-OWED: no event=play within 30 s; morph=\(probe(app, "debug_trailerMorph"))")
+            return
+        }
+        pause(4)   // the reveal gate (BUG-59) conceals the first frames until the zoom is measured
+        let first = XCUIScreen.main.screenshot()
+        pause(1.5)
+        let second = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: second)
+        attachment.name = "landscape-3-playing"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let card = focusedElement(app).frame
+        let diff = Self.meanDifference(first, second, in: card, screenWidth: app.frame.width)
+        note("landscape-3-playing", "card=\(card) diff=\(diff.map { String(format: "%.2f", $0) } ?? "nil") morph=\(probe(app, "debug_trailerMorph"))")
+        if let diff {
+            XCTAssertGreaterThan(diff, 2, "BUG-163: the trailer plays but the card region does not move (still picture, audio only)")
         }
     }
 }

@@ -28,8 +28,9 @@ struct StripLoadingRow: View {
     @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     var body: some View {
-        let width = style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
-        let height = style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
+        // BUG-162: the row's card size (`PosterStyle.cardWidth`/`cardHeight`).
+        let width = style.cardWidth
+        let height = style.cardHeight
         // BUG-146 second trim: the strip's heading gap, as the loaded row.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             StripRowHeading(text: heading)

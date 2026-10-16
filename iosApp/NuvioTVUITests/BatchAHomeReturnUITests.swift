@@ -198,4 +198,193 @@ final class BatchAHomeReturnUITests: XCTestCase {
         // restoration already right) or a rung that moved focus back.
         XCTAssertNotEqual(Self.token(after, "ret"), "-", "the push edge never logged an origin: \(after)")
     }
+
+    // MARK: - Batch B (BUG-156 (a) + (b), Steven's rc4 verdict 2026-10-16)
+
+    /// Stage Home: down to row ≥ 1, Right twice. Returns the `debug_strip` line there.
+    private func walkStageStrip(_ app: XCUIApplication) throws -> String {
+        guard poll(30, step: 0.5, { !label(app, "debug_strip").isEmpty }) else {
+            throw HarnessAbort("debug_strip never appeared (DEBUG build? -home_layout stage honoured?)")
+        }
+        remote.press(.down)
+        pause(2.0)
+        var reached = Self.token(label(app, "debug_strip"), "row").flatMap { Int($0) } ?? 0
+        for _ in 0..<2 {
+            let before = reached
+            remote.press(.down)
+            pause(2.0)
+            reached = Self.token(label(app, "debug_strip"), "row").flatMap { Int($0) } ?? before
+            if reached == before { break }
+        }
+        guard reached >= 1 else { throw HarnessAbort("the strip never left row 0: \(label(app, "debug_strip"))") }
+        remote.press(.right)
+        pause(1.0)
+        remote.press(.right)
+        pause(1.5)
+        return label(app, "debug_strip")
+    }
+
+    /// `label`'s `key` token every 0.1 s for `seconds` (the restore's moves, which a single read misses).
+    private func sample(_ app: XCUIApplication, _ identifier: String, _ key: String, seconds: TimeInterval) -> [String] {
+        var values: [String] = []
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            let value = Self.token(label(app, identifier), key) ?? "?"
+            if values.last != value { values.append(value) }
+            pause(0.1)
+        }
+        return values
+    }
+
+    /// Leg 3 (BUG-156 (a)): Stage Home, the focus engine's late restoration simulated. The simulator's
+    /// engine never steals focus after a pop the way the Apple TV's does (0.55–0.98 s late, Batch A
+    /// device pass step 8), so `-debug.uncoverStealMs 600` sends focus to the previous row 0.6 s after
+    /// the restore lands. With no viewer input since the pop the strip must re-grab its row and card
+    /// (`[StageStrip] restore regrab … since=landing`).
+    func testBatchB_StagePopRegrabsAfterALateSteal() throws {
+        let app = launch(Self.arguments(layout: "stage") + ["-debug.uncoverStealMs", "600"])
+        let before = try walkStageStrip(app)
+        let row = Self.token(before, "row")
+        let foc = Self.token(before, "foc")
+        note("steal_before", before)
+        remote.press(.select)
+        pause(5.0)
+        remote.press(.menu)
+        let rows = sample(app, "debug_strip", "row", seconds: 4.0)
+        pause(1.0)
+        let after = label(app, "debug_strip")
+        note("steal_after", "\(after) rows=\(rows)")
+        shot("steal_after_pop")
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertTrue(rows.contains { $0 != row && $0 != "?" },
+                      "the debug steal never moved the strip off row \(row ?? "-") (did the restore land?): \(rows)")
+        XCTAssertEqual(Self.token(after, "row"), row, "the re-grab must bring the strip back to its row: \(after) rows=\(rows)")
+        XCTAssertEqual(Self.token(after, "foc"), foc, "and to the card the push left from: \(after)")
+    }
+
+    /// Leg 4 (BUG-156 (a)): Stage Home, the viewer's own Down right after the restore lands is theirs.
+    /// Before, any row change inside the window re-grabbed; now the press is stamped by the
+    /// viewer-input clock and retires the restore (`restore retired … why=viewer input=down`).
+    func testBatchB_StageViewerDownAfterPopIsNotPulledBack() throws {
+        let app = launch(Self.arguments(layout: "stage"))
+        let before = try walkStageStrip(app)
+        guard let row = Self.token(before, "row").flatMap(Int.init) else { throw HarnessAbort("no row= on debug_strip: \(before)") }
+        remote.press(.select)
+        pause(5.0)
+        remote.press(.menu)
+        // `debug_strip row=` keeps its last value under the push, so it cannot show the landing;
+        // the simulator's restore lands 0.3–0.6 s after the pop (the steal leg's samples). A Down
+        // 1.0 s after the Menu is inside the 1.5 s window from the landing.
+        pause(1.0)
+        XCTAssertEqual(Self.token(label(app, "debug_strip"), "row"), String(row),
+                       "the pop must be back on row \(row) before the Down: \(label(app, "debug_strip"))")
+        remote.press(.down)
+        let rows = sample(app, "debug_strip", "row", seconds: 3.0)
+        let after = label(app, "debug_strip")
+        note("viewer_after", "\(after) rows=\(rows)")
+        XCTAssertEqual(Self.token(after, "row"), String(row + 1),
+                       "the viewer's Down must stand: the restore may not pull the strip back to row \(row): \(rows)")
+        XCTAssertFalse(rows.drop(while: { $0 != String(row + 1) }).contains(String(row)),
+                       "the strip went back to row \(row) after the viewer's Down: \(rows)")
+    }
+
+    // MARK: - Folder ← Detail (BUG-156 (b))
+
+    /// One pinned collection, one folder over three Cinemeta catalogs (three strip rows).
+    private static let folderSeedJson = """
+    [{"id":"zzbatchb-collection","title":"ZZBatchB","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzbatchb-folder","title":"ZZBatchBFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","coverImageUrl":"https://images.metahub.space/poster/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"imdbRating"}]}]}]
+    """
+
+    private func clearSeed() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-debug.collectionsSeedJsonB64", Data("[]".utf8).base64EncodedString()]
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 90) {
+            remote.press(.left)
+            pause(0.5)
+            remote.press(.left)
+            pause(0.5)
+            remote.press(.select)
+        }
+        pause(8)
+        app.terminate()
+    }
+
+    private func detailPageUp(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["detail_hero"].exists
+            || ["Mark Watched", "Watched", "Add to Library", "In Library"].contains { app.buttons[$0].exists }
+    }
+
+    /// Leg 5 (BUG-156 (b), Steven: "the view jumps back up" after Back from a movie inside a
+    /// collection): Stage folder page, row 1 card 2 → Detail → Menu: the folder strip is back on row
+    /// 1 and the same card (`folder_rows_state row= foc=`), and the pop went through the folder's own
+    /// restore (`[StageStrip] restore … reason=uncover source=folder`). `steal`: the engine's late
+    /// restoration simulated (`-debug.uncoverStealMs`), which the folder page must re-grab too.
+    private func runFolderPop(steal: Bool) throws {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer { clearSeed() }
+        var arguments = Self.arguments(layout: "stage") + ["-debug.collectionsSeedJsonB64", seed, "-folder_layout_grid", ""]
+        if steal { arguments += ["-debug.uncoverStealMs", "600"] }
+        let app = launch(arguments)
+        guard poll(30, step: 0.5, { !label(app, "debug_strip").isEmpty }) else {
+            throw HarnessAbort("debug_strip never appeared")
+        }
+        // The pinned collection is the strip's first row; its folder tile is the first card.
+        let folderId = "nuvio-folder://zzbatchb-collection/zzbatchb-folder"
+        var onFolder = false
+        for _ in 0..<4 where !onFolder {
+            remote.press(.down)
+            onFolder = poll(2.0) { Self.token(label(app, "debug_stage"), "fitem") == folderId }
+        }
+        guard onFolder else {
+            throw XCTSkip("the seeded folder tile never took focus (debug_stage: \(label(app, "debug_stage"))) — the collections seed is refused on a signed-in account")
+        }
+        remote.press(.select)
+        guard poll(15, step: 0.5, {
+            let line = label(app, "folder_rows_state")
+            return Self.token(line, "state") == "rows" && Self.token(line, "row") == "0"
+        }) else {
+            throw HarnessAbort("the folder Rows page never settled on row 0: \(label(app, "folder_rows_state"))")
+        }
+        pause(1.0)
+        remote.press(.down)
+        pause(2.5)
+        remote.press(.right)
+        pause(2.0)
+        let before = label(app, "folder_rows_state")
+        let row = Self.token(before, "row")
+        let foc = Self.token(before, "foc")
+        note("folder_before", before)
+        XCTAssertEqual(row, "1", "Down must page to row 1: \(before)")
+        XCTAssertNotEqual(foc, "-", "the folder strip must record the focused card: \(before)")
+        remote.press(.select)
+        guard poll(20, step: 0.5, { self.detailPageUp(app) }) else {
+            XCTFail("Select on a folder card did not open its Detail page")
+            return
+        }
+        pause(2.0)
+        shot("folder_detail")
+        remote.press(.menu)
+        let rows = sample(app, "folder_rows_state", "row", seconds: 4.0)
+        pause(1.0)
+        let after = label(app, "folder_rows_state")
+        note("folder_after", "\(after) rows=\(rows)")
+        shot("folder_after_pop")
+        XCTAssertEqual(app.state, .runningForeground, "one Menu from Detail must pop to the folder, never leave the app")
+        if steal {
+            XCTAssertTrue(rows.contains { $0 != row && $0 != "?" },
+                          "the debug steal never moved the folder strip off row \(row ?? "-") (did the restore land?): \(rows)")
+        }
+        XCTAssertEqual(Self.token(after, "row"), row, "back from Detail the folder strip must be on the row it left: \(after) rows=\(rows)")
+        XCTAssertEqual(Self.token(after, "foc"), foc, "and on the card it left: \(after)")
+    }
+
+    func testBatchB_FolderPopRestoresRowAndCard() throws {
+        try runFolderPop(steal: false)
+    }
+
+    func testBatchB_FolderPopRegrabsAfterALateSteal() throws {
+        try runFolderPop(steal: true)
+    }
 }

@@ -454,10 +454,13 @@ struct StageStripHome: View {
             railRouteBox.wasPushed = cover.pushed
             if cover.pushed {
                 railRouteBox.pushOriginRow = stage.currentRowKey
+                railRouteBox.pushOriginItem = stage.currentRowKey.flatMap { stage.memory.itemId(for: $0) }
                 stage.cancelUncoverRestore()
             } else if !cover.resume, let row = railRouteBox.pushOriginRow {
+                let item = railRouteBox.pushOriginItem
                 railRouteBox.pushOriginRow = nil
-                stage.restoreAfterUncover(rowKey: row)
+                railRouteBox.pushOriginItem = nil
+                stage.restoreAfterUncover(rowKey: row, itemId: item)
             }
         }
         stage.setCovered(restoresFocus || (shell ?? tabBarVisibility.homeSurfaceCovered),
@@ -525,6 +528,10 @@ final class StageRailRouteBox {
     /// push left from (captured on the push edge, consumed on the pop edge).
     var wasPushed = false
     var pushOriginRow: String?
+    /// BUG-156 (a): the card the push left from, snapshotted with the row (the memory is frozen
+    /// under the cover, and the engine's own restoration on the pop can write it before our request
+    /// goes out).
+    var pushOriginItem: String?
 }
 
 /// Before any strip row exists: a copy of `HomeView`'s private `placeholder` (loading, error, the

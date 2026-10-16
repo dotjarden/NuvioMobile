@@ -51,7 +51,7 @@ import SwiftUI
 /// @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 ///
 /// private var leadingEdgeAllowance: CGFloat {
-///     let posterWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+///     let posterWidth = posterStyle.cardWidth   // BUG-162: the row's real resting card width
 ///     // No lift at all in No Zoom mode (`CardFocusMode.still`) — only the ring can bleed there.
 ///     // Otherwise this is `PosterCard.swift`'s own `cardLiftScale(artworkHeight:)` formula
 ///     // inlined — that function is `private` to PosterCard.swift, so this recomputes it from the
@@ -93,7 +93,7 @@ struct RowLeadingEdgeClip: Shape {
     /// what `allowance` above should be set to for a given row.
     ///
     /// - `posterWidth`: the row's card width at rest (`PosterStyle.width`, or
-    ///   `Theme.Size.landscapeWidth` for landscape rows) — what the lift scales ABOUT THE CENTRE
+    ///   `PosterStyle.cardWidth` for landscape rows) — what the lift scales ABOUT THE CENTRE
     ///   of, so half of the width growth bleeds left and half right.
     /// - `liftScale`: the scale factor a focused card's artwork is drawn at. `1.0` means no lift
     ///   bleed at all — only `ringWidth` and the shadow then contribute. (BUG-164: No Zoom no longer

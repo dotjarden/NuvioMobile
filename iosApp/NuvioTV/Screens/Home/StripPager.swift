@@ -28,17 +28,21 @@ import UIKit
 @MainActor
 final class StripPagerHandle {
     typealias Request = @MainActor (_ rowKey: String, _ itemId: String?, _ reason: String) -> Void
+    typealias Cancel = @MainActor (_ reason: String) -> Void
 
     private var request: Request?
+    /// BUG-156 (a): drops the pager's in-flight request (the viewer moved during a pop restore).
+    private var cancel: Cancel?
     /// The installed pager's box (one per pager instance).
     private weak var owner: AnyObject?
 
     /// Whether a pager is mounted and listening.
     var isInstalled: Bool { request != nil }
 
-    func install(owner: AnyObject, _ request: @escaping Request) {
+    func install(owner: AnyObject, cancel: Cancel? = nil, _ request: @escaping Request) {
         self.owner = owner
         self.request = request
+        self.cancel = cancel
     }
 
     /// Clears the closure only if `owner` is still the installed pager.
@@ -46,6 +50,12 @@ final class StripPagerHandle {
         guard self.owner === owner else { return }
         self.owner = nil
         request = nil
+        cancel = nil
+    }
+
+    /// BUG-156 (a): stands the installed pager's in-flight focus request down (no-op when none).
+    func cancelRequest(reason: String) {
+        cancel?(reason)
     }
 
     func requestFocus(rowKey: String, itemId: String?, reason: String = "external") {
@@ -267,6 +277,14 @@ struct StripPager<Row: View>: View {
                         .allowsHitTesting(false)
                 }
             }
+            // BUG-156 (a): the viewer-input clock a pop restore reads to tell the viewer's own
+            // press or swipe from the focus engine's late restoration (`ViewerInputClock`).
+            // Installed once on the window; zero-size, never hit-tested.
+            .background(alignment: .topLeading) {
+                ViewerInputClockInstaller()
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+            }
             .background(alignment: .topLeading) {
                 if ownsProbe {
                     StageStripMarker()
@@ -294,7 +312,9 @@ struct StripPager<Row: View>: View {
         .environment(\.stripFocusMemory, controller.memory)
         .environment(\.rowRestSource, .custom(controller.signal))
         .onAppear {
-            controller.pagerHandle.install(owner: box) { key, itemId, reason in
+            controller.pagerHandle.install(owner: box, cancel: { reason in
+                cancelRowFocusRequest(reason: reason)
+            }) { key, itemId, reason in
                 requestRowFocus(key, itemId: itemId, reason: reason)
             }
             if positionId == nil, let first = rowKeys.first {
@@ -598,6 +618,20 @@ struct StripPager<Row: View>: View {
         dropStaleRequest(keeping: nil)
         StageStripProbe.shared.log("restore row=\(key) expired reason=\(reason)")
         if let owner = box.owners.first(where: { $0 != key }), owner != box.focusedRowKey {
+            handleOwnership(owner, owns: true)
+        }
+    }
+
+    /// BUG-156 (a): the viewer moved while a pop restore's request was in flight. Its later rungs
+    /// stand down, and a row the viewer's move reached (set aside by the in-flight window) is
+    /// followed now, as `expireRequest` does. No-op when nothing is in flight.
+    private func cancelRowFocusRequest(reason: String) {
+        guard let key = box.programmaticTarget ?? focusRequest.rowKey else { return }
+        box.restoreGeneration &+= 1
+        box.programmaticTarget = nil
+        focusRequest = PinnedRowFocusRequest(rowKey: nil, generation: focusRequest.generation)
+        StageStripProbe.shared.log("restore row=\(key) cancelled reason=\(reason)")
+        if let owner = box.owners.first, owner != box.focusedRowKey {
             handleOwnership(owner, owns: true)
         }
     }

@@ -24,6 +24,14 @@ final class StripFocusMemory {
 
     private var byRow: [String: String] = [:]
 
+    /// BUG-156 (a) (Steven, beta.19-rc4 verdict 2026-10-16: the return from a collection still
+    /// jumps): true while something is pushed over the strip (`StageController.setCovered`). A focus
+    /// change reported under the cover is never the viewer's: the In Row trailer's morphed card
+    /// collapsing back to a poster when the cover tears the trailer down replaces the focused view,
+    /// and the row's focus binding can report a neighbour card. Frozen, `remember` ignores it, so
+    /// the pop restores the card the viewer left.
+    private(set) var isFrozen = false
+
     #if DEBUG
     /// The `debug_strip … foc=` readout. DEBUG only, set by `StageController`.
     var onRemember: (@MainActor (_ rowKey: String, _ itemId: String) -> Void)?
@@ -34,10 +42,16 @@ final class StripFocusMemory {
     }
 
     func remember(rowKey: String, itemId: String) {
+        guard !isFrozen else { return }
         byRow[rowKey] = itemId
         #if DEBUG
         onRemember?(rowKey, itemId)
         #endif
+    }
+
+    /// See `isFrozen`. Pruning still runs while frozen (a row that left the data is gone either way).
+    func setFrozen(_ frozen: Bool) {
+        isFrozen = frozen
     }
 
     func itemId(for rowKey: String) -> String? {

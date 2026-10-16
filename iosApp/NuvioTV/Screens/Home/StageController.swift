@@ -153,8 +153,13 @@ final class StageController: ObservableObject {
     }
 
     /// Freezes the focus model while something covers the page (`HomeView.syncHeroFocusCover`'s rule).
+    /// BUG-156 (a): a push or the stream picker (`restoresFocus`) also freezes the strip's per-row
+    /// memory (`StripFocusMemory.isFrozen`), so a focus change reported under the cover (the In Row
+    /// trailer's card collapsing) cannot replace the card the pop restores. A shell cover alone (a
+    /// tab switch) moves no card focus and freezes nothing.
     func setCovered(_ covered: Bool, restoresFocus: Bool) {
         focusModel.setCovered(covered, restoresFocus: restoresFocus)
+        memory.setFrozen(covered && restoresFocus)
     }
 
     /// S4 / R2: put focus on `rowKey` (its card `itemId`, else its remembered card, else its first),
@@ -163,81 +168,211 @@ final class StageController: ObservableObject {
         pagerHandle.requestFocus(rowKey: rowKey, itemId: itemId, reason: reason)
     }
 
-    /// BUG-156: stales a pending `restoreAfterUncover` (a new push went over Home).
+    // MARK: Pop restore (BUG-156)
+
+    /// The host this controller restores for, in the probe lines (`source=home` for Stage Home,
+    /// `source=folder` for the folder Rows page, BUG-156 (b)), so one console log tells them apart.
+    var uncoverSource = "home"
+
+    /// BUG-156: stales a pending `restoreAfterUncover` and its deferred re-grabs (a new push went
+    /// over the page, the viewer moved, the restore retired).
     private var uncoverRestoreGeneration = 0
+    /// The pop (`restoreAfterUncover`) while its request still waits for the pager.
+    private var uncoverRequestedAt: TimeInterval?
+    /// The live restore once its request went to the pager. See `UncoverRestorePolicy`.
+    ///
+    /// BUG-156 (device pass 2026-10-15, Living Room ATV): on hardware the engine's OWN deferred
+    /// restoration landed ~35 ms AFTER our rung 2 had put focus on the right card (`[StageStrip]
+    /// focus → …` then `PRESS … src=vfocus-up`): it moved focus to the row above and the strip
+    /// paged there. BUG-156 (a) (Steven, rc4 verdict 2026-10-16: still jumps on his box): that window
+    /// was counted from the REQUEST (1.2 s), and any second move was taken for the viewer's. Now the
+    /// window runs from the LANDING (the first row change to the target), a viewer input
+    /// (`ViewerInputClock`) retires the restore at once, and a move with no viewer input since the
+    /// pop is the engine's, re-grabbed up to `UncoverRestorePolicy.maxRegrabs`.
+    private var uncoverRestoreTarget: UncoverRestorePolicy.Target?
+    /// Removed in `deinit` (a popped folder page's controller must leave no observer behind).
+    nonisolated(unsafe) private var viewerInputObserver: NSObjectProtocol?
+    #if DEBUG
+    /// The strip rows seen most recently (newest last), for the `-debug.uncoverStealMs` knob.
+    private var recentRowKeys: [String] = []
+    #endif
 
-    /// BUG-156 (device pass 2026-10-15, Living Room ATV): the pop restore's target while it is live.
-    /// On hardware the engine's OWN deferred restoration landed ~35 ms AFTER our rung 2 had put
-    /// focus on the right card (`[StageStrip] focus → …` then `PRESS … src=vfocus-up`): it moved
-    /// focus to the row above and the strip paged there, with no rung left to answer. The strip's
-    /// next row change inside `uncoverRegrabWindow` of the request that is NOT the target row
-    /// re-requests the target once (`reason=uncover-regrab`); a second move is the viewer's.
-    private struct UncoverRestoreTarget {
-        let rowKey: String
-        let itemId: String?
-        let issuedAt: TimeInterval
-        var regrabbed = false
+    deinit {
+        if let viewerInputObserver { NotificationCenter.default.removeObserver(viewerInputObserver) }
     }
-    private var uncoverRestoreTarget: UncoverRestoreTarget?
-    private static let uncoverRegrabWindow: TimeInterval = 1.2
 
-    /// The strip's row changed (the pager's `onRowChange`, Home only). See `uncoverRestoreTarget`.
+    private var uncoverReason: String { "uncover source=\(uncoverSource)" }
+
+    /// The strip's row changed (the pager's `onRowChange`: Stage Home and, BUG-156 (b), the folder
+    /// Rows page). See `uncoverRestoreTarget`.
     func noteStripRowChanged(key: String) {
-        guard var target = uncoverRestoreTarget else { return }
-        let age = ProcessInfo.processInfo.systemUptime - target.issuedAt
-        guard age < Self.uncoverRegrabWindow else {
-            uncoverRestoreTarget = nil
-            return
-        }
-        if key == target.rowKey { return }
-        guard !target.regrabbed else {
-            uncoverRestoreTarget = nil
-            return
-        }
-        target.regrabbed = true
-        uncoverRestoreTarget = target
-        StageStripProbe.shared.log("restore regrab row=\(target.rowKey) item=\(target.itemId ?? "-") from=\(key) age=\(Int(age * 1000)) reason=uncover")
-        requestFocus(rowKey: target.rowKey, itemId: target.itemId, reason: "uncover-regrab")
+        #if DEBUG
+        recentRowKeys.removeAll { $0 == key }
+        recentRowKeys.append(key)
+        if recentRowKeys.count > 4 { recentRowKeys.removeFirst() }
+        #endif
+        handleUncoverMove(key: key)
     }
 
     /// BUG-156 (Steven, beta.19-rc3 follow-ups 2026-10-09 / 10-14): after a pushed folder page or
-    /// Detail pops, put focus back on `rowKey`'s remembered card (`memory`), through the pager's
-    /// rungs (reason `uncover` on the `[StageStrip] restore` lines). The pop runs `StageStripHome`'s
-    /// cover sync in the same update the strip reappears in, and the pager re-installs its handle
-    /// only in its own `.onAppear`, which can come after; so the request waits for the handle,
-    /// polling every 0.1 s for up to 1 s, and goes out on the next runloop at the earliest (the
-    /// rail route's `restore` runs once the strip is on screen, which is why it never needed this).
-    /// The pager's anti-theft guard keeps a row the engine already restored on its card.
-    func restoreAfterUncover(rowKey: String) {
+    /// Detail pops, put focus back on `rowKey`'s card, through the pager's rungs (reason
+    /// `uncover source=<host>` on the `[StageStrip] restore` lines). `itemId` is the card the push
+    /// left from (captured at the push edge, BUG-156 (a)); nil reads the row's remembered card when
+    /// the request goes out. The pop runs in the same update the strip reappears in, and the pager
+    /// re-installs its handle only in its own `.onAppear`, which can come after; so the request
+    /// waits for the handle, polling every 0.1 s for up to 1 s, and goes out on the next runloop at
+    /// the earliest. The pager's anti-theft guard keeps a row the engine already restored on its card.
+    func restoreAfterUncover(rowKey: String, itemId: String? = nil) {
+        installViewerInputObserver()
         uncoverRestoreGeneration &+= 1
-        let generation = uncoverRestoreGeneration
-        attemptUncoverRestore(rowKey: rowKey, generation: generation, attempt: 0)
+        uncoverRestoreTarget = nil
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        uncoverRequestedAt = requestedAt
+        StageStripProbe.shared.log("restore pop row=\(rowKey) item=\(itemId ?? "memory") clock=\(ViewerInputClock.shared.isLive ? 1 : 0) source=\(uncoverSource)")
+        attemptUncoverRestore(rowKey: rowKey, itemId: itemId, requestedAt: requestedAt,
+                              generation: uncoverRestoreGeneration, attempt: 0)
     }
 
     /// A new push: a pop restore still waiting for the pager must not fire under it.
     func cancelUncoverRestore() {
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
+        uncoverRequestedAt = nil
     }
 
-    private func attemptUncoverRestore(rowKey: String, generation: Int, attempt: Int) {
+    private func attemptUncoverRestore(rowKey: String, itemId: String?, requestedAt: TimeInterval,
+                                       generation: Int, attempt: Int) {
         let delay: TimeInterval = attempt == 0 ? 0 : 0.1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, generation == self.uncoverRestoreGeneration else { return }
+            // The viewer pressed or swiped before the pager came back: their move, not ours.
+            if let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
+                self.retireUncover(why: "viewer", rowKey: rowKey, from: nil, cancelsPager: false)
+                return
+            }
             guard self.pagerHandle.isInstalled else {
                 if attempt < 10 {
-                    self.attemptUncoverRestore(rowKey: rowKey, generation: generation, attempt: attempt + 1)
+                    self.attemptUncoverRestore(rowKey: rowKey, itemId: itemId, requestedAt: requestedAt,
+                                               generation: generation, attempt: attempt + 1)
                 } else {
-                    StageStripProbe.shared.log("restore row=\(rowKey) rung=0 landed=0 reason=uncover nopager")
+                    self.uncoverRequestedAt = nil
+                    StageStripProbe.shared.log("restore row=\(rowKey) rung=0 landed=0 reason=\(self.uncoverReason) nopager")
                 }
                 return
             }
-            let itemId = self.memory.itemId(for: rowKey)
-            self.uncoverRestoreTarget = UncoverRestoreTarget(rowKey: rowKey, itemId: itemId,
-                                                             issuedAt: ProcessInfo.processInfo.systemUptime)
-            self.requestFocus(rowKey: rowKey, itemId: itemId, reason: "uncover")
+            let card = itemId ?? self.memory.itemId(for: rowKey)
+            let now = ProcessInfo.processInfo.systemUptime
+            // The engine may have restored the row already (its row change came before this).
+            let alreadyOn = self.stripOwnsFocus && self.currentRowKey == rowKey
+            self.uncoverRequestedAt = nil
+            self.uncoverRestoreTarget = UncoverRestorePolicy.Target(rowKey: rowKey, itemId: card,
+                                                                    requestedAt: requestedAt, issuedAt: now,
+                                                                    landedAt: alreadyOn ? now : nil)
+            if alreadyOn {
+                StageStripProbe.shared.log("restore landed row=\(rowKey) item=\(card ?? "-") after=\(Int((now - requestedAt) * 1000)) via=engine source=\(self.uncoverSource)")
+            }
+            self.requestFocus(rowKey: rowKey, itemId: card, reason: self.uncoverReason)
+            #if DEBUG
+            if alreadyOn { self.scheduleDebugSteal(rowKey: rowKey, generation: generation) }
+            #endif
         }
     }
+
+    /// One row change (or, `key == nil`, focus leaving the strip) against the live restore.
+    private func handleUncoverMove(key: String?) {
+        guard var target = uncoverRestoreTarget else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let clock = ViewerInputClock.shared
+        switch UncoverRestorePolicy.decide(target, key: key, now: now,
+                                           viewerInputAt: clock.lastAt, clockLive: clock.isLive) {
+        case .land:
+            target.landedAt = now
+            uncoverRestoreTarget = target
+            StageStripProbe.shared.log("restore landed row=\(target.rowKey) item=\(target.itemId ?? "-") after=\(Int((now - target.requestedAt) * 1000)) via=request source=\(uncoverSource)")
+            #if DEBUG
+            scheduleDebugSteal(rowKey: target.rowKey, generation: uncoverRestoreGeneration)
+            #endif
+        case .keep:
+            break
+        case .retire(let why):
+            retireUncover(why: why, rowKey: target.rowKey, from: key, cancelsPager: why == "viewer")
+        case .regrab(let age, let from):
+            target.regrabs += 1
+            uncoverRestoreTarget = target
+            let generation = uncoverRestoreGeneration
+            let n = target.regrabs
+            // Deferred one beat, then re-checked: the press behind a row change can reach the
+            // window's recognizer just after the move it caused (`UncoverRestorePolicy.regrabDefer`).
+            DispatchQueue.main.asyncAfter(deadline: .now() + UncoverRestorePolicy.regrabDefer) { [weak self] in
+                guard let self, generation == self.uncoverRestoreGeneration,
+                      let live = self.uncoverRestoreTarget else { return }
+                if UncoverRestorePolicy.viewerMoved(live, viewerInputAt: ViewerInputClock.shared.lastAt) {
+                    self.retireUncover(why: "viewer", rowKey: live.rowKey, from: key, cancelsPager: true)
+                    return
+                }
+                StageStripProbe.shared.log("restore regrab row=\(live.rowKey) item=\(live.itemId ?? "-") from=\(key ?? "outside") age=\(Int(age * 1000)) since=\(from) n=\(n) reason=uncover source=\(self.uncoverSource)")
+                self.requestFocus(rowKey: live.rowKey, itemId: live.itemId,
+                                  reason: "uncover-regrab source=\(self.uncoverSource)")
+            }
+        }
+    }
+
+    /// The restore is over. `cancelsPager`: the viewer moved, so an in-flight request's later rungs
+    /// must not pull focus back to the origin row (the BUG-112 F1/F5 stale-request class).
+    private func retireUncover(why: String, rowKey: String, from key: String?, cancelsPager: Bool) {
+        let input = ViewerInputClock.shared.lastKind
+        cancelUncoverRestore()
+        if cancelsPager { pagerHandle.cancelRequest(reason: "uncover-\(why)") }
+        StageStripProbe.shared.log("restore retired row=\(rowKey) why=\(why) from=\(key ?? "-") input=\(why == "viewer" ? input : "-") source=\(uncoverSource)")
+    }
+
+    /// A viewer press or swipe (`ViewerInputClock`) while a pop restore is live retires it at once.
+    private func installViewerInputObserver() {
+        guard viewerInputObserver == nil else { return }
+        viewerInputObserver = NotificationCenter.default.addObserver(
+            forName: ViewerInputClock.didRecord, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.noteViewerInput()
+            }
+        }
+    }
+
+    private func noteViewerInput() {
+        if let target = uncoverRestoreTarget {
+            guard UncoverRestorePolicy.viewerMoved(target, viewerInputAt: ViewerInputClock.shared.lastAt) else { return }
+            // A restore that landed and saw no move inside its window is long over: retire it
+            // quietly, with no pager cancel (the press may be starting a request of its own).
+            let now = ProcessInfo.processInfo.systemUptime
+            let windowOver = target.landedAt.map { now - $0 >= UncoverRestorePolicy.landedWindow }
+                ?? (now - target.issuedAt >= UncoverRestorePolicy.unlandedWindow)
+            retireUncover(why: windowOver ? "expired" : "viewer", rowKey: target.rowKey, from: nil,
+                          cancelsPager: !windowOver)
+        } else if let requestedAt = uncoverRequestedAt,
+                  let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
+            // Not issued yet (the pager is not back): just stand the attempt down.
+            cancelUncoverRestore()
+            StageStripProbe.shared.log("restore retired row=- why=viewer from=- input=\(ViewerInputClock.shared.lastKind) pending=1 source=\(uncoverSource)")
+        }
+    }
+
+    #if DEBUG
+    /// `-debug.uncoverStealMs <ms>` (DEBUG only): the simulator's focus engine never makes the late
+    /// restoration the Apple TV makes, so this stands in for it. `ms` after the restore lands, focus
+    /// is sent to the most recently seen other strip row (`reason=debug-steal`), the way the engine's
+    /// default candidate took it on the device; the policy must then re-grab the target.
+    private func scheduleDebugSteal(rowKey: String, generation: Int) {
+        let ms = UserDefaults.standard.integer(forKey: "debug.uncoverStealMs")
+        guard ms > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(ms) / 1000) { [weak self] in
+            guard let self, generation == self.uncoverRestoreGeneration,
+                  let live = self.uncoverRestoreTarget, live.regrabs == 0, live.rowKey == rowKey,
+                  let steal = self.recentRowKeys.last(where: { $0 != rowKey }) else { return }
+            StageStripProbe.shared.log("restore debug-steal row=\(steal) from=\(rowKey) source=\(self.uncoverSource)")
+            self.requestFocus(rowKey: steal, itemId: nil, reason: "debug-steal")
+        }
+    }
+    #endif
 
     /// A strip row took focus (Home: the pager's `onRowChange`, which also fires when focus comes
     /// back into the strip). The background trailer may arm again at the next rest.
@@ -245,12 +380,20 @@ final class StageController: ObservableObject {
         stripOwnsFocus = true
     }
 
-    /// Focus left the strip (tab bar, rail, sidebar), #17: the background trailer stops at once.
+    /// Focus left the strip (tab bar, rail, sidebar, Edit band), #17: the background trailer stops at
+    /// once.
     func stripFocusLost() {
         stripOwnsFocus = false
-        // BUG-156 (review r2 P3-6): focus left the strip (tab bar, rail) on the viewer's own move; a
-        // pop restore still waiting for the pager must not pull it back.
-        cancelUncoverRestore()
+        // BUG-156 (review r2 P3-6): focus that left the strip on the viewer's own move (tab bar,
+        // rail) must not be pulled back by a pop restore. BUG-156 (a): with the viewer-input clock
+        // live, the policy tells that move (an input since the pop: retire) from the engine's late
+        // restoration landing outside the strip (the tab bar, the folder's Edit band: re-grab).
+        // Without the clock, any loss retires, as before.
+        if ViewerInputClock.shared.isLive {
+            handleUncoverMove(key: nil)
+        } else {
+            cancelUncoverRestore()
+        }
         StageStripProbe.shared.log("strip focus lost row=\(currentRowKey ?? "-")")
         stopBackgroundTrailer(reason: "focusLost")
     }

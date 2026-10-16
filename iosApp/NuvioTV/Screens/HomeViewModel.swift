@@ -878,6 +878,49 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
+    /// BUG-162/163 (Batch B, B4): DEBUG-only add-on seed for UI legs, so a leg installs a loopback
+    /// fixture add-on without the Add-ons keyboard (which the simulator often refuses focus to, and
+    /// a blind Select on the Add-ons list toggles a row off):
+    ///
+    ///     -debug.addonManifestRemoveMatching <substring>   remove every add-on whose manifest URL
+    ///                                                      contains it (a stale stub from an
+    ///                                                      earlier run on another port)
+    ///     -debug.addonManifestUrls <url,url>               then add each URL not installed yet
+    ///
+    /// Applied ONCE per launch, on the first emission where the store is initialized and holds an
+    /// add-on (so the Cinemeta seed and the account pull have run). Same refusal as the collections
+    /// seed (`collectionsSeedRefusal`): an add-on edit is pushed to a signed-in account, so only a
+    /// signed-out or anonymous-guest session (the FA87 fixture) may take it. A refusal does not latch.
+    private static var didApplyAddonSeed = false
+    private func applyAddonSeedIfRequested(_ state: AddonsUiState) {
+        guard !Self.didApplyAddonSeed, state.isInitialized, !state.addons.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let removeMatching = defaults.string(forKey: "debug.addonManifestRemoveMatching") ?? ""
+        let urls = (defaults.string(forKey: "debug.addonManifestUrls") ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !removeMatching.isEmpty || !urls.isEmpty else { return }
+        if let refusal = Self.collectionsSeedRefusal(authState: AuthRepository.shared.state.value_) {
+            NSLog("[AddonSeed] applied=false refused=%@", refusal)
+            return
+        }
+        Self.didApplyAddonSeed = true
+        if !removeMatching.isEmpty {
+            for addon in state.addons where addon.manifestUrl.contains(removeMatching) {
+                AddonRepository.shared.removeAddon(manifestUrl: addon.manifestUrl)
+                NSLog("[AddonSeed] removed url=%@", addon.manifestUrl)
+            }
+        }
+        for url in urls {
+            AddonRepository.shared.addAddon(rawUrl: url) { result, error in
+                let ok = result is AddAddonResultSuccess
+                NSLog("[AddonSeed] added=%@ url=%@ detail=%@", ok ? "true" : "false", url,
+                      error.map { String(describing: $0) } ?? String(describing: result))
+            }
+        }
+    }
+
     /// beta.19-rc1 verdict (C, BUG-135): nil when the debug collections seed may import — signed
     /// out, or an anonymous guest session (the `isCloudAccount` test `ProfilesViewModel` uses,
     /// inverted). Otherwise the refusal token for the log: `signedIn` for a real cloud account,
@@ -1246,6 +1289,9 @@ final class HomeViewModel: ObservableObject {
     }
 
     private func onAddonsChanged(_ state: AddonsUiState) {
+        #if DEBUG
+        applyAddonSeedIfRequested(state)
+        #endif
         // First run with an empty store → seed Cinemeta, then wait for the next emission. This also
         // catches the repository's pre-bootstrap INITIAL state, which every cold launch delivers
         // here before `AddonRepository.initialize()` runs (the watcher is attached first): it never

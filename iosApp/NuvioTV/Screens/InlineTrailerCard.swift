@@ -2268,9 +2268,13 @@ struct InlineTrailerCard: View {
     @ViewBuilder
     private var baseCard: some View {
         if posterStyle.landscapeCatalogRows {
+            // BUG-162: the row's card size (`PosterStyle.cardWidth`/`cardHeight`): 360×203 under
+            // the global Landscape Posters toggle, the poster height × 16/9 on a shape row.
             LandscapeCard(
                 title: item.name,
                 imageURL: Self.landscapeArtworkURL(item),
+                width: posterStyle.cardWidth,
+                height: posterStyle.cardHeight,
                 depthSurface: .posters,
                 footnote: footnote
             )
@@ -2299,9 +2303,8 @@ struct InlineTrailerCard: View {
     private var expandingCard: some View {
         ZStack(alignment: .topLeading) {
             baseCard
-                // Only the portrait card is crossfaded out — in landscape rows the tile is the same
-                // shape and size as the artwork underneath, so there's nothing to morph and fading
-                // would just blink the row.
+                // The portrait card (and, BUG-163, a shape-landscape card) is crossfaded out. Under
+                // the global Landscape Posters toggle the base card stays (see `fadesBaseCard`).
                 .opacity(fadesBaseCard && model.tileVisible ? 0 : 1)
 
             expandedTile
@@ -2352,8 +2355,9 @@ struct InlineTrailerCard: View {
         let poster: String? = item.poster
         // I1 (critique #3): the tile's resting size, so the loader decodes the banner at the size the
         // tile is drawn at. Same numbers as `artworkWidth` / `artworkHeight` at `.wide`.
+        // BUG-162/163: a landscape row's tile is its card (`cardWidth` × `cardHeight`).
         let tile = posterStyle.landscapeCatalogRows
-            ? CGSize(width: Theme.Size.landscapeWidth, height: Theme.Size.landscapeHeight)
+            ? CGSize(width: posterStyle.cardWidth, height: posterStyle.cardHeight)
             : CGSize(width: Self.expandedWidth(posterStyle), height: posterStyle.height)
         model.tileArtSource = InlineTileArtSource(primary: Self.landscapeArtworkURL(item), fallback: poster, tileSize: tile)
         model.restSource = rowRestSource
@@ -2633,13 +2637,23 @@ struct InlineTrailerCard: View {
         String(format: "%.1f", value)
     }
 
-    private var fadesBaseCard: Bool { !posterStyle.landscapeCatalogRows }
+    /// BUG-163 (Steven, rc4 verdict 2026-10-16: trailers on his add-on's landscape cards play
+    /// "audio only"): the landscape path kept the opaque base `LandscapeCard` at full opacity under
+    /// the tile ("nothing to morph"), and the playing video never showed over it: the sim leg
+    /// (`testLandscapeShapeCatalogDrawsLandscapeCards`) read `event=play`, `stage=wide`, the tile at
+    /// the card's size, and a card region that did not change between two frames (diff 0.00); with
+    /// only this flag flipped the same leg read diff 27.45. Neither the 360×203 tile size nor the
+    /// stage machine was the cause (the size fix alone still read 0.00). A shape-landscape row now
+    /// fades its base card under the tile exactly as a portrait row does (and takes the portrait
+    /// lift rule, `CatalogRowView`'s `cardSystemLiftStyle`). The global Landscape Posters path is
+    /// unchanged here (same layering, not reproduced: out of B4's scope).
+    private var fadesBaseCard: Bool { !posterStyle.landscapeCatalogRows || posterStyle.landscapeFromShape }
 
     /// BUG-158: `.lift` while this card's tile shows in a portrait row (set by `CatalogRowView`).
     @Environment(\.cardSystemLiftStyle) private var liftStyle
 
     /// The faded portrait card takes its title with it, so the tile carries a replacement in the
-    /// same slot. Landscape rows keep their own title (nothing is faded there).
+    /// same slot (BUG-163: a shape-landscape card too). Global landscape rows keep their own title.
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
     /// FEAT-18: the in-tile title/logo — only while the tile is up AND no caption is drawn under
@@ -2659,14 +2673,16 @@ struct InlineTrailerCard: View {
     /// beta.19-rc1 verdict (R2): wide only at `.wide` — the `.reveal` stage dissolves at the
     /// poster's own width, so the tile never grows while translucent.
     private var artworkWidth: CGFloat {
-        if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeWidth }
+        // BUG-162: a landscape row's tile never grows; it is the card (the shape row's card is
+        // already `expandedWidth` wide, so `.wide` changes nothing there either).
+        if posterStyle.landscapeCatalogRows { return posterStyle.cardWidth }
         return model.layoutExpanded ? Self.expandedWidth(posterStyle) : posterStyle.width
     }
 
-    /// Landscape rows are already the target geometry — no morph there, the trailer just
-    /// fades in. Portrait rows: constant height in BOTH states (see artworkWidth).
+    /// Landscape rows are already the target geometry: no width change, the tile dissolves in.
+    /// Portrait rows: constant height in BOTH states (see artworkWidth).
     private var artworkHeight: CGFloat {
-        if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeHeight }
+        if posterStyle.landscapeCatalogRows { return posterStyle.cardHeight }  // BUG-162
         return posterStyle.height
     }
 }

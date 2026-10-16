@@ -19,8 +19,9 @@ import SwiftUI
 //
 // Remote (§2.7): Down/Up page one row per press (P1's strip); Up from the top row reaches the Edit
 // band (the strip never consumes it); Menu pops from any row (`menuPagesToTop: false` installs no
-// exit handler); Back from a pushed Detail restores the same card (the strip's per-row memory, and
-// this page's `@State` survives the push).
+// exit handler); Back from a pushed Detail restores the same row and card (BUG-156 (b): the push's
+// row and card are captured, the pop asks the pager for them through `restoreAfterUncover`, as
+// Stage Home does; this page's `@State` survives the push).
 //
 // Re-render rule (#5, BUG-126): the controller is held, never observed (it publishes nothing); the
 // stage text, art and wash leaves observe their own sources; per-report bookkeeping lives in a
@@ -116,6 +117,7 @@ struct FolderRowsPage: View {
         // The stage frame changes only with a settings change, animated like Home's.
         .animation(.easeInOut(duration: 0.28), value: geo)
         .onAppear {
+            stage.uncoverSource = "folder"
             stage.start()
             stage.swap.setReduceMotion(reduceMotion)
             if !initialFocusWaitOver {
@@ -125,9 +127,23 @@ struct FolderRowsPage: View {
             }
             // A pop back from Detail or See All lifts the cover (P1 §4.3's push rule).
             stage.setCovered(false, restoresFocus: true)
+            // BUG-156 (b) (Steven, beta.19-rc4 verdict 2026-10-16: "the view jumps back up" after
+            // Back from a movie inside a collection): the pop used to rely on the focus engine alone,
+            // which lands on row 0's default candidate once the view it last focused is gone (the
+            // In Row trailer's card collapsing under the cover) or the pager's mounted window moved.
+            // The push's row and card go back through the pager's rungs, as on Stage Home. The
+            // initial mount and a Rows ↔ Grid remount have no origin (a fresh page box).
+            if let origin = box.pushOrigin {
+                box.pushOrigin = nil
+                stage.restoreAfterUncover(rowKey: origin.rowKey, itemId: origin.itemId)
+            }
             seedStage()
         }
         .onDisappear {
+            // BUG-156 (b): a push over this page (UX-14: `onDisappear` fires when Detail or See All
+            // covers it). See `FolderPushOrigin` for why the loss, not the disappear, holds the row.
+            capturePushOrigin()
+            stage.cancelUncoverRestore()
             stage.setCovered(true, restoresFocus: true)
         }
         // R2 (P4 §2.5, H9): this page's rail return route, the Stage shape keyed by `\.railTabIndex`:
@@ -195,7 +211,14 @@ struct FolderRowsPage: View {
                            // Hide While Browsing the rail keeps Home's state.
                            onPageStart: { _, _ in },
                            onStripFocusLost: {
-                               box.stripHasFocus = false
+                               // BUG-156 (b): the row and card the strip left, before the controller
+                               // hears of the loss (a push reports it here, before `onDisappear`).
+                               let pageBox = box
+                               pageBox.lostRow = stage.currentRowKey
+                               pageBox.lostItem = stage.currentRowKey.flatMap { stage.memory.itemId(for: $0) }
+                               pageBox.lostAt = ProcessInfo.processInfo.systemUptime
+                               pageBox.inputBeforeLoss = ViewerInputClock.shared.input(before: pageBox.lostAt ?? 0)
+                               pageBox.stripHasFocus = false
                                stage.stripFocusLost()
                            }) { key in
                     rowView(key, rows: rows)
@@ -355,6 +378,8 @@ struct FolderRowsPage: View {
             name: "folder",
             capture: {
                 pageBox.railSavedRow = pageBox.stripHasFocus ? controller.currentRowKey : nil
+                // BUG-156 (b): a tab picked in the rail is not a push (`FolderPushOrigin`).
+                pageBox.railArmedAt = ProcessInfo.processInfo.systemUptime
             },
             restore: {
                 guard let row = pageBox.railSavedRow else { return false }
@@ -392,11 +417,37 @@ struct FolderRowsPage: View {
     private func rowChanged(key: String) {
         box.focusedRowKey = key
         box.stripHasFocus = true
+        // BUG-156 (b): the pop restore's landing and the engine's late moves (Stage Home's wiring).
+        // `stripFocusGained` never arms a trailer here (only `StageStripHome` arms one).
+        stage.stripFocusGained()
+        stage.noteStripRowChanged(key: key)
         let rows = model.stripRows
         if let tab = rows.first(where: { $0.id == key })?.order, tab > (deepestFocusedTab ?? Int.min) {
             deepestFocusedTab = tab
         }
         refreshFocusDerived(rows: rows)
+    }
+
+    /// BUG-156 (b): the row and card a push over this page leaves from (nil = the strip did not own
+    /// focus: the Edit band, the rail), through `FolderPushOrigin`, logged as
+    /// `[StageStrip] folder push origin=<row>/<card>|- via=<current|loss|none> …`.
+    private func capturePushOrigin() {
+        let pageBox = box
+        let now = ProcessInfo.processInfo.systemUptime
+        let current = pageBox.stripHasFocus
+            ? stage.currentRowKey.map { FolderPushOrigin.Origin(rowKey: $0, itemId: stage.memory.itemId(for: $0)) }
+            : nil
+        let lost = pageBox.lostRow.map { FolderPushOrigin.Origin(rowKey: $0, itemId: pageBox.lostItem) }
+        let sinceLoss = pageBox.lostAt.map { now - $0 }
+        let railArmed = pageBox.railArmedAt.map { armed in pageBox.lostAt.map { armed >= $0 - 0.3 } ?? true } ?? false
+        let origin = FolderPushOrigin.resolve(current: current, lost: lost, sinceLoss: sinceLoss,
+                                              inputBeforeLoss: pageBox.inputBeforeLoss,
+                                              clockLive: ViewerInputClock.shared.isLive,
+                                              railArmedSinceLoss: railArmed)
+        pageBox.pushOrigin = origin
+        let via = origin == nil ? "none" : (current != nil ? "current" : "loss")
+        let input = pageBox.inputBeforeLoss.map { "\($0.kind)/\(Int($0.ago * 1000))" } ?? "-"
+        StageStripProbe.shared.log("folder push origin=\(origin.map { "\($0.rowKey)/\($0.itemId ?? "-")" } ?? "-") via=\(via) sinceLoss=\(sinceLoss.map { String(Int($0 * 1000)) } ?? "-") input=\(input) rail=\(railArmed ? 1 : 0)")
     }
 
     /// The Edit band gate (and the DEBUG readout) from the focused row's place among the focusable
@@ -429,6 +480,15 @@ final class FolderRowsPageBox {
     /// §2.3: cleared by the initial-focus request or by any card report.
     var pendingInitialFocus = true
     /// `FolderStageInput.State.initialCard`.
+    /// BUG-156 (b): the push's origin, captured at `onDisappear`, consumed by the next `onAppear`.
+    var pushOrigin: FolderPushOrigin.Origin?
+    /// BUG-156 (b): the strip's last focus loss: its row and card, when, and the viewer input before it.
+    var lostRow: String?
+    var lostItem: String?
+    var lostAt: TimeInterval?
+    var inputBeforeLoss: (kind: String, ago: TimeInterval)?
+    /// BUG-156 (b): when the rail last armed on this page.
+    var railArmedAt: TimeInterval?
     var initialCard: String?
     /// The strip row that last took focus (kept while focus is on the Edit band).
     var focusedRowKey: String?
@@ -499,7 +559,7 @@ final class FolderRowsDebugState: ObservableObject {
 }
 
 /// `folder_rows_state mode=rows rows=<visible> removed=<n> row=<focusable index|-> tab=<tabIndex|->
-/// docked=<0|1> disp=<displayed identity|-> state=<rows|loading|empty|failed>`. A LEAF: it observes
+/// docked=<0|1> disp=<displayed identity|-> state=<rows|loading|empty|failed> foc=<rowKey>/<itemId>|->`. A LEAF: it observes
 /// its own readout and the stage's debug readout (for `disp`), never the swap driver's output.
 private struct FolderRowsProbeLabel: View {
     @ObservedObject var debug: FolderRowsDebugState
@@ -512,7 +572,9 @@ private struct FolderRowsProbeLabel: View {
     var body: some View {
         let row = debug.row.map { String($0) } ?? "-"
         let tab = debug.tab.map { String($0) } ?? "-"
-        Text(verbatim: "folder_rows_state mode=rows rows=\(visibleCount) removed=\(removedCount) row=\(row) tab=\(tab) docked=\(docked ? 1 : 0) disp=\(stageDebug.disp) state=\(state.token)")
+        // BUG-156 (b): `foc=<rowKey>/<itemId>` (the strip memory's last recorded card, as Home's
+        // `debug_strip foc=`), appended last so every existing token parser is unchanged.
+        Text(verbatim: "folder_rows_state mode=rows rows=\(visibleCount) removed=\(removedCount) row=\(row) tab=\(tab) docked=\(docked ? 1 : 0) disp=\(stageDebug.disp) state=\(state.token) foc=\(stageDebug.foc)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("folder_rows_state")

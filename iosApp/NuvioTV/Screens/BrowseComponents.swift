@@ -934,7 +934,9 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     /// `slide`/`hasSeeded` state onto a title that was never actually mid-slide. Folding `rowKey`
     /// into the id scopes the reset to the row it actually belongs to.
     private var styleKey: String {
-        "\(rowKey)-\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
+        // BUG-162: `shape…` keeps the two landscape kinds apart (global 360×203 vs a per-row
+        // shape card at the poster height), whose card frames differ.
+        "\(rowKey)-\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-shape\(style.landscapeFromShape)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
     }
 
     func body(content: Content) -> some View {
@@ -5071,8 +5073,10 @@ struct CatalogRowView: View {
     /// catalog on a portrait Classic page is a SHORT row (203 pt cards under the poster regime's
     /// reaches). If Home publishes the short-row floor on it, this cancels the floor's layout growth
     /// so only the focusable frames grow, never the spacing to the next row. Non-zero only on a
-    /// landscape-shape catalog row that Home floors (`isLandscapeShapeCatalogRow`); 0 on Home's LAST
-    /// row (by contract) and on every uniform row, whose natural label already equals the floor.
+    /// landscape-shape catalog row that Home floors; 0 on Home's LAST row (by contract) and on every
+    /// uniform row, whose natural label already equals the floor. BUG-162 (Batch B): shape rows are
+    /// the poster height now and Home no longer floors them, so this is 0 everywhere today; it stays
+    /// as the guard for any short catalog row a host floors.
     private var shortRowCompensation: CGFloat {
         let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let natural = cardTopReach + rowArtworkHeight + caption + cardBottomReach
@@ -5103,7 +5107,8 @@ struct CatalogRowView: View {
         inheritedPosterStyle.resolved(forSectionItems: section.items)
     }
     private var rowArtworkHeight: CGFloat {
-        posterStyle.landscapeCatalogRows ? Theme.Size.landscapeHeight : posterStyle.height
+        // BUG-162: `cardHeight` (a shape-landscape row is as tall as a portrait row).
+        posterStyle.cardHeight
     }
 
     /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
@@ -5151,7 +5156,8 @@ struct CatalogRowView: View {
         // the formula this property used to inline (16:9 tile width × the lift, + accent ring +
         // shadow), byte-identical; No Zoom opens for the still focus shadow's visible reach (44 pt)
         // instead of ring + radius (26 pt), which cut the shadow into a hard line.
-        let restingWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        // BUG-162: the row's real card width (a shape-landscape card is `height × 16/9`).
+        let restingWidth = posterStyle.cardWidth
         return RowLeadingEdgeClip.rowAllowance(noZoomOnFocus: noZoomOnFocus,
                                                accentFocusRing: accentFocusRing,
                                                restingWidth: restingWidth,
@@ -5245,9 +5251,12 @@ struct CatalogRowView: View {
                             // BUG-164: never in No Zoom on Focus (`CardSystemLiftStyle.resolve`): the
                             // tile's manual lift scaled the far-left trailer 35.6 pt past the row's
                             // leading clip, the rc4 "glitch on the left" while it plays.
+                            // BUG-163: a shape-landscape row (BUG-157) fades its base card under the
+                            // tile like a portrait row (`InlineTrailerCard.fadesBaseCard`), so it
+                            // takes the portrait rule: `landscapeRowGeometry` is the global toggle only.
                             .environment(\.cardSystemLiftStyle,
                                          CardSystemLiftStyle.resolve(tileShowing: tileShowingItemId == item.id,
-                                                                     landscapeRow: posterStyle.landscapeCatalogRows,
+                                                                     landscapeRow: posterStyle.landscapeRowGeometry,
                                                                      noZoomOnFocus: noZoomOnFocus))
                             // A lift SwiftUI draws itself needs an explicit zIndex to sit above the
                             // row neighbours (the FEAT-14/BUG-36 rule in PosterCard); the system
@@ -5653,7 +5662,7 @@ struct CatalogRowView: View {
             }
             return
         }
-        let cardWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        let cardWidth = posterStyle.cardWidth  // BUG-162: the row's real card width
         guard let x = StripRowRestore.offset(index: index, cardWidth: cardWidth,
                                              gap: Theme.Spacing.rowGap, sample: sample) else { return }
         withTransaction(tx) { rowPosition.scrollTo(x: x) }
@@ -5714,12 +5723,10 @@ struct CatalogRowView: View {
 struct SeeAllCard: View {
     @Environment(\.posterStyle) private var style
 
-    private var tileWidth: CGFloat {
-        style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
-    }
-    private var tileHeight: CGFloat {
-        style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
-    }
+    // BUG-162: the row's resting card size, including a shape-landscape row's 16:9 card at the
+    // poster height.
+    private var tileWidth: CGFloat { style.cardWidth }
+    private var tileHeight: CGFloat { style.cardHeight }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {

@@ -80,4 +80,69 @@ final class PosterStyleLandscapeRowTests: XCTestCase {
         let items = [item("a", .poster), item("b", .poster)]
         XCTAssertTrue(style.resolved(forSectionItems: items).landscapeCatalogRows)
     }
+
+    // MARK: - BUG-162: card sizes for the three kinds of row
+
+    /// Medium+ (134 dp), the size Steven runs: width 134 × 220/126, height × 1.5.
+    private func mediumPlus() -> PosterStyle {
+        var style = PosterStyle()
+        style.width = 134 * (Theme.Size.posterWidth / 126)
+        style.height = style.width * 1.5
+        return style
+    }
+
+    func testPortraitCardIsThePoster() {
+        let style = mediumPlus()
+        XCTAssertEqual(style.cardWidth, style.width)
+        XCTAssertEqual(style.cardHeight, style.height)
+        XCTAssertFalse(style.landscapeRowGeometry)
+    }
+
+    func testGlobalLandscapeKeepsTheFixedCard() {
+        var style = mediumPlus()
+        style.landscapeCatalogRows = true
+        XCTAssertEqual(style.cardWidth, Theme.Size.landscapeWidth)
+        XCTAssertEqual(style.cardHeight, Theme.Size.landscapeHeight)
+        XCTAssertTrue(style.landscapeRowGeometry, "the global toggle's rows are the short 203 pt rows")
+    }
+
+    func testShapeLandscapeIsTheTileAtThePosterHeight() {
+        let base = mediumPlus()
+        let style = base.resolved(forSectionItems: (0..<4).map { item("s\($0)", .landscape) })
+        XCTAssertTrue(style.landscapeFromShape)
+        XCTAssertEqual(style.cardHeight, base.height, "as tall as the portrait row")
+        XCTAssertEqual(style.cardWidth, base.height * 16 / 9, accuracy: 0.001)
+        XCTAssertEqual(style.cardWidth, InlineTrailerCard.expandedWidth(style), accuracy: 0.001,
+                       "the trailer tile's own width: a pure dissolve, no morph")
+        XCTAssertFalse(style.landscapeRowGeometry, "planned as a portrait-height row")
+        XCTAssertGreaterThan(style.cardHeight, Theme.Size.landscapeHeight)
+    }
+
+    func testShapeLandscapeFollowsPosterSize() {
+        let items = (0..<3).map { item("p\($0)", .landscape) }
+        let small = PosterStyle().withHeight(300).resolved(forSectionItems: items)
+        let large = PosterStyle().withHeight(400).resolved(forSectionItems: items)
+        XCTAssertEqual(small.cardHeight, 300)
+        XCTAssertEqual(large.cardHeight, 400)
+        XCTAssertLessThan(small.cardWidth, large.cardWidth)
+    }
+
+    func testGlobalToggleNeverTurnsIntoAShapeRow() {
+        var style = mediumPlus()
+        style.landscapeCatalogRows = true
+        let resolved = style.resolved(forSectionItems: (0..<3).map { item("g\($0)", .landscape) })
+        XCTAssertFalse(resolved.landscapeFromShape, "the global toggle wins, 360×203")
+        XCTAssertEqual(resolved.cardWidth, Theme.Size.landscapeWidth)
+    }
+
+    func testStripInputsPlanAShapeRowAtThePortraitHeight() {
+        let base = mediumPlus()
+        let shape = base.resolved(forSectionItems: (0..<3).map { item("t\($0)", .landscape) })
+        let portraitInputs = StripGeometry.Inputs.live(style: base, noZoom: true, leadingInset: 0)
+        let shapeInputs = StripGeometry.Inputs.live(style: shape, noZoom: true, leadingInset: 0)
+        XCTAssertEqual(shapeInputs, portraitInputs)
+        var global = base
+        global.landscapeCatalogRows = true
+        XCTAssertTrue(StripGeometry.Inputs.live(style: global, noZoom: true, leadingInset: 0).landscapeCatalogRows)
+    }
 }

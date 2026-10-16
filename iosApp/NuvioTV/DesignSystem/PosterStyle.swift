@@ -12,8 +12,35 @@ struct PosterStyle: Equatable {
     var cornerRadius: CGFloat = Theme.Radius.card
     var showTitle: Bool = true
     var landscapeCatalogRows: Bool = false
+    /// BUG-162 (Steven, rc4 verdict 2026-10-16: his add-on's landscape cards "much too small", the
+    /// row heading ~120 pt above them at Medium+): true only when `resolved(forSectionItems:)`
+    /// turned this row landscape from its items' `posterShape` (BUG-157). Such a row's card is the
+    /// trailer tile's own geometry, `height` tall and `height × 16/9` wide (`cardWidth` /
+    /// `cardHeight`), so the row is exactly as tall as a portrait row and follows Poster Size. The
+    /// GLOBAL Landscape Posters toggle (`landscapeCatalogRows` without this) keeps 360×203.
+    var landscapeFromShape: Bool = false
 
     static let `default` = PosterStyle()
+
+    /// BUG-162: the resting card size of a row drawn with this style. Portrait: the poster.
+    /// Global Landscape Posters: the fixed 360×203 landscape card. Shape landscape (BUG-157 per-row):
+    /// a 16:9 card at the poster's height, the inline trailer tile's size
+    /// (`InlineTrailerCard.expandedWidth`), so the trailer is a pure dissolve on the card.
+    var cardWidth: CGFloat {
+        guard landscapeCatalogRows else { return width }
+        return landscapeFromShape ? height * (16.0 / 9.0) : Theme.Size.landscapeWidth
+    }
+
+    /// BUG-162: see `cardWidth`.
+    var cardHeight: CGFloat {
+        guard landscapeCatalogRows else { return height }
+        return landscapeFromShape ? height : Theme.Size.landscapeHeight
+    }
+
+    /// BUG-162: the row is a fixed-size landscape row (the global toggle), shorter than a portrait
+    /// row. False for portrait rows and for shape-landscape rows, which keep the portrait height:
+    /// the strip and the pinned-row planners read this, not `landscapeCatalogRows`.
+    var landscapeRowGeometry: Bool { landscapeCatalogRows && !landscapeFromShape }
 
     /// tvOS points per stored dp (default width dp 126 → 220 pt).
     private static let dpToPoint = Theme.Size.posterWidth / 126.0
@@ -85,6 +112,7 @@ extension PosterStyle {
         guard !landscapeCatalogRows, Self.landscapeSectionCached(items: items) else { return self }
         var copy = self
         copy.landscapeCatalogRows = true
+        copy.landscapeFromShape = true  // BUG-162: sized off the poster height, see `cardWidth`
         return copy
     }
 

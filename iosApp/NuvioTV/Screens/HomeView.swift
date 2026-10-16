@@ -1578,16 +1578,13 @@ struct HomeView: View {
                     // (their label IS the plan's link frame) and stay unfloored. See
                     // `pinnedShortRowLinkFrameFloor` for why a short label parks low.
                     //
-                    // BUG-157 (Steven, 10-10/10-14): and on a CATALOG row the add-on tags as
-                    // landscape (`posterShape`), which `CatalogRowView` now draws as 16:9 cards on
-                    // a portrait page: a short label on the poster regime's reaches, the same class.
-                    // Not when the global Landscape Posters toggle is on (every row is then the
-                    // landscape regime and no row is short).
+                    // BUG-162 (Batch B): a catalog row the add-on tags as landscape (`posterShape`,
+                    // BUG-157) used to be floored here too, its 203 pt cards being a short label on
+                    // the poster regime's reaches. Its cards are the poster height now
+                    // (`PosterStyle.cardHeight`), so it is a uniform catalog row and takes no floor.
                     .environment(\.rowCardLinkFrameFloor,
                                  pinned && (row.id == model.rows.last?.id
-                                            || (pinnedShortRowFloor
-                                                && (Self.isCollectionRow(row)
-                                                    || Self.isLandscapeShapeCatalogRow(row, style: posterStyle))))
+                                            || (pinnedShortRowFloor && Self.isCollectionRow(row)))
                                      ? pinnedLastRowLinkFrameFloor : 0)
                 }
             }
@@ -2974,15 +2971,6 @@ struct HomeView: View {
     private static func isCollectionRow(_ row: HomeRow) -> Bool {
         if case .collection = row { return true }
         return false
-    }
-
-    /// BUG-157: a catalog row whose items the add-on tags as landscape (`PosterStyle.landscapeSection`),
-    /// on a page whose global style is portrait, so `CatalogRowView` draws it as a short 16:9 row.
-    private static func isLandscapeShapeCatalogRow(_ row: HomeRow, style: PosterStyle) -> Bool {
-        guard case .catalog(let section) = row, !style.landscapeCatalogRows else { return false }
-        // Review r2 (P3-8): the same memoised answer `CatalogRowView` draws from, so the floor and
-        // the cards can never disagree on a reload that keeps a row's ends.
-        return PosterStyle.landscapeSectionCached(items: section.items)
     }
 
     /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because
