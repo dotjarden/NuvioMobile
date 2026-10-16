@@ -169,32 +169,78 @@ nonisolated enum PlaybackFailureClassifier {
 
 /// P4 (BUG-143): the last 16 mpv `warn`/`error`/`fatal` log lines of the CURRENT file, written on
 /// the mpv event queue and read at a failure. Lock-guarded so the main-thread failure paths read it
-/// synchronously; no per-line main-queue hop (C-8). r1 P3: only main-stream evidence is kept:
-/// subtitle-side modules and external subtitle fetches are dropped at append, and `clear()` runs
-/// at `MPV_EVENT_START_FILE`, so a line from before the current load never classifies it.
+/// synchronously; no per-line main-queue hop (C-8). Only main-stream evidence is kept, and
+/// `clear()` runs at `MPV_EVENT_START_FILE`, so a line from before the current load never
+/// classifies it.
+///
+/// r2 P3: a line is judged by where it came from, not by words in its URL. mpv hands every log
+/// message a MODULE prefix (`sub`, `sd_ass`, `osd`, `cplayer`, `stream`, `ffmpeg`,
+/// `ffmpeg/demuxer`, …) and FFmpeg's own lines carry their context name at the start of the text
+/// (`srt: Dropping 4 duplicated subtitle events`, `tls: Error decoding the received TLS packet.`,
+/// `https: Error reading HTTP response: …` in the 10-15 device logs). Subtitle modules and subtitle
+/// codec/demuxer contexts are dropped; protocol lines (`tcp`/`tls`/`https`) are kept, whatever the
+/// main-stream URL is called (`Movie.2024.MULTi.SUB.1080p.mkv`, a `x.sub.example` host). The
+/// URL-less protocol lines of an in-core `sub-add <http url>` are dropped by the player's
+/// attribution window (`subtitleLoadBegan` / `subtitleLoadDrained`).
 nonisolated final class MPVLogRing: @unchecked Sendable {
     static let capacity = 16
     private let lock = NSLock()
     private var lines: [String] = []
+    /// Set while the player drains the log lines an in-core `sub-add` produced (the command runs
+    /// synchronously on the event queue, so its lines are the ones buffered when it returns).
+    private var attributingSubtitleLoad = false
 
     /// mpv module prefixes that only ever speak about subtitles / OSD.
     static let subtitlePrefixes: Set<String> = ["sub", "osd", "sd_ass", "sd_lavc", "sd_sub", "ass", "sub/ass", "subreader"]
-    private static let subtitleExtensions = #"\.(srt|vtt|webvtt|ass|ssa|sub|ttml|dfxp|smi|sup)(\?|\b)"#
+    /// FFmpeg context names (the `name:` that starts the text) of subtitle demuxers and decoders.
+    static let subtitleContexts: Set<String> = [
+        "srt", "subrip", "ass", "ssa", "webvtt", "vtt", "mov_text", "ttml", "sami", "microdvd", "subviewer",
+        "subviewer1", "mpl2", "mpsub", "jacosub", "realtext", "stl", "vplayer", "pjs", "aqtitle", "lrc", "scc",
+        "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "pgssub", "hdmv_pgs_subtitle", "sup", "libzvbi_teletextdec",
+        "text", "eia_608", "cc_dec", "dfxp",
+    ]
+    /// A subtitle file URL: the extension ends the URL path (query, whitespace, end, or a trailing
+    /// period / comma / bracket before whitespace or the end). Not `.SUB.` inside a release name.
+    private static let subtitleURLPattern =
+        #"\.(srt|vtt|webvtt|ass|ssa|sub|ttml|dfxp|smi|sup)(\?\S*)?([.,;)\]]*)(\s|$)"#
 
-    /// False for a line about a subtitle (its module, an external-file load, a subtitle URL).
+    /// The FFmpeg context name that starts `text` (`"srt"` for `srt: Dropping …`), lowercased.
+    static func leadingContext(of text: String) -> String? {
+        guard let colon = text.firstIndex(of: ":") else { return nil }
+        let name = text[..<colon]
+        guard !name.isEmpty, name.count <= 32,
+              name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "," }) else { return nil }
+        return name.lowercased()
+    }
+
+    /// False for a line about a subtitle: its mpv module, its FFmpeg subtitle context, an
+    /// external-file load, or a subtitle file URL.
     static func isMainStreamEvidence(prefix: String, text: String) -> Bool {
         let p = prefix.lowercased()
         if subtitlePrefixes.contains(p) || p.hasPrefix("sub") || p.hasPrefix("sd_") { return false }
+        if let context = leadingContext(of: text), subtitleContexts.contains(context) { return false }
         let lower = text.lowercased()
-        if lower.contains("external file") || lower.contains("subtitle") { return false }
-        if lower.range(of: subtitleExtensions, options: .regularExpression) != nil { return false }
+        if lower.contains("external file") { return false }
+        if lower.range(of: subtitleURLPattern, options: .regularExpression) != nil { return false }
         return true
     }
 
     func append(prefix: String, text: String) {
         guard Self.isMainStreamEvidence(prefix: prefix, text: text) else { return }
+        lock.lock()
+        let dropAsSubtitleLoad = attributingSubtitleLoad && prefix.lowercased().hasPrefix("ffmpeg")
+        lock.unlock()
+        guard !dropAsSubtitleLoad else { return }
         append("\(prefix): \(text)")
     }
+
+    /// Event queue: an in-core `sub-add` is about to run. Until `subtitleLoadDrained()`, FFmpeg
+    /// lines (its URL-less `tcp:` / `tls:` / `https:` lines) are the subtitle load's, not the
+    /// stream's. A main-stream FFmpeg line drained in the same window is lost too (rare: the window
+    /// is one synchronous command plus one drain).
+    func subtitleLoadBegan() { lock.lock(); attributingSubtitleLoad = true; lock.unlock() }
+    /// Event queue: the lines buffered during the `sub-add` have been drained.
+    func subtitleLoadDrained() { lock.lock(); attributingSubtitleLoad = false; lock.unlock() }
 
     func append(_ line: String) {
         lock.lock()

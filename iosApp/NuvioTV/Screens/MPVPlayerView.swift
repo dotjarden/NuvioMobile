@@ -1551,7 +1551,14 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         // sub-add downloads/probes the file synchronously inside the core — never on main.
         eventQueue.async { [weak self] in
-            self?.command("sub-add", args: [url, "auto", title, lang])
+            guard let self else { return }
+            // r2 P3: the fetch's FFmpeg lines (URL-less `tcp:` / `tls:` lines) are buffered while
+            // the command runs; drain them now, inside the attribution window, so a timed-out
+            // subtitle fetch never reads as main-stream network evidence.
+            self.logRing.subtitleLoadBegan()
+            self.command("sub-add", args: [url, "auto", title, lang])
+            self.drainEvents()
+            self.logRing.subtitleLoadDrained()
         }
     }
 

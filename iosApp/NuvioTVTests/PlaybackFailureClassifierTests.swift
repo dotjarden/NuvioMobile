@@ -141,6 +141,32 @@ final class PlaybackFailureClassifierTests: XCTestCase {
         XCTAssertTrue(ring.snapshot.isEmpty)
     }
 
+    /// r2 P3: a main-stream line is kept even when its URL or host looks like a subtitle; a
+    /// subtitle demuxer's line (FFmpeg context `srt:`, as in the 10-15 device log) is dropped.
+    func testLogRingJudgesTheSourceNotTheURLWords() {
+        let ring = MPVLogRing()
+        ring.append(prefix: "stream", text: "Failed to open https://cdn.example/Movie.2024.MULTi.SUB.1080p.mkv")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out while opening https://x.sub.example/v.mkv")
+        ring.append(prefix: "stream", text: "HTTP error 404 Not Found for https://subtitlecdn.example/Show.S01E01.mkv")
+        XCTAssertEqual(ring.snapshot.count, 3, "\(ring.snapshot)")
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: false), C.Verdict(.http, http: 404))
+
+        ring.clear()
+        ring.append(prefix: "ffmpeg/demuxer", text: "srt: Dropping 17 duplicated subtitle events")
+        ring.append(prefix: "ffmpeg/demuxer", text: "webvtt: Invalid data found when processing input")
+        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+
+        // An in-core sub-add's URL-less protocol lines, drained inside the attribution window.
+        ring.subtitleLoadBegan()
+        ring.append(prefix: "ffmpeg", text: "tls: Error decoding the received TLS packet.")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        ring.subtitleLoadDrained()
+        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+        // The same lines outside the window are the stream's.
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: true).kind, .network)
+    }
+
     func testRemembersLinkTruthTable() {
         let remembered: [PlaybackFailureKind] = [.http, .decode, .placeholder, .endedEarly, .noMedia, .unknown]
         let transient: [PlaybackFailureKind] = [.network, .offline, .cancelled, .local]
