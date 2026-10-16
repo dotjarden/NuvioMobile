@@ -4,6 +4,7 @@
     "": {
       "shouldTranslate": false
     },
+    " ": {},
     "%.1f GB": {
       "localizations": {
         "de": {
@@ -136,6 +137,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ - %@ Tức thì"
+          }
+        }
+      }
+    },
+    "%@ MB used": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB belegt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB usados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Mo utilisés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB usati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã dùng %@ MB"
           }
         }
       }
@@ -1841,6 +1876,74 @@
         }
       }
     },
+    "0.15 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,15 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,15 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,15 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,15 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,15 giây"
+          }
+        }
+      }
+    },
+    "0.4 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,4 s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,4 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,4 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,4 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0,4 giây"
+          }
+        }
+      }
+    },
     "0–10": {
       "localizations": {
         "de": {
@@ -2963,6 +3066,40 @@
         }
       }
     },
+    "300 ms": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "300 ms"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "300 ms"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "300 ms"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "300 ms"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "300 ms"
+          }
+        }
+      }
+    },
     "30s": {
       "localizations": {
         "de": {
@@ -3231,6 +3368,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "720p"
+          }
+        }
+      }
+    },
+    "75 ms": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "75 ms"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "75 ms"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "75 ms"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "75 ms"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "75 ms"
           }
         }
       }
@@ -4833,6 +5004,40 @@
         }
       }
     },
+    "An A/B switch for how a swipe moves the position. Auto moves it at a steady rate that scales with the video's length; Flick moves it further the faster you swipe.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie ein Wischen die Position verschiebt. Automatisch verschiebt sie gleichmäßig, abhängig von der Länge des Videos; Flick verschiebt sie umso weiter, je schneller du wischst."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cómo un deslizamiento mueve la posición. Auto la mueve a un ritmo constante que depende de la duración del vídeo; Flick la mueve más lejos cuanto más rápido deslizas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la façon dont un balayage déplace la position. Auto la déplace à un rythme régulier adapté à la durée de la vidéo ; Flick la déplace d’autant plus loin que vous balayez vite."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per come uno scorrimento sposta la posizione. Auto la sposta a un ritmo costante che dipende dalla durata del video; Flick la sposta più lontano quanto più velocemente scorri."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho cách thao tác vuốt di chuyển vị trí. Tự động di chuyển đều theo độ dài video; Flick di chuyển xa hơn khi bạn vuốt nhanh hơn."
+          }
+        }
+      }
+    },
     "An A/B switch for how collection rows animate, to test choppy focus movement. 0 is the normal behavior.": {
       "localizations": {
         "de": {
@@ -4863,6 +5068,244 @@
           "stringUnit": {
             "state": "translated",
             "value": "Công tắc A/B cho cách các hàng bộ sưu tập chuyển động, để thử nghiệm chuyển tiêu điểm bị giật. 0 là hành vi bình thường."
+          }
+        }
+      }
+    },
+    "An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie weit ein Wischen die Position verschiebt. Langsamer halbiert es, Schneller verdoppelt es."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cuánto mueve la posición un deslizamiento. Más lento lo reduce a la mitad; Más rápido lo duplica."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la distance parcourue par un balayage. Plus lent la divise par deux ; Plus rapide la double."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per quanto uno scorrimento sposta la posizione. Più lento lo dimezza; Più veloce lo raddoppia."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho khoảng cách một lần vuốt di chuyển vị trí. Chậm hơn giảm một nửa; Nhanh hơn tăng gấp đôi."
+          }
+        }
+      }
+    },
+    "An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie lange der Player nach einem Sprung wartet, bevor er genau auf dem Bild landet. Automatisch sind 150 ms. Nur Keyframes überspringt diesen zweiten Schritt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cuánto espera el reproductor tras un salto antes de llegar al fotograma exacto. Auto son 150 ms. Solo fotogramas clave omite ese segundo paso."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour le temps d’attente du lecteur après un saut avant d’arriver sur l’image exacte. Auto vaut 150 ms. Images clés uniquement saute cette seconde étape."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per quanto il lettore attende dopo un salto prima di arrivare al fotogramma esatto. Auto è 150 ms. Solo fotogrammi chiave salta questo secondo passaggio."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho thời gian trình phát chờ sau khi nhảy trước khi đến đúng khung hình. Tự động là 150 ms. Chỉ khung hình chính bỏ qua bước thứ hai đó."
+          }
+        }
+      }
+    },
+    "An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie oft ein gehaltenes Links oder Rechts einen Schritt hinzufügt. Automatisch sind 0,25 Sekunden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cada cuánto Izquierda o Derecha mantenido añade un paso. Auto son 0,25 segundos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la fréquence à laquelle Gauche ou Droite maintenu ajoute un pas. Auto vaut 0,25 seconde."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per ogni quanto Sinistra o Destra tenuto premuto aggiunge un passo. Auto è 0,25 secondi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho tần suất giữ Trái hoặc Phải thêm một bước. Tự động là 0,25 giây."
+          }
+        }
+      }
+    },
+    "An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none. If the app closes while saving one, saving stops on this Apple TV until you pick a value here.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie oft der mpv-Player ein kleines Bild des Videos für die Suchvorschau speichert. Automatisch speichert alle 10 Sekunden Wiedergabe eines. Aus speichert keines. Schließt sich die App beim Speichern, stoppt das Speichern auf diesem Apple TV, bis du hier einen Wert wählst."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cada cuánto el reproductor mpv guarda una imagen pequeña del vídeo para la vista previa de búsqueda. Auto guarda una cada 10 segundos de reproducción. Desactivado no guarda ninguna. Si la app se cierra mientras guarda una, el guardado se detiene en este Apple TV hasta que elijas un valor aquí."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la fréquence à laquelle le lecteur mpv enregistre une petite image de la vidéo pour l’aperçu de recherche. Auto en enregistre une toutes les 10 secondes de lecture. Désactivé n’en enregistre aucune. Si l’app se ferme pendant un enregistrement, celui-ci s’arrête sur cette Apple TV jusqu’à ce que vous choisissiez une valeur ici."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per ogni quanto il lettore mpv salva una piccola immagine del video per l’anteprima di ricerca. Auto ne salva una ogni 10 secondi di riproduzione. Off non ne salva nessuna. Se l’app si chiude durante un salvataggio, il salvataggio si ferma su questa Apple TV finché non scegli un valore qui."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho tần suất trình phát mpv lưu một ảnh nhỏ của video cho bản xem trước khi tua. Tự động lưu một ảnh mỗi 10 giây phát. Tắt không lưu ảnh nào. Nếu ứng dụng đóng trong lúc lưu, việc lưu sẽ dừng trên Apple TV này cho đến khi bạn chọn một giá trị ở đây."
+          }
+        }
+      }
+    },
+    "An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie schnell ein gehaltenes Links oder Rechts zu größeren Schritten wechselt. Automatisch erreicht 60-Sekunden-Schritte nach 2 Sekunden, Schneller nach 1 Sekunde, Langsamer nach 4 Sekunden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para la rapidez con la que Izquierda o Derecha mantenido pasa a pasos mayores. Auto llega a pasos de 60 segundos tras 2 segundos; Más rápido tras 1 segundo; Más lento tras 4 segundos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la vitesse à laquelle Gauche ou Droite maintenu passe à des pas plus grands. Auto atteint des pas de 60 secondes après 2 secondes ; Plus rapide après 1 seconde ; Plus lent après 4 secondes."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per la rapidità con cui Sinistra o Destra tenuto premuto passa a passi più grandi. Auto arriva a passi di 60 secondi dopo 2 secondi; Più veloce dopo 1 secondo; Più lento dopo 4 secondi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho tốc độ giữ Trái hoặc Phải chuyển sang bước lớn hơn. Tự động đạt bước 60 giây sau 2 giây; Nhanh hơn sau 1 giây; Chậm hơn sau 4 giây."
+          }
+        }
+      }
+    },
+    "An A/B switch for how the mpv player copies a frame for the seek preview. Software for SDR copies it without the video renderer, which uses less memory over a long playback. Video Renderer is the old path. Applies to the next playback.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, wie der mpv-Player ein Bild für die Suchvorschau kopiert. Software für SDR kopiert es ohne den Video-Renderer, was bei langer Wiedergabe weniger Speicher braucht. Video-Renderer ist der alte Weg. Gilt für die nächste Wiedergabe."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para cómo el reproductor mpv copia un fotograma para la vista previa de búsqueda. Software para SDR lo copia sin el renderizador de vídeo, lo que usa menos memoria en una reproducción larga. Renderizador de vídeo es el método anterior. Se aplica a la siguiente reproducción."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la façon dont le lecteur mpv copie une image pour l’aperçu de recherche. Logiciel pour SDR la copie sans le moteur de rendu vidéo, ce qui utilise moins de mémoire sur une longue lecture. Moteur de rendu vidéo est l’ancienne méthode. S’applique à la prochaine lecture."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per come il lettore mpv copia un fotogramma per l’anteprima di ricerca. Software per SDR lo copia senza il renderer video, usando meno memoria durante una riproduzione lunga. Renderer video è il metodo precedente. Si applica alla prossima riproduzione."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho cách trình phát mpv sao chép một khung hình cho bản xem trước khi tua. Phần mềm cho SDR sao chép mà không qua trình kết xuất video, dùng ít bộ nhớ hơn khi phát lâu. Trình kết xuất video là cách cũ. Áp dụng cho lần phát tiếp theo."
+          }
+        }
+      }
+    },
+    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which can download about 200 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter dafür, woher die Suchvorschau ihre Bilder bekommt. Nur Sammeln speichert sie während der Wiedergabe aus dem Video. Sammeln + Dekodieren liest auch Bilder aus noch nicht gesehenen Teilen, was pro Titel etwa 200 MB mehr laden kann. Aus zeigt nur Zeiten und schaltet die Bildspur aus, die der Apple-TV-Player zum Vor- und Zurückspulen nutzt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para de dónde saca sus imágenes la vista previa de búsqueda. Solo captura las guarda del vídeo mientras se reproduce. Captura + decodificación también lee imágenes de partes que aún no has visto, lo que puede descargar unos 200 MB más por título. Desactivado solo muestra tiempos y desactiva la pista de imágenes que usa el reproductor de Apple TV para avanzar y retroceder rápido."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la provenance des images de l’aperçu de recherche. Collecte uniquement les enregistre depuis la vidéo pendant la lecture. Collecte + décodage lit aussi des images des parties pas encore regardées, ce qui peut télécharger environ 200 Mo de plus par titre. Désactivé n’affiche que les durées et désactive la piste d’images que le lecteur Apple TV utilise pour l’avance et le retour rapides."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per da dove l’anteprima di ricerca prende le immagini. Solo raccolta le salva dal video durante la riproduzione. Raccolta + decodifica legge anche immagini dalle parti non ancora viste, il che può scaricare circa 200 MB in più per titolo. Off mostra solo i tempi e disattiva la traccia di immagini che il lettore di Apple TV usa per avanzare e riavvolgere velocemente."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho nguồn ảnh của bản xem trước khi tua. Chỉ thu thập lưu ảnh từ video khi đang phát. Thu thập + giải mã còn đọc ảnh từ các đoạn bạn chưa xem, có thể tải thêm khoảng 200 MB mỗi nội dung. Tắt chỉ hiện thời gian và tắt dải ảnh mà trình phát Apple TV dùng để tua nhanh và tua lại."
           }
         }
       }
@@ -5645,6 +6088,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ảnh hiện khi hero được làm sáng và ẩn đi khi bạn di chuyển xuống các hàng"
+          }
+        }
+      }
+    },
+    "Aspect": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seitenverhältnis"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aspecto"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Formato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tỉ lệ"
           }
         }
       }
@@ -7519,6 +7996,74 @@
         }
       }
     },
+    "Buffering %lld %%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puffern %lld %%"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Almacenando en búfer %lld %%"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mise en mémoire tampon %lld %%"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffering %lld %%"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải bộ đệm %lld %%"
+          }
+        }
+      }
+    },
+    "Buffering…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puffern…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Almacenando en búfer…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mise en mémoire tampon…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffering…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải bộ đệm…"
+          }
+        }
+      }
+    },
     "Build": {
       "localizations": {
         "de": {
@@ -8063,6 +8608,74 @@
         }
       }
     },
+    "Chapter %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kapitel %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capítulo %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chapitre %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capitolo %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chương %lld"
+          }
+        }
+      }
+    },
+    "Chapters": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kapitel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capítulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chapitres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chương"
+          }
+        }
+      }
+    },
     "Check Server": {
       "localizations": {
         "de": {
@@ -8195,6 +8808,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang kiểm tra Simkl xem có thay đổi từ ứng dụng khác hoặc trang web…"
+          }
+        }
+      }
+    },
+    "Checking the stream…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream wird geprüft…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprobando el stream…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vérification du flux…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Controllo dello stream…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang kiểm tra luồng…"
           }
         }
       }
@@ -8501,6 +9148,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chọn bố cục trang tiêu đề, cách trailer hoạt động và những mục hiển thị bên dưới chi tiết chính. Bảo vệ tránh tiết lộ nội dung tập cũng nằm ở đây."
+          }
+        }
+      }
+    },
+    "Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2× and keeps going after you let go: press Right again for 3× or 4×, Select to carry on from there, Menu to go back. Default: Step.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lege fest, was ein gehaltenes Links oder Rechts im mpv-Player tut. Schritt springt weiter, je länger du hältst, und bewegt sich einmal beim Loslassen. Scannen spielt mit 2× und läuft nach dem Loslassen weiter: Rechts erneut für 3× oder 4×, Auswählen, um dort weiterzuschauen, Menü, um zurückzugehen. Standard: Schritt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige qué hace mantener Izquierda o Derecha en el reproductor mpv. Paso salta más lejos cuanto más mantienes y se mueve una vez al soltar. Exploración reproduce a 2× y sigue al soltar: pulsa Derecha otra vez para 3× o 4×, Seleccionar para seguir desde ahí, Menú para volver. Predeterminado: Paso."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez l’effet d’un appui maintenu sur Gauche ou Droite dans le lecteur mpv. Pas saute plus loin à mesure que vous maintenez et se déplace une fois quand vous relâchez. Balayage lit à 2× et continue après le relâchement : appuyez de nouveau sur Droite pour 3× ou 4×, Sélectionner pour reprendre à cet endroit, Menu pour revenir. Par défaut : Pas."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli cosa fa tenere premuto Sinistra o Destra nel lettore mpv. Passo salta più lontano più a lungo tieni premuto e si sposta una volta al rilascio. Scansione riproduce a 2× e continua dopo il rilascio: premi di nuovo Destra per 3× o 4×, Seleziona per proseguire da lì, Menu per tornare indietro. Predefinito: Passo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn tác dụng của việc giữ Trái hoặc Phải trong trình phát mpv. Bước nhảy xa hơn khi bạn giữ lâu hơn và di chuyển một lần khi thả. Quét phát ở 2× và tiếp tục sau khi thả: nhấn Phải lần nữa để lên 3× hoặc 4×, Chọn để tiếp tục từ đó, Menu để quay lại. Mặc định: Bước."
+          }
+        }
+      }
+    },
+    "Choose what one click on Left or Right does in the mpv player. Skip 10 s jumps ten seconds. Previous/Next Chapter jumps to the next chapter, or back to the start of this one, when the video has chapters, and skips 10 seconds when it does not. Default: Skip 10 s.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lege fest, was ein Klick auf Links oder Rechts im mpv-Player tut. 10 s springen springt zehn Sekunden. Vorheriges/nächstes Kapitel springt zum nächsten Kapitel oder zum Anfang des aktuellen, wenn das Video Kapitel hat, sonst 10 Sekunden. Standard: 10 s springen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige qué hace un clic en Izquierda o Derecha en el reproductor mpv. Saltar 10 s salta diez segundos. Capítulo anterior/siguiente salta al siguiente capítulo, o al inicio de este, cuando el vídeo tiene capítulos, y salta 10 segundos cuando no. Predeterminado: Saltar 10 s."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez l’effet d’un clic sur Gauche ou Droite dans le lecteur mpv. Sauter 10 s avance de dix secondes. Chapitre précédent/suivant passe au chapitre suivant, ou revient au début de celui-ci, quand la vidéo a des chapitres, et saute 10 secondes sinon. Par défaut : Sauter 10 s."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli cosa fa un clic su Sinistra o Destra nel lettore mpv. Salta 10 s salta di dieci secondi. Capitolo precedente/successivo passa al capitolo successivo, o all’inizio di quello corrente, quando il video ha capitoli, e salta 10 secondi quando non li ha. Predefinito: Salta 10 s."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chọn tác dụng của một lần nhấn Trái hoặc Phải trong trình phát mpv. Bỏ qua 10 giây nhảy mười giây. Chương trước/sau nhảy sang chương tiếp theo, hoặc về đầu chương hiện tại, khi video có chương, và bỏ qua 10 giây khi không có. Mặc định: Bỏ qua 10 giây."
           }
         }
       }
@@ -10644,6 +11359,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã kết nối đến %@"
+          }
+        }
+      }
+    },
+    "Connecting…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinden…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectando…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connexion…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connessione…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang kết nối…"
           }
         }
       }
@@ -13912,6 +14661,40 @@
         }
       }
     },
+    "Dolby Vision profile 5": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision Profil 5"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision perfil 5"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision profil 5"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision profilo 5"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dolby Vision cấu hình 5"
+          }
+        }
+      }
+    },
     "Downloads the provider code again from every installed repository.": {
       "localizations": {
         "de": {
@@ -14660,7 +15443,6 @@
         }
       }
     },
-    "ends %@": {},
     "Engine": {
       "localizations": {
         "de": {
@@ -15171,6 +15953,40 @@
         }
       }
     },
+    "Exact Seek Delay (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verzögerung exakte Suche (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retardo de búsqueda exacta (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai de recherche exacte (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ritardo ricerca esatta (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Độ trễ tua chính xác (A/B)"
+          }
+        }
+      }
+    },
     "Exclude": {
       "localizations": {
         "de": {
@@ -15579,6 +16395,40 @@
         }
       }
     },
+    "Faster": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schneller"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más rápido"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plus rapide"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Più veloce"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhanh hơn"
+          }
+        }
+      }
+    },
     "File Size Badges": {
       "localizations": {
         "de": {
@@ -15609,6 +16459,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Huy hiệu dung lượng tệp"
+          }
+        }
+      }
+    },
+    "Fill": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remplir"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rellenar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausfüllen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riempi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lấp đầy"
           }
         }
       }
@@ -15749,6 +16633,74 @@
         }
       }
     },
+    "Finding the episode's source…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quelle der Episode wird gesucht…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando la fuente del episodio…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche de la source de l’épisode…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerca della sorgente dell’episodio…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tìm nguồn của tập…"
+          }
+        }
+      }
+    },
+    "Finding the next episode's source…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quelle der nächsten Episode wird gesucht…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando la fuente del siguiente episodio…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche de la source de l’épisode suivant…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerca della sorgente dell’episodio successivo…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tìm nguồn của tập tiếp theo…"
+          }
+        }
+      }
+    },
     "First air date": {
       "localizations": {
         "de": {
@@ -15779,6 +16731,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ngày phát sóng đầu tiên"
+          }
+        }
+      }
+    },
+    "Fit": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajuster"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajustar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anpassen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adatta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vừa màn hình"
+          }
+        }
+      }
+    },
+    "Flick": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flick"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flick"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flick"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flick"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flick"
           }
         }
       }
@@ -16906,6 +17926,108 @@
         }
       }
     },
+    "Harvest + Decode": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammeln + Dekodieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Captura + decodificación"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collecte + décodage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raccolta + decodifica"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thu thập + giải mã"
+          }
+        }
+      }
+    },
+    "Harvest Only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur Sammeln"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo captura"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collecte uniquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo raccolta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chỉ thu thập"
+          }
+        }
+      }
+    },
+    "Harvest Screenshot Path (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aufnahmeweg (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Método de captura (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Méthode de capture (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metodo di cattura (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cách chụp khung hình (A/B)"
+          }
+        }
+      }
+    },
     "Hero": {
       "localizations": {
         "de": {
@@ -17549,6 +18671,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếng Hindi"
+          }
+        }
+      }
+    },
+    "Hold Left/Right": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Links/Rechts halten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantener Izquierda/Derecha"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maintenir Gauche/Droite"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tieni premuto Sinistra/Destra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giữ Trái/Phải"
+          }
+        }
+      }
+    },
+    "Hold Ramp Speed (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beschleunigung beim Halten (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aceleración al mantener (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accélération du maintien (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accelerazione tenendo premuto (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốc độ tăng khi giữ (A/B)"
+          }
+        }
+      }
+    },
+    "Hold Step Interval (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schrittintervall beim Halten (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intervalo de pasos al mantener (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intervalle des pas maintenus (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intervallo dei passi tenendo premuto (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khoảng bước khi giữ (A/B)"
           }
         }
       }
@@ -18879,6 +20103,40 @@
         }
       }
     },
+    "Keyframes Only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nur Keyframes"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo fotogramas clave"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Images clés uniquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo fotogrammi chiave"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chỉ khung hình chính"
+          }
+        }
+      }
+    },
     "Keyword IDs": {
       "localizations": {
         "fr": {
@@ -19389,6 +20647,40 @@
         }
       }
     },
+    "Left/Right Click": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klick Links/Rechts"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clic Izquierda/Derecha"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clic Gauche/Droite"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clic Sinistra/Destra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhấn Trái/Phải"
+          }
+        }
+      }
+    },
     "Lets the top banner play its trailer by itself without waiting for focus. Off by default.": {
       "localizations": {
         "de": {
@@ -19797,6 +21089,40 @@
         }
       }
     },
+    "Loading Screen": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ladebildschirm"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pantalla de carga"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écran de chargement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schermata di caricamento"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Màn hình tải"
+          }
+        }
+      }
+    },
     "Loading catalogs…": {
       "localizations": {
         "de": {
@@ -19929,6 +21255,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tải cài đặt phụ đề…"
+          }
+        }
+      }
+    },
+    "Loading subtitles…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitel werden geladen…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando subtítulos…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chargement des sous-titres…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caricamento dei sottotitoli…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải phụ đề…"
           }
         }
       }
@@ -21123,7 +22483,40 @@
         }
       }
     },
-    "More": {},
+    "More": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mehr"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altro"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thêm"
+          }
+        }
+      }
+    },
     "More Like This": {
       "localizations": {
         "de": {
@@ -23400,6 +24793,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tắt"
+          }
+        }
+      }
+    },
+    "Off After a Crash": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus nach einem Absturz"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado tras un fallo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé après un plantage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off dopo un arresto anomalo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt sau khi gặp sự cố"
+          }
+        }
+      }
+    },
+    "Off after a crash in an earlier playback": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus nach einem Absturz bei einer früheren Wiedergabe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado tras un fallo en una reproducción anterior"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé après un plantage lors d’une lecture précédente"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off dopo un arresto anomalo in una riproduzione precedente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt sau sự cố ở lần phát trước"
           }
         }
       }
@@ -28134,6 +29595,40 @@
         }
       }
     },
+    "Previous/Next Chapter": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorheriges/nächstes Kapitel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capítulo anterior/siguiente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chapitre précédent/suivant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capitolo precedente/successivo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chương trước/sau"
+          }
+        }
+      }
+    },
     "Production": {
       "localizations": {
         "de": {
@@ -31364,6 +32859,40 @@
         }
       }
     },
+    "Scan": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scannen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exploración"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balayage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scansione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quét"
+          }
+        }
+      }
+    },
     "Scan a QR code to sign in — no typing required": {
       "localizations": {
         "de": {
@@ -32007,6 +33536,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xem tất cả"
+          }
+        }
+      }
+    },
+    "Seek Preview Frames (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bilder der Suchvorschau (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imágenes de vista previa de búsqueda (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Images d’aperçu de recherche (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immagini anteprima di ricerca (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ảnh xem trước khi tua (A/B)"
+          }
+        }
+      }
+    },
+    "Seek Previews": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchvorschauen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vistas previas de búsqueda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aperçus de recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anteprime di ricerca"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xem trước khi tua"
           }
         }
       }
@@ -33337,6 +34934,40 @@
         }
       }
     },
+    "Show Clock": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uhr anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar reloj"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l’horloge"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra orologio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện đồng hồ"
+          }
+        }
+      }
+    },
     "Show Hero": {
       "localizations": {
         "de": {
@@ -33609,6 +35240,74 @@
         }
       }
     },
+    "Show the poster and what is happening while a video starts": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster anzeigen und was passiert, während ein Video startet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar el póster y lo que ocurre mientras empieza un vídeo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l’affiche et ce qui se passe pendant le démarrage d’une vidéo"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il poster e cosa succede mentre un video si avvia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện áp phích và những gì đang diễn ra khi video bắt đầu"
+          }
+        }
+      }
+    },
+    "Show the time of day while the controls are up (mpv player)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uhrzeit anzeigen, solange die Steuerung sichtbar ist (mpv-Player)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar la hora mientras los controles están visibles (reproductor mpv)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l’heure quand les commandes sont visibles (lecteur mpv)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra l’ora mentre i controlli sono visibili (lettore mpv)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện giờ khi bảng điều khiển đang hiển thị (trình phát mpv)"
+          }
+        }
+      }
+    },
     "Show the title's poster on the right side of detail pages": {
       "localizations": {
         "de": {
@@ -33639,6 +35338,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiển thị poster của tiêu đề ở phía bên phải trang chi tiết"
+          }
+        }
+      }
+    },
+    "Show the title, source and time remaining after a short pause": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Titel, Quelle und Restzeit nach einer kurzen Pause anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar el título, la fuente y el tiempo restante tras una breve pausa"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le titre, la source et le temps restant après une courte pause"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra titolo, sorgente e tempo rimanente dopo una breve pausa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tiêu đề, nguồn và thời gian còn lại sau khi tạm dừng một lúc"
           }
         }
       }
@@ -34459,6 +36192,74 @@
         }
       }
     },
+    "Shows the poster, the title and what the player is doing (connecting, preparing, buffering) while a video starts, in both players. Off shows a plain spinner. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt Poster, Titel und was der Player gerade tut (Verbinden, Vorbereiten, Puffern), während ein Video startet, in beiden Playern. Aus zeigt nur ein Ladesymbol. Standardmäßig an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el póster, el título y lo que hace el reproductor (conectando, preparando, almacenando en búfer) mientras empieza un vídeo, en ambos reproductores. Desactivado muestra un indicador de carga simple. Activado de forma predeterminada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche l’affiche, le titre et ce que fait le lecteur (connexion, préparation, mise en mémoire tampon) pendant le démarrage d’une vidéo, dans les deux lecteurs. Désactivé affiche un simple indicateur de chargement. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra il poster, il titolo e cosa sta facendo il lettore (connessione, preparazione, buffering) mentre un video si avvia, in entrambi i lettori. Off mostra un semplice indicatore di caricamento. Attivo per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện áp phích, tiêu đề và việc trình phát đang làm (kết nối, chuẩn bị, tải bộ đệm) khi video bắt đầu, ở cả hai trình phát. Tắt chỉ hiện biểu tượng tải. Bật theo mặc định."
+          }
+        }
+      }
+    },
+    "Shows the time of day in the corner while the player controls are up. Off by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt die Uhrzeit in der Ecke, solange die Player-Steuerung sichtbar ist. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra la hora en la esquina mientras los controles del reproductor están visibles. Desactivado de forma predeterminada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche l’heure dans le coin quand les commandes du lecteur sont visibles. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra l’ora nell’angolo mentre i controlli del lettore sono visibili. Off per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện giờ ở góc màn hình khi bảng điều khiển trình phát đang hiển thị. Tắt theo mặc định."
+          }
+        }
+      }
+    },
     "Shows the title's poster on the right side of the page's background. On by default.": {
       "localizations": {
         "de": {
@@ -34523,6 +36324,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiển thị tiêu đề, nguồn và thời gian còn lại sau khi bạn tạm dừng một lúc. Chỉ hoạt động trong trình phát mpv. Mặc định bật."
+          }
+        }
+      }
+    },
+    "Shows the title, source and time left after you have been paused for a while. Works in both players. On by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt Titel, Quelle und Restzeit, wenn du eine Weile pausiert hast. Funktioniert in beiden Playern. Standardmäßig an."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el título, la fuente y el tiempo restante cuando llevas un rato en pausa. Funciona en ambos reproductores. Activado de forma predeterminada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche le titre, la source et le temps restant après une pause prolongée. Fonctionne dans les deux lecteurs. Activé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra titolo, sorgente e tempo rimanente quando sei in pausa da un po’. Funziona in entrambi i lettori. Attivo per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện tiêu đề, nguồn và thời gian còn lại khi bạn đã tạm dừng một lúc. Hoạt động ở cả hai trình phát. Bật theo mặc định."
           }
         }
       }
@@ -35275,6 +37110,40 @@
         }
       }
     },
+    "Skip 10 s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 s springen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar 10 s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sauter 10 s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta 10 s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bỏ qua 10 giây"
+          }
+        }
+      }
+    },
     "Skip Credits": {
       "localizations": {
         "de": {
@@ -35751,6 +37620,40 @@
         }
       }
     },
+    "Slower": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langsamer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más lento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plus lent"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Più lento"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chậm hơn"
+          }
+        }
+      }
+    },
     "Small": {
       "localizations": {
         "de": {
@@ -35883,6 +37786,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nhẹ"
+          }
+        }
+      }
+    },
+    "Software for SDR": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Software für SDR"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Software para SDR"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Logiciel pour SDR"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Software per SDR"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phần mềm cho SDR"
           }
         }
       }
@@ -36363,7 +38300,40 @@
         }
       }
     },
-    "Speed": {},
+    "Speed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geschwindigkeit"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocidad"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vitesse"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocità"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốc độ"
+          }
+        }
+      }
+    },
     "Square": {
       "localizations": {
         "de": {
@@ -36768,6 +38738,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trạng thái"
+          }
+        }
+      }
+    },
+    "Step": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schritt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paso"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bước"
           }
         }
       }
@@ -37282,6 +39286,40 @@
         }
       }
     },
+    "Stretch": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Strecken"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estirar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Étirer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allunga"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kéo giãn"
+          }
+        }
+      }
+    },
     "Strip SDH Subtitles": {
       "localizations": {
         "de": {
@@ -37618,6 +39656,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Gợi ý"
+          }
+        }
+      }
+    },
+    "Swipe Scrub Curve (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wischkurve (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Curva de deslizamiento (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Courbe de balayage (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Curva di scorrimento (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đường cong tua bằng vuốt (A/B)"
+          }
+        }
+      }
+    },
+    "Swipe Scrub Speed (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wischgeschwindigkeit (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocidad de deslizamiento (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vitesse de balayage (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocità di scorrimento (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốc độ tua bằng vuốt (A/B)"
           }
         }
       }
@@ -40479,6 +42585,40 @@
         }
       }
     },
+    "Thumbnail Harvest (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorschaubilder sammeln (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Captura de miniaturas (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collecte des miniatures (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raccolta miniature (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thu thập ảnh thu nhỏ (A/B)"
+          }
+        }
+      }
+    },
     "Timed out waiting for approval. Try again.": {
       "localizations": {
         "de": {
@@ -41738,6 +43878,40 @@
         }
       }
     },
+    "Try Native Player": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nativen Player versuchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Probar el reproductor nativo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Essayer le lecteur natif"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prova il lettore nativo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử trình phát gốc"
+          }
+        }
+      }
+    },
     "Try Next Source": {
       "localizations": {
         "de": {
@@ -41768,6 +43942,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thử nguồn tiếp theo"
+          }
+        }
+      }
+    },
+    "Try with mpv": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mit mpv versuchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Probar con mpv"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Essayer avec mpv"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prova con mpv"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử với mpv"
           }
         }
       }
@@ -43439,6 +45647,40 @@
         }
       }
     },
+    "Video Renderer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video-Renderer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renderizador de vídeo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moteur de rendu vidéo"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renderer video"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trình kết xuất video"
+          }
+        }
+      }
+    },
     "Video bitrate": {
       "localizations": {
         "de": {
@@ -44867,6 +47109,40 @@
         }
       }
     },
+    "Zoom": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phóng to"
+          }
+        }
+      }
+    },
     "Z–A": {
       "localizations": {
         "de": {
@@ -45067,6 +47343,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "api.nuvio.tv là máy chủ chính thức. Dùng “Dùng máy chủ chính thức” trong Cài đặt → Tài khoản và hồ sơ để chuyển về."
+          }
+        }
+      }
+    },
+    "budget used": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Budget aufgebraucht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "presupuesto agotado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "budget épuisé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "budget esaurito"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "đã hết hạn mức"
           }
         }
       }
@@ -45717,6 +48027,40 @@
         }
       }
     },
+    "decode off: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dekodieren aus: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "decodificación desactivada: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "décodage désactivé : %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "decodifica disattivata: %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tắt giải mã: %@"
+          }
+        }
+      }
+    },
     "depth=%lld cycles=%lld": {
       "localizations": {
         "de": {
@@ -46195,6 +48539,41 @@
         }
       }
     },
+    "ends %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "endet %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "termina a las %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "fin à %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "finisce alle %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kết thúc lúc %@"
+          }
+        }
+      }
+    },
+    "focused": {},
     "https://backend.example.com": {
       "localizations": {
         "de": {
@@ -46263,6 +48642,40 @@
         }
       }
     },
+    "last decode %ld ms": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "letzte Dekodierung %ld ms"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "última decodificación %ld ms"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dernier décodage %ld ms"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ultima decodifica %ld ms"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "lần giải mã gần nhất %ld ms"
+          }
+        }
+      }
+    },
     "mpv · fallback": {
       "localizations": {
         "de": {
@@ -46293,6 +48706,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "mpv · dự phòng"
+          }
+        }
+      }
+    },
+    "no seek index": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kein Suchindex"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sin índice de búsqueda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pas d’index de recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "nessun indice di ricerca"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "không có chỉ mục tua"
           }
         }
       }
@@ -46331,6 +48778,74 @@
         }
       }
     },
+    "not supported for this file": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "für diese Datei nicht unterstützt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no compatible con este archivo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "non pris en charge pour ce fichier"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "non supportato per questo file"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "không hỗ trợ cho tệp này"
+          }
+        }
+      }
+    },
+    "off": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "aus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "desactivado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "désactivé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "off"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tắt"
+          }
+        }
+      }
+    },
     "on %@": {
       "localizations": {
         "de": {
@@ -46365,6 +48880,7 @@
         }
       }
     },
+    "rail bounds": {},
     "refresh=%lld leg=%lld": {
       "localizations": {
         "de": {
@@ -46637,6 +49153,76 @@
         }
       }
     },
+    "selected": {},
+    "stage text slot": {},
+    "store full": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speicher voll"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "almacén lleno"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "stockage plein"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "archivio pieno"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "bộ nhớ đầy"
+          }
+        }
+      }
+    },
+    "the server refused": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Server hat abgelehnt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el servidor lo rechazó"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le serveur a refusé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "il server ha rifiutato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "máy chủ từ chối"
+          }
+        }
+      }
+    },
     "tvOS": {
       "localizations": {
         "de": {
@@ -46806,63 +49392,7 @@
           }
         }
       }
-    },
-    "0.15 s": {},
-    "0.4 s": {},
-    "300 ms": {},
-    "75 ms": {},
-    "An A/B switch for how a swipe moves the position. Auto moves it at a steady rate that scales with the video's length; Flick moves it further the faster you swipe.": {},
-    "An A/B switch for how far a swipe moves the position. Slower halves it; Faster doubles it.": {},
-    "An A/B switch for how often the mpv player saves a small picture of the video for the seek preview. Auto saves one every 10 seconds of playback. Off saves none. If the app closes while saving one, saving stops on this Apple TV until you pick a value here.": {},
-    "An A/B switch for how long the player waits after a jump before it lands on the exact frame. Auto is 150 ms. Keyframes Only skips that second step.": {},
-    "An A/B switch for how often a held Left or Right adds a step. Auto is 0.25 seconds.": {},
-    "An A/B switch for how quickly a held Left or Right moves up to bigger steps. Auto reaches 60-second steps after 2 seconds; Faster after 1 second; Slower after 4 seconds.": {},
-    "Choose what holding Left or Right does in the mpv player. Step jumps further the longer you hold and moves once when you let go. Scan plays at 2× and keeps going after you let go: press Right again for 3× or 4×, Select to carry on from there, Menu to go back. Default: Step.": {},
-    "Exact Seek Delay (A/B)": {},
-    "Faster": {},
-    "Flick": {},
-    "Hold Left/Right": {},
-    "Hold Ramp Speed (A/B)": {},
-    "Hold Step Interval (A/B)": {},
-    "Keyframes Only": {},
-    "Scan": {},
-    "Show Clock": {},
-    "Show the time of day while the controls are up (mpv player)": {},
-    "Shows the time of day in the corner while the player controls are up. Off by default.": {},
-    "Slower": {},
-    "Step": {},
-    "Swipe Scrub Curve (A/B)": {},
-    "Swipe Scrub Speed (A/B)": {},
-    "Aspect": {},
-    "Chapter %lld": {},
-    "Chapters": {},
-    "Choose what one click on Left or Right does in the mpv player. Skip 10 s jumps ten seconds. Previous/Next Chapter jumps to the next chapter, or back to the start of this one, when the video has chapters, and skips 10 seconds when it does not. Default: Skip 10 s.": {},
-    "Fill": {},
-    "Fit": {},
-    "Left/Right Click": {},
-    "Previous/Next Chapter": {},
-    "Skip 10 s": {},
-    "Stretch": {},
-    "Zoom": {},
-    "Seek Previews": {},
-    "Thumbnail Harvest (A/B)": {},
-    "Off After a Crash": {},
-    "Off after a crash in an earlier playback": {},
-    "Try Native Player": {},
-    "Seek Preview Frames (A/B)": {},
-    "Harvest Only": {},
-    "Harvest + Decode": {},
-    "last decode %ld ms": {},
-    "%@ MB used": {},
-    "decode off: %@": {},
-    "no seek index": {},
-    "the server refused": {},
-    "budget used": {},
-    "store full": {},
-    "Dolby Vision profile 5": {},
-    "not supported for this file": {},
-    "An A/B switch for where the player's seek preview gets its pictures. Harvest Only saves them from the video as it plays. Harvest + Decode also reads pictures from parts you have not watched yet, which can download about 200 MB more per title. Off shows times only and turns off the picture track the Apple TV player uses to fast forward and rewind.": {},
-    "Try with mpv": {}
+    }
   },
   "version": "1.0"
 }
