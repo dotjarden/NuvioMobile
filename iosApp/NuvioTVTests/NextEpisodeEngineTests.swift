@@ -433,7 +433,7 @@ final class NextEpisodeEngineTests: XCTestCase {
     private func directStream() -> StreamItem {
         StreamItem(
             name: "S", title: nil, description: nil, url: "https://cdn.example.com/s1e2.mkv",
-            infoHash: nil, fileIdx: nil, externalUrl: nil, sources: [], sourceName: nil,
+            infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: "Addon", addonId: "addon", addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil),
