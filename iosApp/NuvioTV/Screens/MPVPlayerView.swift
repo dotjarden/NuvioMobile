@@ -1655,7 +1655,7 @@ final class MPVTVPlayerViewController: UIViewController {
         lastStreamTitle: context.streamTitle,
         lastStreamSubtitle: context.streamSubtitle,
         pauseDescription: nil,
-        lastSourceUrl: context.url.absoluteString
+        lastSourceUrl: context.persistedSourceUrl
     )
 
     private func saveProgress(flush: Bool = false) {

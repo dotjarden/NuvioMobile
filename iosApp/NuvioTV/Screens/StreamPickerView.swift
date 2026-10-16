@@ -199,7 +199,10 @@ struct StreamPickerView: View {
             streamKey: streamKey,
             startFromBeginning: startsOver,
             attempt: attempt,
-            listedStream: listedStream
+            listedStream: listedStream,
+            // Batch D U2: a ytId-only stream plays a link resolved on this device that expires
+            // within hours — never persisted as the entry's last source URL.
+            sessionOnlySourceUrl: Self.isYouTubeResolved(listedStream)
         )
     }
 
@@ -587,6 +590,13 @@ struct StreamPickerView: View {
                     if hasBadgeRow && !model.badgesOnTop {
                         badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)
                     }
+                    // Batch D U2: the add-on gave only a YouTube video id — the row plays after an
+                    // on-device resolve (the spinner above), so say where the video comes from.
+                    if Self.isYouTubeResolved(stream) {
+                        Text(verbatim: "YouTube")
+                            .font(Theme.Font.caption)
+                            .rowTextColor(secondary: true)
+                    }
                     // Orivio batch item 2: this link failed recently for this title, so the
                     // automatic pickers skip it. Still selectable by hand.
                     if !rejectedKeys.isEmpty, rejectedKeys.contains(stream.playbackStreamKey) {
@@ -757,6 +767,28 @@ struct StreamPickerView: View {
             return
         }
 
+        // Batch D U2 (upstream 94976222): the add-on gave only a YouTube video id — resolve it on
+        // the device to one playable URL (HLS master, else progressive), then play that exactly
+        // like a direct link. The listed stream stays the identity (`streamKey`, `listedStream`):
+        // the resolved link expires within hours.
+        if Self.isYouTubeResolved(stream) {
+            guard resolvingKey == nil else { return }
+            resolvingKey = rowKey
+            resolveYouTube(stream) { resolved in
+                resolvingKey = nil
+                let resolvedUrl: String? = resolved?.playableDirectUrl
+                guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
+                    showToast(Self.youTubeResolveFailedMessage)
+                    return
+                }
+                NextEpisodeEngine.consecutiveAutoPlays = 0
+                dismissAfterPlayer = false
+                selected = context(url: url, stream: resolved, listedStream: stream, streamKey: streamKey,
+                                   launchSource: .manual, attempt: attempt)
+            }
+            return
+        }
+
         // Torrent / clientResolve result → resolve through the in-app debrid connection.
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
@@ -797,6 +829,28 @@ struct StreamPickerView: View {
         }
     }
 
+    // MARK: - YouTube resolve (batch D U2)
+
+    /// True when the add-on gave this stream only a YouTube video id (shared `youTubeIdToResolve`).
+    /// nil → false, so callers can pass an optional listed stream.
+    static func isYouTubeResolved(_ stream: StreamItem?) -> Bool {
+        let youTubeId: String? = stream?.youTubeIdToResolve
+        return !(youTubeId ?? "").isEmpty
+    }
+
+    static var youTubeResolveFailedMessage: String { String(localized: "Could not load this YouTube video.") }
+
+    /// Resolves a ytId-only stream to a copy carrying one playable URL through the shared
+    /// `YouTubeStreamResolver` (the trailer extractor; HLS master playlist, else progressive). The
+    /// shared function never throws (it wraps its own failures and answers nil), so the plain
+    /// completion-handler export is safe; the handler is hopped back onto the main actor.
+    private func resolveYouTube(_ stream: StreamItem, completion: @escaping @MainActor (StreamItem?) -> Void) {
+        YouTubeStreamResolver.shared.resolve(stream: stream) { resolved, error in
+            if let error { print("[StreamPicker] YouTube resolve failed: \(error)") }
+            Task { @MainActor in completion(resolved) }
+        }
+    }
+
     // MARK: - External player handoff (FEAT-5)
 
     /// Hands the stream to an installed external player (Infuse today) instead of the in-app
@@ -815,6 +869,24 @@ struct StreamPickerView: View {
         if let direct, !direct.isEmpty {
             openExternally(urlString: direct, stream: stream, listed: stream, playerId: playerId,
                            fallbackToInternal: fallbackToInternal)
+            return
+        }
+
+        // Batch D U2: a ytId-only stream resolves on the device first (see `internalPlay`), then
+        // the resolved link is handed off like a direct one.
+        if Self.isYouTubeResolved(stream) {
+            guard resolvingKey == nil else { return }
+            resolvingKey = rowKey
+            resolveYouTube(stream) { resolved in
+                resolvingKey = nil
+                let resolvedUrl: String? = resolved?.playableDirectUrl
+                guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty else {
+                    showToast(Self.youTubeResolveFailedMessage)
+                    return
+                }
+                openExternally(urlString: resolvedUrl, stream: resolved, listed: stream, playerId: playerId,
+                               fallbackToInternal: fallbackToInternal)
+            }
             return
         }
 

@@ -92,6 +92,15 @@ struct PlaybackContext: Identifiable {
     var forcedEngine: PlaybackEngine? = nil
     /// Failure-alert retry: both engines resume from here instead of the saved progress (> 10 s).
     var resumeAtSec: Double? = nil
+    /// Batch D U2: `url` was resolved on this device from an add-on `ytId`-only stream and expires
+    /// within hours, so it is session-only — neither engine writes it to the watch-progress
+    /// entry's `lastSourceUrl` (the field mobile's "reuse last link" reads back), see
+    /// `persistedSourceUrl`. The stream's identity for the failover memory is its `yt:` key.
+    var sessionOnlySourceUrl: Bool = false
+
+    /// What the progress writers store as `lastSourceUrl`: the playing URL, or nil for a
+    /// session-only link (`sessionOnlySourceUrl`).
+    var persistedSourceUrl: String? { sessionOnlySourceUrl ? nil : url.absoluteString }
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and
@@ -219,9 +228,13 @@ enum PlaybackStreamKey {
     /// is the hex of the first 4 bytes of SHA-256 of `addonId`, the link digest the hex of the
     /// first 16 bytes of SHA-256 of the stream URL's host+path. The query and fragment never join
     /// the digest (they usually carry a per-session token, so a refreshed token keeps the key). A
-    /// stream with no URL digests its label instead; one with neither has no key (""). Built from
-    /// the stream as listed: a debrid resolve's per-session link must not be the identity.
-    static func make(infoHash: String?, fileIdx: Int?, addonId: String, url: String?, label: String) -> String {
+    /// stream with no URL but a YouTube video id (batch D U2, an add-on `ytId`-only stream) keys on
+    /// `yt:<video id>` — the video id is public and stable, whereas the URL the on-device extractor
+    /// resolves it to expires within hours and must never become the identity; one with none of
+    /// those digests its label instead; one with nothing has no key (""). Built from the stream as
+    /// listed: a debrid resolve's (or a YouTube resolve's) per-session link must not be the identity.
+    static func make(infoHash: String?, fileIdx: Int?, addonId: String, url: String?, label: String,
+                     youTubeId: String? = nil) -> String {
         if let hash = infoHash?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hash.isEmpty {
             return "\(hash)#\(fileIdx.map(String.init) ?? "")"
         }
@@ -236,6 +249,9 @@ enum PlaybackStreamKey {
                     .map(String.init) ?? bare
             }
             return "\(digestHex(addonId, bytes: 4))|\(digestHex(link, bytes: 16))"
+        }
+        if let videoId = youTubeId?.trimmingCharacters(in: .whitespacesAndNewlines), !videoId.isEmpty {
+            return "\(digestHex(addonId, bytes: 4))|yt:\(videoId)"
         }
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedLabel.isEmpty else { return "" }
@@ -259,12 +275,14 @@ extension StreamItem {
         let rawUrl: String? = url
         let rawExternal: String? = externalUrl
         let rawName: String? = name
+        let rawYouTubeId: String? = ytId
         return PlaybackStreamKey.make(
             infoHash: hash,
             fileIdx: index,
             addonId: addonId,
             url: rawUrl ?? rawExternal,
-            label: rawName ?? ""
+            label: rawName ?? "",
+            youTubeId: rawYouTubeId
         )
     }
 }

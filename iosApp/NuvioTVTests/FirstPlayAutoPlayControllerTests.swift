@@ -20,7 +20,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
             url: direct ? "https://cdn.example.com/\(name).mkv" : nil,
             // Resolve candidates carry an info hash, so each gets its own `playbackStreamKey`.
             infoHash: direct ? nil : "hash-\(name)",
-            fileIdx: nil, externalUrl: nil, sources: [], sourceName: nil,
+            fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: addon, addonId: addon, addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
                                                filename: nil, proxyHeaders: nil),
@@ -454,7 +454,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         func item(url: String? = nil, infoHash: String? = nil, resolve: StreamClientResolve? = nil,
                   cache: StreamDebridCacheStatus? = nil) -> StreamItem {
             StreamItem(name: "S", title: nil, description: nil, url: url, infoHash: infoHash, fileIdx: nil,
-                       externalUrl: nil, sources: [], sourceName: nil, addonName: "Add-on", addonId: "addon:x",
+                       externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add-on", addonId: "addon:x",
                        addonLogo: nil, streamType: nil, behaviorHints: hints, clientResolve: resolve,
                        debridCacheStatus: cache, externalSubtitles: [], badges: [])
         }

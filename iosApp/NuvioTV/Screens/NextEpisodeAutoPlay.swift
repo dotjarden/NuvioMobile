@@ -272,7 +272,7 @@ final class NextEpisodeEngine: ObservableObject {
         sourcesWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
             guard let self, generation == self.sourceLoadGeneration,
                   let state = emitted as? StreamsUiState else { return }
-            self.sources = self.allStreams(state.groups)
+            self.sources = self.listableStreams(state.groups)
             if state.isAnyLoading || !state.groups.isEmpty { sawActivity = true }
             if sawActivity, !state.isAnyLoading { self.sourcesLoading = false }
         }
@@ -302,6 +302,25 @@ final class NextEpisodeEngine: ObservableObject {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
             switchToSource(stream: stream, url: url, listed: stream)
+            return true
+        }
+        // Batch D U2 (upstream 94976222): a ytId-only source resolves on the device first, like a
+        // debrid one — the tab closes now and playback switches when the link lands (a failed
+        // resolve leaves playback untouched, as the debrid path does). The shared resolver never
+        // throws, so the plain completion-handler export is safe.
+        if StreamPickerView.isYouTubeResolved(stream) {
+            YouTubeStreamResolver.shared.resolve(stream: stream) { [weak self] resolved, error in
+                if let error { print("[UpNext] YouTube resolve failed: \(error)") }
+                Task { @MainActor [weak self] in
+                    guard let self, let resolved else {
+                        print("[UpNext] YouTube source switch: no playable link")
+                        return
+                    }
+                    let resolvedUrl: String? = resolved.playableDirectUrl
+                    guard let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else { return }
+                    self.switchToSource(stream: resolved, url: url, listed: stream)
+                }
+            }
             return true
         }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else { return false }
@@ -358,7 +377,9 @@ final class NextEpisodeEngine: ObservableObject {
                 headers: stream.behaviorHints.proxyHeaders?.request),
             launchSource: .manual,
             streamKey: listed.playbackStreamKey,
-            listedStream: listed
+            listedStream: listed,
+            // Batch D U2: a link resolved from a ytId expires within hours — session-only.
+            sessionOnlySourceUrl: StreamPickerView.isYouTubeResolved(listed)
         )
         onPlayNext(switched)
     }
@@ -616,6 +637,12 @@ final class NextEpisodeEngine: ObservableObject {
         return manualAutoSelect ? StreamAutoPlaySource.allSources : settings.streamAutoPlaySource
     }
 
+    /// The streams the Up Next engine may SELECT from (`select`): direct links and debrid
+    /// candidates only. Batch D U2: a ytId-only stream (`youTubeIdToResolve`) is excluded here on
+    /// purpose — auto-play never resolves a YouTube video (seconds of extraction for a link that
+    /// expires within hours); the viewer can still pick one from the in-player source list
+    /// (`listableStreams`). Keep this filter aligned with the shared auto-play selector and the
+    /// picker's `FirstPlayAutoPlayController`, which exclude it the same way.
     private func allStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
         groups.flatMap { group in
             group.streams.filter {
@@ -626,6 +653,19 @@ final class NextEpisodeEngine: ObservableObject {
                 // an all-debrid account always ends in "no stream found" even though every result
                 // is instantly playable.
                 return DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: $0)
+            }
+        }
+    }
+
+    /// What the in-player source list shows (`sources`): everything `allStreams` would select from,
+    /// plus ytId-only streams the viewer may pick by hand (`playSource` resolves them).
+    private func listableStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
+        groups.flatMap { group in
+            group.streams.filter {
+                let direct: String? = $0.playableDirectUrl
+                if !(direct ?? "").isEmpty { return true }
+                if DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: $0) { return true }
+                return StreamPickerView.isYouTubeResolved($0)
             }
         }
     }
