@@ -68,6 +68,18 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// playback…" until the remux reports a Dolby Vision stream; it used to say "Preparing Dolby
     /// Vision…" for every native-engine file, SDR and HDR10 included.
     @Published private(set) var preparingLabel = NativePreparingLabel.text(for: nil)
+    /// Startup stage for the loading overlay (P4, B24): connecting → preparing → (subtitles) →
+    /// buffering → started. Moves forward only; a signaling retry or a later item never moves it
+    /// back. Each transition logs `[Loading] engine=native stage=… t=+…s`.
+    @Published private(set) var loadingStage: PlayerLoadingStage = .connecting
+    /// Uptime at `init`, the zero of the `[Loading]` log's `t=`.
+    private let loadingStartUptime = ProcessInfo.processInfo.systemUptime
+    /// Set once `play()` has been issued on a ready item: a later `.paused` status is then the
+    /// viewer's pause, which also ends startup (a ready, paused picture needs no overlay). [C-9]
+    private var playIssued = false
+    /// Classified cause of the failure behind `phase = .failed(...)` (P4, BUG-143). Nil until a
+    /// producer classifies one; the screen passes it on as `PlaybackFailure.kind`.
+    @Published private(set) var failureKind: PlaybackFailureKind?
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
@@ -87,7 +99,12 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Last observed position/duration, used when falling back to mpv.
     private(set) var lastPositionSec: Double = 0
-    private var lastDurationSec: Double = 0
+    private var lastDurationSec: Double = 0 {
+        didSet { if durationSec != lastDurationSec { durationSec = lastDurationSec } }
+    }
+    /// The item's duration once known (0 before), updated on the playback tick. Published for the
+    /// screen (pause card remaining time, P4).
+    @Published private(set) var durationSec: Double = 0
 
     /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
     /// signaling retry or a later item never moves it).
@@ -226,6 +243,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func start() {
         guard remux == nil else { return }
+        logLoadingStage(loadingStage)
         // Addon-subtitle results. The completion signal is polled from `completedRequest` in
         // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
         // StateFlow replay also delivers results prefetched before this coordinator existed).
@@ -475,12 +493,16 @@ final class NativePlaybackCoordinator: ObservableObject {
                 // segment map exists; a Dolby Vision file flips the caption once, in the first few
                 // hundred milliseconds. (P, BUG-139)
                 self?.updatePreparingLabel(remux.videoSignaling)
+                if let signaling = remux.videoSignaling {
+                    self?.advanceLoadingStage(.preparing(dolbyVision: NativePreparingLabel.isDolbyVision(signaling)))
+                }
                 let hasMap = remux.segmentMap != nil
                 let hasInit = Self.fileSize(dir, "init.mp4") > 0
                 // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
                 let hasFirst = Self.fileSize(dir, RemuxSession.segmentName(1)) > 0 || remux.state == .ready
                 if hasMap && hasInit && hasFirst {
                     if let self, !self.subsFetchCompleted(), Date() < subsDeadline {
+                        self.advanceLoadingStage(.subtitles)
                         try? await Task.sleep(nanoseconds: 250_000_000)   // waiting only on subtitles now
                         continue
                     }
@@ -493,6 +515,30 @@ final class NativePlaybackCoordinator: ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
             self?.failIfPreplayback("no segments produced")
+        }
+    }
+
+    /// Moves `loadingStage` forward (never back) and logs the transition once. A same-rank change
+    /// (the Dolby Vision flag of `.preparing`, a `.buffering` percentage) is applied too.
+    private func advanceLoadingStage(_ next: PlayerLoadingStage) {
+        guard next != loadingStage, Self.loadingRank(next) >= Self.loadingRank(loadingStage) else { return }
+        loadingStage = next
+        logLoadingStage(next)
+    }
+
+    private func logLoadingStage(_ stage: PlayerLoadingStage) {
+        let t = ProcessInfo.processInfo.systemUptime - loadingStartUptime
+        print("[Loading] engine=native stage=\(stage.logToken) t=+\(String(format: "%.2f", t))s")
+    }
+
+    private static func loadingRank(_ stage: PlayerLoadingStage) -> Int {
+        switch stage {
+        case .checking: 0
+        case .connecting: 1
+        case .preparing: 2
+        case .subtitles: 3
+        case .buffering: 4
+        case .started: 5
         }
     }
 
@@ -612,6 +658,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if status == .playing { self.hasStartedPlaying = true }
+                    if status == .playing || (status == .paused && self.playIssued) {
+                        self.advanceLoadingStage(.started)
+                    }
                     guard self.hasStartedPlaying else { return }
                     let paused = status == .paused
                     if self.isPaused != paused { self.isPaused = paused }
@@ -619,6 +668,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
+            self.advanceLoadingStage(.buffering(percent: nil))
             self.observePlayback(player: player, item: item)
             #if DEBUG
             self.startSubtitleDelaySpike()
@@ -687,6 +737,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                     print("[NativePlayer] item readyToPlay")
                     if self.readyUptime == nil { self.readyUptime = ProcessInfo.processInfo.systemUptime }
                     let duration = CMTimeGetSeconds(item.duration)
+                    // Publish the duration as soon as the item knows it (the tick keeps it current);
+                    // `lastDurationSec` stays tick-driven so `stop()`'s final record is unchanged.
+                    if duration.isFinite, duration > 0, self.durationSec != duration { self.durationSec = duration }
                     // A failure-alert retry resumes where the failed attempt stopped, Start Over
                     // included (mpv's `computeResumePosition` rule). Otherwise Start Over ignores saved
                     // progress (gated here: `PlaybackProgressRecorder` is untouched).
@@ -710,6 +763,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.onResumeSeekCompleted?(CMTimeGetSeconds(player.currentTime()))
                     }
                     player.play()
+                    self.playIssued = true
                     if !self.traktStarted {
                         self.traktStarted = true
                         self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
