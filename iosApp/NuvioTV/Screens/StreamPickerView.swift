@@ -96,6 +96,9 @@ struct StreamPickerView: View {
     @State private var fetchedEpisodes: [MetaVideo] = []
     /// Row key currently mid debrid-resolve (drives the row spinner; one resolve at a time).
     @State private var resolvingKey: String?
+    /// False once the picker left the screen (a Menu press during a resolve): a late result must
+    /// not hand a link to an external player from a view that is gone (batch D review r1).
+    @State private var pickerOnScreen = false
     /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
     @State private var toast: String?
     @FocusState private var focusedRow: String?
@@ -424,6 +427,7 @@ struct StreamPickerView: View {
                 }
             }
             .onAppear {
+                pickerOnScreen = true
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
                 // opens instead of requiring an app relaunch. First, so an auto-play start already
@@ -447,7 +451,10 @@ struct StreamPickerView: View {
                 // own fetch call deduplicates against this one.
                 SubtitleRepository.shared.fetchAddonSubtitles(type: type, videoId: videoId)
             }
-            .onDisappear { model.stop() }
+            .onDisappear {
+                pickerOnScreen = false
+                model.stop()
+            }
             .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
                 // episode's context (a same-position cover would otherwise keep the old libmpv
@@ -780,7 +787,15 @@ struct StreamPickerView: View {
             guard resolvingKey == nil else { return }
             resolvingKey = rowKey
             resolveYouTube(stream) { resolved in
+                // Review r1: only the resolve the spinner belongs to may act, and a late result
+                // never replaces a playback the viewer started since (another row, "Try Next
+                // Source", an auto-play pick).
+                guard resolvingKey == rowKey else { return }
                 resolvingKey = nil
+                guard selected == nil else {
+                    print("[StreamPicker] YouTube resolve landed after another playback started — dropped")
+                    return
+                }
                 let resolvedUrl: String? = resolved?.playableDirectUrl
                 guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
                     showToast(Self.youTubeResolveFailedMessage)
@@ -837,8 +852,9 @@ struct StreamPickerView: View {
     // MARK: - YouTube resolve (batch D U2)
 
     /// True when the add-on gave this stream only a YouTube video id (shared `youTubeIdToResolve`).
-    /// nil → false, so callers can pass an optional listed stream.
-    static func isYouTubeResolved(_ stream: StreamItem?) -> Bool {
+    /// nil → false, so callers can pass an optional listed stream. Pure and `nonisolated`: the
+    /// Up Next engine's stream predicates and `PlaybackFailoverPolicy` call it off the main actor.
+    nonisolated static func isYouTubeResolved(_ stream: StreamItem?) -> Bool {
         let youTubeId: String? = stream?.youTubeIdToResolve
         return !(youTubeId ?? "").isEmpty
     }
@@ -847,12 +863,15 @@ struct StreamPickerView: View {
 
     /// Resolves a ytId-only stream to a copy carrying one playable URL through the shared
     /// `YouTubeStreamResolver` (the trailer extractor; HLS master playlist, else progressive). The
-    /// shared function never throws (it wraps its own failures and answers nil), so the plain
-    /// completion-handler export is safe; the handler is hopped back onto the main actor.
+    /// shared function maps every failure to nil and rethrows only cancellation (review r1 F3),
+    /// which `try?` also turns into nil — so a nil is "could not resolve" unless this Task itself
+    /// was cancelled, in which case nobody is told anything. Runs on the main actor throughout
+    /// (the async export, not the completion-handler twin, so no `@Sendable` hop is needed).
     private func resolveYouTube(_ stream: StreamItem, completion: @escaping @MainActor (StreamItem?) -> Void) {
-        YouTubeStreamResolver.shared.resolve(stream: stream) { resolved, error in
-            if let error { print("[StreamPicker] YouTube resolve failed: \(error)") }
-            Task { @MainActor in completion(resolved) }
+        Task { @MainActor in
+            let resolved: StreamItem? = try? await YouTubeStreamResolver.shared.resolve(stream: stream)
+            guard !Task.isCancelled else { return }
+            completion(resolved)
         }
     }
 
@@ -883,7 +902,15 @@ struct StreamPickerView: View {
             guard resolvingKey == nil else { return }
             resolvingKey = rowKey
             resolveYouTube(stream) { resolved in
+                // Review r1: same guards as `internalPlay`, plus the picker must still be on
+                // screen — a Menu press during the resolve must not launch Infuse from a view
+                // that is gone.
+                guard resolvingKey == rowKey else { return }
                 resolvingKey = nil
+                guard selected == nil, pickerOnScreen else {
+                    print("[StreamPicker] YouTube resolve landed after the picker moved on — dropped")
+                    return
+                }
                 let resolvedUrl: String? = resolved?.playableDirectUrl
                 guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty else {
                     showToast(Self.youTubeResolveFailedMessage)
@@ -1210,9 +1237,8 @@ struct StreamPickerView: View {
     /// (falling back to the live list), after the failed one, same add-on first, failed links skipped.
     private func nextManualStream(after ctx: PlaybackContext) -> StreamItem? {
         let list = manualFailoverList.isEmpty ? model.groups.flatMap(\.streams) : manualFailoverList
-        let entries = list.map { PlaybackFailoverPolicy.Entry(key: $0.playbackStreamKey, addonId: $0.addonId) }
         guard let index = PlaybackFailoverPolicy.nextManualIndex(
-            entries: entries,
+            streams: list,
             failedKey: ctx.streamKey,
             failedAddonId: ctx.providerAddonId,
             rejected: RejectedStreamLinks.rejected(for: videoId)

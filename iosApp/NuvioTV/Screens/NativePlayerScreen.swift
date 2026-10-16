@@ -132,9 +132,17 @@ struct NativePlayerScreen: View {
                     .padding(.trailing, PlayerChipStyle.edgePadding)
                     .padding(.bottom, PlayerChipStyle.edgePadding + Self.contextualActionClearance)
                     .transition(.opacity)
+            } else if let failure = upNext.sourceSwitchFailure {
+                // Batch D review r1: a Sources-tab switch that could not start (see the mpv screen).
+                PlayerChipCaption(text: failure, symbol: "exclamationmark.circle")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, PlayerChipStyle.edgePadding)
+                    .padding(.bottom, PlayerChipStyle.edgePadding + Self.contextualActionClearance)
+                    .transition(.opacity)
             }
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: upNext.sourceSwitchFailure)
         .animation(PlayerChipStyle.animation, value: showSwipeHint)
         .onChange(of: coordinator.phase) { _, phase in
             if phase == .playing { flashSwipeHint(after: 1, reason: .start) }

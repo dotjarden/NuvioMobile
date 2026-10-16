@@ -41,6 +41,17 @@ final class NextEpisodeEngine: ObservableObject {
     /// Alternate streams for the CURRENTLY-playing video (in-player source switching).
     @Published private(set) var sources: [StreamItem] = []
     @Published private(set) var sourcesLoading = false
+    /// Batch D review r1: a one-shot notice for a source switch that could not start (a ytId
+    /// source whose YouTube resolve failed). `playSource` has already answered true and the tab
+    /// closed, so this is the only feedback; both players draw it in the shared chip slot, and it
+    /// clears itself after a few seconds. Playback is untouched.
+    @Published private(set) var sourceSwitchFailure: String?
+    private var sourceSwitchFailureTask: Task<Void, Never>?
+    /// Identity of the playback this engine is switching to. Bumped on every `playSource` entry
+    /// and on every hand-off to `onPlayNext` (a source switch, the next episode, an episode jump),
+    /// so a resolve that lands after the viewer moved on is dropped instead of replacing the
+    /// playback they started since (review r1).
+    private var sourceSwitchGeneration = 0
     private var sourcesWatcher: FlowWatcher?
     /// Identity of the current `loadSources()` request. `episodeStreamsState` is a shared StateFlow
     /// that replays its last value on subscribe — without this, a new subscription can adopt the
@@ -92,6 +103,20 @@ final class NextEpisodeEngine: ObservableObject {
     var currentSeason: Int? { context.season }
     var currentEpisode: Int? { context.episode }
     var currentUrlString: String { context.url.absoluteString }
+    /// The playing stream as listed (`PlaybackContext.streamKey`); "" for a launch that carried
+    /// no listed stream (the test stream, some Top Shelf paths).
+    var currentStreamKey: String { context.streamKey }
+
+    /// Whether `stream` is the one playing now (the Sources tab's "Playing" mark). Review r1: by
+    /// listed-stream key, so a ytId source (whose resolved googlevideo URL never matches a listed
+    /// URL) and a debrid source (resolved link vs. listed torrent) are recognised; the URL
+    /// comparison remains only for a context that carries no key.
+    func isCurrentSource(_ stream: StreamItem) -> Bool {
+        let key = stream.playbackStreamKey
+        if !context.streamKey.isEmpty, !key.isEmpty { return key == context.streamKey }
+        let direct: String? = stream.playableDirectUrl
+        return direct == context.url.absoluteString
+    }
 
     /// True while a manual episode jump is searching — plays immediately when a stream is found
     /// (no countdown, no Still Watching gate: a jump IS user interaction).
@@ -236,6 +261,7 @@ final class NextEpisodeEngine: ObservableObject {
         guard settings != nil else { return }
         tearDownSearch()
         cancelSourceLoad()
+        sourceSwitchGeneration += 1   // a pending source resolve must not land on the jumped-to episode
         Self.consecutiveAutoPlays = 0
         cancelled = false
         triggered = true          // the threshold trigger must not re-fire for this session
@@ -299,27 +325,36 @@ final class NextEpisodeEngine: ObservableObject {
     /// stream resolves asynchronously first (the panel may dismiss; playback switches when the
     /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
+        sourceSwitchGeneration += 1
+        let generation = sourceSwitchGeneration
+        let videoId = context.videoId
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
             switchToSource(stream: stream, url: url, listed: stream)
             return true
         }
         // Batch D U2 (upstream 94976222): a ytId-only source resolves on the device first, like a
-        // debrid one — the tab closes now and playback switches when the link lands (a failed
-        // resolve leaves playback untouched, as the debrid path does). The shared resolver never
-        // throws, so the plain completion-handler export is safe.
+        // debrid one — the tab closes now and playback switches when the link lands. Review r1: a
+        // failed resolve leaves playback untouched but SAYS so (`sourceSwitchFailure`), and a
+        // result that lands after the viewer moved on (another pick, the next episode) is dropped.
+        // The async export: the shared resolver maps failures to nil and rethrows only
+        // cancellation, which `try?` also turns into nil — hence the `Task.isCancelled` check
+        // before calling a nil a failure.
         if StreamPickerView.isYouTubeResolved(stream) {
-            YouTubeStreamResolver.shared.resolve(stream: stream) { [weak self] resolved, error in
-                if let error { print("[UpNext] YouTube resolve failed: \(error)") }
-                Task { @MainActor [weak self] in
-                    guard let self, let resolved else {
-                        print("[UpNext] YouTube source switch: no playable link")
-                        return
-                    }
-                    let resolvedUrl: String? = resolved.playableDirectUrl
-                    guard let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else { return }
-                    self.switchToSource(stream: resolved, url: url, listed: stream)
+            Task { @MainActor [weak self] in
+                let resolved: StreamItem? = try? await YouTubeStreamResolver.shared.resolve(stream: stream)
+                guard !Task.isCancelled, let self else { return }
+                guard generation == self.sourceSwitchGeneration, videoId == self.context.videoId else {
+                    print("[UpNext] YouTube source switch landed after the viewer moved on — dropped")
+                    return
                 }
+                let resolvedUrl: String? = resolved?.playableDirectUrl
+                guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
+                    print("[UpNext] YouTube source switch: no playable link")
+                    self.reportSourceSwitchFailure(StreamPickerView.youTubeResolveFailedMessage)
+                    return
+                }
+                self.switchToSource(stream: resolved, url: url, listed: stream)
             }
             return true
         }
@@ -338,6 +373,10 @@ final class NextEpisodeEngine: ObservableObject {
                 result = nil
             }
             guard let self, let success = result as? DirectDebridPlayableResult.Success else { return }
+            guard generation == self.sourceSwitchGeneration, videoId == self.context.videoId else {
+                print("[UpNext] debrid source switch landed after the viewer moved on — dropped")
+                return
+            }
             let resolved: String? = success.stream.playableDirectUrl
             guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else { return }
             self.switchToSource(stream: success.stream, url: url, listed: stream)
@@ -345,10 +384,23 @@ final class NextEpisodeEngine: ObservableObject {
         return true
     }
 
+    /// Publishes `sourceSwitchFailure` for ~4 s (the picker's toast duration), then clears it; a
+    /// newer failure restarts the clock.
+    private func reportSourceSwitchFailure(_ message: String) {
+        sourceSwitchFailureTask?.cancel()
+        sourceSwitchFailure = message
+        sourceSwitchFailureTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.sourceSwitchFailure = nil
+        }
+    }
+
     /// `listed` is the stream as the source list showed it (pre-resolve): its key is what a failure
     /// is remembered under. The viewer chose it, so the context is `.manual`.
     private func switchToSource(stream: StreamItem, url: URL, listed: StreamItem) {
         Self.consecutiveAutoPlays = 0
+        sourceSwitchGeneration += 1
 
         let switched = PlaybackContext(
             url: url,
@@ -644,30 +696,45 @@ final class NextEpisodeEngine: ObservableObject {
     /// (`listableStreams`). Keep this filter aligned with the shared auto-play selector and the
     /// picker's `FirstPlayAutoPlayController`, which exclude it the same way.
     private func allStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
-        groups.flatMap { group in
-            group.streams.filter {
-                let direct: String? = $0.playableDirectUrl
-                if !(direct ?? "").isEmpty { return true }
-                // Debrid setups: torrent/clientResolve results carry NO direct URL — they resolve
-                // to one at play time (exactly like the stream picker's click path). Without this,
-                // an all-debrid account always ends in "no stream found" even though every result
-                // is instantly playable.
-                return DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: $0)
-            }
-        }
+        groups.flatMap { group in group.streams.filter { Self.isAutoPlayCandidate($0) } }
     }
 
     /// What the in-player source list shows (`sources`): everything `allStreams` would select from,
     /// plus ytId-only streams the viewer may pick by hand (`playSource` resolves them).
     private func listableStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
-        groups.flatMap { group in
-            group.streams.filter {
-                let direct: String? = $0.playableDirectUrl
-                if !(direct ?? "").isEmpty { return true }
-                if DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: $0) { return true }
-                return StreamPickerView.isYouTubeResolved($0)
-            }
-        }
+        groups.flatMap { group in group.streams.filter { Self.isListable($0) } }
+    }
+
+    /// The debrid half of the two predicates below, injectable so the tests need no debrid
+    /// settings: a torrent / clientResolve result the in-app debrid connection can resolve.
+    nonisolated static func resolvesThroughDebrid(_ stream: StreamItem) -> Bool {
+        DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream)
+    }
+
+    /// Whether the Up Next engine may auto-select `stream` (`allStreams`): a direct link, or a
+    /// debrid candidate — torrent/clientResolve results carry NO direct URL and resolve to one at
+    /// play time (exactly like the stream picker's click path; without this an all-debrid account
+    /// always ended in "no stream found"). A ytId-only stream is NOT one (batch D U2): auto-play
+    /// never resolves a YouTube video (seconds of extraction for a link that expires within
+    /// hours). Keep aligned with the shared auto-play selector and the picker's
+    /// `FirstPlayAutoPlayController`, which exclude it the same way.
+    nonisolated static func isAutoPlayCandidate(
+        _ stream: StreamItem,
+        resolvesThroughDebrid: (StreamItem) -> Bool = NextEpisodeEngine.resolvesThroughDebrid
+    ) -> Bool {
+        let direct: String? = stream.playableDirectUrl
+        if !(direct ?? "").isEmpty { return true }
+        return resolvesThroughDebrid(stream)
+    }
+
+    /// Whether the in-player source list shows `stream` (`listableStreams`): every auto-play
+    /// candidate, plus a ytId-only stream the viewer may pick by hand (`playSource` resolves it).
+    nonisolated static func isListable(
+        _ stream: StreamItem,
+        resolvesThroughDebrid: (StreamItem) -> Bool = NextEpisodeEngine.resolvesThroughDebrid
+    ) -> Bool {
+        if isAutoPlayCandidate(stream, resolvesThroughDebrid: resolvesThroughDebrid) { return true }
+        return StreamPickerView.isYouTubeResolved(stream)
     }
 
     private func attemptBingeGroupOnlySelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) {
@@ -805,6 +872,7 @@ final class NextEpisodeEngine: ObservableObject {
         let urlString: String? = stream.playableDirectUrl
         if let urlString, !urlString.isEmpty, let url = URL(string: urlString) {
             phase = .hidden
+            sourceSwitchGeneration += 1
             onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream))
             return
         }
@@ -833,6 +901,7 @@ final class NextEpisodeEngine: ObservableObject {
                 if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
                     print("[UpNext] resolved — playing next episode")
                     self.phase = .hidden
+                    self.sourceSwitchGeneration += 1
                     self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next, listed: stream))
                     return
                 }

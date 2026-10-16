@@ -57,6 +57,40 @@ final class NextEpisodeEngineTests: XCTestCase {
         )
     }
 
+    private func stream(url: String? = nil, ytId: String? = nil, infoHash: String? = nil) -> StreamItem {
+        StreamItem(
+            name: "1080p", title: nil, description: nil, url: url, infoHash: infoHash, fileIdx: nil,
+            externalUrl: nil, ytId: ytId, sources: [], sourceName: nil, addonName: "Add-on", addonId: "addon:x",
+            addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+        )
+    }
+
+    // MARK: - Source predicates (batch D U2)
+
+    func testYouTubeOnlyStreamIsListableButNeverAnAutoPlayCandidate() {
+        // The debrid half is injected as "never" so no debrid settings are read.
+        let never: (StreamItem) -> Bool = { _ in false }
+        let yt = stream(ytId: "dQw4w9WgXcQ")
+        XCTAssertFalse(NextEpisodeEngine.isAutoPlayCandidate(yt, resolvesThroughDebrid: never),
+                       "auto-play never spends seconds resolving a YouTube video")
+        XCTAssertTrue(NextEpisodeEngine.isListable(yt, resolvesThroughDebrid: never),
+                      "the viewer may still pick it from the in-player source list")
+
+        let direct = stream(url: "https://cdn.example.com/s1e2.mkv")
+        XCTAssertTrue(NextEpisodeEngine.isAutoPlayCandidate(direct, resolvesThroughDebrid: never))
+        XCTAssertTrue(NextEpisodeEngine.isListable(direct, resolvesThroughDebrid: never))
+
+        let torrent = stream(infoHash: "feedface")
+        XCTAssertFalse(NextEpisodeEngine.isAutoPlayCandidate(torrent, resolvesThroughDebrid: never))
+        XCTAssertFalse(NextEpisodeEngine.isListable(torrent, resolvesThroughDebrid: never),
+                       "a torrent with no debrid connection is neither")
+        XCTAssertTrue(NextEpisodeEngine.isAutoPlayCandidate(torrent, resolvesThroughDebrid: { _ in true }))
+        XCTAssertTrue(NextEpisodeEngine.isListable(torrent, resolvesThroughDebrid: { _ in true }))
+    }
+
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))

@@ -80,6 +80,21 @@ final class LibraryViewModel: ObservableObject {
     private var watchers: [FlowWatcher] = []
     private var republishScheduled = false
 
+    /// Which provider order `providerOrderWatcher` is collecting: one list of one source under
+    /// one effective sort (review r1 P2). Nil for the local library, which has no provider order.
+    private struct ProviderOrderKey: Equatable {
+        let sourceModeName: String
+        let listKey: String
+        let sortOptionName: String
+    }
+    private var providerOrderWatcher: FlowWatcher?
+    private var providerOrderKey: ProviderOrderKey?
+    /// The latest `LibraryProviderOrderResult` for `providerOrderKey`: the provider's rank per
+    /// item key (nil while unknown, or when the sort has no provider order), and whether the
+    /// provider's sorter failed.
+    private var providerOrderRanks: [String: Int]?
+    private var providerOrderFailed = false
+
     func start() {
         guard watchers.isEmpty else { return }
         LibraryRepository.shared.ensureLoaded()
@@ -118,6 +133,11 @@ final class LibraryViewModel: ObservableObject {
     func stop() {
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
+        providerOrderWatcher?.cancel()
+        providerOrderWatcher = nil
+        providerOrderKey = nil
+        providerOrderRanks = nil
+        providerOrderFailed = false
     }
 
     // MARK: - Viewer actions
@@ -241,22 +261,41 @@ final class LibraryViewModel: ObservableObject {
         }
         update(\.sourceModeName, modeName)
         update(\.availableSortOptions, LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: state.sourceMode))
-        update(\.effectiveSortOption, LibraryDisplaySettingsKt.effectiveLibrarySortOption(
+        let effective = LibraryDisplaySettingsKt.effectiveLibrarySortOption(
             selected: sortOption,
             sourceMode: state.sourceMode
-        ))
+        )
+        update(\.effectiveSortOption, effective)
 
-        // providerOrders stays empty, as on mobile's grid: the per-list added-order caches have no
-        // public shared accessor. MDBList's DEFAULT order ("List Order": the owner's saved order on
-        // mdblist.com — the list rank — since batch D U1; before that it was newest-added first)
-        // comes from `listKey`, which the projection sets to the chosen list.
+        // Provider orders (batch D review r1 P2, mobile's `rememberLibraryProviderOrders`): for a
+        // provider library, the chosen list's order under the effective sort comes from the
+        // provider's own sorter — MDBList's added / release orders are its server's, not derivable
+        // from `savedAtEpochMs` (U1). The shared `observeProviderOrder` emits (nil, false) once for
+        // a sort with no provider order (DEFAULT, whose "List Order" is the list rank the
+        // projection reads off `listKey`; TITLE_*), so those cost nothing. One watcher at a time,
+        // re-created when the (source, list, effective sort) triple changes. On a failed sorter
+        // the projection falls back to DEFAULT, as mobile's grid does; the pill keeps showing the
+        // selected sort (`effectiveSortOption` is untouched).
+        let orderListKey: String? = LibraryGridPolicy.providerName(sourceModeName: modeName) == nil
+            ? nil
+            : (state.sections.first { $0.type == requestedSectionKey } ?? state.sections.first)?.type
+        observeProviderOrder(
+            key: orderListKey.map { ProviderOrderKey(sourceModeName: modeName, listKey: $0, sortOptionName: effective.name) },
+            sortOption: effective
+        )
+        let providerOrders: [String: [String: KotlinInt]]
+        if let orderListKey, let ranks = providerOrderRanks {
+            providerOrders = [orderListKey: ranks.mapValues { KotlinInt(int: Int32($0)) }]
+        } else {
+            providerOrders = [:]
+        }
         let projection = LibraryDisplaySettingsKt.buildLibraryVerticalProjection(
             sections: state.sections,
             sourceMode: state.sourceMode,
             selectedSectionKey: requestedSectionKey,
             selectedType: requestedType,
-            sortOption: sortOption,
-            providerOrders: [:]
+            sortOption: providerOrderFailed ? LibrarySortOption.default_ : sortOption,
+            providerOrders: providerOrders
         )
         update(\.sections, projection.availableSections)
         update(\.selectedSectionKey, projection.selectedSectionKey)
@@ -293,6 +332,27 @@ final class LibraryViewModel: ObservableObject {
             visibleCount: shown.count,
             smartFiltersActive: !activeSmartFilters.isEmpty
         ))
+    }
+
+    /// Keeps exactly one provider-order watcher, for `key`; a nil key (local library) stops any.
+    /// The watcher's emissions only store the result and schedule a republish, which reads it.
+    private func observeProviderOrder(key: ProviderOrderKey?, sortOption: LibrarySortOption) {
+        guard key != providerOrderKey else { return }
+        providerOrderWatcher?.cancel()
+        providerOrderWatcher = nil
+        providerOrderKey = key
+        providerOrderRanks = nil
+        providerOrderFailed = false
+        guard let key else { return }
+        let flow = LibraryRepository.shared.observeProviderOrder(listKey: key.listKey, sortOption: sortOption)
+        providerOrderWatcher = FlowWatcherKt.watchFlow(flow) { [weak self] emitted in
+            guard let self, self.providerOrderKey == key,
+                  let result = emitted as? LibraryProviderOrderResult else { return }
+            let ranks: [String: KotlinInt]? = result.ranks
+            self.providerOrderRanks = ranks?.mapValues { $0.intValue }
+            self.providerOrderFailed = result.failed
+            self.scheduleRepublish()
+        }
     }
 
     /// Writes a published value only when it changed, so a sync or progress tick that changes
@@ -340,5 +400,6 @@ final class LibraryViewModel: ObservableObject {
 
     deinit {
         watchers.forEach { $0.cancel() }
+        providerOrderWatcher?.cancel()
     }
 }

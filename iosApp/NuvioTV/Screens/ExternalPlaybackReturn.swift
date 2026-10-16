@@ -56,17 +56,26 @@ enum ExternalPlaybackReturnRouter {
         isCallback(url, callbackScheme: AppCallbackScheme.value)
     }
 
+    /// Query parameters whose VALUE the probe may print: the stop position / duration the device
+    /// test is looking for and the error fields. Compared case-insensitively.
+    static let probeVisibleParameters: Set<String> = [
+        "position", "duration", "error", "errorcode", "errormessage", "x-source",
+    ]
+
     /// The callback as a probe may print it (FEAT-56 `debug.extPlayerProbe`): every query parameter
-    /// name and value kept, except `lastPlayedUrl`'s value, replaced by `<redacted>` (it can carry a
-    /// debrid link with a token). Falls back to the scheme and path alone when the URL does not parse.
+    /// NAME kept (the probe's job is to learn which names a player sends back), but a value is
+    /// printed only for `probeVisibleParameters`; every other value becomes `<redacted>` — a
+    /// player can echo the played link (`lastPlayedUrl`, `url`, `playUrl`, …), which carries a
+    /// debrid token (review r1: an allowlist, not a denylist). Falls back to the scheme and path
+    /// alone when the URL does not parse.
     static func redactedForProbe(_ url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
         }
         components.queryItems = components.queryItems?.map { item in
-            item.name.caseInsensitiveCompare("lastPlayedUrl") == .orderedSame
-                ? URLQueryItem(name: item.name, value: "<redacted>")
-                : item
+            probeVisibleParameters.contains(item.name.lowercased())
+                ? item
+                : URLQueryItem(name: item.name, value: "<redacted>")
         }
         return components.string ?? "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
     }

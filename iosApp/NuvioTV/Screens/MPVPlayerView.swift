@@ -3965,6 +3965,15 @@ struct MPVPlayerScreen: View {
                 .padding(.bottom, chipBottomInset)
                 .padding(.trailing, chipTrailingInset)
                 .transition(.opacity)
+            } else if let failure = upNext.sourceSwitchFailure {
+                // Batch D review r1: a source switch from the Sources tab that could not start (a
+                // ytId source whose resolve failed). One-shot; the engine clears it. The up-next
+                // chip keeps precedence (it carries the D-pad Down action), the skip prompt yields.
+                PlayerChipCaption(text: failure, symbol: "exclamationmark.circle")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.bottom, chipBottomInset)
+                    .padding(.trailing, chipTrailingInset)
+                    .transition(.opacity)
             } else if let prompt = state.skipPrompt {
                 PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -3975,6 +3984,7 @@ struct MPVPlayerScreen: View {
         }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
         .animation(PlayerChipStyle.animation, value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: upNext.sourceSwitchFailure)
         .animation(PlayerChipStyle.animation, value: state.controlsVisible)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(

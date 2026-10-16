@@ -242,6 +242,46 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
         XCTAssertFalse(key.contains("googlevideo"))
     }
 
+    private func directStream(url: String, addonId: String = "addon:x") -> StreamItem {
+        StreamItem(
+            name: "Direct", title: nil, description: nil, url: url, infoHash: nil, fileIdx: nil,
+            externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add-on", addonId: addonId,
+            addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+        )
+    }
+
+    func testTryNextSourceSkipsYouTubeStreamsButStillFindsTheFailedOne() {
+        // Review r1: "Try Next Source" never lands on a ytId-only stream (a resolve takes seconds
+        // and may fail), yet the list is not filtered — the failed stream's own index must still be
+        // found when ytId streams sit before it, or the search would restart from the top.
+        let yt = ytStream()
+        let failed = directStream(url: "https://cdn.example.com/a.mkv")
+        let ytAfter = ytStream(ytId: "zzzzzzzzzzz")
+        let next = directStream(url: "https://cdn.example.com/b.mkv")
+        let list = [yt, failed, ytAfter, next]
+        XCTAssertEqual(PlaybackFailoverPolicy.nextManualIndex(streams: list, failedKey: failed.playbackStreamKey,
+                                                              failedAddonId: "addon:x", rejected: []), 3)
+        // A ytId stream is skipped even when it is the same add-on's next entry, and nothing else
+        // left means nil rather than the YouTube row.
+        XCTAssertNil(PlaybackFailoverPolicy.nextManualIndex(streams: [failed, ytAfter], failedKey: failed.playbackStreamKey,
+                                                            failedAddonId: "addon:x", rejected: []))
+        // Already-rejected keys still apply on top.
+        XCTAssertNil(PlaybackFailoverPolicy.nextManualIndex(streams: list, failedKey: failed.playbackStreamKey,
+                                                            failedAddonId: "addon:x", rejected: [next.playbackStreamKey]))
+    }
+
+    func testStreamItemKeyIgnoresAYouTubeIdAttachedToAnOrdinaryLink() {
+        // Review r1: `playbackStreamKey` keys on `youTubeIdToResolve` (the id the stream would be
+        // PLAYED through), so a ytId riding along an ordinary link never becomes its identity.
+        let withLink = ytStream(url: "https://cdn.example.com/d/abc/file.mkv")
+        XCTAssertNil({ let id: String? = withLink.youTubeIdToResolve; return id }())
+        XCTAssertEqual(withLink.playbackStreamKey, urlKey("https://cdn.example.com/d/abc/file.mkv"))
+        XCTAssertNotNil({ let id: String? = ytStream().youTubeIdToResolve; return id }())
+    }
+
     func testSessionOnlyContextPersistsNoSourceUrl() {
         var ctx = makeContext()
         XCTAssertEqual(ctx.persistedSourceUrl, ctx.url.absoluteString, "a normal link is stored as the entry's last source")

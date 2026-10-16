@@ -213,6 +213,19 @@ enum PlaybackFailoverPolicy {
         }
         return eligible.first
     }
+
+    /// `nextManualIndex` over the listed streams themselves. Batch D review r1: a ytId-only stream
+    /// (`StreamPickerView.isYouTubeResolved`) is never the next source — "Try Next Source" is meant
+    /// to play at once, and a YouTube resolve takes seconds and may fail — so its key joins the
+    /// rejected set. The list stays whole, so the failed stream's own index is still found even
+    /// when ytId streams sit before it.
+    static func nextManualIndex(streams: [StreamItem], failedKey: String, failedAddonId: String?,
+                                rejected: Set<String>) -> Int? {
+        let entries = streams.map { Entry(key: $0.playbackStreamKey, addonId: $0.addonId) }
+        let youTubeKeys = Set(streams.filter { StreamPickerView.isYouTubeResolved($0) }.map(\.playbackStreamKey))
+        return nextManualIndex(entries: entries, failedKey: failedKey, failedAddonId: failedAddonId,
+                               rejected: rejected.union(youTubeKeys))
+    }
 }
 
 /// The key a stream link is remembered under (`RejectedStreamLinks`, `PlaybackContext.streamKey`).
@@ -275,7 +288,9 @@ extension StreamItem {
         let rawUrl: String? = url
         let rawExternal: String? = externalUrl
         let rawName: String? = name
-        let rawYouTubeId: String? = ytId
+        // Review r1: the id the stream would actually be PLAYED through (nil when a URL / hash /
+        // externalUrl exists), not the raw `ytId` an add-on may attach to an ordinary link.
+        let rawYouTubeId: String? = youTubeIdToResolve
         return PlaybackStreamKey.make(
             infoHash: hash,
             fileIdx: index,
