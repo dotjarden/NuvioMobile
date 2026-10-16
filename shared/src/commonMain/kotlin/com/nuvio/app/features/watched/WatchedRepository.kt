@@ -14,6 +14,7 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watching.sync.SupabaseWatchedSyncAdapter
 import com.nuvio.app.features.watching.sync.WatchedDeltaEvent
 import com.nuvio.app.features.watching.sync.WatchedSyncAdapter
@@ -156,6 +157,14 @@ private const val maxRestorableWatchedPayloadChars = 4 * 1024 * 1024
 
 internal fun shouldRestoreWatchedPayload(payloadLength: Int): Boolean =
     payloadLength <= maxRestorableWatchedPayloadChars
+
+/**
+ * Content ids whose dismissed Continue Watching "next up" keys a mark-watched call restores:
+ * every episode item's series id, deduplicated, in first-seen order (upstream 6fefbcdab).
+ * Movies never dismiss a next-up entry, so they are ignored.
+ */
+internal fun dismissedNextUpContentIdsToRestore(items: Collection<WatchedItem>): List<String> =
+    items.filter { it.isEpisode }.map { it.id }.distinct()
 
 object WatchedRepository {
     private data class WatchedRefreshOperation(
@@ -765,6 +774,12 @@ object WatchedRepository {
     }
 
     fun markWatched(items: Collection<WatchedItem>) {
+        // Upstream 6fefbcdab (#2244): a show dismissed from Continue Watching comes back once
+        // one of its episodes is marked watched. The id list is a pure helper so the rule is
+        // unit-testable without this object's load path (Fork: upstream inlines it).
+        dismissedNextUpContentIdsToRestore(items).forEach {
+            ContinueWatchingPreferencesRepository.removeDismissedNextUpKeysForContent(it)
+        }
         markWatched(items = items, trackerHistorySync = WatchedTrackerHistorySync.Mirror)
     }
 
