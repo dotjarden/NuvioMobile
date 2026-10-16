@@ -11703,6 +11703,7 @@
         }
       }
     },
+    "Could not load this YouTube video.": {},
     "Could not open this link.": {
       "localizations": {
         "de": {
@@ -25615,6 +25616,7 @@
         }
       }
     },
+    "Oldest Released": {},
     "Oldest First": {
       "localizations": {
         "de": {
@@ -30513,6 +30515,7 @@
         }
       }
     },
+    "Recently Released": {},
     "Records how a trailer is framed and played so a zoomed, letterboxed or stuttering trailer can be photographed. Turn it on only when asked.": {
       "localizations": {
         "de": {

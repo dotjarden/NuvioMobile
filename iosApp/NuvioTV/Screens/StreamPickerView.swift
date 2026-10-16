@@ -96,6 +96,19 @@ struct StreamPickerView: View {
     @State private var fetchedEpisodes: [MetaVideo] = []
     /// Row key currently mid debrid-resolve (drives the row spinner; one resolve at a time).
     @State private var resolvingKey: String?
+    /// False once the picker left the screen (a Menu press during a resolve): a late result must
+    /// not hand a link to an external player from a view that is gone (batch D review r1).
+    @State private var pickerOnScreen = false
+    /// Batch D review r2 P3-2: the YouTube resolve in flight, by request. `resolvingKey == rowKey`
+    /// was no guard at all (only the owning completion ever reset it), and `selected == nil`
+    /// missed a playback that started AND ended inside the resolve window (an auto-play pick or
+    /// a failover dismissed within the 30 s). The token is minted when a resolve starts and
+    /// dropped the moment any playback starts (`selected` set, see `onChange`) or the picker
+    /// leaves the screen; a completion whose token is no longer current does nothing.
+    @State private var youTubeResolveToken: UUID?
+    /// The resolve's Task (review r2 P3-3): cancelled with the token, so a superseded or abandoned
+    /// resolve stops the extractor instead of running to the 30 s timeout in the background.
+    @State private var youTubeResolveTask: Task<Void, Never>?
     /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
     @State private var toast: String?
     @FocusState private var focusedRow: String?
@@ -107,7 +120,8 @@ struct StreamPickerView: View {
     @State private var didAutoExpand = false
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
-    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21),
+    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21,
+    /// SenPlayer as of FEAT-56),
     /// so testers without any of them installed never see the handoff option at all. Empty ⇒ no
     /// menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
@@ -120,8 +134,12 @@ struct StreamPickerView: View {
     private static let testRowKey = "test-stream"
     /// Spinner key for a "Try Next Source" resolve (its row may be collapsed or off-screen).
     private static let failoverRowKey = "failover-next"
-    /// `ExternalPlayerApp.id` of Infuse, the external player that reports playback back.
-    private static let infusePlayerId = "infuse"
+    /// `ExternalPlayerApp.id`s of the external players that report the stop position back over an
+    /// x-callback return (`ExternalPlaybackReturn`): Infuse (7.6.2+, `x-success` with `position`)
+    /// and, FEAT-56 (GitHub #5), SenPlayer (6.1.1+ returns the current playback time on exit; the
+    /// query parameter name is unverified on hardware — the `debug.extPlayerProbe` print in
+    /// `ContentView.handleDeepLink` shows what it sends). Every other player gets no callback URLs.
+    static let returnReportingPlayerIds: Set<String> = ["infuse", "senplayer"]
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
     init(
@@ -199,7 +217,10 @@ struct StreamPickerView: View {
             streamKey: streamKey,
             startFromBeginning: startsOver,
             attempt: attempt,
-            listedStream: listedStream
+            listedStream: listedStream,
+            // Batch D U2: a ytId-only stream plays a link resolved on this device that expires
+            // within hours — never persisted as the entry's last source URL.
+            sessionOnlySourceUrl: Self.isYouTubeResolved(listedStream)
         )
     }
 
@@ -416,6 +437,7 @@ struct StreamPickerView: View {
                 }
             }
             .onAppear {
+                pickerOnScreen = true
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
                 // opens instead of requiring an app relaunch. First, so an auto-play start already
@@ -439,7 +461,16 @@ struct StreamPickerView: View {
                 // own fetch call deduplicates against this one.
                 SubtitleRepository.shared.fetchAddonSubtitles(type: type, videoId: videoId)
             }
-            .onDisappear { model.stop() }
+            .onDisappear {
+                pickerOnScreen = false
+                invalidateYouTubeResolve()
+                model.stop()
+            }
+            // Review r2 P3-2: every playback start (a row, "Try Next Source", auto-play, the Up
+            // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
+            .onChange(of: selected?.id) { _, playing in
+                if playing != nil { invalidateYouTubeResolve() }
+            }
             .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
                 // episode's context (a same-position cover would otherwise keep the old libmpv
@@ -586,6 +617,13 @@ struct StreamPickerView: View {
                     }
                     if hasBadgeRow && !model.badgesOnTop {
                         badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)
+                    }
+                    // Batch D U2: the add-on gave only a YouTube video id — the row plays after an
+                    // on-device resolve (the spinner above), so say where the video comes from.
+                    if Self.isYouTubeResolved(stream) {
+                        Text(verbatim: "YouTube")
+                            .font(Theme.Font.caption)
+                            .rowTextColor(secondary: true)
                     }
                     // Orivio batch item 2: this link failed recently for this title, so the
                     // automatic pickers skip it. Still selectable by hand.
@@ -757,6 +795,37 @@ struct StreamPickerView: View {
             return
         }
 
+        // Batch D U2 (upstream 94976222): the add-on gave only a YouTube video id — resolve it on
+        // the device to one playable URL (HLS master, else progressive), then play that exactly
+        // like a direct link. The listed stream stays the identity (`streamKey`, `listedStream`):
+        // the resolved link expires within hours.
+        if Self.isYouTubeResolved(stream) {
+            guard resolvingKey == nil else { return }
+            let token = beginYouTubeResolve(rowKey: rowKey)
+            youTubeResolveTask = resolveYouTube(stream) { resolved in
+                // Review r1 / r2 P3-2: only the request the token belongs to may act; a playback
+                // the viewer started since (another row, "Try Next Source", an auto-play pick,
+                // even one already dismissed again) dropped the token, and so did leaving the
+                // picker (a Menu press during the resolve).
+                guard youTubeResolveToken == token else {
+                    print("[StreamPicker] YouTube resolve landed after another playback started — dropped")
+                    return
+                }
+                finishYouTubeResolve()
+                guard selected == nil, pickerOnScreen else { return }
+                let resolvedUrl: String? = resolved?.playableDirectUrl
+                guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
+                    showToast(Self.youTubeResolveFailedMessage)
+                    return
+                }
+                NextEpisodeEngine.consecutiveAutoPlays = 0
+                dismissAfterPlayer = false
+                selected = context(url: url, stream: resolved, listedStream: stream, streamKey: streamKey,
+                                   launchSource: .manual, attempt: attempt)
+            }
+            return
+        }
+
         // Torrent / clientResolve result → resolve through the in-app debrid connection.
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
@@ -797,6 +866,61 @@ struct StreamPickerView: View {
         }
     }
 
+    // MARK: - YouTube resolve (batch D U2)
+
+    /// True when the add-on gave this stream only a YouTube video id (shared `youTubeIdToResolve`).
+    /// nil → false, so callers can pass an optional listed stream. Pure and `nonisolated`: the
+    /// Up Next engine's stream predicates and `PlaybackFailoverPolicy` call it off the main actor.
+    nonisolated static func isYouTubeResolved(_ stream: StreamItem?) -> Bool {
+        let youTubeId: String? = stream?.youTubeIdToResolve
+        return !(youTubeId ?? "").isEmpty
+    }
+
+    static var youTubeResolveFailedMessage: String { String(localized: "Could not load this YouTube video.") }
+
+    /// Resolves a ytId-only stream to a copy carrying one playable URL through the shared
+    /// `YouTubeStreamResolver` (the trailer extractor; HLS master playlist, else progressive). The
+    /// shared function maps every failure to nil and rethrows only cancellation (review r1 F3),
+    /// which `try?` also turns into nil — so a nil is "could not resolve" unless this Task itself
+    /// was cancelled, in which case nobody is told anything. Runs on the main actor throughout
+    /// (the async export, not the completion-handler twin, so no `@Sendable` hop is needed).
+    @discardableResult
+    private func resolveYouTube(_ stream: StreamItem, completion: @escaping @MainActor (StreamItem?) -> Void) -> Task<Void, Never> {
+        Task { @MainActor in
+            let resolved: StreamItem? = try? await YouTubeStreamResolver.shared.resolve(stream: stream)
+            guard !Task.isCancelled else { return }
+            completion(resolved)
+        }
+    }
+
+    /// Starts a YouTube resolve for `rowKey`: the row spinner (`resolvingKey`, which also keeps
+    /// resolves one at a time) plus a fresh request token (review r2 P3-2). Returns the token the
+    /// completion must still hold to act.
+    private func beginYouTubeResolve(rowKey: String) -> UUID {
+        let token = UUID()
+        resolvingKey = rowKey
+        youTubeResolveToken = token
+        return token
+    }
+
+    /// The owning completion is done (either way): clears the spinner and the token.
+    private func finishYouTubeResolve() {
+        resolvingKey = nil
+        youTubeResolveToken = nil
+        youTubeResolveTask = nil
+    }
+
+    /// Supersedes the YouTube resolve in flight, if any: its completion will find a stale token,
+    /// its Task is cancelled (review r2 P3-3), and the spinner it owned is cleared so the
+    /// one-at-a-time guard reopens. A debrid resolve's spinner (no token) is left alone.
+    private func invalidateYouTubeResolve() {
+        guard youTubeResolveToken != nil else { return }
+        youTubeResolveToken = nil
+        youTubeResolveTask?.cancel()
+        youTubeResolveTask = nil
+        resolvingKey = nil
+    }
+
     // MARK: - External player handoff (FEAT-5)
 
     /// Hands the stream to an installed external player (Infuse today) instead of the in-app
@@ -815,6 +939,31 @@ struct StreamPickerView: View {
         if let direct, !direct.isEmpty {
             openExternally(urlString: direct, stream: stream, listed: stream, playerId: playerId,
                            fallbackToInternal: fallbackToInternal)
+            return
+        }
+
+        // Batch D U2: a ytId-only stream resolves on the device first (see `internalPlay`), then
+        // the resolved link is handed off like a direct one.
+        if Self.isYouTubeResolved(stream) {
+            guard resolvingKey == nil else { return }
+            let token = beginYouTubeResolve(rowKey: rowKey)
+            youTubeResolveTask = resolveYouTube(stream) { resolved in
+                // Review r1 / r2 P3-2: same token guard as `internalPlay` — a Menu press during
+                // the resolve must not launch an external player from a view that is gone.
+                guard youTubeResolveToken == token else {
+                    print("[StreamPicker] YouTube resolve landed after the picker moved on — dropped")
+                    return
+                }
+                finishYouTubeResolve()
+                guard selected == nil, pickerOnScreen else { return }
+                let resolvedUrl: String? = resolved?.playableDirectUrl
+                guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty else {
+                    showToast(Self.youTubeResolveFailedMessage)
+                    return
+                }
+                openExternally(urlString: resolvedUrl, stream: resolved, listed: stream, playerId: playerId,
+                               fallbackToInternal: fallbackToInternal)
+            }
             return
         }
 
@@ -869,9 +1018,10 @@ struct StreamPickerView: View {
     /// whose URL builders consume `sub`/`position` (VidHub `/play`, Infuse, VLC) resume and
     /// subtitle like the built-in player instead of starting cold.
     ///
-    /// Orivio batch item 5: an Infuse handoff first prepares a shared external-playback session and
-    /// passes Infuse its x-success / x-error callback URLs on this install's own URL scheme, so the
-    /// position Infuse reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
+    /// Orivio batch item 5: a handoff to a player that reports back (`returnReportingPlayerIds`:
+    /// Infuse, and SenPlayer since FEAT-56) first prepares a shared external-playback session and
+    /// passes the player its x-success / x-error callback URLs on this install's own URL scheme, so
+    /// the position it reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
     /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).
     ///
     /// `autoAttempt` (1-based) marks the first-play auto start handing its pick to the viewer's
@@ -896,15 +1046,17 @@ struct StreamPickerView: View {
         var launchSessionId: String?
         var callbackSuccessUrl: String?
         var callbackErrorUrl: String?
-        if playerId == Self.infusePlayerId, let sourceURL = URL(string: urlString) {
+        if Self.returnReportingPlayerIds.contains(playerId), let sourceURL = URL(string: urlString) {
             let session = ExternalPlaybackReturn.shared.prepare(
-                playerId: Self.infusePlayerId,
+                playerId: playerId,
                 sourceUrl: urlString,
-                playbackSession: PlaybackProgressRecorder.playbackSession(for: context(url: sourceURL, stream: stream)),
+                // `listedStream: listed` so a ytId-only stream's session stores no expiring link.
+                playbackSession: PlaybackProgressRecorder.playbackSession(
+                    for: context(url: sourceURL, stream: stream, listedStream: listed)),
                 durationMs: externalDurationMs(progress: progress).map { KotlinLong(value: $0) }
             )
             let callbacks = ExternalPlaybackCallbacks.shared.build(
-                scheme: AppCallbackScheme.value, playerId: Self.infusePlayerId, sessionId: session.id
+                scheme: AppCallbackScheme.value, playerId: playerId, sessionId: session.id
             )
             launchSessionId = session.id
             callbackSuccessUrl = callbacks.first.map { $0 as String }
@@ -923,7 +1075,8 @@ struct StreamPickerView: View {
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,
             skipSegmentsJson: nil,
-            // Infuse only (nil for every other player): where Infuse reports the stop position.
+            // Infuse and SenPlayer only (nil for every other player): where the player reports the
+            // stop position.
             callbackSuccessUrl: callbackSuccessUrl,
             callbackErrorUrl: callbackErrorUrl
         )
@@ -1134,9 +1287,8 @@ struct StreamPickerView: View {
     /// (falling back to the live list), after the failed one, same add-on first, failed links skipped.
     private func nextManualStream(after ctx: PlaybackContext) -> StreamItem? {
         let list = manualFailoverList.isEmpty ? model.groups.flatMap(\.streams) : manualFailoverList
-        let entries = list.map { PlaybackFailoverPolicy.Entry(key: $0.playbackStreamKey, addonId: $0.addonId) }
         guard let index = PlaybackFailoverPolicy.nextManualIndex(
-            entries: entries,
+            streams: list,
             failedKey: ctx.streamKey,
             failedAddonId: ctx.providerAddonId,
             rejected: RejectedStreamLinks.rejected(for: videoId)

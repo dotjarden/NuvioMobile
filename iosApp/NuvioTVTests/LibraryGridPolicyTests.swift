@@ -1,4 +1,5 @@
 import XCTest
+import SharedCore
 @testable import NuvioTV
 
 /// Library L1 (2026-10-04): the Library grid's pure rules (smart filters, chip visibility, count
@@ -91,12 +92,31 @@ final class LibraryGridPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.sourceBadge(sourceModeName: "SIMKL"), "SIMKL")
     }
 
+    func testProviderControlsShowForProviderLibrariesOnly() {
+        for provider in ["TRAKT", "SIMKL", "MDBLIST", "mdblist"] {
+            XCTAssertTrue(Policy.showsProviderControls(sourceModeName: provider), provider)
+        }
+        XCTAssertFalse(Policy.showsProviderControls(sourceModeName: "LOCAL"))
+        XCTAssertFalse(Policy.showsProviderControls(sourceModeName: ""))
+    }
+
     func testDefaultSortIsNamedAfterTraktOnlyOnTrakt() {
         XCTAssertEqual(Policy.sortLabel(optionName: "DEFAULT", sourceModeName: "TRAKT"), "Trakt Order")
         XCTAssertEqual(Policy.sortLabel(optionName: "DEFAULT", sourceModeName: "SIMKL"), "List Order")
         XCTAssertEqual(Policy.sortLabel(optionName: "DEFAULT", sourceModeName: "MDBLIST"), "List Order")
         XCTAssertEqual(Policy.sortLabel(optionName: "ADDED_DESC", sourceModeName: "LOCAL"), "Recently Added")
         XCTAssertEqual(Policy.sortLabel(optionName: "TITLE_ASC", sourceModeName: "LOCAL"), "A\u{2013}Z")
+    }
+
+    func testReleaseDateSortsHaveLabels() {
+        // Batch D U1 (upstream d8ce7258): the shared `LibrarySortOption.RELEASED_DESC` / `RELEASED_ASC`,
+        // offered for MDBList lists. Without a case here the pill would print the raw enum name.
+        XCTAssertEqual(Policy.sortLabel(optionName: "RELEASED_DESC", sourceModeName: "MDBLIST"), "Recently Released")
+        XCTAssertEqual(Policy.sortLabel(optionName: "RELEASED_ASC", sourceModeName: "MDBLIST"), "Oldest Released")
+        XCTAssertEqual(Policy.sortLabel(optionName: LibrarySortOption.releasedDesc.name, sourceModeName: "MDBLIST"),
+                       "Recently Released", "the Swift label switch keys on the Kotlin entry name")
+        XCTAssertEqual(Policy.sortLabel(optionName: LibrarySortOption.releasedAsc.name, sourceModeName: "MDBLIST"),
+                       "Oldest Released")
     }
 
     // MARK: - Screen state

@@ -38,6 +38,27 @@ class LibraryProviderOrdersTest {
     }
 
     @Test
+    fun `release sorts use the provider release order in both directions`() = runTest {
+        val requested = mutableListOf<Boolean>()
+        val sorter = object : TrackingLibrarySorter {
+            override fun observeAddedOrder(listKey: String, descending: Boolean) = error("Unexpected request")
+            override fun observeReleaseOrder(listKey: String, descending: Boolean) = flowOf(
+                if (descending) keys.reversed() else keys
+            ).also { requested += descending }
+        }
+        val sections = listOf(LibrarySection(firstKey, "First", items))
+        for ((option, names) in mapOf(
+            LibrarySortOption.RELEASED_DESC to listOf("Bravo", "Alpha", "Zulu"),
+            LibrarySortOption.RELEASED_ASC to listOf("Zulu", "Alpha", "Bravo"),
+        )) {
+            val orders = observeLibraryProviderOrders(sorter, listOf(firstKey), option).first { it.ranks.isNotEmpty() }
+            val sorted = sortLibrarySections(sections, option, LibrarySourceMode.MDBLIST, orders.ranks)
+            assertEquals(names, sorted[0].items.map { it.name })
+        }
+        assertEquals(listOf(true, false), requested)
+    }
+
+    @Test
     fun `horizontal lists each use their own server order without added timestamps`() = runTest {
         val requested = mutableListOf<Pair<String, Boolean>>()
         val sorter = object : TrackingLibrarySorter {
@@ -52,6 +73,34 @@ class LibraryProviderOrdersTest {
         assertEquals(listOf("Zulu", "Alpha", "Bravo"), sorted[0].items.map { it.name })
         assertEquals(listOf("Bravo", "Alpha", "Zulu"), sorted[1].items.map { it.name })
         assertEquals(listOf(firstKey to true, secondKey to true), requested)
+    }
+
+    @Test
+    fun `one list's slice carries its ranks and the failure flag for the tvOS accessor`() = runTest {
+        // Fork (batch D review r1 F2): `LibraryRepository.observeProviderOrder` maps
+        // `LibraryProviderOrders` through `forList`; Swift reads the result's `ranks` / `failed`.
+        val ranks = keys.withIndex().associate { (index, key) -> key to index }
+        assertEquals(
+            LibraryProviderOrderResult(ranks = ranks, failed = false),
+            LibraryProviderOrders(ranks = mapOf(firstKey to ranks)).forList(firstKey),
+        )
+        assertEquals(
+            LibraryProviderOrderResult(ranks = null, failed = false),
+            LibraryProviderOrders(ranks = mapOf(firstKey to ranks)).forList(secondKey),
+        )
+        assertEquals(
+            LibraryProviderOrderResult(ranks = null, failed = true),
+            LibraryProviderOrders(failed = true).forList(firstKey),
+        )
+        val failing = object : TrackingLibrarySorter {
+            override fun observeAddedOrder(listKey: String, descending: Boolean) = flow<List<String>?> { error("down") }
+        }
+        val result = observeLibraryProviderOrders(failing, listOf(firstKey), LibrarySortOption.ADDED_DESC)
+            .first { it.failed }
+            .forList(firstKey)
+        assertEquals(LibraryProviderOrderResult(ranks = null, failed = true), result)
+        val none = observeLibraryProviderOrders(null, listOf(firstKey), LibrarySortOption.RELEASED_DESC).first().forList(firstKey)
+        assertEquals(LibraryProviderOrderResult(ranks = null, failed = false), none)
     }
 
     @Test

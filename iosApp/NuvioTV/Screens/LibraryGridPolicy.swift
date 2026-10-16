@@ -168,6 +168,15 @@ nonisolated enum LibraryGridPolicy {
         }
     }
 
+    /// Whether the control row shows the provider controls (the Refresh pill, batch D review r2
+    /// P2): a provider library (Trakt / Simkl / MDBList) is a copy of the provider's server state
+    /// and can go stale without any local change (a list re-sorted on mdblist.com keeps its
+    /// `updatedAt`), so the viewer needs a user-initiated pull; the local library has nothing to
+    /// pull.
+    static func showsProviderControls(sourceModeName: String) -> Bool {
+        providerName(sourceModeName: sourceModeName) != nil
+    }
+
     /// The small spaced badge beside the title (official NuvioTV's LOCAL / TRAKT / …). Nil for
     /// the local library, which needs no badge.
     static func sourceBadge(sourceModeName: String) -> String? {
@@ -188,6 +197,10 @@ nonisolated enum LibraryGridPolicy {
                 : String(localized: "List Order")
         case "ADDED_DESC": return String(localized: "Recently Added")
         case "ADDED_ASC": return String(localized: "Oldest First")
+        // Batch D U1 (upstream d8ce7258): MDBList lists sort by the title's release date; the shared
+        // `availableLibrarySortOptions` offers these for MDBLIST only.
+        case "RELEASED_DESC": return String(localized: "Recently Released")
+        case "RELEASED_ASC": return String(localized: "Oldest Released")
         case "TITLE_ASC": return String(localized: "A\u{2013}Z")
         case "TITLE_DESC": return String(localized: "Z\u{2013}A")
         default: return optionName

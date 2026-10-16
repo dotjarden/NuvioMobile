@@ -1698,7 +1698,7 @@ final class MPVTVPlayerViewController: UIViewController {
         lastStreamTitle: context.streamTitle,
         lastStreamSubtitle: context.streamSubtitle,
         pauseDescription: nil,
-        lastSourceUrl: context.url.absoluteString
+        lastSourceUrl: context.persistedSourceUrl
     )
 
     private func saveProgress(flush: Bool = false) {
@@ -4141,10 +4141,22 @@ struct MPVPlayerScreen: View {
                     .padding(.bottom, chipBottomInset)
                     .padding(.trailing, chipTrailingInset)
                     .transition(.opacity)
+            } else if let failure = upNext.sourceSwitchFailure {
+                // Batch D review r1: a source switch from the Sources tab that could not start (a
+                // ytId source whose resolve failed). One-shot; the engine clears it. Review r2
+                // P3-1: anything that carries the D-pad Down action (up-next, then the skip
+                // prompt) draws over this caption, which carries none — `pressesBegan` performs
+                // the skip whether or not its chip is visible, so the chip must be.
+                PlayerChipCaption(text: failure, symbol: "exclamationmark.circle")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.bottom, chipBottomInset)
+                    .padding(.trailing, chipTrailingInset)
+                    .transition(.opacity)
             }
         }
         .animation(PlayerChipStyle.animation, value: state.skipPrompt)
         .animation(PlayerChipStyle.animation, value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: upNext.sourceSwitchFailure)
         .animation(PlayerChipStyle.animation, value: state.controlsVisible)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .animation(.easeInOut(duration: 0.25), value: state.playbackStarted)

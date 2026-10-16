@@ -1,7 +1,9 @@
 package com.nuvio.app.features.trailer
 
 import co.touchlab.kermit.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -305,19 +307,51 @@ class InAppYouTubeExtractor {
     suspend fun extractPlaybackSource(
         youtubeUrl: String,
         timeoutMillis: Long = TRAILER_EXTRACTOR_TIMEOUT_MS,
+    ): TrailerPlaybackSource? = extract(youtubeUrl, timeoutMillis, singleUrl = false)
+
+    /**
+     * Upstream 94976222 (ytId-only streams): returns one URL that carries both video and audio,
+     * for players that take a single source: the HLS master playlist (every quality, audio as a
+     * rendition), or a progressive file when there is no playlist. The adaptive formats are
+     * skipped because their audio is a separate file. Fork: keeps the extractor's full timeout
+     * ceiling; the stream picker has no shorter deadline of its own.
+     */
+    suspend fun extractSingleUrl(youtubeUrl: String): String? =
+        extract(youtubeUrl, TRAILER_EXTRACTOR_TIMEOUT_MS, singleUrl = true)?.videoUrl
+
+    private suspend fun extract(
+        youtubeUrl: String,
+        timeoutMillis: Long,
+        singleUrl: Boolean,
     ): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
         if (youtubeUrl.isBlank()) return@withContext null
 
-        runCatching {
+        // Review r1 F8: a ytId stream resolve logs with a "[stream] " prefix so a device console
+        // read tells it from a trailer extraction; the trailer text is unchanged.
+        // Review r2 P3-3: the caller's cancellation is rethrown instead of being swallowed as a
+        // failed extraction, so `YouTubeStreamResolverCore.resolveOrNull`'s rethrow is reachable
+        // and a cancelled resolve stops here; the trailer callers (`HeroTrailerResolver`) already
+        // `runCatching` around this call, so trailer behaviour is unchanged. The extractor's own
+        // timeout is a `TimeoutCancellationException`, which stays a logged failure (null).
+        try {
             withTimeout(timeoutMillis.coerceIn(1L, TRAILER_EXTRACTOR_TIMEOUT_MS)) {
-                extractPlaybackSourceInternal(youtubeUrl)
+                extractPlaybackSourceInternal(youtubeUrl, singleUrl)
             }
-        }.onFailure {
-            log.w { "Trailer extractor failed for $youtubeUrl: ${it.message}" }
-        }.getOrNull()
+        } catch (error: TimeoutCancellationException) {
+            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${error.message}" }
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${error.message}" }
+            null
+        }
     }
 
-    private suspend fun extractPlaybackSourceInternal(youtubeUrl: String): TrailerPlaybackSource? {
+    private suspend fun extractPlaybackSourceInternal(
+        youtubeUrl: String,
+        singleUrl: Boolean,
+    ): TrailerPlaybackSource? {
         val videoId = extractYouTubeVideoId(youtubeUrl) ?: return null
 
         val watchUrl = "https://www.youtube.com/watch?v=$videoId&hl=en"
@@ -542,11 +576,19 @@ class InAppYouTubeExtractor {
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
+        // Review r1 F8: the single-URL (ytId stream) path tags its lines "[stream] "; the trailer
+        // path's text stays byte-identical.
+        val logTag = if (singleUrl) "[stream] " else ""
         trailerDebugLog(
-            "selection: manifest=${bestManifest?.height ?: "none"} " +
+            "${logTag}selection: manifest=${bestManifest?.height ?: "none"} " +
                 "progressive=${bestProgressive?.height ?: "none"} " +
                 "(manifests collected=${manifestUrls.size})"
         )
+        if (singleUrl) {
+            val source = singleUrlSource(bestManifest, bestProgressive)
+            if (source == null) trailerDebugLog("[stream] no single-url source for video=$videoId")
+            return source?.copy(videoId = videoId)
+        }
         val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENTS)
         val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENTS)
 
@@ -582,6 +624,31 @@ class InAppYouTubeExtractor {
             bestM4aAudio = bestM4aAudio,
         )?.copy(videoId = videoId)
     }
+
+    private suspend fun singleUrlSource(
+        bestManifest: ManifestCandidate?,
+        bestProgressive: StreamCandidate?,
+    ): TrailerPlaybackSource? {
+        selectSingleUrlManifest(bestManifest)?.let { return TrailerPlaybackSource(videoUrl = it) }
+        // Fork: the tvOS repack pair (`bestAvcVideo`/`bestM4aAudio`) is a trailer-only path; a
+        // stream wants one URL, so the progressive file is the only fallback here.
+        return TrailerExtractionPlatform.buildPlaybackSource(
+            bestManifest = null,
+            bestProgressive = bestProgressive,
+            bestVideo = null,
+            bestAudio = null,
+            bestAvcVideo = null,
+            bestM4aAudio = null,
+        )
+    }
+
+    /**
+     * The master playlist rather than the best variant: YouTube's variant
+     * playlists carry video only, with audio as a separate rendition that only
+     * the master playlist links.
+     */
+    internal fun selectSingleUrlManifest(bestManifest: ManifestCandidate?): String? =
+        bestManifest?.manifestUrl?.takeIf { it.isNotBlank() }
 
     private suspend fun fetchPlayerResponse(
         apiKey: String,

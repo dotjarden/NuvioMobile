@@ -191,15 +191,7 @@ final class StreamsViewModel: ObservableObject {
         let debridEnabled = debridResolveEnabled
 
         groups = state.groups.compactMap { group in
-            // Widen through an explicit String? — Kotlin's nullable String surfaces here as a
-            // non-optional Swift String, so direct optional-chaining/binding won't compile.
-            let playable = group.streams.filter { stream in
-                let direct: String? = stream.playableDirectUrl
-                if !(direct ?? "").isEmpty { return true }
-                // Torrent / clientResolve results from installed addons resolve at click time
-                // through the in-app debrid connection (DirectDebridPlaybackResolver).
-                return debridEnabled && stream.isAddonDebridCandidate
-            }
+            let playable = group.streams.filter { Self.isListable(stream: $0, debridEnabled: debridEnabled) }
             guard !playable.isEmpty else { return nil }
             return Group(id: group.addonId, addonName: group.addonName, streams: playable, isLoading: group.isLoading)
         }
@@ -236,6 +228,24 @@ final class StreamsViewModel: ObservableObject {
             hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
         )
         if feed != autoPlayFeed { autoPlayFeed = feed }
+    }
+
+    /// Whether the picker lists `stream` at all: it has a direct link, it is a torrent /
+    /// clientResolve result from an installed add-on that the in-app debrid connection resolves at
+    /// click time (`DirectDebridPlaybackResolver`), or (batch D U2, upstream 94976222) its only
+    /// playable field is a YouTube video id, which `StreamPickerView` resolves on the device when
+    /// the row is picked. Note the first-play auto-start never sees a ytId-only stream: the shared
+    /// `autoPlayCandidates` selector and `FirstPlayAutoPlayController` walk only direct links and
+    /// debrid candidates, which excludes it on purpose (the resolve costs seconds and its link
+    /// expires within hours).
+    static func isListable(stream: StreamItem, debridEnabled: Bool) -> Bool {
+        // Widen through an explicit String? — Kotlin's nullable String surfaces here as a
+        // non-optional Swift String, so direct optional-chaining/binding won't compile.
+        let direct: String? = stream.playableDirectUrl
+        if !(direct ?? "").isEmpty { return true }
+        if debridEnabled && stream.isAddonDebridCandidate { return true }
+        let youTubeId: String? = stream.youTubeIdToResolve
+        return !(youTubeId ?? "").isEmpty
     }
 
     /// Builds the reason/hint pair for the "shared found streams, but our playability filter

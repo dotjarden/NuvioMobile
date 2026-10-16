@@ -52,12 +52,17 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var effectiveSortOption: LibrarySortOption = .addedDesc
     /// Sort options valid for the active source (DEFAULT = the provider's order, remote only).
     @Published private(set) var availableSortOptions: [LibrarySortOption] = []
+    /// The shared state's `isLoading` (a provider pull in flight, incl. the Refresh pill's and
+    /// Retry's user-initiated one), for the spinner beside the Refresh pill.
+    @Published private(set) var isLoading = false
     /// Set while the remove confirmation is up.
     @Published private(set) var pendingRemoval: LibraryPendingRemoval?
     /// A failed remove's message, shown in an alert (the shared toast is a no-op on tvOS).
     @Published var actionError: String?
 
     var providerName: String? { LibraryGridPolicy.providerName(sourceModeName: sourceModeName) }
+    /// Batch D review r2 P2: the Refresh pill shows for provider libraries only.
+    var showsProviderControls: Bool { LibraryGridPolicy.showsProviderControls(sourceModeName: sourceModeName) }
 
     /// The chosen list's title ("Watchlist", "Plan to Watch", …), for the pill and the hold menu.
     var selectedSectionTitle: String? {
@@ -79,6 +84,25 @@ final class LibraryViewModel: ObservableObject {
     private var watchedByEntryID: [String: Bool] = [:]
     private var watchers: [FlowWatcher] = []
     private var republishScheduled = false
+
+    /// Which provider order `providerOrderWatcher` is collecting: one list of one source under
+    /// one effective sort (review r1 P2). Nil for the local library, which has no provider order.
+    private struct ProviderOrderKey: Equatable {
+        let sourceModeName: String
+        let listKey: String
+        let sortOptionName: String
+    }
+    private var providerOrderWatcher: FlowWatcher?
+    private var providerOrderKey: ProviderOrderKey?
+    /// The latest `LibraryProviderOrderResult` for `providerOrderKey`: the provider's rank per
+    /// item key (nil while unknown, or when the sort has no provider order), and whether the
+    /// provider's sorter failed.
+    private var providerOrderRanks: [String: Int]?
+    /// The key `providerOrderRanks` were computed for, so a re-subscription for the same key (a
+    /// Refresh / Retry) keeps the grid's order instead of blinking to the fallback while the
+    /// provider's sorter re-emits.
+    private var providerOrderRanksKey: ProviderOrderKey?
+    private var providerOrderFailed = false
 
     func start() {
         guard watchers.isEmpty else { return }
@@ -118,6 +142,12 @@ final class LibraryViewModel: ObservableObject {
     func stop() {
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
+        providerOrderWatcher?.cancel()
+        providerOrderWatcher = nil
+        providerOrderKey = nil
+        providerOrderRanks = nil
+        providerOrderRanksKey = nil
+        providerOrderFailed = false
     }
 
     // MARK: - Viewer actions
@@ -154,7 +184,28 @@ final class LibraryViewModel: ObservableObject {
 
     /// Retry after a failed load (the same pull mobile's Retry runs). Failure-contained in Kotlin.
     func retry() {
+        resetProviderOrderSubscription()
         LibraryRepository.shared.retryLoadAsync()
+    }
+
+    /// The Refresh pill (batch D review r2 P2): the one user-initiated pull a provider library
+    /// has outside the failed state. `retryLoadAsync` runs the USER_INITIATED pull, which for
+    /// MDBList re-downloads the lists (a list re-sorted on mdblist.com keeps its `updatedAt`, so
+    /// nothing else would notice). Ignored while a pull is already in flight.
+    func refresh() {
+        guard !isLoading else { return }
+        retry()
+    }
+
+    /// Review r2 P3-4: a provider-order watcher that failed (or went stale) would stay failed for
+    /// as long as its (source, list, sort) key stood, because `observeProviderOrder` only
+    /// re-subscribes on a key change. Forgetting the key makes the next republish (the pull's own
+    /// state emission) subscribe again; the ranks stay for the grid until the sorter re-emits.
+    private func resetProviderOrderSubscription() {
+        providerOrderWatcher?.cancel()
+        providerOrderWatcher = nil
+        providerOrderKey = nil
+        providerOrderFailed = false
     }
 
     /// The hold menu's remove. With a provider list open it removes the title from THAT list
@@ -241,21 +292,41 @@ final class LibraryViewModel: ObservableObject {
         }
         update(\.sourceModeName, modeName)
         update(\.availableSortOptions, LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: state.sourceMode))
-        update(\.effectiveSortOption, LibraryDisplaySettingsKt.effectiveLibrarySortOption(
+        let effective = LibraryDisplaySettingsKt.effectiveLibrarySortOption(
             selected: sortOption,
             sourceMode: state.sourceMode
-        ))
+        )
+        update(\.effectiveSortOption, effective)
 
-        // providerOrders stays empty, as on mobile's grid: the per-list added-order caches have no
-        // public shared accessor. MDBList's DEFAULT order (newest added, then the chosen list's
-        // rank) comes from `listKey`, which the projection sets to the chosen list.
+        // Provider orders (batch D review r1 P2, mobile's `rememberLibraryProviderOrders`): for a
+        // provider library, the chosen list's order under the effective sort comes from the
+        // provider's own sorter — MDBList's added / release orders are its server's, not derivable
+        // from `savedAtEpochMs` (U1). The shared `observeProviderOrder` emits (nil, false) once for
+        // a sort with no provider order (DEFAULT, whose "List Order" is the list rank the
+        // projection reads off `listKey`; TITLE_*), so those cost nothing. One watcher at a time,
+        // re-created when the (source, list, effective sort) triple changes. On a failed sorter
+        // the projection falls back to DEFAULT, as mobile's grid does; the pill keeps showing the
+        // selected sort (`effectiveSortOption` is untouched).
+        let orderListKey: String? = LibraryGridPolicy.providerName(sourceModeName: modeName) == nil
+            ? nil
+            : (state.sections.first { $0.type == requestedSectionKey } ?? state.sections.first)?.type
+        observeProviderOrder(
+            key: orderListKey.map { ProviderOrderKey(sourceModeName: modeName, listKey: $0, sortOptionName: effective.name) },
+            sortOption: effective
+        )
+        let providerOrders: [String: [String: KotlinInt]]
+        if let orderListKey, let ranks = providerOrderRanks {
+            providerOrders = [orderListKey: ranks.mapValues { KotlinInt(int: Int32($0)) }]
+        } else {
+            providerOrders = [:]
+        }
         let projection = LibraryDisplaySettingsKt.buildLibraryVerticalProjection(
             sections: state.sections,
             sourceMode: state.sourceMode,
             selectedSectionKey: requestedSectionKey,
             selectedType: requestedType,
-            sortOption: sortOption,
-            providerOrders: [:]
+            sortOption: providerOrderFailed ? LibrarySortOption.default_ : sortOption,
+            providerOrders: providerOrders
         )
         update(\.sections, projection.availableSections)
         update(\.selectedSectionKey, projection.selectedSectionKey)
@@ -284,6 +355,7 @@ final class LibraryViewModel: ObservableObject {
             : all.filter { LibraryGridPolicy.passes($0.state, filters: activeSmartFilters) }
         update(\.entries, shown)
         update(\.countLine, LibraryGridPolicy.countLine(kinds: shown.map(\.kind)))
+        update(\.isLoading, state.isLoading)
         update(\.content, LibraryGridPolicy.content(
             isLoaded: state.isLoaded,
             isLoading: state.isLoading,
@@ -292,6 +364,31 @@ final class LibraryViewModel: ObservableObject {
             visibleCount: shown.count,
             smartFiltersActive: !activeSmartFilters.isEmpty
         ))
+    }
+
+    /// Keeps exactly one provider-order watcher, for `key`; a nil key (local library) stops any.
+    /// The watcher's emissions only store the result and schedule a republish, which reads it.
+    private func observeProviderOrder(key: ProviderOrderKey?, sortOption: LibrarySortOption) {
+        guard key != providerOrderKey else { return }
+        providerOrderWatcher?.cancel()
+        providerOrderWatcher = nil
+        providerOrderKey = key
+        if key != providerOrderRanksKey {
+            providerOrderRanks = nil
+            providerOrderRanksKey = nil
+        }
+        providerOrderFailed = false
+        guard let key else { return }
+        let flow = LibraryRepository.shared.observeProviderOrder(listKey: key.listKey, sortOption: sortOption)
+        providerOrderWatcher = FlowWatcherKt.watchFlow(flow) { [weak self] emitted in
+            guard let self, self.providerOrderKey == key,
+                  let result = emitted as? LibraryProviderOrderResult else { return }
+            let ranks: [String: KotlinInt]? = result.ranks
+            self.providerOrderRanks = ranks?.mapValues { $0.intValue }
+            self.providerOrderRanksKey = key
+            self.providerOrderFailed = result.failed
+            self.scheduleRepublish()
+        }
     }
 
     /// Writes a published value only when it changed, so a sync or progress tick that changes
@@ -339,5 +436,6 @@ final class LibraryViewModel: ObservableObject {
 
     deinit {
         watchers.forEach { $0.cancel() }
+        providerOrderWatcher?.cancel()
     }
 }

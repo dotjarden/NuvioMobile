@@ -514,6 +514,10 @@ extension FirstPlayAutoPlayController.Dependencies {
                 guard stream.isAddonDebridCandidate else { return }
                 DirectDebridPlaybackResolver.shared.invalidate(stream: stream, season: kotlinSeason, episode: kotlinEpisode)
             },
+            // Batch D U2: a ytId-only stream (`youTubeIdToResolve`) has neither a direct URL nor a
+            // debrid resolve, so the walk skips it by construction — on purpose: auto-play never
+            // spends seconds extracting a YouTube link that expires within hours. The shared
+            // `autoPlayCandidates` selector excludes it the same way; only a viewer's pick resolves it.
             directURL: { stream in
                 let direct: String? = stream.playableDirectUrl
                 guard let direct, !direct.isEmpty else { return nil }

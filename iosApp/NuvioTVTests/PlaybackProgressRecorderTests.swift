@@ -32,6 +32,35 @@ final class PlaybackProgressRecorderTests: XCTestCase {
         )
     }
 
+    // MARK: Progress session (batch D U2)
+
+    private func context(sessionOnly: Bool) -> PlaybackContext {
+        var context = PlaybackContext(
+            url: URL(string: "https://rr3---sn-example.googlevideo.com/videoplayback?id=o-abc")!, title: "Movie",
+            contentType: "movie", parentMetaId: "tt1", videoId: "tt1", season: nil, episode: nil,
+            poster: nil, background: nil, providerName: "Add-on", providerAddonId: "addon:x",
+            streamTitle: "Trailer 1080p", streamSubtitle: nil, externalSubtitles: []
+        )
+        context.sessionOnlySourceUrl = sessionOnly
+        return context
+    }
+
+    func testSessionOnlyContextWritesNoLastSourceUrl() {
+        // A link resolved from a ytId expires within hours: the progress entry (and so the
+        // "reuse last link" readers) must never learn it, while every other field still lands.
+        let session = PlaybackProgressRecorder.playbackSession(for: context(sessionOnly: true))
+        let lastSourceUrl: String? = session.lastSourceUrl
+        XCTAssertNil(lastSourceUrl)
+        XCTAssertEqual(session.videoId, "tt1")
+        XCTAssertEqual(session.providerAddonId, "addon:x")
+        XCTAssertEqual(session.lastStreamTitle, "Trailer 1080p")
+
+        let persisted = PlaybackProgressRecorder.playbackSession(for: context(sessionOnly: false))
+        let persistedUrl: String? = persisted.lastSourceUrl
+        XCTAssertEqual(persistedUrl, "https://rr3---sn-example.googlevideo.com/videoplayback?id=o-abc",
+                       "an ordinary link is stored as the entry's last source")
+    }
+
     // MARK: Resume position
 
     func testSavedPositionResumesWithoutStartOver() {

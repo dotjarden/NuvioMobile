@@ -37,6 +37,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
@@ -223,7 +224,16 @@ object LibraryRepository {
         ) != null
     }
 
-    suspend fun pullFromServer(profileId: Int) {
+    /**
+     * Upstream c1022e2eb: a pull is AUTOMATIC unless the user asked for it. `SyncManager`'s
+     * foreground / periodic / profile-entry pulls stay on the default, so a provider that treats
+     * USER_INITIATED as "download every list again" (MDBList, `MdbListLibraryService.refresh`)
+     * only does so from the Library screen's own Retry ([retryLoadAsync]).
+     */
+    suspend fun pullFromServer(
+        profileId: Int,
+        refreshIntent: TrackingRefreshIntent = TrackingRefreshIntent.AUTOMATIC,
+    ) {
         val operationToken = activeOperationToken(profileId) ?: run {
             log.d { "Skipping library pull for inactive profile $profileId" }
             return
@@ -233,7 +243,7 @@ object LibraryRepository {
             refreshLibraryProvider(
                 provider = provider,
                 reason = "explicit pull",
-                intent = TrackingRefreshIntent.USER_INITIATED,
+                intent = refreshIntent,
             )
             if (!isActiveOperation(operationToken)) return
             publish()
@@ -611,7 +621,7 @@ object LibraryRepository {
         val profileId = ProfileRepository.activeProfileId
         syncScope.launch {
             try {
-                pullFromServer(profileId)
+                pullFromServer(profileId, refreshIntent = TrackingRefreshIntent.USER_INITIATED)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -794,6 +804,22 @@ object LibraryRepository {
         sourceMode: LibrarySourceMode = effectiveLibrarySourceMode(),
     ): TrackingLibraryProvider? =
         sourceMode.providerId?.let(TrackingProviderRegistry::libraryProvider)
+
+    /**
+     * Fork (tvOS Library, batch D review r1 F2): the provider order of one list under [sortOption],
+     * the `providerOrders[listKey]` input of `buildLibraryVerticalProjection`. Mobile's grid
+     * collects `observeLibraryProviderOrders` directly; Swift cannot, so this wraps it for the
+     * active source's sorter (the provider [publish] projects). Emits once with null ranks when
+     * the sort has no provider order (DEFAULT / TITLE_*) or the source has no sorter; `failed`
+     * is set when the sorter's flow threw. A plain `Flow`, watched from Swift with `watchFlow`
+     * (the bridge collects on `Dispatchers.Main`).
+     */
+    fun observeProviderOrder(listKey: String, sortOption: LibrarySortOption): Flow<LibraryProviderOrderResult> =
+        observeLibraryProviderOrders(
+            sorter = effectiveLibrarySourceMode().librarySorter(),
+            listKeys = listOf(listKey),
+            sortOption = sortOption,
+        ).map { orders -> orders.forList(listKey) }.distinctUntilChanged()
 }
 
 internal const val LOCAL_LIBRARY_LIST_KEY = "local"

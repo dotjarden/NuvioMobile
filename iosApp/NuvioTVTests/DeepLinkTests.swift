@@ -95,6 +95,55 @@ final class DeepLinkTests: XCTestCase {
         XCTAssertNil(ExternalPlaybackReturnRouter.outcome(of: url("\(installScheme)://external-player/success")))
     }
 
+    // MARK: - FEAT-56 (SenPlayer): return session + probe redaction
+
+    func testInfuseAndSenPlayerReportTheirStopPositionBack() {
+        // Both get `ExternalPlaybackReturn` sessions and x-success / x-error callback URLs from the
+        // picker; every other player gets none (`openExternally`).
+        XCTAssertEqual(StreamPickerView.returnReportingPlayerIds, ["infuse", "senplayer"])
+    }
+
+    private func redactedValue(_ name: String, in printed: String) -> Bool {
+        printed.contains("\(name)=%3Credacted%3E") || printed.contains("\(name)=<redacted>")
+    }
+
+    func testProbeRedactsTheLastPlayedUrlAndKeepsThePosition() {
+        let callback = url("\(installScheme)://external-player/senplayer/SESSION/success?lastPlayedUrl=https%3A%2F%2Fcdn.example.com%2Frealdebrid%2FSECRET%2Ffile.mkv&position=42.5")
+        let printed = ExternalPlaybackReturnRouter.redactedForProbe(callback)
+        XCTAssertFalse(printed.contains("SECRET"))
+        XCTAssertFalse(printed.contains("cdn.example.com"))
+        XCTAssertTrue(redactedValue("lastPlayedUrl", in: printed), printed)
+        XCTAssertTrue(printed.contains("position=42.5"), "the parameter the device test is looking for stays readable")
+        XCTAssertTrue(printed.hasPrefix("\(installScheme)://external-player/senplayer/SESSION/success?"))
+    }
+
+    func testProbeRedactsEveryValueOutsideTheAllowlist() {
+        // Review r1: an allowlist, not a denylist — a player may echo the link under any name
+        // (`url`, `playUrl`, …), and every such value carries the debrid token. The NAMES stay
+        // visible: learning which names SenPlayer sends is what the probe is for.
+        let callback = url("\(installScheme)://external-player/senplayer/SESSION/success?url=https%3A%2F%2Fcdn.example.com%2Frealdebrid%2FSECRET%2Ffile.mkv&playUrl=https%3A%2F%2Fcdn.example.com%2FSECRET2&position=42.5&duration=5400&currentTime=7")
+        let printed = ExternalPlaybackReturnRouter.redactedForProbe(callback)
+        XCTAssertFalse(printed.contains("SECRET"))
+        XCTAssertFalse(printed.contains("cdn.example.com"))
+        XCTAssertTrue(redactedValue("url", in: printed), printed)
+        XCTAssertTrue(redactedValue("playUrl", in: printed), printed)
+        XCTAssertTrue(redactedValue("currentTime", in: printed), "an unknown numeric name is still redacted; the name shows: \(printed)")
+        XCTAssertTrue(printed.contains("position=42.5"))
+        XCTAssertTrue(printed.contains("duration=5400"))
+    }
+
+    func testProbeAllowlistIsCaseInsensitiveAndErrorFieldsStayReadable() {
+        let callback = url("\(installScheme)://external-player/senplayer/SESSION/error?LASTPLAYEDURL=x&POSITION=3&errorCode=12&errorMessage=Not%20found&x-source=nuviotv")
+        let printed = ExternalPlaybackReturnRouter.redactedForProbe(callback)
+        XCTAssertFalse(printed.contains("LASTPLAYEDURL=x"))
+        XCTAssertTrue(printed.contains("POSITION=3"))
+        XCTAssertTrue(printed.contains("errorCode=12"))
+        XCTAssertTrue(printed.contains("errorMessage=Not%20found"))
+        XCTAssertTrue(printed.contains("x-source=nuviotv"))
+        XCTAssertEqual(ExternalPlaybackReturnRouter.redactedForProbe(url("\(installScheme)://external-player/senplayer/SESSION/error")),
+                       "\(installScheme)://external-player/senplayer/SESSION/error")
+    }
+
     // MARK: - DeepLink.parse
 
     func testParseStillReadsTopShelfTitleLinks() {

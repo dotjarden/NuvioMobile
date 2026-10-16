@@ -81,7 +81,10 @@ object ExternalPlaybackReturn {
      * scheme (compared case-insensitively) or host, a different player or session id, a
      * `lastPlayedUrl` that is not the launched source (compared leniently, see
      * [sameSourceUrl]), or a missing/invalid `position` (finite, non-negative seconds; a
-     * fraction such as `1234.5` is fine).
+     * fraction such as `1234.5` is fine). `lastPlayedUrl` is Infuse's echo of the launched
+     * source and is required for Infuse; for any other player (SenPlayer) a success without it
+     * is accepted, since the session and player id in the path already tie the callback to its
+     * launch (review r1 F9).
      */
     fun handleUrl(url: String, scheme: String): Boolean = handler.handleUrl(url, scheme)
 }
@@ -180,7 +183,7 @@ internal class ExternalPlaybackReturnHandler(
                 ?.takeIf { session ->
                     session.id == sessionId &&
                         session.playerId.equals(playerId, ignoreCase = true) &&
-                        (positionSec == null || sameSourceUrl(lastPlayedUrl, session.sourceUrl))
+                        (positionSec == null || acceptsReturnedSource(session, lastPlayedUrl))
                 }
                 ?.let { session ->
                     clear()
@@ -189,12 +192,29 @@ internal class ExternalPlaybackReturnHandler(
         }
     }
 
+    /**
+     * Review r1 F9: Infuse echoes the launched source as `lastPlayedUrl`, and a success whose echo
+     * is another video is a playlist advance, not this launch; that guard is byte-for-byte the
+     * old rule. Other players (SenPlayer's `x-success`) return `position` without a
+     * `lastPlayedUrl`, which used to be logged "ignored" with nothing recorded: an absent echo is
+     * accepted for every player but Infuse, a present one must still match.
+     */
+    private fun acceptsReturnedSource(session: ExternalPlaybackSession, lastPlayedUrl: String?): Boolean =
+        if (lastPlayedUrl != null) {
+            sameSourceUrl(lastPlayedUrl, session.sourceUrl)
+        } else {
+            !session.playerId.equals(INFUSE_PLAYER_ID, ignoreCase = true)
+        }
+
     private fun storedSessionLocked(): ExternalPlaybackSession? = load()?.let { payload ->
         runCatching { json.decodeFromString<ExternalPlaybackSession>(payload) }.getOrNull()
     }
 
     private companion object {
         val log = Logger.withTag("ExternalPlaybackReturn")
+
+        /** The one player whose success must echo the launched source (see [acceptsReturnedSource]). */
+        const val INFUSE_PLAYER_ID = "infuse"
 
         /** Upper bound for a returned position: `seconds * 1000` must still fit a `Long`. */
         val MAX_POSITION_SECONDS: Double = (Long.MAX_VALUE / 1000L).toDouble()

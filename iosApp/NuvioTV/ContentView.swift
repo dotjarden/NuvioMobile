@@ -206,7 +206,7 @@ struct ContentView: View {
             // error and returns false; a declared scheme with no installed handler returns
             // false silently — so this output distinguishes plist problems from the target
             // player simply not registering its URL scheme on tvOS.
-            for scheme in ["infuse", "vlc-x-callback", "outplayer", "open-vidhub", "vidhub"] {
+            for scheme in ["infuse", "vlc-x-callback", "outplayer", "open-vidhub", "vidhub", "senplayer"] {
                 if let url = URL(string: "\(scheme)://") {
                     print("[ExtPlayerProbe] canOpenURL(\(scheme)://) = \(UIApplication.shared.canOpenURL(url))")
                 }
@@ -345,6 +345,12 @@ struct ContentView: View {
         // cover. Before the profile gate it waits for `entered` (the position write and the sync
         // that follows want a restored session), then replays through the same router.
         if ExternalPlaybackReturnRouter.isCallback(url) {
+            // FEAT-56 device diagnostic, behind the same knob the shared player probe reads: which
+            // query parameters the returning player sends (SenPlayer's position parameter name is
+            // unverified). `lastPlayedUrl` is redacted — it can carry a debrid token.
+            if UserDefaults.standard.bool(forKey: "debug.extPlayerProbe") {
+                print("[ExtPlayerProbe] return url=\(ExternalPlaybackReturnRouter.redactedForProbe(url))")
+            }
             if auth.gate == .main, entered {
                 ExternalPlaybackReturnRouter.handle(url)
             } else {

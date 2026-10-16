@@ -172,8 +172,8 @@ struct PlayerSourcesColumn: View {
     }
 
     private func sourceRow(_ stream: StreamItem) -> some View {
-        let urlString: String? = stream.playableDirectUrl
-        let isCurrent = urlString == engine.currentUrlString
+        // Review r1: by listed-stream key (a ytId or debrid source never matches by URL).
+        let isCurrent = engine.isCurrentSource(stream)
         return Button {
             guard !isCurrent else { return }
             if engine.playSource(stream) { onClose() }
@@ -185,6 +185,11 @@ struct PlayerSourcesColumn: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(stream.streamLabel).font(Theme.Font.body).lineLimit(1)
                     Text(stream.addonName).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1)
+                    // Batch D U2: the add-on gave only a YouTube video id — the switch resolves it
+                    // on the device first, so say where the video comes from (the picker's caption).
+                    if StreamPickerView.isYouTubeResolved(stream) {
+                        Text(verbatim: "YouTube").font(Theme.Font.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
                 if isCurrent {

@@ -264,6 +264,40 @@ class InfusePlaybackTest {
     }
 
     @Test
+    fun senPlayerSuccessWithPositionAndNoLastPlayedUrlIsClaimedAndRecorded() {
+        // Review r1 F9: SenPlayer's x-success is expected to carry `position` alone (the
+        // parameter name is unverified until the device probe); the session + player id in the
+        // path tie the callback to its launch, so no `lastPlayedUrl` echo is required of it.
+        val callbacks = handler()
+        val session = callbacks.launch(playerId = "senplayer")
+        val (success, _) = ExternalPlaybackCallbacks.build("nuvio", session.playerId, session.id)
+        assertTrue(callbacks.handleUrl("$success?position=1800", "nuvio"))
+        val (recordedSession, positionSec) = recorded.single()
+        assertEquals(session.id, recordedSession.id)
+        assertEquals("senplayer", recordedSession.playerId)
+        assertEquals(1800.0, positionSec)
+        assertNull(stored)
+
+        // A present echo must still match, whatever the player.
+        val next = callbacks.launch(playerId = "senplayer")
+        assertFalse(callbacks.handleUrl(successUrl(next, "1200", "https://example.com/other.mkv"), "nuvio"))
+        assertNotNull(callbacks.pendingSession())
+        assertTrue(callbacks.handleUrl(successUrl(next, "1200"), "nuvio"))
+        assertEquals(1200.0, recorded.last().second)
+    }
+
+    @Test
+    fun infuseSuccessWithPositionAndNoLastPlayedUrlIsStillIgnored() {
+        val callbacks = handler()
+        val session = callbacks.launch()
+        val (success, _) = ExternalPlaybackCallbacks.build("nuvio", session.playerId, session.id)
+        assertFalse(callbacks.handleUrl("$success?position=1800", "nuvio"))
+        assertFalse(callbacks.handleUrl("$success?position=1800&lastPlayedUrl=", "nuvio"))
+        assertTrue(recorded.isEmpty())
+        assertNotNull(callbacks.pendingSession())
+    }
+
+    @Test
     fun errorDoesNotProducePlaybackProgress() {
         val callbacks = handler()
         val session = callbacks.launch()

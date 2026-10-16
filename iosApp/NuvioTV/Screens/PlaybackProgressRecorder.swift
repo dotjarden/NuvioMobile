@@ -85,7 +85,7 @@ final class PlaybackProgressRecorder {
             lastStreamTitle: context.streamTitle,
             lastStreamSubtitle: context.streamSubtitle,
             pauseDescription: nil,
-            lastSourceUrl: context.url.absoluteString
+            lastSourceUrl: context.persistedSourceUrl
         )
     }
 
