@@ -26,6 +26,10 @@ final class NextEpisodeEngineTests: XCTestCase {
     private final class Recorder {
         var calls: [LoadCall] = []
         var searchBegan = 0
+        var clears = 0
+        var watches = 0
+        /// Every callback handed to `Hooks.watchStreams`, in order (the seam returns no watcher).
+        var callbacks: [(StreamsUiState) -> Void] = []
     }
 
     private func makeContext() -> PlaybackContext {
@@ -60,7 +64,13 @@ final class NextEpisodeEngineTests: XCTestCase {
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
-        }, searchBegan: { recorder.searchBegan += 1 })
+        }, searchBegan: { recorder.searchBegan += 1 },
+        clearStreams: { recorder.clears += 1 },
+        watchStreams: { callback in
+            recorder.watches += 1
+            recorder.callbacks.append(callback)
+            return nil
+        })
         let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { _ in }, hooks: hooks)
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
@@ -260,5 +270,103 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertFalse(rearm(2400, dismissed: true, rearmed: true))
         // No duration yet.
         XCTAssertFalse(rearm(0, dismissed: true, rearmed: false, duration: 0))
+    }
+
+    // MARK: - BUG-129: the Sources tab vs the up-next search
+
+    private func nonEmptyState() -> StreamsUiState {
+        let group = AddonStreamGroup(addonName: "Addon", addonId: "addon", streams: [], isLoading: false, error: nil)
+        return StreamsUiState(
+            requestToken: "t", groups: [group], activeAddonIds: [], installedAddonIds: ["addon"],
+            selectedFilter: nil, isAnyLoading: false, emptyStateReason: nil, autoPlayStream: nil,
+            autoPlayCandidates: [], isDirectAutoPlayFlow: false, showDirectAutoPlayOverlay: false,
+            overlayMessage: nil
+        )
+    }
+
+    /// (1) Busy guard: the list never clears or subscribes while a search owns the flow.
+    func testSourcesDeferredWhileSearching() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.forceSearchingForTesting()
+        let watchesBefore = recorder.watches
+
+        engine.loadSources()
+
+        XCTAssertTrue(engine.sourcesBlockedBySearch)
+        XCTAssertFalse(engine.sourcesBlockedByJump)
+        XCTAssertFalse(engine.sourcesLoading)
+        XCTAssertEqual(recorder.clears, 0, "the list cleared the search's results")
+        XCTAssertEqual(recorder.watches, watchesBefore, "the list subscribed during the search")
+        XCTAssertTrue(recorder.calls.isEmpty, "the list issued a load during the search")
+    }
+
+    /// (2) Generation guard: an emission from a torn-down search is dropped.
+    func testLateEmissionAfterTearDownIsDropped() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.forceSearchingForTesting()
+        let staleCallback = recorder.callbacks.last!
+
+        engine.cancel()                         // tearDownSearch
+        XCTAssertEqual(engine.phase, .hidden)
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+
+        staleCallback(nonEmptyState())
+        XCTAssertEqual(engine.searchEmissionsAccepted, 0, "a torn-down search consumed an emission")
+        XCTAssertEqual(engine.phase, .hidden)
+
+        // Control: the live search's own emission is accepted.
+        engine.forceSearchingForTesting()
+        recorder.callbacks.last!(nonEmptyState())
+        XCTAssertEqual(engine.searchEmissionsAccepted, 1)
+    }
+
+    /// (2b) A source list opened after a search ended drops that search's late emissions too.
+    func testSearchEmissionAfterSourceListIsDropped() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.forceSearchingForTesting()
+        let staleCallback = recorder.callbacks.last!
+        engine.cancel()
+        engine.loadSources()
+        staleCallback(nonEmptyState())
+        XCTAssertEqual(engine.searchEmissionsAccepted, 0)
+    }
+
+    /// (3) Without a search the list clears once, subscribes and loads the current video.
+    func testSourcesLoadWithoutSearch() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+
+        engine.loadSources()
+
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesLoading)
+        XCTAssertEqual(recorder.clears, 1)
+        XCTAssertEqual(recorder.watches, 1)
+        XCTAssertEqual(recorder.calls, [LoadCall(type: "series", videoId: "tt1:1:1", season: 1, episode: 1)])
+    }
+
+    /// (4) Closing the native panel's source list re-arms the FEAT-49 preload it clobbered; the
+    /// re-issue happens on the next tick past the lead.
+    func testNativePanelCloseReissuesPreloadOnNextTick() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99, preload: true), recorder: recorder)
+        let next = LoadCall(type: "series", videoId: "tt1:1:2", season: 1, episode: 2)
+
+        engine.onProgress(positionSec: 2346, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls.filter { $0 == next }.count, 1)
+
+        engine.loadSources()                    // the list clears the preload's results
+        engine.onProgress(positionSec: 2348, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls.filter { $0 == next }.count, 1, "preload re-issued while the list owns the flow")
+
+        engine.noteSourceListClosed()
+        XCTAssertEqual(recorder.calls.filter { $0 == next }.count, 1, "closing only invalidates")
+
+        engine.onProgress(positionSec: 2350, durationSec: Self.duration)
+        XCTAssertEqual(recorder.calls.filter { $0 == next }.count, 2, "the next tick must re-issue the preload")
+        XCTAssertEqual(engine.phase, .hidden)
     }
 }

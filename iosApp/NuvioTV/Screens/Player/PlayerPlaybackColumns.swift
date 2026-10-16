@@ -137,7 +137,16 @@ struct PlayerSourcesColumn: View {
             }
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    if engine.sources.isEmpty && !engine.sourcesLoading {
+                    if engine.sourcesBlockedBySearch {
+                        // BUG-129: an up-next search (or an episode jump) owns the shared streams
+                        // flow; the list is not loaded until it ends. Re-open the tab to load it.
+                        Text(engine.sourcesBlockedByJump
+                             ? String(localized: "Finding the episode's source…")
+                             : String(localized: "Finding the next episode's source…"))
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .accessibilityIdentifier("player.panel.sources.busy")
+                    } else if engine.sources.isEmpty && !engine.sourcesLoading {
                         Text("No alternate sources found yet.")
                             .font(Theme.Font.body)
                             .foregroundStyle(Theme.Palette.textSecondary)

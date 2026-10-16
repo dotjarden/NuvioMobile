@@ -41,7 +41,24 @@ final class NextEpisodeEngine: ObservableObject {
     /// Alternate streams for the CURRENTLY-playing video (in-player source switching).
     @Published private(set) var sources: [StreamItem] = []
     @Published private(set) var sourcesLoading = false
+    /// BUG-129: the Sources column was opened while an up-next search (or an episode jump's
+    /// search) owns the shared `episodeStreamsState` flow. The list is not loaded; the column shows
+    /// a busy line instead, and the viewer re-opens the tab once the search has finished.
+    @Published private(set) var sourcesBlockedBySearch = false
+    /// The search that blocked the list is a manual episode jump (its busy copy differs).
+    @Published private(set) var sourcesBlockedByJump = false
     private var sourcesWatcher: FlowWatcher?
+    /// The in-player source list owns the shared streams flow (set by `loadSources`, cleared by
+    /// `cancelSourceLoad`/`stop`). Kept beside the watcher because the test seam's watcher is nil.
+    private var sourceListOwnsFlow = false
+    /// BUG-129: identity of the current up-next search watcher. `beginSearch()` bumps it before
+    /// installing the watcher; `tearDownSearch()` and `cancelSourceLoad()` bump it too, so an
+    /// emission that belongs to a torn-down search (or to the source list that replaced it) is dropped.
+    private var searchGeneration = 0
+    #if DEBUG
+    /// Tests only: search emissions that passed the generation guard.
+    private(set) var searchEmissionsAccepted = 0
+    #endif
     /// Identity of the current `loadSources()` request. `episodeStreamsState` is a shared StateFlow
     /// that replays its last value on subscribe — without this, a new subscription can adopt the
     /// previous episode's (or the autoplay search's) streams as if they were ours (ME-005).
@@ -55,6 +72,15 @@ final class NextEpisodeEngine: ObservableObject {
         /// Invoked first thing in `beginSearch()`, before the `settings` guard, so tests can see
         /// that a search was attempted. No-op in `.live`.
         var searchBegan: () -> Void = {}
+        /// BUG-129 seams: the shared flow's reset and its subscription, used by `loadSources`,
+        /// `beginSearch` and `tearDownSearch`. Tests replace them with spies (a nil watcher).
+        var clearStreams: () -> Void = { PlayerStreamsRepository.shared.clearEpisodeStreams() }
+        var watchStreams: (@escaping (StreamsUiState) -> Void) -> FlowWatcher? = { callback in
+            FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { emitted in
+                guard let state = emitted as? StreamsUiState else { return }
+                callback(state)
+            }
+        }
 
         /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
         nonisolated static var live: Hooks {
@@ -175,7 +201,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// Only with the preload toggle on: with it off nothing waits on `sourcesWatcher`, and the
     /// list keeps today's behaviour (its watcher lives until the next `loadSources`/search).
     private func sourceListClosed() {
-        guard trigger?.preloadEnabled == true, sourcesWatcher != nil else { return }
+        guard trigger?.preloadEnabled == true, sourceListOwnsFlow else { return }
         cancelSourceLoad()
         if preloaded && !triggered {
             preloaded = false
@@ -187,6 +213,10 @@ final class NextEpisodeEngine: ObservableObject {
     /// resolution, without the mpv-specific remote hooks (the countdown still auto-plays via
     /// `onProgress` → `onPlayNext`). See docs/tvos-hybrid-player-plan.md.
     func startNative() { prime() }
+
+    /// The native host's panel closed (P4 §7.2 item 3): the native twin of mpv's `panelOpen`
+    /// sink, so the FEAT-49 layer-2 re-preload works on the native engine too.
+    func noteSourceListClosed() { sourceListClosed() }
 
     private func prime() {
         PlayerSettingsRepository.shared.ensureLoaded()
@@ -225,6 +255,7 @@ final class NextEpisodeEngine: ObservableObject {
         panelWatch = nil
         sourcesWatcher?.cancel()
         sourcesWatcher = nil
+        sourceListOwnsFlow = false
         tearDownSearch()
     }
 
@@ -254,6 +285,20 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Load alternate streams for the video that's playing right now.
     func loadSources() {
+        // BUG-129: the source list and an up-next search share `episodeStreamsState`, and this
+        // list clears it. Opening the list mid-search used to wipe the search's results and feed
+        // the list's emissions to the search as if they were the next episode's. While a search
+        // owns the flow, the list is deferred (the column shows a busy line). Keyed on the phase
+        // OR a live watcher: the test seam's watcher is nil.
+        guard streamsWatcher == nil, phase != .searching else {
+            sourcesBlockedBySearch = true
+            sourcesBlockedByJump = immediatePlay
+            sourcesLoading = false
+            print("[UpNext] source list deferred: up-next search in flight")
+            return
+        }
+        sourcesBlockedBySearch = false
+        sourcesBlockedByJump = false
         guard !sourcesLoading else { return }
         sourcesLoading = true
         sources = []
@@ -262,34 +307,36 @@ final class NextEpisodeEngine: ObservableObject {
         // not a previous request's results; then subscribe *before* triggering the load so no
         // emission is missed. Late emissions from a superseded request are dropped by generation.
         sourcesWatcher?.cancel()
-        PlayerStreamsRepository.shared.clearEpisodeStreams()
+        hooks.clearStreams()
         sourceLoadGeneration += 1
+        searchGeneration += 1        // nothing from an earlier search may land after this point
         let generation = sourceLoadGeneration
+        sourceListOwnsFlow = true
 
         // The first emission may be the cleared-state replay (empty, not loading) — don't let it
         // end the loading phase before the load has actually produced anything.
         var sawActivity = false
-        sourcesWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
-            guard let self, generation == self.sourceLoadGeneration,
-                  let state = emitted as? StreamsUiState else { return }
+        sourcesWatcher = hooks.watchStreams { [weak self] state in
+            guard let self, generation == self.sourceLoadGeneration else { return }
             self.sources = self.allStreams(state.groups)
             if state.isAnyLoading || !state.groups.isEmpty { sawActivity = true }
             if sawActivity, !state.isAnyLoading { self.sourcesLoading = false }
         }
 
-        PlayerStreamsRepository.shared.loadEpisodeStreams(
-            type: context.contentType,
-            videoId: context.videoId,
-            season: context.season.map { KotlinInt(int: Int32($0)) },
-            episode: context.episode.map { KotlinInt(int: Int32($0)) },
-            forceRefresh: false
+        hooks.loadStreams(
+            context.contentType,
+            context.videoId,
+            context.season.map { KotlinInt(int: Int32($0)) },
+            context.episode.map { KotlinInt(int: Int32($0)) }
         )
     }
 
     private func cancelSourceLoad() {
         sourceLoadGeneration += 1
+        searchGeneration += 1
         sourcesWatcher?.cancel()
         sourcesWatcher = nil
+        sourceListOwnsFlow = false
         sources = []
         sourcesLoading = false
     }
@@ -364,15 +411,17 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     private func tearDownSearch() {
+        searchGeneration += 1
         streamsWatcher?.cancel()
         streamsWatcher = nil
+        searchEnded()
         countdownTask?.cancel()
         countdownTask = nil
         timeoutTask?.cancel()
         timeoutTask = nil
         hideTask?.cancel()
         hideTask = nil
-        PlayerStreamsRepository.shared.clearEpisodeStreams()
+        hooks.clearStreams()
         // The repository key was just cleared, so the next search is a fresh fetch, not a replay.
         preloaded = false
     }
@@ -400,7 +449,7 @@ final class NextEpisodeEngine: ObservableObject {
         // before the card would appear, silently: no phase change, no watcher, no timeout, no
         // subtitle prefetch (the subtitle repository is single-slot and would swap the panel's
         // subs early). Never while the in-player source list owns the shared streams flow.
-        if !reachesNow, trigger.preloadEnabled, !preloaded, sourcesWatcher == nil,
+        if !reachesNow, trigger.preloadEnabled, !preloaded, !sourceListOwnsFlow,
            !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) {
             let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)
             if NextEpisodeTriggerPolicy.reachesThreshold(
@@ -552,12 +601,7 @@ final class NextEpisodeEngine: ObservableObject {
         // deduplicates against this one.
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: videoId)
 
-        streamsWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
-            guard let self, let state = emitted as? StreamsUiState else { return }
-            self.latestStreamsState = state
-            print("[UpNext] streams: groups=\(state.groups.count) playable=\(self.allStreams(state.groups).count) loading=\(state.isAnyLoading)")
-            self.handleStreams(state, settings: settings)
-        }
+        installSearchWatcher()
 
         // Bounded auto-select timeout (mobile default 3s, clamped 1–30).
         let timeoutSeconds = min(max(Int(settings.streamAutoPlayTimeoutSeconds), 1), 30)
@@ -582,6 +626,43 @@ final class NextEpisodeEngine: ObservableObject {
             self.attemptSelection(groups: late?.groups ?? [], settings: settings, loadFinished: true)
         }
     }
+
+    /// Subscribes the search to the shared streams flow under a fresh `searchGeneration` (BUG-129):
+    /// the watcher drops every emission once that generation has moved on.
+    private func installSearchWatcher() {
+        searchGeneration += 1
+        let generation = searchGeneration
+        streamsWatcher = hooks.watchStreams { [weak self] state in
+            guard let self, generation == self.searchGeneration else { return }
+            self.handleSearchEmission(state)
+        }
+    }
+
+    private func handleSearchEmission(_ state: StreamsUiState) {
+        #if DEBUG
+        searchEmissionsAccepted += 1
+        #endif
+        latestStreamsState = state
+        print("[UpNext] streams: groups=\(state.groups.count) playable=\(allStreams(state.groups).count) loading=\(state.isAnyLoading)")
+        guard let settings else { return }
+        handleStreams(state, settings: settings)
+    }
+
+    /// The search no longer owns the shared flow: a deferred source list may load again.
+    private func searchEnded() {
+        sourcesBlockedBySearch = false
+        sourcesBlockedByJump = false
+    }
+
+    #if DEBUG
+    /// Tests only (BUG-129): `phase = .searching` plus `beginSearch()`'s watcher wiring, without
+    /// `settings`, the stream load or the subtitle prefetch, so the guards are reachable.
+    func forceSearchingForTesting() {
+        cancelSourceLoad()
+        phase = .searching
+        installSearchWatcher()
+    }
+    #endif
 
     private func handleStreams(_ state: StreamsUiState, settings: PlayerSettingsUiState) {
         guard selectedStream == nil, !cancelled else { return }
@@ -720,6 +801,7 @@ final class NextEpisodeEngine: ObservableObject {
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
+        searchEnded()
 
         // Manual episode jump: play as soon as a stream resolves — no countdown, no
         // Still Watching gate (the jump itself is user interaction).
@@ -753,6 +835,7 @@ final class NextEpisodeEngine: ObservableObject {
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
+        searchEnded()
         phase = .noStream
         hideTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
