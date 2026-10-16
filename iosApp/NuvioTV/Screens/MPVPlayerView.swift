@@ -4057,7 +4057,9 @@ struct MPVPlayerScreen: View {
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .animation(.easeInOut(duration: 0.25), value: state.playbackStarted)
         #if DEBUG
-        .onChange(of: state.startupStage, initial: true) { _, stage in
+        // Every published value (not `onChange`: FILE_LOADED and the first restart often land in
+        // one main-thread turn, and `onChange` would only see `started`).
+        .onReceive(state.$startupStage) { stage in
             PlayerLoadingHistory.shared.note(stage, contextID: context.id)
         }
         #endif

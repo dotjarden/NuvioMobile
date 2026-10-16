@@ -36,7 +36,10 @@ extension PlayerLoadingStage {
 /// off (critique C17).
 enum PlayerLoadingOverlaySetting {
     static var enabled: Bool {
-        (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?.showLoadingOverlay != false
+        // A cold launch straight into a player (Top Shelf, the smoke rig) can get here before
+        // anything else hydrated the repository; `ensureLoaded` is a no-op once it has.
+        PlayerSettingsRepository.shared.ensureLoaded()
+        return (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?.showLoadingOverlay != false
     }
 }
 

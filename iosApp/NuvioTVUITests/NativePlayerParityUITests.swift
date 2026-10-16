@@ -326,4 +326,224 @@ class NativePlayerParityUITests: XCTestCase {
         XCTAssertLessThan(abs(after - expected), 3, "position \(before) → \(after), expected ≈\(expected)")
         print("[NativeParityLeg] late: \(nativeProbeText(app))")
     }
+
+    // MARK: B24 loading screen (agent C, spec §10.2)
+
+    func loadingHistory(_ app: XCUIApplication) -> String {
+        let el = element(app, "debug_loadingHistory")
+        return el.waitForExistence(timeout: 2) ? el.label : ""
+    }
+
+    /// The mpv twin of the smoke fixture: the same file remuxed to MPEG-TS, which the router sends
+    /// to mpv ("container mpegts") with the native engine on. The SDR Matroska fixture itself routes
+    /// native, so it cannot exercise the probe → mpv path.
+    func mpvFixtureURL() throws -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let url = env["PLAYER_SMOKE_TS_URL"] { return url }
+        let mkv = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        return mkv.replacingOccurrences(of: ".mkv", with: ".ts")
+    }
+
+    /// Native, forced: the overlay is up within 1 s of the player's host appearing, is gone once
+    /// playback runs, and the history never saw `checking` (a forced engine skips the probe).
+    func testNativeLoadingOverlay() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES",
+                                "-debug.mpvSmokeEngine", "native", "-debug.mpvSmokeStartOver", "YES"]
+        app.launch()
+        let overlay = element(app, "player.loadingOverlay")
+        // The overlay is drawn from the first `.preparing` frame, before the host view exists;
+        // either may be seen first.
+        let firstSeen = Date().addingTimeInterval(40)
+        while Date() < firstSeen, !overlay.exists, !app.otherElements["player.native"].exists {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertTrue(overlay.waitForExistence(timeout: 1), "no loading overlay at the start: \(loadingHistory(app))")
+        print("[LoadingLeg] native overlay value=\(overlay.value as? String ?? "-")")
+        XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 },
+                      "native playback never started: \(nativeProbeText(app))")
+        let gone = Date().addingTimeInterval(3)
+        while Date() < gone, overlay.exists { Thread.sleep(forTimeInterval: 0.2) }
+        XCTAssertFalse(overlay.exists, "overlay still up after playback started")
+        let history = loadingHistory(app)
+        XCTAssertTrue(history.hasPrefix("connecting>"), history)
+        XCTAssertTrue(history.contains(">buffering>"), history)
+        XCTAssertTrue(history.hasSuffix(">started"), history)
+        XCTAssertFalse(history.contains("checking"), "a forced native engine never probes: \(history)")
+        print("[LoadingLeg] native history=\(history) probe=\(nativeProbeText(app))")
+    }
+
+    /// mpv through the router (no forced engine, native on): the probe phase shows `checking`, then
+    /// mpv's own stages; the overlay is gone once playback runs.
+    func testMpvLoadingOverlay() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try mpvFixtureURL()
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES",
+                                "-debug.mpvSmokeStartOver", "YES"]
+        app.launch()
+        let overlay = element(app, "player.loadingOverlay")
+        XCTAssertTrue(overlay.waitForExistence(timeout: 30), "no loading overlay at the start: \(loadingHistory(app))")
+        print("[LoadingLeg] mpv overlay value=\(overlay.value as? String ?? "-")")
+        XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30),
+                      "the router did not pick mpv: \(loadingHistory(app))")
+        let seek = element(app, "debug_seekProbe")
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
+        let started = Date().addingTimeInterval(40)
+        while Date() < started, (Double(Self.parse(seek.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertGreaterThan(Double(Self.parse(seek.label)["pos"] ?? "") ?? 0, 1, "playback never started: \(seek.label)")
+        let gone = Date().addingTimeInterval(3)
+        while Date() < gone, overlay.exists { Thread.sleep(forTimeInterval: 0.2) }
+        XCTAssertFalse(overlay.exists, "overlay still up after playback started")
+        let history = loadingHistory(app)
+        XCTAssertTrue(history.hasPrefix("checking>connecting>buffering"), history)
+        XCTAssertTrue(history.hasSuffix(">started"), history)
+        print("[LoadingLeg] mpv history=\(history) seek=\(seek.label)")
+    }
+
+    /// Settings › Player › Loading Screen off → the overlay never draws and the spinner path runs.
+    /// The setting is profile-scoped and FA87 is the shared fixture, so the leg turns it back on in
+    /// a teardown block (critique C18).
+    func testLoadingOverlayOff() throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+
+        let settingsApp = launchToProfileHome()
+        let before = try XCTUnwrap(setLoadingScreen(settingsApp, on: false), "Loading Screen row not found or unreadable")
+        addTeardownBlock { [weak self] in
+            guard let self else { return }
+            let app = self.launchToProfileHome()
+            let restored = self.setLoadingScreen(app, on: true)
+            print("[LoadingLeg] teardown: Loading Screen was on=\(restored.map(String.init) ?? "unreadable"), set back on (the leg found on=\(before))")
+            app.terminate()
+        }
+        Thread.sleep(forTimeInterval: 2)     // let the defaults write land before the kill
+        settingsApp.terminate()
+
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES",
+                                "-debug.mpvSmokeEngine", "native", "-debug.mpvSmokeStartOver", "YES"]
+        app.launch()
+        let overlay = element(app, "player.loadingOverlay")
+        let probe = element(app, "debug_nativeProbe")
+        var sawOverlay = false
+        let end = Date().addingTimeInterval(45)
+        while Date() < end {
+            if overlay.exists { sawOverlay = true; break }
+            if probe.exists, (Double(Self.parse(probe.label)["pos"] ?? "") ?? 0) > 1 { break }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        XCTAssertFalse(sawOverlay, "the loading overlay drew with Loading Screen off")
+        XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 },
+                      "native playback never started: \(nativeProbeText(app))")
+        print("[LoadingLeg] off: overlay never drawn; history=\(loadingHistory(app)) probe=\(nativeProbeText(app))")
+    }
+
+    // MARK: Settings helpers (B24 off leg; trimmed copies, house rule: each file owns its helpers)
+
+    /// Launches to the profile picker and enters the fixture's "Chris" profile.
+    func launchToProfileHome() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
+        if chris.exists {
+            if !chris.hasFocus { for _ in 0..<3 { remote.press(.left); Thread.sleep(forTimeInterval: 0.5) } }
+            remote.press(.select)
+        }
+        Thread.sleep(forTimeInterval: 6)
+        return app
+    }
+
+    func focusedNodes(_ app: XCUIApplication) -> [(identifier: String, label: String, value: String)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(identifier: String, label: String, value: String)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append((node.identifier, node.label, (node.value as? String) ?? "")) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// Opens Settings › Player, walks to "Loading Screen" and sets it. Returns the state it found
+    /// (nil = row not reached or unreadable).
+    @discardableResult
+    func setLoadingScreen(_ app: XCUIApplication, on: Bool) -> Bool? {
+        guard openSettingsPlayer(app) else { return nil }
+        var reached = false
+        for _ in 0..<30 {
+            if focusedNodes(app).contains(where: { $0.label.hasPrefix("Loading Screen") }) { reached = true; break }
+            remote.press(.down)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        guard reached, let before = loadingScreenState(app) else { return nil }
+        if before != on {
+            remote.press(.select)
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        XCTAssertEqual(loadingScreenState(app), on, "Loading Screen did not end up \(on ? "on" : "off")")
+        return before
+    }
+
+    func loadingScreenState(_ app: XCUIApplication) -> Bool? {
+        let matches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Loading Screen")).allElementsBoundByIndex
+        for e in matches {
+            if let value = e.value as? String, ["On", "Off", "1", "0"].contains(value) { return value == "On" || value == "1" }
+        }
+        for e in matches {
+            if e.label.hasSuffix(", On") { return true }
+            if e.label.hasSuffix(", Off") { return false }
+        }
+        return nil
+    }
+
+    /// Settings tab → root → "Player" pushed. Tabs-mode fixture: Up to the tab bar, then across.
+    func openSettingsPlayer(_ app: XCUIApplication) -> Bool {
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<40 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+        let tab = app.buttons["Settings"]
+        for direction in [XCUIRemote.Button.right, .left] {
+            for _ in 0..<8 where !(tab.exists && tab.hasFocus) {
+                remote.press(direction)
+                Thread.sleep(forTimeInterval: 0.6)
+            }
+        }
+        guard tab.exists, tab.hasFocus else { return false }
+        remote.press(.select)
+        Thread.sleep(forTimeInterval: 2)
+        remote.press(.down)
+        Thread.sleep(forTimeInterval: 1)
+        // A pane the persisted path left open: pop back to the root.
+        for _ in 0..<3 where !element(app, "settings_category_player").exists {
+            remote.press(.menu)
+            Thread.sleep(forTimeInterval: 1.2)
+        }
+        let row = element(app, "settings_category_player")
+        guard row.waitForExistence(timeout: 4) else { return false }
+        var focused = false
+        for direction in [XCUIRemote.Button.down, .up] {
+            for _ in 0..<12 where !focused {
+                if focusedNodes(app).contains(where: { $0.identifier == "settings_category_player" || $0.label.hasPrefix("Player") }) {
+                    focused = true
+                } else {
+                    remote.press(direction)
+                    Thread.sleep(forTimeInterval: 0.6)
+                }
+            }
+        }
+        guard focused else { return false }
+        remote.press(.select)
+        return element(app, "settings_pane_player").waitForExistence(timeout: 4)
+    }
 }

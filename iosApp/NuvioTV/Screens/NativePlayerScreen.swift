@@ -191,7 +191,8 @@ struct NativePlayerScreen: View {
         .animation(.easeInOut(duration: 0.25), value: showPauseCard)
         .animation(.easeInOut(duration: 0.25), value: showsLoadingOverlay)
         #if DEBUG
-        .onChange(of: coordinator.loadingStage, initial: true) { _, stage in
+        // Every published value (not `onChange`, which coalesces two stages set in one turn).
+        .onReceive(coordinator.$loadingStage) { stage in
             PlayerLoadingHistory.shared.note(stage, contextID: context.id)
         }
         #endif
