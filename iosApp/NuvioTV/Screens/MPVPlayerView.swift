@@ -71,6 +71,10 @@ final class MPVPlaybackState: ObservableObject {
     @Published var isEnded: Bool = false
     /// A swipe scrub is on screen (its preview card): the chips move above it.
     @Published var scrubCardUp = false
+    /// P4 B24: the startup stage the loading screen shows (`MPVStartupStageReducer`), and whether
+    /// playback has started. Mid-play rebuffers after the start keep the small spinner.
+    @Published var startupStage: PlayerLoadingStage = .connecting
+    @Published var playbackStarted = false
     /// Info tab "Seek Previews" row: frames · store MB (· process RSS in debug builds); empty until
     /// a harvest lands, or the reason the harvest is off on this device.
     @Published var previewStoreSummary: String = ""
@@ -135,6 +139,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private var pendingResumeSec: Double?
     /// True once the resume seek has been issued (see `applyPendingResume`).
     private(set) var didResumeSeek = false
+    /// P4 B24 (main thread): the startup stages behind the loading screen, and the uptime the
+    /// `[Loading]` lines count from.
+    private var startupStages = MPVStartupStageReducer()
+    private let loadingStartUptime = ProcessInfo.processInfo.systemUptime
     /// Percentage-only entry (Simkl/Trakt rows: no stored position/duration). Resolved against
     /// mpv's real duration at file-load in `applyPendingResume`; never the show runtime.
     private var pendingResumeEntry: WatchProgressEntry?
@@ -303,6 +311,8 @@ final class MPVTVPlayerViewController: UIViewController {
         var eof = false
         var videoW: Int64 = 0
         var videoH: Int64 = 0
+        /// `cache-buffering-state` (0–100; −1 = not reported yet). B24's "Buffering N %".
+        var cacheBufferingPct: Int64 = -1
     }
     private let propLock = NSLock()
     private var propSnapshot = PropSnapshot()
@@ -320,7 +330,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Observation ids for mpv_observe_property (arrive back as `reply_userdata`).
     private enum ObservedProp: UInt64 {
         case timePos = 1, duration, pause, coreIdle, pausedForCache, eofReached, trackCount
-        case videoW, videoH, aid
+        case videoW, videoH, aid, cacheBuffering
     }
 
     private func cachedProps() -> PropSnapshot {
@@ -650,6 +660,7 @@ final class MPVTVPlayerViewController: UIViewController {
             // the fallback for a `setupMpv()` that ran before the settings store had hydrated.
             applyAudioLanguagePreferences()
             command("loadfile", args: [context.url.absoluteString, "replace"])
+            print("[Loading] engine=mpv stage=\(startupStages.stage.logToken) t=+\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - loadingStartUptime))s")
             armStartWatchdog()
             startPolling()
             flashControls()
@@ -913,6 +924,7 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.videoW.rawValue, "video-params/w", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.videoH.rawValue, "video-params/h", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, ObservedProp.cacheBuffering.rawValue, "cache-buffering-state", MPV_FORMAT_INT64)
 
         let relay = MPVWakeupRelay(queue: eventQueue) { [weak self] in self?.drainEvents() }
         wakeupRelay = relay
@@ -1709,6 +1721,14 @@ final class MPVTVPlayerViewController: UIViewController {
         state.isPaused = snap.paused
         state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
         samplePlayClock(snap)
+        if !startupStages.started {
+            // B24: a percentage only while mpv is really waiting on its cache; the position
+            // advancing > 1 s while playing is the start backstop (spec §8.1).
+            var changed = startupStages.bufferingPercent(
+                snap.cacheWait && snap.cacheBufferingPct >= 0 ? Int(snap.cacheBufferingPct) : nil)
+            changed = startupStages.tick(positionSec: snap.position, paused: snap.paused) || changed
+            if changed { publishStartupStage() }
+        }
 
         // Seek preview harvest (P2-B): playback time only, never while the transport moves.
         let harvestNow = ProcessInfo.processInfo.systemUptime
@@ -3175,7 +3195,8 @@ final class MPVTVPlayerViewController: UIViewController {
         flashControls()
     }
 
-    private func seekAbsolute(_ seconds: Double, kind: SkipSegmentPlanner.SeekKind) {
+    @discardableResult
+    private func seekAbsolute(_ seconds: Double, kind: SkipSegmentPlanner.SeekKind) -> Int {
         issueSeek(kind: kind, targetSec: seconds, args: [String(format: "%.3f", seconds), "absolute"])
     }
 
@@ -3529,7 +3550,10 @@ final class MPVTVPlayerViewController: UIViewController {
                     // Auto flows: a stub clip is a failed source, not an episode — no resume,
                     // no scrobble, no subtitle fetch.
                     if self.rejectPlaceholderClip(durationSec: loadedDuration) { return }
-                    self.applyPendingResume(actualDurationSec: loadedDuration)
+                    let resumeGeneration = self.applyPendingResume(actualDurationSec: loadedDuration)
+                    // B24: buffering until the restart that completes this resume seek (or any
+                    // restart when there is none). Before `onFileLoaded`, so the stage leads.
+                    if self.startupStages.fileLoaded(resumeGeneration: resumeGeneration) { self.publishStartupStage() }
                     self.onFileLoaded()
                 }
                 self.refreshTracksAsync()
@@ -3544,6 +3568,14 @@ final class MPVTVPlayerViewController: UIViewController {
                 if self.exactAwaitsSeekStart == generation {
                     self.exactAwaitsSeekStart = nil
                     DispatchQueue.main.async { self.runExactStage(ifGeneration: generation) }
+                }
+            }
+            if id == MPV_EVENT_PLAYBACK_RESTART {
+                // B24: which of our seeks (if any) this restart completes, read before the block
+                // below clears it. Strong hop (the BUG-141 rule); a few per file, never per frame.
+                let completes = self.startedSeekGeneration
+                DispatchQueue.main.async {
+                    if self.startupStages.playbackRestart(completesSeek: completes) { self.publishStartupStage() }
                 }
             }
             if id == MPV_EVENT_PLAYBACK_RESTART, let generation = self.startedSeekGeneration {
@@ -3657,32 +3689,44 @@ final class MPVTVPlayerViewController: UIViewController {
             if let v = asInt() { updateProps { $0.videoH = v } }
         case .aid:
             if let v = asInt() { alangTrace("aid changed -> \(v)") }
+        case .cacheBuffering:
+            if let v = asInt() { updateProps { $0.cacheBufferingPct = v } }
         }
     }
 
     /// THE resume seek (user-initiated for skip logic: an intro interval this lands inside must
     /// not be auto-skipped). Sets `didResumeSeek` so later code can identify it.
-    private func applyPendingResume(actualDurationSec: Double) {
+    /// Returns the resume seek's generation (nil = no resume seek), for the B24 startup stages.
+    @discardableResult
+    private func applyPendingResume(actualDurationSec: Double) -> Int? {
         if let seconds = pendingResumeSec {
             pendingResumeSec = nil
             didResumeSeek = true
-            seekAbsolute(seconds, kind: .resume)
-            return
+            return seekAbsolute(seconds, kind: .resume)
         }
-        guard let entry = pendingResumeEntry else { return }
+        guard let entry = pendingResumeEntry else { return nil }
         pendingResumeEntry = nil
         if actualDurationSec > 0 {
             let seconds = Double(entry.resolveResumePosition(actualDurationMs: Int64(actualDurationSec * 1000))) / 1000.0
-            guard seconds > 10 else { return }
+            guard seconds > 10 else { return nil }
             didResumeSeek = true
-            seekAbsolute(seconds, kind: .resume)
+            return seekAbsolute(seconds, kind: .resume)
         } else {
             // Duration unknown (some HLS): let mpv resolve the percentage itself.
             let pct = Double(entry.progressFraction) * 100
-            guard pct > 0 else { return }
+            guard pct > 0 else { return nil }
             didResumeSeek = true
-            issueSeek(kind: .resume, targetSec: nil, args: [String(format: "%.3f", pct), "absolute-percent"])
+            return issueSeek(kind: .resume, targetSec: nil, args: [String(format: "%.3f", pct), "absolute-percent"])
         }
+    }
+
+    /// B24 (main thread): mirror the reducer's stage into the screen state and log the change.
+    private func publishStartupStage() {
+        let stage = startupStages.stage
+        state.startupStage = stage
+        if stage.isStarted { state.playbackStarted = true }
+        let t = ProcessInfo.processInfo.systemUptime - loadingStartUptime
+        print("[Loading] engine=mpv stage=\(stage.logToken) t=+\(String(format: "%.2f", t))s")
     }
 
     // MARK: - libmpv C-interop helpers
@@ -3861,6 +3905,8 @@ struct MPVPlayerScreen: View {
     @State private var pauseCardEnabled = true
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: MPVPlayerPanelAdapter?
+    /// P4 B24: Settings › Playback › Loading Screen, read in `init` (critique C17).
+    @State private var loadingOverlayOn: Bool
 
     /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
     private var upNextChipAction: String? {
@@ -3883,6 +3929,7 @@ struct MPVPlayerScreen: View {
         self.onPlaybackHealthy = onPlaybackHealthy
         self.startWatchdogShortened = startWatchdogShortened
         self.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
+        _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         let playbackState = MPVPlaybackState(title: context.title)
         _state = StateObject(wrappedValue: playbackState)
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
@@ -3928,7 +3975,9 @@ struct MPVPlayerScreen: View {
             )
             .ignoresSafeArea()
 
-            if state.isBuffering {
+            // B24: before the start the loading screen says what is happening; this spinner is
+            // the mid-play rebuffer only (and the whole startup again with the screen off).
+            if state.isBuffering && (state.playbackStarted || !loadingOverlayOn) {
                 ProgressView()
                     .scaleEffect(1.6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3941,6 +3990,14 @@ struct MPVPlayerScreen: View {
             #endif
 
             PlayerAspectFlashHost(model: state.transport)
+
+            // B24: the loading screen until the first PLAYBACK_RESTART after the resume seek. Above
+            // the transport bar, which `viewDidAppear` raises at load: the startup frame is the
+            // overlay, not the bar over a black picture. Never on a mid-play rebuffer.
+            if loadingOverlayOn && !state.playbackStarted {
+                PlayerLoadingOverlay(context: context, stage: state.startupStage)
+                    .transition(.opacity)
+            }
 
             // Metadata card after a sustained pause (Android TV PauseOverlay parity).
             // It waits for the bar's fade (0.25 s) before fading in; any press raises the bar,
@@ -3998,6 +4055,12 @@ struct MPVPlayerScreen: View {
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(PlayerChipStyle.animation, value: state.controlsVisible)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
+        .animation(.easeInOut(duration: 0.25), value: state.playbackStarted)
+        #if DEBUG
+        .onChange(of: state.startupStage, initial: true) { _, stage in
+            PlayerLoadingHistory.shared.note(stage, contextID: context.id)
+        }
+        #endif
         .fullScreenCover(
             isPresented: Binding(
                 get: { state.isEnded && upNext.phase == .hidden },
