@@ -40,6 +40,9 @@ struct PlayerSpeedRow: View {
 struct PlayerEpisodesColumn: View {
     @ObservedObject var engine: NextEpisodeEngine
     let onClose: () -> Void
+    /// Optional: bound to the first row so a host can move focus into this column (the native
+    /// transport bar's Episodes item). nil (mpv) leaves focus entirely to the engine.
+    var firstRowFocus: FocusState<Bool>.Binding? = nil
 
     /// The engine's episodes with a season and number, in season/episode order. Shared with the
     /// tabs so they can hide the column when it would be empty.
@@ -59,7 +62,7 @@ struct PlayerEpisodesColumn: View {
             PlayerPanelSectionCaption(text: String(localized: "Episodes"))
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
+                    ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { index, episode in
                         let isCurrent = isCurrentEpisode(episode)
                         Button {
                             guard !isCurrent else { return }
@@ -77,6 +80,7 @@ struct PlayerEpisodesColumn: View {
                             }
                             .contentShape(Rectangle())
                         }
+                        .focusedIfBound(index == 0 ? firstRowFocus : nil)
                     }
                 }
             }
@@ -128,6 +132,8 @@ struct PlayerEpisodesColumn: View {
 struct PlayerSourcesColumn: View {
     @ObservedObject var engine: NextEpisodeEngine
     let onClose: () -> Void
+    /// Optional: bound to the first source row (see `PlayerEpisodesColumn.firstRowFocus`).
+    var firstRowFocus: FocusState<Bool>.Binding? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
@@ -151,8 +157,9 @@ struct PlayerSourcesColumn: View {
                             .font(Theme.Font.body)
                             .foregroundStyle(Theme.Palette.textSecondary)
                     }
-                    ForEach(Array(engine.sources.prefix(12).enumerated()), id: \.offset) { _, stream in
+                    ForEach(Array(engine.sources.prefix(12).enumerated()), id: \.offset) { index, stream in
                         sourceRow(stream)
+                            .focusedIfBound(index == 0 ? firstRowFocus : nil)
                     }
                 }
             }
@@ -185,5 +192,13 @@ struct PlayerSourcesColumn: View {
             }
             .contentShape(Rectangle())
         }
+    }
+}
+
+private extension View {
+    /// `.focused(binding)` when a binding is given; the view untouched otherwise.
+    @ViewBuilder
+    func focusedIfBound(_ binding: FocusState<Bool>.Binding?) -> some View {
+        if let binding { focused(binding) } else { self }
     }
 }

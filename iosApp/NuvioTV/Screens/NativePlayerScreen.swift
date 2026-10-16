@@ -91,7 +91,12 @@ struct NativePlayerScreen: View {
                         onSkip: { target in skipSeek(to: target, kind: .chip) },
                         onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
                         onDismissUpNext: { [weak upNext] in upNext?.dismissIfVisible() ?? false },
-                        onPanelOpenChanged: { open in panelOpen = open }
+                        onPanelOpenChanged: { open in panelOpen = open },
+                        engine: upNext,
+                        canSwitchStreams: onPlayNext != nil,
+                        hasEpisodes: !context.episodes.isEmpty && context.season != nil,
+                        onBarVisibility: { _ in },
+                        onAnyPress: {}
                     )
                     .ignoresSafeArea()
                 }
@@ -110,7 +115,8 @@ struct NativePlayerScreen: View {
                             onPlaybackFailed(PlaybackFailure(
                                 reason: reason, positionSec: coordinator.lastPositionSec,
                                 secondsPlayed: coordinator.secondsPlayed,
-                                startedPlaying: coordinator.readyUptime != nil))
+                                startedPlaying: coordinator.readyUptime != nil,
+                                kind: coordinator.failureKind ?? .unknown))
                         }
                         dismiss()
                     }
@@ -316,24 +322,82 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     /// Menu while the up-next chip is showing → dismiss it (returns true) instead of exiting.
     let onDismissUpNext: () -> Bool
     let onPanelOpenChanged: (Bool) -> Void
+    /// The Playback tab's Episodes / Sources columns (P4 A8).
+    let engine: NextEpisodeEngine
+    /// The presenter can swap playback contexts (episode jump / source switching).
+    let canSwitchStreams: Bool
+    /// A series with an episode list: the transport bar offers "Episodes".
+    let hasEpisodes: Bool
+    /// System transport bar about to show / hide (host delegate, P4 B16).
+    let onBarVisibility: (Bool) -> Void
+    /// Any remote press (P4 B16: hides the pause card).
+    let onAnyPress: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIViewController(context: Context) -> NativePlayerHostController {
         let host = NativePlayerHostController()
+        host.loadViewIfNeeded()          // viewDidLoad wires the child + delegate before configuring
         host.playerVC.player = player
-        // No `customInfoViewControllers`: on tvOS 26 that renders as an "Info" pill under the seek
-        // bar. Info lives in the app-drawn swipe-down panel presented by the host instead.
+        // No `customInfoViewControllers`: on tvOS 26 that renders as pills under the seek bar and
+        // would split the native player into two panels. Info · Subtitles · Audio · Playback live
+        // in the app-drawn swipe-down panel presented by the host; the Playback tab (speed,
+        // Episodes, Sources) and the transport bar's Episodes / Sources menu items replace the old
+        // `customInfoViewControllers` idea (P4 A8, spec D1/D5).
         let model = panelModel
         let openChanged = onPanelOpenChanged
-        host.onOpenPanel = { [weak host] _, _ in
+        let engine = engine
+        let canSwitchStreams = canSwitchStreams
+
+        // D4: one speed list, the same seven rates the panel row offers, so the system pill and the
+        // tab stay in step through `selectSpeed`.
+        host.playerVC.speeds = PlayerPlaybackColumns.speeds.map {
+            AVPlaybackSpeed(rate: Float($0), localizedName: String(format: "%g\u{00D7}", $0))
+        }
+        let speedModel = context.coordinator.speedModel
+        speedModel.onSelect = { [weak host, weak speedModel] value in
+            guard let host, let speedModel else { return }
+            NativeSpeedModel.apply(value, on: host.playerVC, model: speedModel)
+        }
+
+        // D5: Episodes (series with episodes) and Sources, each opening the panel on Playback with
+        // that column focused. Installed once: their meaning never changes in a session.
+        var menu: [UIMenuElement] = []
+        if canSwitchStreams, hasEpisodes {
+            menu.append(UIAction(title: String(localized: "Episodes"), image: UIImage(systemName: "list.number")) { [weak host] _ in
+                host?.openPanel(tab: .playback, column: .episodes)
+            })
+        }
+        if canSwitchStreams {
+            menu.append(UIAction(title: String(localized: "Sources"),
+                                 image: UIImage(systemName: "arrow.triangle.2.circlepath")) { [weak host] _ in
+                host?.openPanel(tab: .playback, column: .sources)
+            })
+        }
+        host.playerVC.transportBarCustomMenuItems = menu
+
+        host.onOpenPanel = { [weak host] tab, column in
             guard let host else { return }
-            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model))
+            speedModel.rate = Double(host.playerVC.selectedSpeed?.rate ?? 1)
+            let extra = PlayerPanelExtraTab {
+                NativePlaybackTab(engine: engine, speed: speedModel, canSwitchStreams: canSwitchStreams,
+                                  initialColumn: column, onClose: { model.onClose?() })
+            }
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: extra, initialTab: tab))
             model.onClose = { [weak panel] in panel?.close(animated: true) }
             host.present(panel: panel)
             openChanged(true)
         }
-        host.onPanelClosed = { openChanged(false) }
+        host.onPanelClosed = {
+            openChanged(false)
+            // FEAT-49 layer 2 on native: the Sources column may have clobbered a preload.
+            engine.noteSourceListClosed()
+        }
+        host.onTransportBarVisibilityChange = onBarVisibility
+        host.onAnyPress = onAnyPress
+        let speedList = PlayerPlaybackColumns.speeds.map { String(format: "%g", $0) }.joined(separator: ",")
+        let menuTitles = menu.compactMap { ($0 as? UIAction)?.title }.joined(separator: ",")
+        print("[NativePlayer] avpvc speeds=\(speedList) menu=\(menuTitles.isEmpty ? "-" : menuTitles) delegate=\(host.playerVC.delegate === host ? 1 : 0)")
         // Set once, like `onOpenPanel`: the closure captures the screen's stable `@StateObject`.
         host.onMenuPress = onDismissUpNext
         return host
@@ -380,8 +444,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         controller.contextualActions = actions
     }
 
+    @MainActor
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
+        /// The Playback tab's speed model, alive as long as the container.
+        let speedModel = NativeSpeedModel()
     }
 }
