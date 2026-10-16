@@ -3965,17 +3965,19 @@ struct MPVPlayerScreen: View {
                 .padding(.bottom, chipBottomInset)
                 .padding(.trailing, chipTrailingInset)
                 .transition(.opacity)
-            } else if let failure = upNext.sourceSwitchFailure {
-                // Batch D review r1: a source switch from the Sources tab that could not start (a
-                // ytId source whose resolve failed). One-shot; the engine clears it. The up-next
-                // chip keeps precedence (it carries the D-pad Down action), the skip prompt yields.
-                PlayerChipCaption(text: failure, symbol: "exclamationmark.circle")
+            } else if let prompt = state.skipPrompt {
+                PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(.bottom, chipBottomInset)
                     .padding(.trailing, chipTrailingInset)
                     .transition(.opacity)
-            } else if let prompt = state.skipPrompt {
-                PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
+            } else if let failure = upNext.sourceSwitchFailure {
+                // Batch D review r1: a source switch from the Sources tab that could not start (a
+                // ytId source whose resolve failed). One-shot; the engine clears it. Review r2
+                // P3-1: anything that carries the D-pad Down action (up-next, then the skip
+                // prompt) draws over this caption, which carries none — `pressesBegan` performs
+                // the skip whether or not its chip is visible, so the chip must be.
+                PlayerChipCaption(text: failure, symbol: "exclamationmark.circle")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(.bottom, chipBottomInset)
                     .padding(.trailing, chipTrailingInset)

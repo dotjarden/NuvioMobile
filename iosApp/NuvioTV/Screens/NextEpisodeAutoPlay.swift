@@ -52,6 +52,10 @@ final class NextEpisodeEngine: ObservableObject {
     /// so a resolve that lands after the viewer moved on is dropped instead of replacing the
     /// playback they started since (review r1).
     private var sourceSwitchGeneration = 0
+    /// The ytId source switch's resolve Task (review r2 P3-3): cancelled, not just outrun by the
+    /// generation, whenever the switch is superseded (another pick, a hand-off, an episode jump,
+    /// `stop()`), so the extractor's network work ends with the viewer's interest in it.
+    private var sourceSwitchResolveTask: Task<Void, Never>?
     private var sourcesWatcher: FlowWatcher?
     /// Identity of the current `loadSources()` request. `episodeStreamsState` is a shared StateFlow
     /// that replays its last value on subscribe — without this, a new subscription can adopt the
@@ -244,6 +248,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     func stop() {
+        supersedeSourceSwitch()
         settingsWatcher?.cancel()
         settingsWatcher = nil
         panelWatch?.cancel()
@@ -261,7 +266,7 @@ final class NextEpisodeEngine: ObservableObject {
         guard settings != nil else { return }
         tearDownSearch()
         cancelSourceLoad()
-        sourceSwitchGeneration += 1   // a pending source resolve must not land on the jumped-to episode
+        supersedeSourceSwitch()   // a pending source resolve must not land on the jumped-to episode
         Self.consecutiveAutoPlays = 0
         cancelled = false
         triggered = true          // the threshold trigger must not re-fire for this session
@@ -312,6 +317,14 @@ final class NextEpisodeEngine: ObservableObject {
         )
     }
 
+    /// Bumps `sourceSwitchGeneration` (a resolve that lands later is dropped) and cancels the
+    /// ytId resolve in flight, if any (review r2 P3-3).
+    private func supersedeSourceSwitch() {
+        sourceSwitchGeneration += 1
+        sourceSwitchResolveTask?.cancel()
+        sourceSwitchResolveTask = nil
+    }
+
     private func cancelSourceLoad() {
         sourceLoadGeneration += 1
         sourcesWatcher?.cancel()
@@ -325,7 +338,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// stream resolves asynchronously first (the panel may dismiss; playback switches when the
     /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
-        sourceSwitchGeneration += 1
+        supersedeSourceSwitch()
         let generation = sourceSwitchGeneration
         let videoId = context.videoId
         let direct: String? = stream.playableDirectUrl
@@ -341,7 +354,7 @@ final class NextEpisodeEngine: ObservableObject {
         // cancellation, which `try?` also turns into nil — hence the `Task.isCancelled` check
         // before calling a nil a failure.
         if StreamPickerView.isYouTubeResolved(stream) {
-            Task { @MainActor [weak self] in
+            sourceSwitchResolveTask = Task { @MainActor [weak self] in
                 let resolved: StreamItem? = try? await YouTubeStreamResolver.shared.resolve(stream: stream)
                 guard !Task.isCancelled, let self else { return }
                 guard generation == self.sourceSwitchGeneration, videoId == self.context.videoId else {
@@ -400,7 +413,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// is remembered under. The viewer chose it, so the context is `.manual`.
     private func switchToSource(stream: StreamItem, url: URL, listed: StreamItem) {
         Self.consecutiveAutoPlays = 0
-        sourceSwitchGeneration += 1
+        supersedeSourceSwitch()
 
         let switched = PlaybackContext(
             url: url,
@@ -872,7 +885,7 @@ final class NextEpisodeEngine: ObservableObject {
         let urlString: String? = stream.playableDirectUrl
         if let urlString, !urlString.isEmpty, let url = URL(string: urlString) {
             phase = .hidden
-            sourceSwitchGeneration += 1
+            supersedeSourceSwitch()
             onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream))
             return
         }
@@ -901,7 +914,7 @@ final class NextEpisodeEngine: ObservableObject {
                 if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
                     print("[UpNext] resolved — playing next episode")
                     self.phase = .hidden
-                    self.sourceSwitchGeneration += 1
+                    self.supersedeSourceSwitch()
                     self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next, listed: stream))
                     return
                 }

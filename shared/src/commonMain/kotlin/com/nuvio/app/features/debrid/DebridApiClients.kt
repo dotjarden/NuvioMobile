@@ -1,5 +1,6 @@
 package com.nuvio.app.features.debrid
 
+import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.RawHttpResponse
 import com.nuvio.app.features.addons.DefaultRawHttpResponseMaxBytes
 import com.nuvio.app.features.addons.httpRequestRaw
@@ -689,6 +690,7 @@ object DebridCredentialValidator {
 // Upstream be81802c8 (#2215): TorBox's `mylist` endpoints page at 100; a large library used to
 // come back truncated at the 16 MB cap and decode to nothing.
 private const val TORBOX_CLOUD_MAX_PAGES = 1000
+private val torboxCloudLog = Logger.withTag("TorboxCloud")
 
 internal suspend fun fetchTorboxCloudPages(
     fetchPage: suspend (offset: Int, limit: Int) -> DebridApiResponse<TorboxEnvelopeDto<List<TorboxCloudItemDto>>>,
@@ -722,6 +724,12 @@ internal suspend fun fetchTorboxCloudPages(
         }
         pages += 1
         if (page.size < limit || added == 0 || pages >= TORBOX_CLOUD_MAX_PAGES) {
+            // Review r2 P3-6: a short page is the normal end; the two guards are not, and the
+            // list handed back may be partial, so say so.
+            if (page.size >= limit) {
+                val reason = if (added == 0) "page at offset=$offset added no new id" else "page cap $TORBOX_CLOUD_MAX_PAGES reached"
+                torboxCloudLog.w { "Torbox cloud mylist walk stopped early ($reason); returning ${items.size} items, possibly partial" }
+            }
             return response.copy(body = envelope.copy(data = items), rawBody = "")
         }
         offset += page.size

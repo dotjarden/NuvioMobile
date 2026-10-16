@@ -92,6 +92,14 @@ final class LibraryGridPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.sourceBadge(sourceModeName: "SIMKL"), "SIMKL")
     }
 
+    func testProviderControlsShowForProviderLibrariesOnly() {
+        for provider in ["TRAKT", "SIMKL", "MDBLIST", "mdblist"] {
+            XCTAssertTrue(Policy.showsProviderControls(sourceModeName: provider), provider)
+        }
+        XCTAssertFalse(Policy.showsProviderControls(sourceModeName: "LOCAL"))
+        XCTAssertFalse(Policy.showsProviderControls(sourceModeName: ""))
+    }
+
     func testDefaultSortIsNamedAfterTraktOnlyOnTrakt() {
         XCTAssertEqual(Policy.sortLabel(optionName: "DEFAULT", sourceModeName: "TRAKT"), "Trakt Order")
         XCTAssertEqual(Policy.sortLabel(optionName: "DEFAULT", sourceModeName: "SIMKL"), "List Order")

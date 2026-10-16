@@ -203,18 +203,21 @@ object ContinueWatchingPreferencesRepository {
     }
 
     private fun persist() {
+        // Review r2 P3-5: one snapshot; reading `_uiState.value` per field could persist a torn
+        // mix of two concurrent updates (the mutators run on more than one dispatcher).
+        val state = _uiState.value
         ContinueWatchingPreferencesStorage.savePayload(
             json.encodeToString(
                 StoredContinueWatchingPreferences(
-                    isVisible = _uiState.value.isVisible,
-                    style = _uiState.value.style,
-                    upNextFromFurthestEpisode = _uiState.value.upNextFromFurthestEpisode,
-                    useEpisodeThumbnails = _uiState.value.useEpisodeThumbnails,
-                    showUnairedNextUp = _uiState.value.showUnairedNextUp,
-                    blurNextUp = _uiState.value.blurNextUp,
-                    dismissedNextUpKeys = _uiState.value.dismissedNextUpKeys,
-                    showResumePromptOnLaunch = _uiState.value.showResumePromptOnLaunch,
-                    sortMode = _uiState.value.sortMode,
+                    isVisible = state.isVisible,
+                    style = state.style,
+                    upNextFromFurthestEpisode = state.upNextFromFurthestEpisode,
+                    useEpisodeThumbnails = state.useEpisodeThumbnails,
+                    showUnairedNextUp = state.showUnairedNextUp,
+                    blurNextUp = state.blurNextUp,
+                    dismissedNextUpKeys = state.dismissedNextUpKeys,
+                    showResumePromptOnLaunch = state.showResumePromptOnLaunch,
+                    sortMode = state.sortMode,
                 ),
             ),
         )

@@ -1,7 +1,9 @@
 package com.nuvio.app.features.trailer
 
 import co.touchlab.kermit.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -324,15 +326,26 @@ class InAppYouTubeExtractor {
     ): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
         if (youtubeUrl.isBlank()) return@withContext null
 
-        runCatching {
+        // Review r1 F8: a ytId stream resolve logs with a "[stream] " prefix so a device console
+        // read tells it from a trailer extraction; the trailer text is unchanged.
+        // Review r2 P3-3: the caller's cancellation is rethrown instead of being swallowed as a
+        // failed extraction, so `YouTubeStreamResolverCore.resolveOrNull`'s rethrow is reachable
+        // and a cancelled resolve stops here; the trailer callers (`HeroTrailerResolver`) already
+        // `runCatching` around this call, so trailer behaviour is unchanged. The extractor's own
+        // timeout is a `TimeoutCancellationException`, which stays a logged failure (null).
+        try {
             withTimeout(timeoutMillis.coerceIn(1L, TRAILER_EXTRACTOR_TIMEOUT_MS)) {
                 extractPlaybackSourceInternal(youtubeUrl, singleUrl)
             }
-        }.onFailure {
-            // Review r1 F8: a ytId stream resolve logs with a "[stream] " prefix so a device
-            // console read tells it from a trailer extraction; the trailer text is unchanged.
-            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${it.message}" }
-        }.getOrNull()
+        } catch (error: TimeoutCancellationException) {
+            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${error.message}" }
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${error.message}" }
+            null
+        }
     }
 
     private suspend fun extractPlaybackSourceInternal(

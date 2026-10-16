@@ -197,7 +197,7 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Control row (List · type · Sort · smart filters)
+    // MARK: - Control row (List · type · Sort · Refresh · smart filters)
 
     private var controls: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -217,6 +217,15 @@ struct LibraryView: View {
                 }
                 if !model.availableSortOptions.isEmpty {
                     sortMenu
+                }
+                if model.showsProviderControls {
+                    // Batch D review r2 P2: the user-initiated pull for a provider library (the
+                    // Debrid Cloud pane's Refresh, same shape). Lives in this row so Right from the
+                    // Sort pill reaches it and Up keeps the full-width source-chip section above.
+                    refreshPill
+                    if model.isLoading {
+                        ProgressView()
+                    }
                 }
                 ForEach(model.visibleSmartFilters, id: \.self) { filter in
                     FilterChip(title: filter.title, isActive: model.activeSmartFilters.contains(filter)) {
@@ -246,6 +255,12 @@ struct LibraryView: View {
             pickerTitle: String(localized: "List"),
             label: { key in model.sections.first { $0.type == key }?.displayTitle ?? key }
         )
+    }
+
+    private var refreshPill: some View {
+        PillButton(title: String(localized: "Refresh"), systemImage: "arrow.clockwise", id: "library.refresh") {
+            model.refresh()
+        }
     }
 
     private var sortMenu: some View {

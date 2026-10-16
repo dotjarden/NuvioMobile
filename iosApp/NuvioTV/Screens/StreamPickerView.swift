@@ -99,6 +99,16 @@ struct StreamPickerView: View {
     /// False once the picker left the screen (a Menu press during a resolve): a late result must
     /// not hand a link to an external player from a view that is gone (batch D review r1).
     @State private var pickerOnScreen = false
+    /// Batch D review r2 P3-2: the YouTube resolve in flight, by request. `resolvingKey == rowKey`
+    /// was no guard at all (only the owning completion ever reset it), and `selected == nil`
+    /// missed a playback that started AND ended inside the resolve window (an auto-play pick or
+    /// a failover dismissed within the 30 s). The token is minted when a resolve starts and
+    /// dropped the moment any playback starts (`selected` set, see `onChange`) or the picker
+    /// leaves the screen; a completion whose token is no longer current does nothing.
+    @State private var youTubeResolveToken: UUID?
+    /// The resolve's Task (review r2 P3-3): cancelled with the token, so a superseded or abandoned
+    /// resolve stops the extractor instead of running to the 30 s timeout in the background.
+    @State private var youTubeResolveTask: Task<Void, Never>?
     /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
     @State private var toast: String?
     @FocusState private var focusedRow: String?
@@ -453,7 +463,13 @@ struct StreamPickerView: View {
             }
             .onDisappear {
                 pickerOnScreen = false
+                invalidateYouTubeResolve()
                 model.stop()
+            }
+            // Review r2 P3-2: every playback start (a row, "Try Next Source", auto-play, the Up
+            // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
+            .onChange(of: selected?.id) { _, playing in
+                if playing != nil { invalidateYouTubeResolve() }
             }
             .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
@@ -785,17 +801,18 @@ struct StreamPickerView: View {
         // the resolved link expires within hours.
         if Self.isYouTubeResolved(stream) {
             guard resolvingKey == nil else { return }
-            resolvingKey = rowKey
-            resolveYouTube(stream) { resolved in
-                // Review r1: only the resolve the spinner belongs to may act, and a late result
-                // never replaces a playback the viewer started since (another row, "Try Next
-                // Source", an auto-play pick).
-                guard resolvingKey == rowKey else { return }
-                resolvingKey = nil
-                guard selected == nil else {
+            let token = beginYouTubeResolve(rowKey: rowKey)
+            youTubeResolveTask = resolveYouTube(stream) { resolved in
+                // Review r1 / r2 P3-2: only the request the token belongs to may act; a playback
+                // the viewer started since (another row, "Try Next Source", an auto-play pick,
+                // even one already dismissed again) dropped the token, and so did leaving the
+                // picker (a Menu press during the resolve).
+                guard youTubeResolveToken == token else {
                     print("[StreamPicker] YouTube resolve landed after another playback started — dropped")
                     return
                 }
+                finishYouTubeResolve()
+                guard selected == nil, pickerOnScreen else { return }
                 let resolvedUrl: String? = resolved?.playableDirectUrl
                 guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) else {
                     showToast(Self.youTubeResolveFailedMessage)
@@ -867,12 +884,41 @@ struct StreamPickerView: View {
     /// which `try?` also turns into nil — so a nil is "could not resolve" unless this Task itself
     /// was cancelled, in which case nobody is told anything. Runs on the main actor throughout
     /// (the async export, not the completion-handler twin, so no `@Sendable` hop is needed).
-    private func resolveYouTube(_ stream: StreamItem, completion: @escaping @MainActor (StreamItem?) -> Void) {
+    @discardableResult
+    private func resolveYouTube(_ stream: StreamItem, completion: @escaping @MainActor (StreamItem?) -> Void) -> Task<Void, Never> {
         Task { @MainActor in
             let resolved: StreamItem? = try? await YouTubeStreamResolver.shared.resolve(stream: stream)
             guard !Task.isCancelled else { return }
             completion(resolved)
         }
+    }
+
+    /// Starts a YouTube resolve for `rowKey`: the row spinner (`resolvingKey`, which also keeps
+    /// resolves one at a time) plus a fresh request token (review r2 P3-2). Returns the token the
+    /// completion must still hold to act.
+    private func beginYouTubeResolve(rowKey: String) -> UUID {
+        let token = UUID()
+        resolvingKey = rowKey
+        youTubeResolveToken = token
+        return token
+    }
+
+    /// The owning completion is done (either way): clears the spinner and the token.
+    private func finishYouTubeResolve() {
+        resolvingKey = nil
+        youTubeResolveToken = nil
+        youTubeResolveTask = nil
+    }
+
+    /// Supersedes the YouTube resolve in flight, if any: its completion will find a stale token,
+    /// its Task is cancelled (review r2 P3-3), and the spinner it owned is cleared so the
+    /// one-at-a-time guard reopens. A debrid resolve's spinner (no token) is left alone.
+    private func invalidateYouTubeResolve() {
+        guard youTubeResolveToken != nil else { return }
+        youTubeResolveToken = nil
+        youTubeResolveTask?.cancel()
+        youTubeResolveTask = nil
+        resolvingKey = nil
     }
 
     // MARK: - External player handoff (FEAT-5)
@@ -900,17 +946,16 @@ struct StreamPickerView: View {
         // the resolved link is handed off like a direct one.
         if Self.isYouTubeResolved(stream) {
             guard resolvingKey == nil else { return }
-            resolvingKey = rowKey
-            resolveYouTube(stream) { resolved in
-                // Review r1: same guards as `internalPlay`, plus the picker must still be on
-                // screen — a Menu press during the resolve must not launch Infuse from a view
-                // that is gone.
-                guard resolvingKey == rowKey else { return }
-                resolvingKey = nil
-                guard selected == nil, pickerOnScreen else {
+            let token = beginYouTubeResolve(rowKey: rowKey)
+            youTubeResolveTask = resolveYouTube(stream) { resolved in
+                // Review r1 / r2 P3-2: same token guard as `internalPlay` — a Menu press during
+                // the resolve must not launch an external player from a view that is gone.
+                guard youTubeResolveToken == token else {
                     print("[StreamPicker] YouTube resolve landed after the picker moved on — dropped")
                     return
                 }
+                finishYouTubeResolve()
+                guard selected == nil, pickerOnScreen else { return }
                 let resolvedUrl: String? = resolved?.playableDirectUrl
                 guard let resolved, let resolvedUrl, !resolvedUrl.isEmpty else {
                     showToast(Self.youTubeResolveFailedMessage)
