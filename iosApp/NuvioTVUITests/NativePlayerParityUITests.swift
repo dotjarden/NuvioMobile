@@ -329,9 +329,18 @@ class NativePlayerParityUITests: XCTestCase {
 
     // MARK: B24 loading screen (agent C, spec §10.2)
 
+    /// `debug_loadingHistory` reads `<stage>>…>started overlay=<stage the overlay was first drawn
+    /// at | none>`; returns the stage chain and the overlay field.
     func loadingHistory(_ app: XCUIApplication) -> String {
         let el = element(app, "debug_loadingHistory")
-        return el.waitForExistence(timeout: 2) ? el.label : ""
+        let label = el.waitForExistence(timeout: 2) ? el.label : ""
+        return label.components(separatedBy: " overlay=").first ?? label
+    }
+
+    func overlayDrawnAt(_ app: XCUIApplication) -> String {
+        let el = element(app, "debug_loadingHistory")
+        let label = el.waitForExistence(timeout: 2) ? el.label : ""
+        return label.components(separatedBy: " overlay=").dropFirst().first ?? "none"
     }
 
     /// The mpv twin of the smoke fixture: the same file remuxed to MPEG-TS, which the router sends
@@ -361,10 +370,15 @@ class NativePlayerParityUITests: XCTestCase {
         while Date() < firstSeen, !overlay.exists, !app.otherElements["player.native"].exists {
             Thread.sleep(forTimeInterval: 0.1)
         }
-        XCTAssertTrue(overlay.waitForExistence(timeout: 1), "no loading overlay at the start: \(loadingHistory(app))")
-        print("[LoadingLeg] native overlay value=\(overlay.value as? String ?? "-")")
+        // A warm start (fixture already cached) can finish between two snapshots, so the hard
+        // oracle is the DEBUG record of the stage the overlay was first drawn at.
+        let seenLive = overlay.waitForExistence(timeout: 1)
+        print("[LoadingLeg] native overlay live=\(seenLive) value=\(seenLive ? (overlay.value as? String ?? "-") : "-")")
         XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 },
                       "native playback never started: \(nativeProbeText(app))")
+        let drawnAt = overlayDrawnAt(app)
+        XCTAssertTrue(drawnAt == "connecting" || drawnAt.hasPrefix("preparing"),
+                      "the overlay was not the first startup frame (drawn at: \(drawnAt))")
         let gone = Date().addingTimeInterval(3)
         while Date() < gone, overlay.exists { Thread.sleep(forTimeInterval: 0.2) }
         XCTAssertFalse(overlay.exists, "overlay still up after playback started")
@@ -373,7 +387,7 @@ class NativePlayerParityUITests: XCTestCase {
         XCTAssertTrue(history.contains(">buffering>"), history)
         XCTAssertTrue(history.hasSuffix(">started"), history)
         XCTAssertFalse(history.contains("checking"), "a forced native engine never probes: \(history)")
-        print("[LoadingLeg] native history=\(history) probe=\(nativeProbeText(app))")
+        print("[LoadingLeg] native history=\(history) overlay=\(drawnAt) probe=\(nativeProbeText(app))")
     }
 
     /// mpv through the router (no forced engine, native on): the probe phase shows `checking`, then
@@ -402,7 +416,8 @@ class NativePlayerParityUITests: XCTestCase {
         let history = loadingHistory(app)
         XCTAssertTrue(history.hasPrefix("checking>connecting>buffering"), history)
         XCTAssertTrue(history.hasSuffix(">started"), history)
-        print("[LoadingLeg] mpv history=\(history) seek=\(seek.label)")
+        XCTAssertEqual(overlayDrawnAt(app), "checking", "the probe phase's first frame is the overlay")
+        print("[LoadingLeg] mpv history=\(history) overlay=\(overlayDrawnAt(app)) seek=\(seek.label)")
     }
 
     /// Settings › Player › Loading Screen off → the overlay never draws and the spinner path runs.
@@ -439,6 +454,7 @@ class NativePlayerParityUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.15)
         }
         XCTAssertFalse(sawOverlay, "the loading overlay drew with Loading Screen off")
+        XCTAssertEqual(overlayDrawnAt(app), "none", "the loading overlay drew with Loading Screen off")
         XCTAssertTrue(waitNative(app, timeout: 40) { (Double($0["pos"] ?? "") ?? 0) > 1 },
                       "native playback never started: \(nativeProbeText(app))")
         print("[LoadingLeg] off: overlay never drawn; history=\(loadingHistory(app)) probe=\(nativeProbeText(app))")

@@ -91,6 +91,11 @@ struct PlayerLoadingOverlay: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("player.loadingOverlay")
         .accessibilityValue(stage.debugName)
+        #if DEBUG
+        // A fast start can come and go between two XCUITest snapshots; the history label keeps
+        // the stage the overlay was first drawn at.
+        .onAppear { PlayerLoadingHistory.shared.noteOverlayDrawn(stage, contextID: context.id) }
+        #endif
     }
 }
 
@@ -172,11 +177,23 @@ struct MPVStartupStageReducer: Equatable {
 final class PlayerLoadingHistory: ObservableObject {
     static let shared = PlayerLoadingHistory()
     @Published private(set) var text = ""
+    /// The stage the loading overlay was first drawn at for this context (nil = never drawn).
+    @Published private(set) var overlayDrawnAt: String?
     private var contextID: String?
     private var last: String?
 
+    private func begin(_ id: String) {
+        guard id != contextID else { return }
+        contextID = id; text = ""; last = nil; overlayDrawnAt = nil
+    }
+
+    func noteOverlayDrawn(_ stage: PlayerLoadingStage, contextID id: String) {
+        begin(id)
+        if overlayDrawnAt == nil { overlayDrawnAt = stage.logToken }
+    }
+
     func note(_ stage: PlayerLoadingStage, contextID id: String) {
-        if id != contextID { contextID = id; text = ""; last = nil }
+        begin(id)
         // `buffering(42)` and `buffering` are one stage for the history.
         let token = stage.logToken.split(separator: "(").first.map(String.init) ?? stage.logToken
         guard token != last else { return }
@@ -189,7 +206,8 @@ struct PlayerLoadingHistoryLabel: View {
     @ObservedObject private var history = PlayerLoadingHistory.shared
 
     var body: some View {
-        Text(verbatim: history.text.isEmpty ? "none" : history.text)
+        // `<stage>>…>started overlay=<first drawn stage | none>`
+        Text(verbatim: (history.text.isEmpty ? "none" : history.text) + " overlay=" + (history.overlayDrawnAt ?? "none"))
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_loadingHistory")
