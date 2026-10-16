@@ -323,15 +323,75 @@ final class NextEpisodeEngineTests: XCTestCase {
     }
 
     /// (2b) A source list opened after a search ended drops that search's late emissions too.
+    /// The search ends through a seam that does NOT bump the generation, so only `loadSources`'
+    /// own bump can drop the stale callback (r1 P3: `cancel()` bumped it first and hid the line).
     func testSearchEmissionAfterSourceListIsDropped() {
         let recorder = Recorder()
         let engine = makeEngine(trigger: trigger(), recorder: recorder)
         engine.forceSearchingForTesting()
         let staleCallback = recorder.callbacks.last!
-        engine.cancel()
+        engine.endForcedSearchWithoutGenerationBumpForTesting()
         engine.loadSources()
         staleCallback(nonEmptyState())
-        XCTAssertEqual(engine.searchEmissionsAccepted, 0)
+        XCTAssertEqual(engine.searchEmissionsAccepted, 0, "loadSources did not move the search generation on")
+    }
+
+    /// Control for (2b): the seam itself leaves the generation alone, so without `loadSources`
+    /// the same stale callback is accepted.
+    func testGenerationSeamDoesNotBump() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.forceSearchingForTesting()
+        let staleCallback = recorder.callbacks.last!
+        engine.endForcedSearchWithoutGenerationBumpForTesting()
+        staleCallback(nonEmptyState())
+        XCTAssertEqual(engine.searchEmissionsAccepted, 1)
+    }
+
+    /// (2c) r1 P3, reverse race: a search that starts while the Sources list is open shows the
+    /// busy line instead of an emptied list.
+    func testSearchStartingUnderOpenListShowsBusyLine() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+
+        engine.forceSearchingForTesting()
+        XCTAssertTrue(engine.sourcesBlockedBySearch, "the open list was blanked with no busy line")
+        XCTAssertFalse(engine.sourcesLoading)
+    }
+
+    /// (2d) r1 P3: when the search ends with the column still up, the list reloads by itself, so
+    /// the column never falls through to "No alternate sources found yet.".
+    func testSearchEndReloadsVisibleSourceList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        let current = LoadCall(type: "series", videoId: "tt1:1:1", season: 1, episode: 1)
+        engine.sourceColumnAppeared()
+        engine.forceSearchingForTesting()
+        engine.loadSources()                    // deferred: busy line
+        XCTAssertTrue(engine.sourcesBlockedBySearch)
+        XCTAssertFalse(recorder.calls.contains(current))
+
+        engine.cancel()                         // the search ends
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesLoading, "busy line fell through to the empty-list copy")
+        XCTAssertEqual(recorder.calls.filter { $0 == current }.count, 1)
+    }
+
+    /// (2e) Column gone: a search end does not load a list nobody sees.
+    func testSearchEndWithColumnClosedDoesNotReload() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.forceSearchingForTesting()
+        engine.loadSources()
+        engine.sourceColumnDisappeared()
+        engine.cancel()
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertFalse(engine.sourcesLoading)
+        XCTAssertTrue(recorder.calls.isEmpty)
     }
 
     /// (3) Without a search the list clears once, subscribes and loads the current video.

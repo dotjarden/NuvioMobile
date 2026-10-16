@@ -145,7 +145,7 @@ struct PlayerSourcesColumn: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     if engine.sourcesBlockedBySearch {
                         // BUG-129: an up-next search (or an episode jump) owns the shared streams
-                        // flow; the list is not loaded until it ends. Re-open the tab to load it.
+                        // flow; the list loads by itself once it ends (r1 P3).
                         Text(engine.sourcesBlockedByJump
                              ? String(localized: "Finding the episode's source…")
                              : String(localized: "Finding the next episode's source…"))
@@ -167,7 +167,8 @@ struct PlayerSourcesColumn: View {
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
         }
-        .onAppear { engine.loadSources() }
+        .onAppear { engine.sourceColumnAppeared(); engine.loadSources() }
+        .onDisappear { engine.sourceColumnDisappeared() }
     }
 
     private func sourceRow(_ stream: StreamItem) -> some View {

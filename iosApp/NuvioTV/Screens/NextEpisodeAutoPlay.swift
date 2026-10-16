@@ -43,10 +43,16 @@ final class NextEpisodeEngine: ObservableObject {
     @Published private(set) var sourcesLoading = false
     /// BUG-129: the Sources column was opened while an up-next search (or an episode jump's
     /// search) owns the shared `episodeStreamsState` flow. The list is not loaded; the column shows
-    /// a busy line instead, and the viewer re-opens the tab once the search has finished.
+    /// a busy line instead, and the list loads by itself once the search ends (while the column is up).
     @Published private(set) var sourcesBlockedBySearch = false
     /// The search that blocked the list is a manual episode jump (its busy copy differs).
     @Published private(set) var sourcesBlockedByJump = false
+    /// r1 P3: the Sources column is on screen (`sourceColumnAppeared`/`Disappeared`). A search
+    /// that ends while it is reloads the list itself, so the busy line never falls through to
+    /// "No alternate sources found yet." and the viewer never has to re-open the tab.
+    private var sourceColumnVisible = false
+    /// `jumpToEpisode`'s teardown is followed at once by a new search: no list reload in between.
+    private var suppressSourceReload = false
     private var sourcesWatcher: FlowWatcher?
     /// The in-player source list owns the shared streams flow (set by `loadSources`, cleared by
     /// `cancelSourceLoad`/`stop`). Kept beside the watcher because the test seam's watcher is nil.
@@ -249,6 +255,7 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     func stop() {
+        sourceColumnVisible = false
         settingsWatcher?.cancel()
         settingsWatcher = nil
         panelWatch?.cancel()
@@ -265,7 +272,9 @@ final class NextEpisodeEngine: ObservableObject {
     /// immediately. Reuses the autoplay search/selection machinery without the countdown.
     func jumpToEpisode(_ episode: MetaVideo) {
         guard settings != nil else { return }
+        suppressSourceReload = true
         tearDownSearch()
+        suppressSourceReload = false
         cancelSourceLoad()
         Self.consecutiveAutoPlays = 0
         cancelled = false
@@ -589,7 +598,7 @@ final class NextEpisodeEngine: ObservableObject {
         hooks.searchBegan()
         guard let next = nextVideo, let settings else { return }
         // The search and the source list share the repo's episodeStreamsState flow — never both.
-        cancelSourceLoad()
+        takeFlowFromSourceList()
         phase = .searching
         sourceName = nil
 
@@ -648,19 +657,50 @@ final class NextEpisodeEngine: ObservableObject {
         handleStreams(state, settings: settings)
     }
 
-    /// The search no longer owns the shared flow: a deferred source list may load again.
+    /// r1 P3 (BUG-129, reverse race): a search that starts while the Sources list owns the flow
+    /// blanks that list, so the open column flips to the busy line instead of an empty list.
+    private func takeFlowFromSourceList() {
+        if sourceListOwnsFlow {
+            sourcesBlockedBySearch = true
+            sourcesBlockedByJump = immediatePlay
+            print("[UpNext] source list blocked: up-next search took the flow")
+        }
+        cancelSourceLoad()
+    }
+
+    /// The search no longer owns the shared flow: a deferred source list may load again. While the
+    /// column is on screen it reloads here, in the same update, so it goes straight from the busy
+    /// line to the loading list. Not when a jump's stream was just picked (the player is swapping)
+    /// nor between a jump's teardown and its new search.
     private func searchEnded() {
+        let wasBlocked = sourcesBlockedBySearch
         sourcesBlockedBySearch = false
         sourcesBlockedByJump = false
+        guard wasBlocked, sourceColumnVisible, !suppressSourceReload,
+              !(selectedStream != nil && immediatePlay) else { return }
+        print("[UpNext] search ended with the Sources column open: loading the list")
+        loadSources()
     }
+
+    /// The Sources column's `onAppear` / `onDisappear`.
+    func sourceColumnAppeared() { sourceColumnVisible = true }
+    func sourceColumnDisappeared() { sourceColumnVisible = false }
 
     #if DEBUG
     /// Tests only (BUG-129): `phase = .searching` plus `beginSearch()`'s watcher wiring, without
     /// `settings`, the stream load or the subtitle prefetch, so the guards are reachable.
     func forceSearchingForTesting() {
-        cancelSourceLoad()
+        takeFlowFromSourceList()
         phase = .searching
         installSearchWatcher()
+    }
+
+    /// Tests only (r1 P3): ends the forced search WITHOUT bumping `searchGeneration`, so a test
+    /// can prove that a later guard (e.g. `loadSources`' own bump) is what drops a stale emission.
+    func endForcedSearchWithoutGenerationBumpForTesting() {
+        streamsWatcher = nil
+        phase = .hidden
+        searchEnded()
     }
     #endif
 
