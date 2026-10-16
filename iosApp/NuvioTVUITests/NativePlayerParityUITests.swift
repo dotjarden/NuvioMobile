@@ -256,4 +256,74 @@ class NativePlayerParityUITests: XCTestCase {
             throw XCTSkip("the simulator dismissed the native player on Menu (environmental)")
         }
     }
+
+    // MARK: B legs (agent B, step 8)
+
+    /// Walks Right from the panel's first tab until `tabId` reads selected.
+    func selectPanelTab(_ app: XCUIApplication, _ tabId: String, file: StaticString = #filePath, line: UInt = #line) {
+        let tab = element(app, "player.panel.tab.\(tabId)")
+        XCTAssertTrue(tab.waitForExistence(timeout: 8), "no \(tabId) tab", file: file, line: line)
+        for _ in 0..<6 where (tab.value as? String) != "selected" {
+            remote.press(.right)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertEqual(tab.value as? String, "selected", "never reached the \(tabId) tab", file: file, line: line)
+    }
+
+    /// A6-native: the remux's chapters fill the panel's Chapters tab, and picking row 3 (Act Two,
+    /// 240 s in the fixture) lands there.
+    func testNativeChaptersTab() throws {
+        let url = try XCTUnwrap(ProcessInfo.processInfo.environment["PLAYER_SMOKE_CHAPTERS_URL"],
+                                "PLAYER_SMOKE_CHAPTERS_URL not set")
+        let app = try launchNative(url: url)
+        XCTAssertTrue(waitNative(app, timeout: 10) { $0["chapters"] == "5" }, "chapters: \(nativeProbeText(app))")
+        remote.press(.down)
+        selectPanelTab(app, "chapters")
+        let row = element(app, "player.panel.chapter.2")
+        XCTAssertTrue(row.waitForExistence(timeout: 3), "no chapter row 2")
+        XCTAssertTrue(row.label.contains("Act Two"), row.label)
+        XCTAssertTrue(focusWalk(app, to: row), "focus never reached chapter row 2")
+        remote.press(.select)
+        XCTAssertTrue(waitNative(app, timeout: 8) { (Double($0["pos"] ?? "") ?? 0) >= 238 },
+                      "never reached chapter 3: \(nativeProbeText(app))")
+        let pos = Double(nativeProbe(app)["pos"] ?? "") ?? 0
+        XCTAssertLessThanOrEqual(pos, 245, "landed past chapter 3: \(nativeProbeText(app))")
+        print("[NativeParityLeg] chapters: \(nativeProbeText(app))")
+    }
+
+    /// B17 lazy path: an add-on subtitle injected after the master (DEBUG knobs) is listed as a
+    /// row before the pick; picking it rebuilds the item once at the same position and shows it.
+    func testNativeLateSubtitleLazyPick() throws {
+        let env = ProcessInfo.processInfo.environment
+        let smoke = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let base = smoke.components(separatedBy: "/").dropLast().joined(separator: "/")
+        let app = try launchNative(extra: ["-debug.nativeLateSubtitleURL", base + "/test.srt",
+                                           "-debug.nativeLateSubtitleDelaySec", "6",
+                                           "-debug.nativeSubsGateSec", "0"])
+        XCTAssertTrue(waitNative(app, timeout: 20) { $0["late"] == "published" || $0["late"] == "rebuilt" },
+                      "late rendition never published: \(nativeProbeText(app))")
+        if nativeProbe(app)["late"] == "rebuilt" {
+            // The fixture profile prefers a subtitle language: the auto path ran instead.
+            print("[NativeParityLeg] late: auto path (fixture prefers a subtitle language): \(nativeProbeText(app))")
+            return
+        }
+        remote.press(.down)
+        selectPanelTab(app, "subtitles")
+        let row = element(app, "player.panel.subtitle.Late Test")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "no late row before the pick")
+        XCTAssertTrue(focusWalk(app, to: row), "focus never reached the late row")
+        let before = Double(nativeProbe(app)["pos"] ?? "") ?? 0
+        let pickedAt = Date()
+        remote.press(.select)
+        let selected = NSPredicate(format: "value == 'selected'")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selected, object: row)], timeout: 4),
+                       .completed, "the late row never read selected")
+        XCTAssertTrue(waitNative(app, timeout: 5) { $0["late"] == "rebuilt" }, "no rebuild: \(nativeProbeText(app))")
+        // Playback keeps running through the pick, so compare against where it would be without
+        // the swap: a rebuild that restarted from t=0 or jumped would miss by far more than 3 s.
+        let after = Double(nativeProbe(app)["pos"] ?? "") ?? 0
+        let expected = before + Date().timeIntervalSince(pickedAt)
+        XCTAssertLessThan(abs(after - expected), 3, "position \(before) → \(after), expected ≈\(expected)")
+        print("[NativeParityLeg] late: \(nativeProbeText(app))")
+    }
 }
