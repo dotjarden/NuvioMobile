@@ -194,7 +194,19 @@ final class PlayerTransportUITests: XCTestCase {
     /// double tap), then the app must still be in the foreground once the cover is gone. Without
     /// `MenuExitShield` the second press reaches the root and the app backgrounds.
     func testMenuExitOverRootKeepsTheAppForeground() throws {
-        let app = try launchWithBarHidden()
+        try menuExitOverRoot(shieldOff: false)
+    }
+
+    /// The control run: the same presses with the shield off (`-debug.menuExitShieldOff`). Opt-in
+    /// (`PLAYER_EXIT_CONTROL=1`): it ends with the app in the background when the shield is what
+    /// keeps it up, which is the leg's proof, and a backgrounded app wedges the legs after it.
+    func testMenuExitOverRootControlWithShieldOff() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["PLAYER_EXIT_CONTROL"] == "1")
+        try menuExitOverRoot(shieldOff: true)
+    }
+
+    private func menuExitOverRoot(shieldOff: Bool) throws {
+        let app = try launchWithBarHidden(extra: shieldOff ? ["-debug.menuExitShieldOff", "YES"] : [])
         remote.press(.menu)                      // bar hidden → `MenuPrecedence.exit`
         Thread.sleep(forTimeInterval: 0.25)      // inside the cover's dismissal
         remote.press(.menu)

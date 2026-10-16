@@ -58,6 +58,14 @@ final class MenuExitShield: NSObject {
     /// The player decided to exit on this Menu press. From here until `disarm`, every Menu press
     /// the window sees is claimed.
     func arm(reason: String) {
+        #if DEBUG
+        // A/B knob for the device and the simulator leg: `-debug.menuExitShieldOff YES` leaves every
+        // Menu to the responder chain, so a run can show what the shield changes.
+        if UserDefaults.standard.bool(forKey: "debug.menuExitShieldOff") {
+            NSLog("[MenuProbe] shield off (debug knob) reason=%@", reason)
+            return
+        }
+        #endif
         let now = ProcessInfo.processInfo.systemUptime
         armedAt = now
         recognizer?.isEnabled = true
