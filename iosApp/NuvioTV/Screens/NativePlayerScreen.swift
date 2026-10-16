@@ -57,6 +57,9 @@ struct NativePlayerScreen: View {
     @State private var pausedSince: TimeInterval?
     @State private var showPauseCard = false
     @State private var pauseCardTask: Task<Void, Never>?
+    /// P4 B24: Settings › Playback › Loading Screen, read in `init` (not `onAppear`, which runs
+    /// after the first frame and would flash the overlay when the setting is off — critique C17).
+    @State private var loadingOverlayOn: Bool
     @Environment(\.dismiss) private var dismiss
 
     init(context: PlaybackContext,
@@ -71,6 +74,7 @@ struct NativePlayerScreen: View {
         self.routingNote = routingNote
         self.onPlaybackFailed = onPlaybackFailed
         self.onPlaybackHealthy = onPlaybackHealthy
+        _loadingOverlayOn = State(initialValue: PlayerLoadingOverlaySetting.enabled)
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in }))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
@@ -83,11 +87,15 @@ struct NativePlayerScreen: View {
 
             switch coordinator.phase {
             case .preparing:
-                VStack(spacing: 20) {
-                    ProgressView().scaleEffect(1.6)
-                    Text(coordinator.preparingLabel)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(.white.opacity(0.7))
+                // With the loading screen on, the overlay below draws this phase (B24); the bare
+                // spinner + caption stay for the setting-off branch only.
+                if !loadingOverlayOn {
+                    VStack(spacing: 20) {
+                        ProgressView().scaleEffect(1.6)
+                        Text(coordinator.preparingLabel)
+                            .font(Theme.Font.body)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
                 }
             case .playing:
                 if let player = coordinator.player {
@@ -126,11 +134,21 @@ struct NativePlayerScreen: View {
                                 reason: reason, positionSec: coordinator.lastPositionSec,
                                 secondsPlayed: coordinator.secondsPlayed,
                                 startedPlaying: coordinator.readyUptime != nil,
-                                kind: coordinator.failureKind ?? .unknown))
+                                kind: coordinator.failureKind ?? .unknown,
+                                httpStatus: coordinator.failureHTTPStatus))
                         }
                         dismiss()
                     }
                 }
+            }
+
+            // P4 B24: one overlay from the first `.preparing` frame until `loadingStage == .started`,
+            // over the mounted `AVPlayerContainer` once playing, so AVKit's own spinner is covered
+            // and there is no bare-spinner frame. Never focusable or hit-tested (the remote still
+            // reaches the system player underneath).
+            if showsLoadingOverlay {
+                PlayerLoadingOverlay(context: context, stage: coordinator.loadingStage)
+                    .transition(.opacity)
             }
 
             // Up-next status/countdown caption (visual only). The interactive part is the
@@ -171,6 +189,12 @@ struct NativePlayerScreen: View {
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(PlayerChipStyle.animation, value: showSwipeHint)
         .animation(.easeInOut(duration: 0.25), value: showPauseCard)
+        .animation(.easeInOut(duration: 0.25), value: showsLoadingOverlay)
+        #if DEBUG
+        .onChange(of: coordinator.loadingStage, initial: true) { _, stage in
+            PlayerLoadingHistory.shared.note(stage, contextID: context.id)
+        }
+        #endif
         .onChange(of: coordinator.phase) { _, phase in
             if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
             evaluatePauseCard()
@@ -298,6 +322,13 @@ struct NativePlayerScreen: View {
     /// Vertical room the system contextual-action pill occupies above the bottom inset on tvOS 26,
     /// so the caption sits above it rather than on top of it. Device-tuned.
     private static let contextualActionClearance: CGFloat = 96
+
+    /// B24: the loading screen covers every phase until the first play (or a ready-and-paused
+    /// item). It stays up through a pre-start `.failed`, so a native → mpv fallback goes from this
+    /// overlay straight to the mpv screen's (same poster, already in memory) with no spinner frame.
+    private var showsLoadingOverlay: Bool {
+        loadingOverlayOn && !coordinator.loadingStage.isStarted
+    }
 
     /// Which up-next contextual action to offer: "Play Next Episode" during the countdown,
     /// "Continue Watching" once the still-watching guard has paused autoplay, none otherwise.

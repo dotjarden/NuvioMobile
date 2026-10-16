@@ -32,6 +32,8 @@ struct PlayerScreen: View {
     @State private var nativeSecondsPlayed: Double = 0
     /// The native engine fell back before it ever started playing.
     @State private var nativeFailedBeforeStart = false
+    /// P4 B24: Settings › Playback › Loading Screen, read once (default on).
+    @State private var loadingOverlayOn = PlayerLoadingOverlaySetting.enabled
 
     private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
 
@@ -69,12 +71,24 @@ struct PlayerScreen: View {
                                 startWatchdogShortened: forcedMPV && nativeFailedBeforeStart,
                                 nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0)
             case .deciding:
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    ProgressView().scaleEffect(1.5)
+                // B24: the probe is the first startup phase; the loading screen draws it from the
+                // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.
+                Group {
+                    if loadingOverlayOn {
+                        PlayerLoadingOverlay(context: context, stage: .checking)
+                    } else {
+                        PlayerLoadingSpinner()
+                    }
                 }
+                #if DEBUG
+                .onAppear { PlayerLoadingHistory.shared.note(.checking, contextID: context.id) }
+                #endif
             }
         }
+        #if DEBUG
+        // B24 legs' oracle (critique C9): every stage any engine showed for this context.
+        .overlay { PlayerLoadingHistoryLabel() }
+        #endif
         .task(id: context.id) { await decideEngine() }
         // Hosts that swap the context without rebuilding this view keep mpv pinned (`forcedMPV`),
         // but the native engine never played the new context: its carried-over state is reset.
