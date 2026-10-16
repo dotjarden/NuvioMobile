@@ -343,14 +343,43 @@ class NativePlayerParityUITests: XCTestCase {
         return label.components(separatedBy: " overlay=").dropFirst().first ?? "none"
     }
 
-    /// The mpv twin of the smoke fixture: the same file remuxed to MPEG-TS, which the router sends
-    /// to mpv ("container mpegts") with the native engine on. The SDR Matroska fixture itself routes
-    /// native, so it cannot exercise the probe → mpv path.
+    /// The exact recipe that made `build/smoke/test-long.ts` (2026-10-16; ffprobe: format mpegts,
+    /// 600.02 s, stream 0 hevc, stream 1 aac, 166,052,128 bytes from the 158,083,364-byte mkv):
+    ///
+    ///     cd iosApp/build/smoke && ~/bin/ffmpeg -v error -y -i test-long.mkv -map 0 -c copy test-long.ts
+    ///     ffprobe -v error -show_entries format=format_name,duration:stream=codec_name -of compact test-long.ts
+    static let mpvFixtureRecipe = "cd iosApp/build/smoke && ~/bin/ffmpeg -v error -y -i test-long.mkv -map 0 -c copy test-long.ts"
+
+    /// The mpv twin of the smoke fixture: the same file remuxed to MPEG-TS (recipe above), which
+    /// the router sends to mpv ("container mpegts") with the native engine on. The SDR Matroska
+    /// fixture itself routes native, so it cannot exercise the probe → mpv path. Skips with the
+    /// recipe when the smoke server does not have the file (the 10-04 disk purge deleted it once).
     func mpvFixtureURL() throws -> String {
         let env = ProcessInfo.processInfo.environment
-        if let url = env["PLAYER_SMOKE_TS_URL"] { return url }
-        let mkv = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
-        return mkv.replacingOccurrences(of: ".mkv", with: ".ts")
+        let url: String
+        if let ts = env["PLAYER_SMOKE_TS_URL"] {
+            url = ts
+        } else {
+            let mkv = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+            url = mkv.replacingOccurrences(of: ".mkv", with: ".ts")
+        }
+        try XCTSkipUnless(Self.fixtureAnswers(url), "\(url) is missing; make it with: \(Self.mpvFixtureRecipe)")
+        return url
+    }
+
+    /// HEAD request to the smoke server; true on a 2xx.
+    static func fixtureAnswers(_ urlString: String) -> Bool {
+        guard let url = URL(string: urlString) else { return false }
+        var request = URLRequest(url: url, timeoutInterval: 5)
+        request.httpMethod = "HEAD"
+        let done = DispatchSemaphore(value: 0)
+        var ok = false
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            if let http = response as? HTTPURLResponse { ok = (200..<300).contains(http.statusCode) }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return ok
     }
 
     /// Native, forced: the overlay is up within 1 s of the player's host appearing, is gone once
@@ -421,22 +450,34 @@ class NativePlayerParityUITests: XCTestCase {
     }
 
     /// Settings › Player › Loading Screen off → the overlay never draws and the spinner path runs.
-    /// The setting is profile-scoped and FA87 is the shared fixture, so the leg turns it back on in
-    /// a teardown block (critique C18).
+    /// The setting is profile-scoped and FA87 is the shared fixture, so the leg puts it back to the
+    /// value it found in a teardown block (critique C18, r1 P3). The teardown is registered before
+    /// the first toggle and keys on the value read just before the press, so it also runs when the
+    /// leg fails mid-way. ⚠️ `show_loading_overlay` is synced with the phone app: run this leg only
+    /// on a GUEST fixture (FA87 today), never a signed-in profile, or the account sees "off" for the
+    /// length of the run.
     func testLoadingOverlayOff() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
 
-        let settingsApp = launchToProfileHome()
-        let before = try XCTUnwrap(setLoadingScreen(settingsApp, on: false), "Loading Screen row not found or unreadable")
+        final class Found { var before: Bool? }
+        let found = Found()
         addTeardownBlock { [weak self] in
             guard let self else { return }
+            guard let before = found.before else {
+                print("[LoadingLeg] teardown: the row was never read, nothing to restore")
+                return
+            }
             let app = self.launchToProfileHome()
-            let restored = self.setLoadingScreen(app, on: true)
-            print("[LoadingLeg] teardown: Loading Screen was on=\(restored.map(String.init) ?? "unreadable"), set back on (the leg found on=\(before))")
+            let was = self.setLoadingScreen(app, on: before)
+            print("[LoadingLeg] teardown: Loading Screen was on=\(was.map(String.init) ?? "unreadable"), restored to on=\(before)")
             app.terminate()
         }
+        let settingsApp = launchToProfileHome()
+        let before = try XCTUnwrap(setLoadingScreen(settingsApp, on: false, onRead: { found.before = $0 }),
+                                   "Loading Screen row not found or unreadable")
+        print("[LoadingLeg] off: the fixture had Loading Screen on=\(before)")
         Thread.sleep(forTimeInterval: 2)     // let the defaults write land before the kill
         settingsApp.terminate()
 
@@ -489,8 +530,9 @@ class NativePlayerParityUITests: XCTestCase {
 
     /// Opens Settings › Player, walks to "Loading Screen" and sets it. Returns the state it found
     /// (nil = row not reached or unreadable).
+    /// `onRead` gets the found state before any press (the off leg's teardown keys on it).
     @discardableResult
-    func setLoadingScreen(_ app: XCUIApplication, on: Bool) -> Bool? {
+    func setLoadingScreen(_ app: XCUIApplication, on: Bool, onRead: ((Bool) -> Void)? = nil) -> Bool? {
         guard openSettingsPlayer(app) else { return nil }
         var reached = false
         for _ in 0..<30 {
@@ -499,6 +541,7 @@ class NativePlayerParityUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.5)
         }
         guard reached, let before = loadingScreenState(app) else { return nil }
+        onRead?(before)
         if before != on {
             remote.press(.select)
             Thread.sleep(forTimeInterval: 1.5)
