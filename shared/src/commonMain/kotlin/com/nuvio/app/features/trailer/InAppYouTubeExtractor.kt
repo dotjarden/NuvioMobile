@@ -329,7 +329,9 @@ class InAppYouTubeExtractor {
                 extractPlaybackSourceInternal(youtubeUrl, singleUrl)
             }
         }.onFailure {
-            log.w { "Trailer extractor failed for $youtubeUrl: ${it.message}" }
+            // Review r1 F8: a ytId stream resolve logs with a "[stream] " prefix so a device
+            // console read tells it from a trailer extraction; the trailer text is unchanged.
+            log.w { "${if (singleUrl) "[stream] " else ""}Trailer extractor failed for $youtubeUrl: ${it.message}" }
         }.getOrNull()
     }
 
@@ -561,13 +563,18 @@ class InAppYouTubeExtractor {
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
+        // Review r1 F8: the single-URL (ytId stream) path tags its lines "[stream] "; the trailer
+        // path's text stays byte-identical.
+        val logTag = if (singleUrl) "[stream] " else ""
         trailerDebugLog(
-            "selection: manifest=${bestManifest?.height ?: "none"} " +
+            "${logTag}selection: manifest=${bestManifest?.height ?: "none"} " +
                 "progressive=${bestProgressive?.height ?: "none"} " +
                 "(manifests collected=${manifestUrls.size})"
         )
         if (singleUrl) {
-            return singleUrlSource(bestManifest, bestProgressive)?.copy(videoId = videoId)
+            val source = singleUrlSource(bestManifest, bestProgressive)
+            if (source == null) trailerDebugLog("[stream] no single-url source for video=$videoId")
+            return source?.copy(videoId = videoId)
         }
         val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENTS)
         val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENTS)

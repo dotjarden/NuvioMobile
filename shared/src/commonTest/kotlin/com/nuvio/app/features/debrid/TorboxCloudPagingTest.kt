@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -87,6 +88,36 @@ class TorboxCloudPagingTest {
 
         assertEquals(listOf(0 to 100, 0 to 50, 50 to 50, 100 to 50), requests)
         assertEquals(all, response.body?.data)
+        assertEquals("", response.rawBody)
+    }
+
+    @Test
+    fun `a body still truncated at limit one fails rather than looping`() = runBlocking {
+        val limits = mutableListOf<Int>()
+
+        assertFailsWith<IllegalStateException> {
+            fetchTorboxCloudPages { _, limit ->
+                limits += limit
+                truncated()
+            }
+        }
+
+        assertEquals(listOf(100, 50, 25, 12, 6, 3, 1), limits)
+    }
+
+    @Test
+    fun `a server that ignores the offset ends after the first repeated page`() = runBlocking {
+        // Fork hardening: every page is the same full page of ids 1..100.
+        val samePage = (1..100).map(::item)
+        val offsets = mutableListOf<Int>()
+
+        val response = fetchTorboxCloudPages { offset, _ ->
+            offsets += offset
+            page(samePage)
+        }
+
+        assertEquals(listOf(0, 100), offsets)
+        assertEquals(samePage, response.body?.data)
         assertEquals("", response.rawBody)
     }
 

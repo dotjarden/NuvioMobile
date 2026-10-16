@@ -163,6 +163,33 @@ class MdbListLibraryServiceTest {
         assertEquals(1, h.repository.currentSnapshot()!!.library!!.itemsByList.getValue(MDBLIST_TEST_LIST_KEY).size)
     }
 
+    /**
+     * Fork (batch D review r1 F1): `LibraryRepository.pullFromServer` now defaults to AUTOMATIC
+     * (upstream c1022e2eb), so the sync manager's foreground / periodic / profile-entry pulls reuse
+     * the cached lists; only the Library screen's Retry (USER_INITIATED) downloads them again.
+     */
+    @Test
+    fun `automatic refresh reuses cached lists and only a manual refresh downloads them again`() = runTest {
+        val h = MdbListSyncTestHarness(backgroundScope)
+        h.seedLibrary()
+        val service = h.libraryService(backgroundScope)
+        h.http.now += MdbListSyncRepository.AUTOMATIC_INTERVAL_MS
+        h.http.reply(body = mdbListLibraryListsBody())
+        h.http.reply(body = MDBLIST_EMPTY_LIBRARY_PAGE)
+        service.refresh(TrackingRefreshIntent.AUTOMATIC)
+        assertEquals(listOf("/lists/user", "/watchlist/items"), h.http.engine.requests.map { it.path })
+
+        h.http.reply(body = mdbListLibraryListsBody())
+        h.http.reply(body = MDBLIST_EMPTY_LIBRARY_PAGE)
+        h.http.reply(body = MDBLIST_LIBRARY_MOVIE_PAGE)
+        service.refresh(TrackingRefreshIntent.USER_INITIATED)
+        assertEquals(
+            listOf("/lists/user", "/watchlist/items", "/lists/user", "/watchlist/items", "/lists/7/items"),
+            h.http.engine.requests.map { it.path },
+        )
+        assertEquals(1, h.repository.currentSnapshot()!!.library!!.itemsByList.getValue(MDBLIST_TEST_LIST_KEY).size)
+    }
+
     @Test
     fun `changed or missing versions refetch contents even when item counts stay equal`() = runTest {
         for (version in listOf("v2", null)) {

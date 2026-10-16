@@ -1,8 +1,10 @@
 package com.nuvio.app.features.streams
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 
@@ -62,6 +64,18 @@ class YouTubeStreamResolverTest {
     fun `failed extraction returns null`() = runTest {
         val resolver = YouTubeStreamResolverCore { null }
         assertNull(resolver.resolve(ytIdStream()))
+    }
+
+    @Test
+    fun `a failing extractor yields null from the null-mapping resolve`() = runTest {
+        val resolver = YouTubeStreamResolverCore { throw IllegalStateException("boom") }
+        assertNull(resolver.resolveOrNull(ytIdStream()))
+    }
+
+    @Test
+    fun `cancellation propagates out of the null-mapping resolve`() = runTest {
+        val resolver = YouTubeStreamResolverCore { throw CancellationException("cancelled") }
+        assertFailsWith<CancellationException> { resolver.resolveOrNull(ytIdStream()) }
     }
 
     @Test

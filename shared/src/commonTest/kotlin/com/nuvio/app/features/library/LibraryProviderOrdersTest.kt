@@ -76,6 +76,34 @@ class LibraryProviderOrdersTest {
     }
 
     @Test
+    fun `one list's slice carries its ranks and the failure flag for the tvOS accessor`() = runTest {
+        // Fork (batch D review r1 F2): `LibraryRepository.observeProviderOrder` maps
+        // `LibraryProviderOrders` through `forList`; Swift reads the result's `ranks` / `failed`.
+        val ranks = keys.withIndex().associate { (index, key) -> key to index }
+        assertEquals(
+            LibraryProviderOrderResult(ranks = ranks, failed = false),
+            LibraryProviderOrders(ranks = mapOf(firstKey to ranks)).forList(firstKey),
+        )
+        assertEquals(
+            LibraryProviderOrderResult(ranks = null, failed = false),
+            LibraryProviderOrders(ranks = mapOf(firstKey to ranks)).forList(secondKey),
+        )
+        assertEquals(
+            LibraryProviderOrderResult(ranks = null, failed = true),
+            LibraryProviderOrders(failed = true).forList(firstKey),
+        )
+        val failing = object : TrackingLibrarySorter {
+            override fun observeAddedOrder(listKey: String, descending: Boolean) = flow<List<String>?> { error("down") }
+        }
+        val result = observeLibraryProviderOrders(failing, listOf(firstKey), LibrarySortOption.ADDED_DESC)
+            .first { it.failed }
+            .forList(firstKey)
+        assertEquals(LibraryProviderOrderResult(ranks = null, failed = true), result)
+        val none = observeLibraryProviderOrders(null, listOf(firstKey), LibrarySortOption.RELEASED_DESC).first().forList(firstKey)
+        assertEquals(LibraryProviderOrderResult(ranks = null, failed = false), none)
+    }
+
+    @Test
     fun `vertical filtering preserves server positions and title sorting stays local`() {
         val orders = mapOf(firstKey to keys.withIndex().associate { (index, key) -> key to index })
         val sections = listOf(LibrarySection(firstKey, "First", items))

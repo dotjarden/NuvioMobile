@@ -1,8 +1,12 @@
 package com.nuvio.app.features.watchprogress
 
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -35,20 +39,29 @@ object ContinueWatchingPreferencesRepository {
     private val _uiState = MutableStateFlow(ContinueWatchingPreferencesUiState())
     val uiState: StateFlow<ContinueWatchingPreferencesUiState> = _uiState.asStateFlow()
 
+    // Fork (batch D review r1 F4): mutators run off the main thread too (`WatchingActions`
+    // marks a series watched on `Dispatchers.Default` and restores its dismissed Next Up keys from
+    // there), so every state write is an atomic `update` and the loaded flag sits under the same
+    // `SynchronizedObject` lock the fork's other repositories use.
+    private val loadLock = SynchronizedObject()
     private var hasLoaded = false
 
     fun ensureLoaded() {
-        if (hasLoaded) return
-        loadFromDisk()
+        synchronized(loadLock) {
+            if (hasLoaded) return
+            loadFromDisk()
+        }
     }
 
     fun onProfileChanged() {
-        loadFromDisk()
+        synchronized(loadLock) { loadFromDisk() }
     }
 
     fun clearLocalState() {
-        hasLoaded = false
-        _uiState.value = ContinueWatchingPreferencesUiState()
+        synchronized(loadLock) {
+            hasLoaded = false
+            _uiState.value = ContinueWatchingPreferencesUiState()
+        }
     }
 
     internal fun applyFromSync(
@@ -61,18 +74,21 @@ object ContinueWatchingPreferencesRepository {
         dismissedNextUpKeys: Set<String>,
     ) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(
-            isVisible = isVisible,
-            style = style,
-            upNextFromFurthestEpisode = upNextFromFurthestEpisode,
-            useEpisodeThumbnails = useEpisodeThumbnails,
-            showUnairedNextUp = showUnairedNextUp,
-            blurNextUp = blurNextUp,
-            dismissedNextUpKeys = dismissedNextUpKeys
-                .map(String::trim)
-                .filter(String::isNotBlank)
-                .toSet(),
-        )
+        val normalizedKeys = dismissedNextUpKeys
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+        _uiState.update { state ->
+            state.copy(
+                isVisible = isVisible,
+                style = style,
+                upNextFromFurthestEpisode = upNextFromFurthestEpisode,
+                useEpisodeThumbnails = useEpisodeThumbnails,
+                showUnairedNextUp = showUnairedNextUp,
+                blurNextUp = blurNextUp,
+                dismissedNextUpKeys = normalizedKeys,
+            )
+        }
         persist()
     }
 
@@ -108,37 +124,37 @@ object ContinueWatchingPreferencesRepository {
 
     fun setVisible(isVisible: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(isVisible = isVisible)
+        _uiState.update { state -> state.copy(isVisible = isVisible) }
         persist()
     }
 
     fun setStyle(style: ContinueWatchingSectionStyle) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(style = style)
+        _uiState.update { state -> state.copy(style = style) }
         persist()
     }
 
     fun setUpNextFromFurthestEpisode(enabled: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(upNextFromFurthestEpisode = enabled)
+        _uiState.update { state -> state.copy(upNextFromFurthestEpisode = enabled) }
         persist()
     }
 
     fun setUseEpisodeThumbnails(enabled: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(useEpisodeThumbnails = enabled)
+        _uiState.update { state -> state.copy(useEpisodeThumbnails = enabled) }
         persist()
     }
 
     fun setShowUnairedNextUp(enabled: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(showUnairedNextUp = enabled)
+        _uiState.update { state -> state.copy(showUnairedNextUp = enabled) }
         persist()
     }
 
     fun setBlurNextUp(enabled: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(blurNextUp = enabled)
+        _uiState.update { state -> state.copy(blurNextUp = enabled) }
         persist()
     }
 
@@ -146,22 +162,29 @@ object ContinueWatchingPreferencesRepository {
         ensureLoaded()
         val normalizedKey = key.trim()
         if (normalizedKey.isBlank()) return
-        val current = _uiState.value.dismissedNextUpKeys
-        if (normalizedKey in current) return
-        _uiState.value = _uiState.value.copy(dismissedNextUpKeys = current + normalizedKey)
+        val previous = _uiState.getAndUpdate { state ->
+            if (normalizedKey in state.dismissedNextUpKeys) {
+                state
+            } else {
+                state.copy(dismissedNextUpKeys = state.dismissedNextUpKeys + normalizedKey)
+            }
+        }
+        if (normalizedKey in previous.dismissedNextUpKeys) return
         persist()
     }
 
     fun setShowResumePromptOnLaunch(enabled: Boolean) {
         ensureLoaded()
-        _uiState.value = _uiState.value.copy(showResumePromptOnLaunch = enabled)
+        _uiState.update { state -> state.copy(showResumePromptOnLaunch = enabled) }
         persist()
     }
 
     fun setSortMode(mode: ContinueWatchingSortMode) {
         ensureLoaded()
-        if (_uiState.value.sortMode == mode) return
-        _uiState.value = _uiState.value.copy(sortMode = mode)
+        val previous = _uiState.getAndUpdate { state ->
+            if (state.sortMode == mode) state else state.copy(sortMode = mode)
+        }
+        if (previous.sortMode == mode) return
         persist()
     }
 
@@ -170,11 +193,12 @@ object ContinueWatchingPreferencesRepository {
         val normalizedContentId = contentId.trim()
         if (normalizedContentId.isBlank()) return
         val prefix = "$normalizedContentId|"
-        val filtered = _uiState.value.dismissedNextUpKeys.filterNot {
-            it == normalizedContentId || it.startsWith(prefix)
-        }.toSet()
-        if (filtered == _uiState.value.dismissedNextUpKeys) return
-        _uiState.value = _uiState.value.copy(dismissedNextUpKeys = filtered)
+        val matches: (String) -> Boolean = { it == normalizedContentId || it.startsWith(prefix) }
+        val previous = _uiState.getAndUpdate { state ->
+            val filtered = state.dismissedNextUpKeys.filterNot(matches).toSet()
+            if (filtered.size == state.dismissedNextUpKeys.size) state else state.copy(dismissedNextUpKeys = filtered)
+        }
+        if (previous.dismissedNextUpKeys.none(matches)) return
         persist()
     }
 

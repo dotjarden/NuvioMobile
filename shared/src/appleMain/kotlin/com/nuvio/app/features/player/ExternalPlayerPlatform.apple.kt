@@ -130,9 +130,13 @@ private val iosExternalPlayerSpecs = listOf(
         // notes "returning current playback time when exiting playback"). `debug.senplayerMethod`
         // bisects the handoff live from launch args without a rebuild, like VidHub's knob:
         // "minimal" = url only, "noname" = everything except filename/name, unset = full.
+        // The minimal leg carries no `x-success`/`x-error` either: url-only is the point of that
+        // bisect step, so no playback position comes back on it (the session Swift prepares just
+        // expires). "noname" and the full URL keep the callbacks.
         buildUrl = { request ->
             when (NSUserDefaults.standardUserDefaults.stringForKey("debug.senplayerMethod")) {
                 "minimal" -> buildString {
+                    // url only, no callbacks: see the note above.
                     append("senplayer://x-callback-url/play?url=")
                     append(request.sourceUrl.urlQueryEncode())
                 }
@@ -162,8 +166,11 @@ private fun buildSenPlayerUrl(request: ExternalPlayerPlaybackRequest, includeNam
             append("&sub=")
             append(subtitle.url.urlQueryEncode())
         }
-        // Same return contract as Infuse: a returned `position` lands in
+        // Return contract, modelled on Infuse's but unverified for SenPlayer: a returned
+        // `position` (the parameter name is assumed; the device probe decides) lands in
         // `ExternalPlaybackReturn.handleUrl` once Swift prepares a session for "senplayer".
+        // `lastPlayedUrl` is Infuse's own echo and is optional here: the handler accepts a
+        // positioned success without it for any player but Infuse (review r1 F9).
         request.callbackSuccessUrl?.let { callbackUrl ->
             append("&x-success=")
             append(callbackUrl.urlQueryEncode())

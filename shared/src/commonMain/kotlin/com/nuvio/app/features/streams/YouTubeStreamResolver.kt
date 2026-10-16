@@ -1,6 +1,7 @@
 package com.nuvio.app.features.streams
 
 import com.nuvio.app.features.trailer.InAppYouTubeExtractor
+import kotlinx.coroutines.CancellationException
 
 /**
  * Makes streams that only carry a YouTube id ([StreamItem.ytId]) playable (upstream 94976222).
@@ -23,11 +24,12 @@ object YouTubeStreamResolver {
 
     /**
      * Returns [stream] unchanged when it needs no resolving, a copy whose `url` is the extracted
-     * single URL when it does, or null when the video could not be resolved. Never throws: a Kotlin
-     * exception out of a plain suspend export aborts the process on tvOS.
+     * single URL when it does, or null when the video could not be resolved. Never throws a
+     * failure: a Kotlin exception out of a plain suspend export aborts the process on tvOS.
+     * Cancellation is the one exception that propagates (review r1 F3): Swift receives it as an
+     * NSError on the completion, not as a "could not resolve" null.
      */
-    suspend fun resolve(stream: StreamItem): StreamItem? =
-        runCatching { core.resolve(stream) }.getOrNull()
+    suspend fun resolve(stream: StreamItem): StreamItem? = core.resolveOrNull(stream)
 
     fun watchUrl(videoId: String): String = YouTubeStreamResolverCore.watchUrl(videoId)
 }
@@ -40,6 +42,19 @@ internal class YouTubeStreamResolverCore(
         val url = extractSingleUrl(watchUrl(videoId))?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         return stream.copy(url = url)
     }
+
+    /**
+     * [resolve] with every failure mapped to null, except [CancellationException], which is
+     * rethrown so a cancelled caller is not told the video could not be resolved. `Throwable`
+     * rather than `Exception` keeps the Swift-facing object's never-abort guarantee.
+     */
+    suspend fun resolveOrNull(stream: StreamItem): StreamItem? =
+        try {
+            resolve(stream)
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            null
+        }
 
     companion object {
         fun watchUrl(videoId: String): String = "https://www.youtube.com/watch?v=$videoId"

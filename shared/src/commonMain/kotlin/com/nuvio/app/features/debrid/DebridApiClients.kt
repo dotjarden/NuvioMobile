@@ -688,10 +688,18 @@ object DebridCredentialValidator {
 
 // Upstream be81802c8 (#2215): TorBox's `mylist` endpoints page at 100; a large library used to
 // come back truncated at the 16 MB cap and decode to nothing.
+private const val TORBOX_CLOUD_MAX_PAGES = 1000
+
 internal suspend fun fetchTorboxCloudPages(
     fetchPage: suspend (offset: Int, limit: Int) -> DebridApiResponse<TorboxEnvelopeDto<List<TorboxCloudItemDto>>>,
 ): DebridApiResponse<TorboxEnvelopeDto<List<TorboxCloudItemDto>>> {
     val items = mutableListOf<TorboxCloudItemDto>()
+    // Fork hardening (batch D review r1 F5, not in upstream be81802c8): a server that ignores
+    // `offset` would answer the same full page forever. Items are merged by `id`; a page that adds
+    // no new id, or the TORBOX_CLOUD_MAX_PAGES cap, ends the walk with what was merged so far.
+    // Items without an id cannot be deduplicated and only the page cap bounds them.
+    val seenIds = HashSet<JsonElement>()
+    var pages = 0
     var offset = 0
     var limit = 100
     while (true) {
@@ -705,8 +713,15 @@ internal suspend fun fetchTorboxCloudPages(
         val envelope = response.body
         if (!response.isSuccessful || envelope == null || envelope.success == false) return response
         val page = envelope.data.orEmpty()
-        items.addAll(page)
-        if (page.size < limit) {
+        var added = 0
+        for (item in page) {
+            val id = item.id
+            if (id != null && !seenIds.add(id)) continue
+            items.add(item)
+            added += 1
+        }
+        pages += 1
+        if (page.size < limit || added == 0 || pages >= TORBOX_CLOUD_MAX_PAGES) {
             return response.copy(body = envelope.copy(data = items), rawBody = "")
         }
         offset += page.size

@@ -16,6 +16,20 @@ internal data class LibraryProviderOrders(
     val failed: Boolean = false,
 )
 
+/**
+ * Fork (tvOS, batch D review r1 F2): one list's slice of [LibraryProviderOrders], the shape Swift
+ * watches through `LibraryRepository.observeProviderOrder`. [ranks] is null while the provider
+ * order is unknown: still loading, no provider order for this sort, or the sorter failed
+ * ([failed]); the projection then falls back to its local sort.
+ */
+data class LibraryProviderOrderResult(
+    val ranks: Map<String, Int>?,
+    val failed: Boolean,
+)
+
+internal fun LibraryProviderOrders.forList(listKey: String): LibraryProviderOrderResult =
+    LibraryProviderOrderResult(ranks = ranks[listKey], failed = failed)
+
 internal fun LibrarySourceMode.librarySorter(): TrackingLibrarySorter? =
     providerId?.let(TrackingProviderRegistry::libraryProvider)?.listSorter
 
