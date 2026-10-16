@@ -773,14 +773,21 @@ final class NativePlaybackCoordinator: ObservableObject {
         lastPositionSec = target.positionSec                 // the skip planner sees no jump
         let landed = CMTimeGetSeconds(player.currentTime())
         print("[Subs] late rebuild item ready at \(String(format: "%.2f", landed))s (target \(String(format: "%.2f", target.positionSec))s)")
+        // r1 P2: every await below can be overtaken by `stop()` or a mid-play fallback to mpv
+        // (both cancel this task and hand the screen over). Without these guards the corrective
+        // seek could complete and `play()` restart a player that was already paused and released:
+        // up to the 24 s forward buffer of ghost audio over mpv's start, or after the viewer left.
         if !landed.isFinite || abs(landed - target.positionSec) > 0.5 {
             await player.seek(to: CMTime(seconds: target.positionSec, preferredTimescale: 600),
                               toleranceBefore: .zero, toleranceAfter: .zero)
+            guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after seek") }
         }
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("before play") }
         if target.wasPlaying { player.play() }
         let audible = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after audible") }
         let legible = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
-        guard playerItem === item else { return }
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after legible") }
         if let audible, let name = target.audioName,
            let option = audible.options.first(where: { Self.renditionName(of: $0) == name }) {
             item.select(option, in: audible)
@@ -807,6 +814,19 @@ final class NativePlaybackCoordinator: ObservableObject {
         print("[Subs] late rebuild reason=\(target.reason) at \(String(format: "%.1f", target.positionSec))s"
               + " took=\(String(format: "%.2f", took))s audio=\(currentAudioOption.map(Self.renditionName(of:)) ?? "-")"
               + " sub=\(currentLegibleName ?? "off")")
+    }
+
+    /// r1 P2: the rebuild may only touch the player while this coordinator still owns it and the
+    /// rebuilt item is current: not cancelled, not stopped (`player` nil), not swapped, still
+    /// `.playing` (a fallback sets `.failed`).
+    private func rebuildStillOwns(player: AVPlayer, item: AVPlayerItem) -> Bool {
+        !Task.isCancelled && self.player === player && playerItem === item && phase == .playing
+    }
+
+    /// An abandoned rebuild never leaves `syncAudioSelection` / `checkLateSubtitles` gated.
+    private func abandonRebuild(_ at: String) {
+        isRebuildingItem = false
+        print("[Subs] late rebuild abandoned \(at) (stopped, swapped or handed to mpv)")
     }
 
     /// Every `AVPlayerItem` this coordinator creates (first item, signaling retry, B17 rebuild)
