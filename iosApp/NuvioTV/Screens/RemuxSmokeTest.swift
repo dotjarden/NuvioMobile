@@ -182,6 +182,19 @@ nonisolated enum RemuxSmokeTest {
                         }
                     }
                 }
+                // debug.remuxSmokeLatePickSec=N (player P4, B17): N s after ready, pick the first late
+                // add-on rendition the way the panel does (lazy rebuild path).
+                let latePick = UserDefaults.standard.double(forKey: "debug.remuxSmokeLatePickSec")
+                if latePick > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + latePick) { [weak coordinator] in
+                        guard let coordinator else { return }
+                        guard let first = coordinator.lateSubtitleRows.first else {
+                            print("[RemuxSmoke] late pick: no late rows (state=\(coordinator.lateState))"); return
+                        }
+                        print("[RemuxSmoke] late pick → \(first.name) at \(String(format: "%.1f", coordinator.lastPositionSec))s")
+                        coordinator.selectLateSubtitle(name: first.name)
+                    }
+                }
                 // debug.remuxSmokeScanRate=N (player P3): 6 s after ready, play at rate N for 6 s
                 // (FF scan), then back to 1. AVPlayer scans HLS through the EXT-X-I-FRAMES-ONLY
                 // rendition, so with it published the run shows iframe.m3u8 + iframe-NNNNN.m4s

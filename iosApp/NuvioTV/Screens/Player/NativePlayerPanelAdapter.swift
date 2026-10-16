@@ -35,12 +35,15 @@ final class NativePlayerPanelAdapter {
             .sink { [weak model] ms in if model?.subtitleDelayMs != ms { model?.subtitleDelayMs = ms } }
             .store(in: &cancellables)
 
-        Publishers.Merge4(
+        Publishers.MergeMany([
             coordinator.$legibleGroup.map { _ in () }.eraseToAnyPublisher(),
             coordinator.$audibleGroup.map { _ in () }.eraseToAnyPublisher(),
             coordinator.$selectionVersion.map { _ in () }.eraseToAnyPublisher(),
-            coordinator.$audioTracks.map { _ in () }.eraseToAnyPublisher()
-        )
+            coordinator.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
+            // B17: late add-on renditions and the item rebuild.
+            coordinator.$lateSubtitleRows.map { _ in () }.eraseToAnyPublisher(),
+            coordinator.$isRebuildingItem.map { _ in () }.eraseToAnyPublisher(),
+        ])
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildSelections() }
         .store(in: &cancellables)
@@ -95,7 +98,16 @@ final class NativePlayerPanelAdapter {
     // MARK: - Selections
 
     private func rebuildSelections() {
-        // Subtitles: Off, embedded (rendition order), addon (rendition order).
+        rebuildSubtitleRows()
+        rebuildAudioRows()
+    }
+
+    private func rebuildSubtitleRows() {
+        // B17: while the item is being rebuilt its legible group is not loaded yet; keep the list
+        // the viewer is looking at instead of flashing an empty one under the focused row.
+        if coordinator.isRebuildingItem && coordinator.legibleGroup == nil { return }
+        // Subtitles: Off, embedded (rendition order), addon (rendition order), then late add-on
+        // renditions not yet in the item (a pick rebuilds it).
         var subtitles: [PlayerPanelOption] = []
         if let group = coordinator.legibleGroup {
             let selected = coordinator.currentSubtitleOption
@@ -132,6 +144,16 @@ final class NativePlayerPanelAdapter {
                     isSelected: selectedName == name))
             }
         }
+        let late = coordinator.lateSubtitleRows
+        if !late.isEmpty {
+            if subtitles.isEmpty {
+                subtitles.append(PlayerPanelOption(id: "off", title: String(localized: "Off"), group: .off,
+                                                   isSelected: true))
+            }
+            for r in late where !subtitles.contains(where: { $0.id == r.name }) {
+                subtitles.append(PlayerPanelOption(id: r.name, title: r.name, group: .addon, isSelected: false))
+            }
+        }
         if model.subtitles != subtitles { model.subtitles = subtitles }
         // The Timing row is only meaningful for a showing ADDON rendition: the whole file is ours to
         // re-serve. Embedded text tracks are per-segment VTTs the remux writes as it goes and are not
@@ -143,7 +165,9 @@ final class NativePlayerPanelAdapter {
         if model.supportsSubtitleDelay != canRetime { model.supportsSubtitleDelay = canRetime }
         let searching = !coordinator.addonSubtitlesFetched
         if model.subtitlesSearching != searching { model.subtitlesSearching = searching }
+    }
 
+    private func rebuildAudioRows() {
         // Audio: every audible option; the title is the rendition NAME ("English · TrueHD 7.1").
         var audio: [PlayerPanelOption] = []
         if let group = coordinator.audibleGroup {
@@ -159,13 +183,18 @@ final class NativePlayerPanelAdapter {
 
     private func selectSubtitle(_ option: PlayerPanelOption?) {
         guard let option else { coordinator.select(subtitle: nil); return }
-        guard let group = coordinator.legibleGroup,
-              let target = group.options.first(where: {
-                  let name = NativePlaybackCoordinator.renditionName(of: $0)
-                  return NativePlaybackCoordinator.subtitleSlot(ofName: name) == 0
-                      && NativePlaybackCoordinator.canonicalSubtitleName(name) == option.id
-              })
-        else { return }
+        let target = coordinator.legibleGroup?.options.first(where: {
+            let name = NativePlaybackCoordinator.renditionName(of: $0)
+            return NativePlaybackCoordinator.subtitleSlot(ofName: name) == 0
+                && NativePlaybackCoordinator.canonicalSubtitleName(name) == option.id
+        })
+        guard let target else {
+            // B17: a late rendition the current item does not carry yet.
+            if coordinator.lateSubtitleRows.contains(where: { $0.name == option.id }) {
+                coordinator.selectLateSubtitle(name: option.id)
+            }
+            return
+        }
         coordinator.select(subtitle: target)
     }
 

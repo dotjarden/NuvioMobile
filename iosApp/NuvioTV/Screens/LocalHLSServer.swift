@@ -60,9 +60,14 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let bandwidth: Int
     /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
     /// download + convert just-in-time on first request and are cached here for the session.
-    private let subtitles: [SubtitleRendition]
-    /// Per-rendition AUTOSELECT/DEFAULT (parallel to `subtitles`; empty = legacy flags).
-    private let subtitleFlags: [SubtitleRenditionFlags]
+    /// Lock-guarded: late add-on renditions (P4, B17) are appended mid-session by `setSubtitles`;
+    /// every read goes through `subtitleSnapshot()`.
+    private var _subtitles: [SubtitleRendition]
+    /// Per-rendition AUTOSELECT/DEFAULT (parallel to `_subtitles`; empty = legacy flags).
+    private var _subtitleFlags: [SubtitleRenditionFlags]
+    /// P4 [C-1]: while non-nil, the master carries `#EXT-X-START:TIME-OFFSET=<sec>,PRECISE=YES` so a
+    /// rebuilt item loads at the playhead instead of t=0. Nil renders the master unchanged.
+    private var _startOffsetSec: Double?
     /// Settings → Playback → Strip SDH Subtitles: addon/sidecar files run through the shared
     /// `SubtitleSdhFilter` as they are converted to VTT (SDH stripping, native path — the mpv path
     /// sets `sub-filter-sdh` instead). Sampled at session start; converted VTTs are cached, so a
@@ -137,8 +142,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.selectedAudio = selectedAudio
         self.requestAudioTrack = requestAudioTrack
         self.bandwidth = bandwidth
-        self.subtitles = subtitles
-        self.subtitleFlags = subtitleFlags
+        self._subtitles = subtitles
+        self._subtitleFlags = subtitleFlags
         self.stripSdh = stripSdh
         self.iFrames = iFrames
         var independentMaster = false
@@ -158,6 +163,29 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    private func subtitleSnapshot() -> ([SubtitleRendition], [SubtitleRenditionFlags]) {
+        lock.lock(); defer { lock.unlock() }
+        return (_subtitles, _subtitleFlags)
+    }
+
+    /// P4 (B17): replace the subtitle renditions (existing entries first and unchanged, late ones
+    /// appended) and their flags. The master is rendered per request, so the next master fetch
+    /// carries the new EXT-X-MEDIA lines; existing indices/names never change, so cached VTTs stay
+    /// valid.
+    func setSubtitles(_ renditions: [SubtitleRendition], flags: [SubtitleRenditionFlags]) {
+        lock.lock()
+        let added = renditions.count - _subtitles.count
+        _subtitles = renditions
+        _subtitleFlags = flags
+        lock.unlock()
+        print("[HLS] subtitles now \(renditions.count) (+\(added))")
+    }
+
+    /// P4 [C-1]: render `EXT-X-START` into the master (nil = none, byte-identical master).
+    func setStartOffset(_ sec: Double?) {
+        lock.lock(); _startOffsetSec = sec; lock.unlock()
     }
 
     /// Swap the master-playlist signaling (used for the minimal-signaling retry).
@@ -265,12 +293,15 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     func renderedPlaylist(named name: String) -> String? {
         switch name {
         case masterName:
-            lock.lock(); let signaling = _signaling; let slots = _subtitleSlots; lock.unlock()
-            let master = map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
+            lock.lock()
+            let signaling = _signaling; let slots = _subtitleSlots
+            let subtitles = _subtitles; let subtitleFlags = _subtitleFlags; let startOffset = _startOffsetSec
+            lock.unlock()
+            let master = map.masterPlaylist(signaling: signaling, audioRenditions: currentAudioRenditions(),
                                             bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
                                             subtitleFlags: subtitleFlags, iFrames: iFrames,
                                             independentSegments: independentMaster)
-            return Self.expandSubtitleSlots(master, slots: slots)
+            return Self.insertingStart(Self.expandSubtitleSlots(master, slots: slots), offsetSec: startOffset)
         case mediaName:
             return map.mediaPlaylist()
         case SegmentMap.iFramePlaylistName:
@@ -283,6 +314,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             }
             // sub-N-sK.m3u8 — a delay slot's twin of sub-N.m3u8; same content, same rendition.
             let slotted = Self.parseSubtitlePlaylistName(name)
+            let subtitles = subtitleSnapshot().0
             guard let rendition = subtitles.first(where: {
                 $0.playlistName == name || (!$0.isEmbedded && $0.index == slotted?.index)
             }) else { return nil }
@@ -310,6 +342,32 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 "#EXT-X-ENDLIST",
             ].joined(separator: "\n") + "\n"
         }
+    }
+
+    /// P4 [C-2]: the audio renditions with DEFAULT following the track AVPlayer's selection names
+    /// (`selectedAudio`), so a rebuilt item starts on the track the worker produces instead of the
+    /// one that was default at session start. Unknown or unmatched selection → the stored flags.
+    private func currentAudioRenditions() -> [AudioRendition] {
+        guard let selected = selectedAudio(), audioRenditions.contains(where: { $0.streamIndex == selected }) else {
+            return audioRenditions
+        }
+        return audioRenditions.map {
+            AudioRendition(streamIndex: $0.streamIndex, name: $0.name, language: $0.language, channels: $0.channels,
+                           codecToken: $0.codecToken, isDefault: $0.streamIndex == selected)
+        }
+    }
+
+    /// `#EXT-X-START:TIME-OFFSET=…,PRECISE=YES` right after `#EXT-X-VERSION` (nil = unchanged).
+    static func insertingStart(_ master: String, offsetSec: Double?) -> String {
+        guard let offsetSec else { return master }
+        var lines = master.components(separatedBy: "\n")
+        let start = String(format: "#EXT-X-START:TIME-OFFSET=%.3f,PRECISE=YES", max(0, offsetSec))
+        if let i = lines.firstIndex(where: { $0.hasPrefix("#EXT-X-VERSION") }) {
+            lines.insert(start, at: i + 1)
+        } else {
+            lines.insert(start, at: min(1, lines.count))
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Start listening on loopback and return the URL of the master playlist, or nil if no port could
@@ -519,7 +577,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// (AVPlayer keeps playing; the menu entry just doesn't render cues).
     private func serveSubtitle(name: String, rangeHeader: String?, isHead: Bool, on connection: NWConnection) {
         guard let index = Self.parseSubtitleVTTName(name)?.index,
-              let rendition = subtitles.first(where: { !$0.isEmbedded && $0.index == index }),
+              let rendition = subtitleSnapshot().0.first(where: { !$0.isEmbedded && $0.index == index }),
               let sourceURL = rendition.sourceURL else {
             send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
                  on: connection, requestPath: name)
