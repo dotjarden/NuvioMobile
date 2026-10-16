@@ -189,6 +189,18 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `screenshot-raw` (the simulator cannot screenshot, see `viewDidLoad`). Set once in
     /// `viewDidLoad`, read on `eventQueue`.
     private var harvestSynthetic = false
+    #if DEBUG
+    /// DEBUG `-debug.harvestSyntheticSize WxH` (P3-F9 §4): the synthetic frame's size, so the
+    /// Swift half can be measured at a real frame size (default 640 × 360).
+    private var harvestSyntheticSize = (width: 640, height: 360)
+    #endif
+    /// P3-F9: Developer › Harvest Screenshot Path (`HarvestScreenshotPath`), read once in
+    /// `viewDidLoad` in every build; on = `screenshot-sw` for SDR frames.
+    private var harvestScreenshotSW = true
+    /// `eventQueue` only: the `screenshot-sw` path last chosen (nil = none yet this file).
+    private var harvestScreenshotSWApplied: Bool?
+    /// `eventQueue` only: `[MPVStats] vo=` printed for this file.
+    private var statsVOLogged = false
     /// Crash guard around `screenshot-raw` (review r1 P2 #3); `eventQueue` arms and clears it.
     private let harvestSentinel = HarvestCrashSentinel(store: UserDefaults.standard)
     /// `eventQueue` only: the first real capture of this file flushes the armed flag to disk.
@@ -510,8 +522,12 @@ final class MPVTVPlayerViewController: UIViewController {
         seekPreviewSource = store
         harvest = HarvestScheduler(intervalSec: HarvestScheduler.interval(
             fromSetting: UserDefaults.standard.integer(forKey: "debug.harvestIntervalSec")))
+        harvestScreenshotSW = HarvestScreenshotPath.softwareEnabled()
         #if DEBUG
         harvestSynthetic = UserDefaults.standard.bool(forKey: "debug.harvestSynthetic")
+        if let size = HarvestScreenshotPath.parseSize(UserDefaults.standard.string(forKey: "debug.harvestSyntheticSize")) {
+            harvestSyntheticSize = size
+        }
         let flashSec = UserDefaults.standard.double(forKey: "debug.aspectFlashSec")
         if flashSec > 0 { aspectFlashSec = flashSec }
         #endif
@@ -1824,6 +1840,12 @@ final class MPVTVPlayerViewController: UIViewController {
         let underruns = cacheWaitCount
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
+            if !self.statsVOLogged {
+                // P3-F9 step 0: which VO this file runs on (`gpu` or `gpu-next`); the two take the
+                // screenshot readback through different code.
+                self.statsVOLogged = true
+                print("[MPVStats] vo=\(self.getString("current-vo") ?? "-")")
+            }
             let cacheSec = self.getDouble("demuxer-cache-duration")
             let cacheSpeed = self.getDouble("cache-speed")
             let voDropped = self.getInt("frame-drop-count")
@@ -1929,26 +1951,40 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             let t0 = DispatchTime.now().uptimeNanoseconds
             let sec = self.getDouble("time-pos")
-            let frame = self.captureHarvestFrame()
+            // P3-F9 hygiene: capture AND scale here, inside one autorelease pool, so only the
+            // ~171 KB thumbnail leaves `eventQueue` (no 11 MB frame copy per capture). `took=`
+            // now includes the scale (a few ms).
+            let capture = autoreleasepool { self.captureHarvestFrame() }
             let tookMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             #if DEBUG
             NSLog("%@", String(format: "[Harvest] took=%.1fms size=%dx%d fmt=%@ at=%.1f src=%@", tookMs,
-                               frame?.width ?? 0, frame?.height ?? 0, frame?.format ?? "-", sec,
+                               capture?.width ?? 0, capture?.height ?? 0, capture?.format ?? "-", sec,
                                self.harvestSynthetic ? "synthetic" : "mpv"))
             #endif
             // Strong hop to main (critique C13, the `refreshBufferedAsync` shape): `deinit` can
             // never run on `eventQueue`.
-            DispatchQueue.main.async { self.harvestCaptured(frame, at: sec, tookMs: tookMs) }
+            DispatchQueue.main.async { self.harvestCaptured(capture, at: sec, tookMs: tookMs) }
         }
     }
 
     /// `eventQueue` only. `screenshot-raw video bgr0`; if this mpv rejects the format argument,
     /// retries once without it (the default is `bgr0`) and keeps that form for the session.
-    private func captureHarvestFrame() -> MPVRawFrame? {
-        if harvestSynthetic { return Self.syntheticHarvestFrame(at: getDouble("time-pos")) }
+    /// Returns the scaled thumbnail (P3-F9 hygiene), never the full frame.
+    private func captureHarvestFrame() -> MPVHarvestCapture? {
+        if harvestSynthetic {
+            #if DEBUG
+            let size = harvestSyntheticSize
+            #else
+            let size = (width: 640, height: 360)
+            #endif
+            let frame = Self.syntheticHarvestFrame(at: getDouble("time-pos"), width: size.width, height: size.height)
+            return MPVHarvestCapture(width: frame.width, height: frame.height, format: frame.format,
+                                     thumb: PreviewFrameScaler.makeThumbnail(frame))
+        }
         #if targetEnvironment(simulator)
         return nil
         #else
+        applyHarvestScreenshotPath()
         // Armed for the length of the native call: if it takes the process down, the next player
         // open finds the flag still set and turns the harvest off (review r1 P2 #3).
         harvestSentinel.arm()
@@ -1977,9 +2013,24 @@ final class MPVTVPlayerViewController: UIViewController {
         #endif
     }
 
-    /// A 640 × 360 `bgr0` frame whose grey level follows `sec` (DEBUG plumbing tests only).
-    private static func syntheticHarvestFrame(at sec: Double) -> MPVRawFrame {
-        let w = 640, h = 360, stride = w * 4
+    /// `eventQueue` only, real captures. P3-F9 fix candidate (i): `screenshot-sw=yes` for SDR
+    /// frames, the video renderer's readback otherwise (`HarvestScreenshotPath`). Written only on
+    /// change; logged once per change.
+    private func applyHarvestScreenshotPath() {
+        let gamma = getString("video-params/gamma")
+        let matrix = getString("video-params/colormatrix")
+        let software = HarvestScreenshotPath.useSoftware(enabled: harvestScreenshotSW, gamma: gamma, colormatrix: matrix)
+        guard software != harvestScreenshotSWApplied else { return }
+        // mpv's default is `no`: only write it once `yes` has been written.
+        if software || harvestScreenshotSWApplied == true { setMpvString("screenshot-sw", software ? "yes" : "no") }
+        harvestScreenshotSWApplied = software
+        print("[Harvest] path=\(software ? "sw" : "vo") gamma=\(gamma ?? "-") matrix=\(matrix ?? "-") switch=\(harvestScreenshotSW ? "sw" : "vo")")
+    }
+
+    /// A `bgr0` frame (640 × 360 unless `debug.harvestSyntheticSize`) whose grey level follows
+    /// `sec` (DEBUG plumbing tests only).
+    private static func syntheticHarvestFrame(at sec: Double, width w: Int = 640, height h: Int = 360) -> MPVRawFrame {
+        let stride = w * 4
         let level = UInt8(truncatingIfNeeded: Int(sec.isFinite ? sec : 0) * 4)
         return MPVRawFrame(width: w, height: h, stride: stride, format: "bgr0",
                            bytes: Data(repeating: level, count: stride * h))
@@ -1987,29 +2038,31 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Main. The mpv side is done: free the scheduler, then scale + encode + insert on a utility
     /// queue that carries only the frame bytes, the store and the (main-actor) state object.
-    private func harvestCaptured(_ frame: MPVRawFrame?, at sec: Double, tookMs: Double) {
-        if harvest.noteFinished(tookMs: frame == nil ? nil : tookMs) {
+    private func harvestCaptured(_ capture: MPVHarvestCapture?, at sec: Double, tookMs: Double) {
+        if harvest.noteFinished(tookMs: capture == nil ? nil : tookMs) {
             #if DEBUG
             NSLog("%@", String(format: "[Harvest] slow (%.1fms > %.0fms): interval now %.0fs for this file",
                                tookMs, HarvestScheduler.slowHarvestMs, harvest.intervalSec))
             #endif
         }
-        guard let frame, sec.isFinite, let store = previewStore else { return }
+        guard let capture, sec.isFinite, let store = previewStore else { return }
         // Built on main (the controller is alive here); the utility work holds this closure.
         let publish: @MainActor @Sendable (SeekPreviewInsertResult) -> Void = { [weak self] result in
             guard let self else { return }
             self.applyStoreSnapshot(result.snapshot)
             #if DEBUG
-            NSLog("%@", "[Harvest] stored n=\(result.snapshot.count) bytes=\(result.snapshot.bytes) outcome=\(result.outcome.rawValue)")
+            NSLog("%@", "[Harvest] stored n=\(result.snapshot.count) bytes=\(result.snapshot.bytes) outcome=\(result.outcome.rawValue) rss=\(ProcessMemory.footprintMB())")
             #endif
         }
+        guard let thumb = capture.thumb else {
+            #if DEBUG
+            NSLog("%@", "[Harvest] unsupported frame format \(capture.format)")
+            #endif
+            return
+        }
+        // The thumbnail was scaled on `eventQueue`; this queue only encodes (inside the store's
+        // insert) and inserts.
         DispatchQueue.global(qos: .utility).async {
-            guard let thumb = PreviewFrameScaler.makeThumbnail(frame) else {
-                #if DEBUG
-                NSLog("%@", "[Harvest] unsupported frame format \(frame.format)")
-                #endif
-                return
-            }
             Task {
                 let result = await store.insert(thumb, at: sec, origin: .harvest)
                 await publish(result)
@@ -3759,12 +3812,13 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// `eventQueue` only. `screenshot-raw video [bgr0]`: the decoded frame without subtitles or
-    /// OSD, copied out of the node.
-    private func screenshotRaw(withFormat: Bool) -> MPVRawFrame? {
+    /// OSD, scaled to the store's thumbnail straight from the node's bytes before the node is
+    /// freed (P3-F9 hygiene: no 11 MB copy per capture).
+    private func screenshotRaw(withFormat: Bool) -> MPVHarvestCapture? {
         let args = withFormat ? ["screenshot-raw", "video", "bgr0"] : ["screenshot-raw", "video"]
         return withCommandResult(args) { node in
             guard node.format == MPV_FORMAT_NODE_MAP, let list = node.u.list else { return nil }
-            var w = 0, h = 0, stride = 0, fmt = "", bytes: Data?
+            var w = 0, h = 0, stride = 0, fmt = "", bytes: UnsafeRawBufferPointer?
             for i in 0..<Int(list.pointee.num) {
                 guard let k = list.pointee.keys?[i] else { continue }
                 let v = list.pointee.values[i]
@@ -3775,13 +3829,15 @@ final class MPVTVPlayerViewController: UIViewController {
                 case "format": if v.format == MPV_FORMAT_STRING, let s = v.u.string { fmt = String(cString: s) }
                 case "data":
                     if v.format == MPV_FORMAT_BYTE_ARRAY, let ba = v.u.ba, let p = ba.pointee.data {
-                        bytes = Data(bytes: p, count: ba.pointee.size)
+                        // Borrowed: valid only inside this closure (the node is freed after it).
+                        bytes = UnsafeRawBufferPointer(start: p, count: ba.pointee.size)
                     }
                 default: break
                 }
             }
             guard w > 0, h > 0, stride >= w * 4, let bytes, bytes.count >= stride * h else { return nil }
-            return MPVRawFrame(width: w, height: h, stride: stride, format: fmt, bytes: bytes)
+            let thumb = PreviewFrameScaler.makeThumbnail(width: w, height: h, stride: stride, format: fmt, bytes: bytes)
+            return MPVHarvestCapture(width: w, height: h, format: fmt, thumb: thumb)
         }
     }
 

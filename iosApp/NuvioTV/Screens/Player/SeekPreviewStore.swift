@@ -368,15 +368,30 @@ nonisolated enum PreviewFrameScaler {
     }
 
     static func makeThumbnail(_ f: MPVRawFrame, width: Int = SeekPreviewStore.targetWidth) -> CGImage? {
-        guard f.width > 0, f.height > 0, let info = bitmapInfo(for: f.format),
+        f.bytes.withUnsafeBytes { raw in
+            makeThumbnail(width: f.width, height: f.height, stride: f.stride, format: f.format, bytes: raw,
+                          targetWidth: width)
+        }
+    }
+
+    /// P3-F9 hygiene: scales straight from borrowed bytes (mpv's result node, before
+    /// `mpv_free_node_contents`). The source image and its provider are locals that die here, and
+    /// the returned thumbnail owns its own small buffer (`CGContext(data: nil)`), so nothing keeps
+    /// `bytes` alive past the call.
+    static func makeThumbnail(width srcW: Int, height srcH: Int, stride: Int, format: String,
+                              bytes: UnsafeRawBufferPointer,
+                              targetWidth width: Int = SeekPreviewStore.targetWidth) -> CGImage? {
+        guard srcW > 0, srcH > 0, let base = bytes.baseAddress, bytes.count >= stride * srcH,
+              let info = bitmapInfo(for: format),
               let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let provider = CGDataProvider(data: f.bytes as CFData),
-              let source = CGImage(width: f.width, height: f.height, bitsPerComponent: 8, bitsPerPixel: 32,
-                                   bytesPerRow: f.stride, space: space, bitmapInfo: info, provider: provider,
+              let provider = CGDataProvider(dataInfo: nil, data: base, size: stride * srcH,
+                                            releaseData: { _, _, _ in }),
+              let source = CGImage(width: srcW, height: srcH, bitsPerComponent: 8, bitsPerPixel: 32,
+                                   bytesPerRow: stride, space: space, bitmapInfo: info, provider: provider,
                                    decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         else { return nil }
-        let w = min(width, f.width)
-        let h = targetHeight(width: w, sourceWidth: f.width, sourceHeight: f.height)
+        let w = min(width, srcW)
+        let h = targetHeight(width: w, sourceWidth: srcW, sourceHeight: srcH)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space,
                                   bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
         else { return nil }
@@ -384,6 +399,44 @@ nonisolated enum PreviewFrameScaler {
         ctx.draw(source, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage()
     }
+}
+
+/// P3-F9 (docs/research/player-p4-rss-retention-2026-10-15.md): which mpv path the harvest's
+/// `screenshot-raw` takes. The video renderer's readback (`VOCTRL_SCREENSHOT`, libplacebo →
+/// MoltenVK) grew the process by ~3–5 MB per capture on the Apple TV; `screenshot-sw=yes` copies
+/// the decoded frame and converts it in software instead. Software does not tone map, so it is
+/// used for SDR only: a known gamma that is neither PQ nor HLG, and no Dolby Vision colour matrix.
+/// Unknown gamma counts as HDR (keep the renderer path).
+nonisolated enum HarvestScreenshotPath {
+    /// Developer › Harvest Screenshot Path (A/B), read in every build. Unset = on.
+    static let defaultsKey = "debug.harvestScreenshotSW"
+
+    static func softwareEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: defaultsKey) == nil ? true : defaults.bool(forKey: defaultsKey)
+    }
+
+    static func useSoftware(enabled: Bool, gamma: String?, colormatrix: String?) -> Bool {
+        guard enabled, let g = gamma?.lowercased(), !g.isEmpty, g != "auto" else { return false }
+        if g == "pq" || g == "hlg" { return false }
+        if colormatrix?.lowercased() == "dolbyvision" { return false }
+        return true
+    }
+
+    /// `debug.harvestSyntheticSize` "WxH" (DEBUG knob); nil when absent or malformed.
+    static func parseSize(_ raw: String?) -> (width: Int, height: Int)? {
+        guard let parts = raw?.lowercased().split(separator: "x"), parts.count == 2,
+              let w = Int(parts[0]), let h = Int(parts[1]), w >= 16, h >= 16, w <= 8192, h <= 8192 else { return nil }
+        return (w, h)
+    }
+}
+
+/// One harvest capture after the scale (P3-F9 hygiene): the frame's geometry for the log and the
+/// store-sized thumbnail, the only image that leaves `eventQueue`.
+nonisolated struct MPVHarvestCapture: @unchecked Sendable {
+    let width: Int
+    let height: Int
+    let format: String
+    let thumb: CGImage?
 }
 
 /// The process's physical footprint (what jetsam counts), for the Info tab's Seek Previews row.
