@@ -52,6 +52,15 @@ struct MPVSmokeModifier: ViewModifier {
                     // legs set it so a hold-step leg never starts a few seconds before the
                     // fixture's end (the P1 legs hit EOF once the saved position passed ~560 s).
                     ctx.startFromBeginning = UserDefaults.standard.bool(forKey: "debug.mpvSmokeStartOver")
+                    // `debug.mpvSmokeEngine` native|mpv (P4 legs): force the engine. A forced
+                    // native engine skips the probe and the silent mpv fallback
+                    // (`PlayerScreen.shown`), so a native leg can never quietly pass on mpv.
+                    switch UserDefaults.standard.string(forKey: "debug.mpvSmokeEngine")?.lowercased() {
+                    case "native": ctx.forcedEngine = .native
+                    case "mpv": ctx.forcedEngine = .mpv
+                    default: break
+                    }
+                    if let forced = ctx.forcedEngine { print("[MPVSmoke] forced engine: \(forced)") }
                     context = ctx
                 }
             }

@@ -154,6 +154,12 @@ struct NativePlayerScreen: View {
                     .transition(.opacity.animation(.easeInOut(duration: 0.25)))
             }
 
+            #if DEBUG
+            // P4 legs' oracle (spec §10.2): 1 pt, top-trailing, like `SeekProbeLabel`.
+            NativeProbeLabel(coordinator: coordinator, barVisible: barVisible, card: showPauseCard)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            #endif
+
             if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
                 PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -180,6 +186,7 @@ struct NativePlayerScreen: View {
             }
             pauseChanged(paused)
         }
+        .onChange(of: coordinator.isRebuildingItem) { _, _ in evaluatePauseCard() }
         .onChange(of: panelOpen) { _, open in
             if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
@@ -241,7 +248,7 @@ struct NativePlayerScreen: View {
     // MARK: - Pause info card (P4 B16)
 
     /// A B17 item rebuild's transient pause is not a viewer pause.
-    private var isRebuildingItem: Bool { false }
+    private var isRebuildingItem: Bool { coordinator.isRebuildingItem }
 
     private func pauseChanged(_ paused: Bool) {
         pauseCardTask?.cancel()
@@ -377,6 +384,38 @@ struct NativePlayerScreen: View {
         }
     }
 }
+
+#if DEBUG
+/// DEBUG probe for the P4 parity legs: `pos= speed= paused= bar= card= stage= chapters= subs= late=`.
+/// `pos` is the player's live time and `speed` the live `player.rate` while playing (the default
+/// rate while paused), re-read twice a second; `bar` is the last delegate report (`u` = none yet).
+private struct NativeProbeLabel: View {
+    @ObservedObject var coordinator: NativePlaybackCoordinator
+    let barVisible: Bool?
+    let card: Bool
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            Text(verbatim: text)
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_nativeProbe")
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var text: String {
+        let player = coordinator.player
+        let pos = player.map { CMTimeGetSeconds($0.currentTime()) } ?? 0
+        let rate: Float = player.map { $0.timeControlStatus == .paused ? $0.defaultRate : $0.rate } ?? 0
+        let bar = barVisible.map { $0 ? "1" : "0" } ?? "u"
+        return "pos=\(String(format: "%.1f", pos.isFinite ? pos : 0)) speed=\(String(format: "%g", rate))"
+            + " paused=\(coordinator.isPaused ? 1 : 0) bar=\(bar) card=\(card ? 1 : 0)"
+            + " stage=\(coordinator.loadingStage.logToken) chapters=\(coordinator.chapters.count)"
+            + " subs=\(coordinator.subtitleRenditionsByName.count) late=\(coordinator.lateState)"
+    }
+}
+#endif
 
 /// Up-next contextual action variants (static titles — see the caption note in `NativePlayerScreen`).
 enum UpNextAction: String {
