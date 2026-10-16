@@ -30,6 +30,9 @@ final class NextEpisodeEngineTests: XCTestCase {
         var watches = 0
         /// Every callback handed to `Hooks.watchStreams`, in order (the seam returns no watcher).
         var callbacks: [(StreamsUiState) -> Void] = []
+        /// r2 P3: every flow operation in call order (`clear`, `watch`, `load:<videoId>`), so a
+        /// test can see a clear that lands after the list's load (it cancels that load on device).
+        var log: [String] = []
     }
 
     private func makeContext() -> PlaybackContext {
@@ -64,10 +67,12 @@ final class NextEpisodeEngineTests: XCTestCase {
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
+            recorder.log.append("load:\(videoId)")
         }, searchBegan: { recorder.searchBegan += 1 },
-        clearStreams: { recorder.clears += 1 },
+        clearStreams: { recorder.clears += 1; recorder.log.append("clear") },
         watchStreams: { callback in
             recorder.watches += 1
+            recorder.log.append("watch")
             recorder.callbacks.append(callback)
             return nil
         })
@@ -374,10 +379,107 @@ final class NextEpisodeEngineTests: XCTestCase {
         XCTAssertTrue(engine.sourcesBlockedBySearch)
         XCTAssertFalse(recorder.calls.contains(current))
 
+        let mark = recorder.log.count
         engine.cancel()                         // the search ends
         XCTAssertFalse(engine.sourcesBlockedBySearch)
         XCTAssertTrue(engine.sourcesLoading, "busy line fell through to the empty-list copy")
         XCTAssertEqual(recorder.calls.filter { $0 == current }.count, 1)
+        assertListReloadIsLast(recorder, since: mark)
+    }
+
+    /// r2 P3: after an exit, the list's own `clear → watch → load` is the LAST thing on the flow.
+    /// A clear after the load (the old `tearDownSearch` order) cancels the load on device.
+    private func assertListReloadIsLast(_ recorder: Recorder, since mark: Int,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        let tail = Array(recorder.log[mark...])
+        XCTAssertEqual(Array(tail.suffix(3)), ["clear", "watch", "load:tt1:1:1"],
+                       "the list did not reload last: \(tail)", file: file, line: line)
+    }
+
+    private func directStream() -> StreamItem {
+        StreamItem(
+            name: "S", title: nil, description: nil, url: "https://cdn.example.com/s1e2.mkv",
+            infoHash: nil, fileIdx: nil, externalUrl: nil, sources: [], sourceName: nil,
+            addonName: "Addon", addonId: "addon", addonLogo: nil, streamType: nil,
+            behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
+                                               filename: nil, proxyHeaders: nil),
+            clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
+        )
+    }
+
+    /// (2d-select) r2 P3: the common exit. The search picks a stream while the phase is still
+    /// `.searching`; the deferred list must load then, not be deferred a second time.
+    func testSelectExitReloadsVisibleSourceList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.forceSearchingForTesting()
+        engine.loadSources()
+        XCTAssertTrue(engine.sourcesBlockedBySearch)
+        XCTAssertEqual(engine.phase, .searching)
+
+        let mark = recorder.log.count
+        engine.selectForTesting(directStream())
+        XCTAssertFalse(engine.sourcesBlockedBySearch, "busy line stayed up after the pick")
+        XCTAssertTrue(engine.sourcesLoading, "the list was deferred again on the select exit")
+        assertListReloadIsLast(recorder, since: mark)
+        engine.cancel()
+    }
+
+    /// (2d-noStream) r2 P3: the search ends with no stream; the deferred list loads.
+    func testNoStreamExitReloadsVisibleSourceList() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.forceSearchingForTesting()
+        engine.loadSources()
+
+        let mark = recorder.log.count
+        engine.finishWithoutStreamForTesting()
+        XCTAssertEqual(engine.phase, .noStream)
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesLoading, "the list was deferred again on the no-stream exit")
+        assertListReloadIsLast(recorder, since: mark)
+        engine.cancel()
+    }
+
+    /// (2d-jump) r2 P3: an episode jump while the Sources column is up shows the jump's busy line,
+    /// and a jump that finds nothing reloads the list.
+    func testEpisodeJumpShowsBusyLineThenReloads() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.loadSources()
+        XCTAssertTrue(engine.sourcesLoading)
+
+        engine.jumpForTesting(to: episode(season: 1, episode: 5))
+        XCTAssertTrue(engine.sourcesBlockedBySearch, "the jump blanked the list with no busy line")
+        XCTAssertTrue(engine.sourcesBlockedByJump)
+        XCTAssertFalse(engine.sourcesLoading)
+
+        let mark = recorder.log.count
+        engine.finishWithoutStreamForTesting()
+        XCTAssertFalse(engine.sourcesBlockedBySearch)
+        XCTAssertTrue(engine.sourcesLoading, "a jump with no stream left the column empty")
+        assertListReloadIsLast(recorder, since: mark)
+        engine.cancel()
+    }
+
+    /// (2d-wiped) r2 P3: a cancel after the search already ended (list reloaded and live) wipes
+    /// the flow; the list is reloaded after the wipe instead of being left empty.
+    func testCancelAfterReloadKeepsListAlive() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(), recorder: recorder)
+        engine.sourceColumnAppeared()
+        engine.forceSearchingForTesting()
+        engine.loadSources()
+        engine.selectForTesting(directStream())   // list reloads; the countdown is pending
+        XCTAssertTrue(engine.sourcesLoading)
+
+        let mark = recorder.log.count
+        engine.cancel()
+        XCTAssertTrue(engine.sourcesLoading, "the cancel's clear left the list empty")
+        assertListReloadIsLast(recorder, since: mark)
     }
 
     /// (2e) Column gone: a search end does not load a list nobody sees.

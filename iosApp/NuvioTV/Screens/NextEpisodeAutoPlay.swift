@@ -57,6 +57,11 @@ final class NextEpisodeEngine: ObservableObject {
     /// The in-player source list owns the shared streams flow (set by `loadSources`, cleared by
     /// `cancelSourceLoad`/`stop`). Kept beside the watcher because the test seam's watcher is nil.
     private var sourceListOwnsFlow = false
+    /// r2 P3: an up-next search (or a jump's search) owns the shared streams flow: set when its
+    /// watcher is installed, cleared the moment it ends (select, no stream, teardown) and BEFORE
+    /// `searchEnded()` runs, so the deferred list reload is not turned away by a stale `.searching`
+    /// phase. Kept as a flag because the test seam's watcher is nil.
+    private var searchOwnsFlow = false
     /// BUG-129: identity of the current up-next search watcher. `beginSearch()` bumps it before
     /// installing the watcher; `tearDownSearch()` and `cancelSourceLoad()` bump it too, so an
     /// emission that belongs to a torn-down search (or to the source list that replaced it) is dropped.
@@ -272,6 +277,15 @@ final class NextEpisodeEngine: ObservableObject {
     /// immediately. Reuses the autoplay search/selection machinery without the countdown.
     func jumpToEpisode(_ episode: MetaVideo) {
         guard settings != nil else { return }
+        performJump(to: episode)
+    }
+
+    private func performJump(to episode: MetaVideo) {
+        // r2 P3: the Sources column beside the Episodes column must show the jump's busy line, not
+        // "No alternate sources found yet.": capture whether the list is up before the teardown
+        // and `cancelSourceLoad()` blank it, and set the busy state before the search starts (a
+        // search that ends at once then reloads the list through `searchEnded()`).
+        let listUp = sourceListOwnsFlow || sourcesBlockedBySearch
         suppressSourceReload = true
         tearDownSearch()
         suppressSourceReload = false
@@ -287,6 +301,11 @@ final class NextEpisodeEngine: ObservableObject {
         immediatePlay = true
         nextVideo = episode
         nextEpisodeTitle = Self.episodeTitle(episode)
+        if listUp && sourceColumnVisible {
+            sourcesBlockedBySearch = true
+            sourcesBlockedByJump = true
+            print("[UpNext] source list blocked: episode jump took the flow")
+        }
         beginSearch()
     }
 
@@ -297,9 +316,10 @@ final class NextEpisodeEngine: ObservableObject {
         // BUG-129: the source list and an up-next search share `episodeStreamsState`, and this
         // list clears it. Opening the list mid-search used to wipe the search's results and feed
         // the list's emissions to the search as if they were the next episode's. While a search
-        // owns the flow, the list is deferred (the column shows a busy line). Keyed on the phase
-        // OR a live watcher: the test seam's watcher is nil.
-        guard streamsWatcher == nil, phase != .searching else {
+        // owns the flow, the list is deferred (the column shows a busy line). Keyed on a live
+        // watcher OR `searchOwnsFlow` (the test seam's watcher is nil), not on the phase: the
+        // phase is still `.searching` when a search ends by selecting a stream (r2 P3).
+        guard streamsWatcher == nil, !searchOwnsFlow else {
             sourcesBlockedBySearch = true
             sourcesBlockedByJump = immediatePlay
             sourcesLoading = false
@@ -423,16 +443,23 @@ final class NextEpisodeEngine: ObservableObject {
         searchGeneration += 1
         streamsWatcher?.cancel()
         streamsWatcher = nil
-        searchEnded()
+        searchOwnsFlow = false
         countdownTask?.cancel()
         countdownTask = nil
         timeoutTask?.cancel()
         timeoutTask = nil
         hideTask?.cancel()
         hideTask = nil
+        // r2 P3: clear BEFORE `searchEnded()`, which may reload the Sources list on this flow; a
+        // clear after it cancelled the job the list had just started. The clear also wipes a
+        // list that owned the flow (a cancel after the search already ended): that list is
+        // dropped and reloaded too, instead of being left on an empty, not-loading state.
+        let listWasLive = sourceListOwnsFlow
         hooks.clearStreams()
         // The repository key was just cleared, so the next search is a fresh fetch, not a replay.
         preloaded = false
+        if listWasLive { cancelSourceLoad() }
+        searchEnded(listWiped: listWasLive)
     }
 
     // MARK: - Trigger
@@ -639,6 +666,7 @@ final class NextEpisodeEngine: ObservableObject {
     /// Subscribes the search to the shared streams flow under a fresh `searchGeneration` (BUG-129):
     /// the watcher drops every emission once that generation has moved on.
     private func installSearchWatcher() {
+        searchOwnsFlow = true
         searchGeneration += 1
         let generation = searchGeneration
         streamsWatcher = hooks.watchStreams { [weak self] state in
@@ -672,8 +700,9 @@ final class NextEpisodeEngine: ObservableObject {
     /// column is on screen it reloads here, in the same update, so it goes straight from the busy
     /// line to the loading list. Not when a jump's stream was just picked (the player is swapping)
     /// nor between a jump's teardown and its new search.
-    private func searchEnded() {
-        let wasBlocked = sourcesBlockedBySearch
+    /// `listWiped`: the teardown's clear dropped a list that owned the flow; reload it the same way.
+    private func searchEnded(listWiped: Bool = false) {
+        let wasBlocked = sourcesBlockedBySearch || listWiped
         sourcesBlockedBySearch = false
         sourcesBlockedByJump = false
         guard wasBlocked, sourceColumnVisible, !suppressSourceReload,
@@ -699,9 +728,20 @@ final class NextEpisodeEngine: ObservableObject {
     /// can prove that a later guard (e.g. `loadSources`' own bump) is what drops a stale emission.
     func endForcedSearchWithoutGenerationBumpForTesting() {
         streamsWatcher = nil
+        searchOwnsFlow = false
         phase = .hidden
         searchEnded()
     }
+
+    /// Tests only (r2 P3): the live select exit, with the phase still `.searching`.
+    func selectForTesting(_ stream: StreamItem) { didSelect(stream) }
+
+    /// Tests only (r2 P3): the live no-stream exit, with the phase still `.searching`.
+    func finishWithoutStreamForTesting() { finishWithoutStream() }
+
+    /// Tests only (r2 P3): `jumpToEpisode` without its `settings` guard. `beginSearch()` still
+    /// returns early (nil settings), so the search itself is not started.
+    func jumpForTesting(to episode: MetaVideo) { performJump(to: episode) }
     #endif
 
     private func handleStreams(_ state: StreamsUiState, settings: PlayerSettingsUiState) {
@@ -841,6 +881,7 @@ final class NextEpisodeEngine: ObservableObject {
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
+        searchOwnsFlow = false        // r2 P3: before `searchEnded()`, so its reload is not deferred
         searchEnded()
 
         // Manual episode jump: play as soon as a stream resolves — no countdown, no
@@ -875,8 +916,9 @@ final class NextEpisodeEngine: ObservableObject {
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
-        searchEnded()
+        searchOwnsFlow = false        // r2 P3: before `searchEnded()`, so its reload is not deferred
         phase = .noStream
+        searchEnded()
         hideTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard let self, !Task.isCancelled else { return }
