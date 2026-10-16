@@ -114,6 +114,12 @@ class NativePlayerParityUITests: XCTestCase {
                                 "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
         app.launch()
         XCTAssertTrue(app.otherElements["player.mpv"].waitForExistence(timeout: 30), "player did not appear")
+        // Same start gate as the P1 harness: playback has really started (pos > 1).
+        let seek = element(app, "debug_seekProbe")
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
+        let started = Date().addingTimeInterval(30)
+        while Date() < started, (Double(Self.parse(seek.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertGreaterThan(Double(Self.parse(seek.label)["pos"] ?? "") ?? 0, 1, "playback never started: \(seek.label)")
         let bar = element(app, "debug_transportProbe")
         XCTAssertTrue(bar.waitForExistence(timeout: 30), "no transport probe")
         let end = Date().addingTimeInterval(20)
@@ -133,7 +139,7 @@ class NativePlayerParityUITests: XCTestCase {
         let end2 = Date().addingTimeInterval(4)
         while Date() < end2, (target.value as? String) != "selected" { Thread.sleep(forTimeInterval: 0.3) }
         XCTAssertEqual(target.value as? String, "selected", "1.25x not selected after the pick")
-        print("[ParityLeg] mpv tab: \(bar.label)")
+        print("[ParityLeg] mpv tab: \(seek.label) | \(bar.label)")
     }
 
     // MARK: Native legs (A step 6)
