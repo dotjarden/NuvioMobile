@@ -234,6 +234,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Embedded text tracks offered as renditions this session (Info tab row).
     private var embeddedSubtitleCount = 0
 
+    // MARK: - Item decoration (P4)
+
+    /// The app subtitle style snapshot (A9), read once in `resolveLanguagePlan`; a Settings change
+    /// applies from the next playback, like `stripSdh`.
+    private var subtitleStyleInput = NativeSubtitleStyle.Input.default
+
     init(context: PlaybackContext) {
         self.context = context
         self.recorder = PlaybackProgressRecorder(context: context)
@@ -287,6 +293,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         PlayerSettingsRepository.shared.ensureLoaded()
         guard let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState else { return }
         playerSettings = settings
+        subtitleStyleInput = NativeSubtitleStyle.input(from: settings.subtitleStyle)
         let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
         let audioTargets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
             preferredAudioLanguage: settings.preferredAudioLanguage,
@@ -548,6 +555,16 @@ final class NativePlaybackCoordinator: ObservableObject {
         if text != preparingLabel { preparingLabel = text }
     }
 
+    /// Every `AVPlayerItem` this coordinator creates (first item, signaling retry, B17 rebuild)
+    /// goes through here; nothing else sets these properties.
+    private func decorate(_ item: AVPlayerItem) {
+        // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
+        // would otherwise race minutes past the ~realtime remux frontier and block on segments that
+        // don't exist yet, tripping CFNetwork's request timeout.
+        item.preferredForwardBufferDuration = 24
+        item.textStyleRules = NativeSubtitleStyle.rules(subtitleStyleInput)
+    }
+
     private static func fileSize(_ dir: URL, _ name: String) -> Int {
         ((try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path))?[.size] as? Int) ?? 0
     }
@@ -641,10 +658,8 @@ final class NativePlaybackCoordinator: ObservableObject {
             print("[NativePlayer] serving \(url.absoluteString)")
             self.servedURL = url
             let item = AVPlayerItem(url: url)
-            // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
-            // would otherwise race minutes past the ~realtime remux frontier and block on segments that
-            // don't exist yet, tripping CFNetwork's request timeout.
-            item.preferredForwardBufferDuration = 24
+            self.decorate(item)
+            print(NativeSubtitleStyle.logLine(self.subtitleStyleInput))
             let player = AVPlayer(playerItem: item)
             self.applyLanguagePlan(to: player)
             self.playerItem = item
@@ -711,7 +726,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
         let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
         let item = AVPlayerItem(url: retryURL)
-        item.preferredForwardBufferDuration = 24
+        decorate(item)
         playerItem = item
         legibleGroup = nil
         audibleGroup = nil            // per-item groups; the retry item gets its own observer too
