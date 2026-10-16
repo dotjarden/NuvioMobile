@@ -50,7 +50,7 @@ struct NativePlayerScreen: View {
     // P4 B16: the pause info card (rule in `NativePauseCardRule`).
     /// Settings › Playback › Pause Info Card, read once in `onAppear` (as on mpv).
     @State private var pauseCardEnabled = true
-    /// A `visible=false` transport-bar callback arrived during this pause (unknown = visible, [C-5]).
+    /// The transport bar's last delegate report was `visible=false` (unknown = visible, [C-5]; P4-F2).
     @State private var barKnownHidden = false
     /// Last transport-bar report from the host delegate (nil = none yet); for the probe.
     @State private var barVisible: Bool?
@@ -174,7 +174,8 @@ struct NativePlayerScreen: View {
 
             #if DEBUG
             // P4 legs' oracle (spec §10.2): 1 pt, top-trailing, like `SeekProbeLabel`.
-            NativeProbeLabel(coordinator: coordinator, barVisible: barVisible, card: showPauseCard)
+            NativeProbeLabel(coordinator: coordinator, barVisible: barVisible, card: showPauseCard,
+                             panel: panelOpen, barHidden: barKnownHidden, pausedSince: pausedSince)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             #endif
 
@@ -279,7 +280,8 @@ struct NativePlayerScreen: View {
         pauseCardTask?.cancel()
         if paused {
             pausedSince = ProcessInfo.processInfo.systemUptime
-            barKnownHidden = false          // unknown counts as visible until the delegate says hidden
+            // P4-F2: start from the delegate's last report (nil = unknown = visible, [C-5]).
+            barKnownHidden = NativePauseCardRule.barKnownHiddenAtPause(lastReport: barVisible)
             pauseCardTask = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(NativePauseCardRule.delaySec))
                 guard !Task.isCancelled else { return }
@@ -287,7 +289,6 @@ struct NativePlayerScreen: View {
             }
         } else {
             pausedSince = nil
-            barKnownHidden = false
             hidePauseCard(reason: "resume")
         }
     }
@@ -444,6 +445,11 @@ private struct NativeProbeLabel: View {
     @ObservedObject var coordinator: NativePlaybackCoordinator
     let barVisible: Bool?
     let card: Bool
+    /// The pause-card rule's other screen-side inputs (P4-F2): panel open, bar known hidden, and
+    /// whether a pause start is recorded.
+    let panel: Bool
+    let barHidden: Bool
+    let pausedSince: TimeInterval?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
@@ -464,6 +470,8 @@ private struct NativeProbeLabel: View {
             + " paused=\(coordinator.isPaused ? 1 : 0) bar=\(bar) card=\(card ? 1 : 0)"
             + " stage=\(coordinator.loadingStage.logToken) chapters=\(coordinator.chapters.count)"
             + " subs=\(coordinator.subtitleRenditionsByName.count) late=\(coordinator.lateState)"
+            + " panel=\(panel ? 1 : 0) barHidden=\(barHidden ? 1 : 0) since=\(pausedSince == nil ? 0 : 1)"
+            + " rebuilding=\(coordinator.isRebuildingItem ? 1 : 0)"
     }
 }
 #endif

@@ -20,7 +20,7 @@ final class NativePauseCardRuleTests: XCTestCase {
         XCTAssertTrue(visible(now: 130))
     }
 
-    /// [C-5]: no `visible=false` callback yet this pause = the bar may be up.
+    /// [C-5]: the last bar report was not `visible=false` (or none yet) = the bar may be up.
     func testHiddenWhileTheBarIsUnknownOrVisible() {
         XCTAssertFalse(visible(barKnownHidden: false))
     }
@@ -48,5 +48,16 @@ final class NativePauseCardRuleTests: XCTestCase {
     func testDelayMatchesTheSpec() {
         XCTAssertEqual(NativePauseCardRule.delaySec, 1.5)
         XCTAssertTrue(NativePauseCardRule.supported)
+    }
+
+    /// P4-F2: a pause starts from the delegate's last report, so a bar that stays hidden through
+    /// the pause (no new callback) still lets the card show; no report yet stays unknown = visible.
+    func testPauseStartsFromTheLastBarReport() {
+        XCTAssertTrue(NativePauseCardRule.barKnownHiddenAtPause(lastReport: false))
+        XCTAssertFalse(NativePauseCardRule.barKnownHiddenAtPause(lastReport: true))
+        XCTAssertFalse(NativePauseCardRule.barKnownHiddenAtPause(lastReport: nil), "no callback yet = unknown")
+        let hidden = NativePauseCardRule.barKnownHiddenAtPause(lastReport: false)
+        XCTAssertTrue(NativePauseCardRule.visible(pausedSince: 10, now: 11.5, barKnownHidden: hidden, panelOpen: false,
+                                                  enabled: true, isPlayingPhase: true, isRebuilding: false))
     }
 }

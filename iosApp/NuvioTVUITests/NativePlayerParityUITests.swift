@@ -325,6 +325,29 @@ class NativePlayerParityUITests: XCTestCase {
         let expected = before + Date().timeIntervalSince(pickedAt)
         XCTAssertLessThan(abs(after - expected), 3, "position \(before) → \(after), expected ≈\(expected)")
         print("[NativeParityLeg] late: \(nativeProbeText(app))")
+
+        // P4-F2: after the rebuild, close the panel and pause: the pause card must still show.
+        remote.press(.menu)
+        try requireNativeStillPresented(app)
+        XCTAssertTrue(waitNative(app, timeout: 4) { $0["panel"] == "0" }, "panel never closed: \(nativeProbeText(app))")
+        waitBarSettled(app)
+        remote.press(.playPause)
+        XCTAssertTrue(waitNative(app, timeout: 4) { $0["paused"] == "1" }, "did not pause after the rebuild: \(nativeProbeText(app))")
+        var sawBarHidden: Date?
+        var cardShown = false
+        let end = Date().addingTimeInterval(14)
+        while Date() < end {
+            let p = nativeProbe(app)
+            if p["card"] == "1" { cardShown = true; break }
+            if p["bar"] == "0", p["paused"] == "1" { sawBarHidden = sawBarHidden ?? Date() }
+            if let hidden = sawBarHidden, Date().timeIntervalSince(hidden) > 3 { break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        guard sawBarHidden != nil || cardShown else {
+            throw XCTSkip("sim bar never hides while paused after the rebuild: \(nativeProbeText(app))")
+        }
+        XCTAssertTrue(cardShown, "no pause card after a late-subtitle rebuild: \(nativeProbeText(app))")
+        print("[NativeParityLeg] late + pause card: \(nativeProbeText(app))")
     }
 
     // MARK: B24 loading screen (agent C, spec §10.2)
