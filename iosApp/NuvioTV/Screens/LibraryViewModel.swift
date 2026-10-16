@@ -247,8 +247,9 @@ final class LibraryViewModel: ObservableObject {
         ))
 
         // providerOrders stays empty, as on mobile's grid: the per-list added-order caches have no
-        // public shared accessor. MDBList's DEFAULT order (newest added, then the chosen list's
-        // rank) comes from `listKey`, which the projection sets to the chosen list.
+        // public shared accessor. MDBList's DEFAULT order ("List Order": the owner's saved order on
+        // mdblist.com — the list rank — since batch D U1; before that it was newest-added first)
+        // comes from `listKey`, which the projection sets to the chosen list.
         let projection = LibraryDisplaySettingsKt.buildLibraryVerticalProjection(
             sections: state.sections,
             sourceMode: state.sourceMode,

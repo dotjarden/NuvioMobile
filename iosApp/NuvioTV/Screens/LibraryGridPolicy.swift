@@ -188,6 +188,10 @@ nonisolated enum LibraryGridPolicy {
                 : String(localized: "List Order")
         case "ADDED_DESC": return String(localized: "Recently Added")
         case "ADDED_ASC": return String(localized: "Oldest First")
+        // Batch D U1 (upstream d8ce7258): MDBList lists sort by the title's release date; the shared
+        // `availableLibrarySortOptions` offers these for MDBLIST only.
+        case "RELEASED_DESC": return String(localized: "Recently Released")
+        case "RELEASED_ASC": return String(localized: "Oldest Released")
         case "TITLE_ASC": return String(localized: "A\u{2013}Z")
         case "TITLE_DESC": return String(localized: "Z\u{2013}A")
         default: return optionName
