@@ -47,6 +47,16 @@ struct NativePlayerScreen: View {
     @State private var swipeHintTask: Task<Void, Never>?
     @State private var swipeHintReason: SwipeHintReason?
     @State private var panelOpen = false
+    // P4 B16: the pause info card (rule in `NativePauseCardRule`).
+    /// Settings › Playback › Pause Info Card, read once in `onAppear` (as on mpv).
+    @State private var pauseCardEnabled = true
+    /// A `visible=false` transport-bar callback arrived during this pause (unknown = visible, [C-5]).
+    @State private var barKnownHidden = false
+    /// Last transport-bar report from the host delegate (nil = none yet); for the probe.
+    @State private var barVisible: Bool?
+    @State private var pausedSince: TimeInterval?
+    @State private var showPauseCard = false
+    @State private var pauseCardTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
     init(context: PlaybackContext,
@@ -95,8 +105,8 @@ struct NativePlayerScreen: View {
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
                         hasEpisodes: !context.episodes.isEmpty && context.season != nil,
-                        onBarVisibility: { _ in },
-                        onAnyPress: {}
+                        onBarVisibility: { visible in barVisibilityChanged(visible) },
+                        onAnyPress: { hidePauseCard(reason: "press") }
                     )
                     .ignoresSafeArea()
                 }
@@ -132,6 +142,18 @@ struct NativePlayerScreen: View {
                 PlayerSwipeHint().transition(.opacity)
             }
 
+            // P4 B16: paused, the system bar known hidden, the panel closed. Above the player,
+            // below the up-next caption; never focusable, never hit-tested.
+            if showPauseCard, coordinator.phase == .playing {
+                PauseInfoCard(context: context, positionSec: coordinator.lastPositionSec,
+                              durationSec: coordinator.durationSec)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(60)
+                    .allowsHitTesting(false)
+                    .focusable(false)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.25)))
+            }
+
             if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
                 PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -142,8 +164,10 @@ struct NativePlayerScreen: View {
         }
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(PlayerChipStyle.animation, value: showSwipeHint)
+        .animation(.easeInOut(duration: 0.25), value: showPauseCard)
         .onChange(of: coordinator.phase) { _, phase in
             if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
+            evaluatePauseCard()
         }
         .onChange(of: coordinator.isPaused) { _, paused in
             // Re-show the hint once per pause (after the pause has settled), like Infuse. Resuming
@@ -154,8 +178,14 @@ struct NativePlayerScreen: View {
             } else if swipeHintReason == .pause {
                 hideSwipeHint()
             }
+            pauseChanged(paused)
+        }
+        .onChange(of: panelOpen) { _, open in
+            if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
         .onAppear {
+            pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
+                .pauseOverlayEnabled != false
             let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,
                                                    context: context, routingNote: routingNote)
             panelAdapter = adapter
@@ -182,6 +212,7 @@ struct NativePlayerScreen: View {
         }
         .onDisappear {
             swipeHintTask?.cancel()
+            pauseCardTask?.cancel()
             coordinator.stop()
             upNext.stop()
         }
@@ -205,6 +236,56 @@ struct NativePlayerScreen: View {
     private func hideSwipeHint() {
         swipeHintTask?.cancel()
         showSwipeHint = false
+    }
+
+    // MARK: - Pause info card (P4 B16)
+
+    /// A B17 item rebuild's transient pause is not a viewer pause.
+    private var isRebuildingItem: Bool { false }
+
+    private func pauseChanged(_ paused: Bool) {
+        pauseCardTask?.cancel()
+        if paused {
+            pausedSince = ProcessInfo.processInfo.systemUptime
+            barKnownHidden = false          // unknown counts as visible until the delegate says hidden
+            pauseCardTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(NativePauseCardRule.delaySec))
+                guard !Task.isCancelled else { return }
+                evaluatePauseCard()
+            }
+        } else {
+            pausedSince = nil
+            barKnownHidden = false
+            hidePauseCard(reason: "resume")
+        }
+    }
+
+    private func barVisibilityChanged(_ visible: Bool) {
+        barVisible = visible
+        barKnownHidden = !visible
+        if visible { hidePauseCard(reason: "bar") } else { evaluatePauseCard() }
+    }
+
+    private func evaluatePauseCard() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let visible = NativePauseCardRule.visible(
+            pausedSince: pausedSince, now: now, barKnownHidden: barKnownHidden, panelOpen: panelOpen,
+            enabled: pauseCardEnabled, isPlayingPhase: coordinator.phase == .playing,
+            isRebuilding: isRebuildingItem)
+        if visible, !showPauseCard {
+            showPauseCard = true
+            // The two would overlap at the top centre.
+            if swipeHintReason == .pause { hideSwipeHint() }
+            print("[NativePlayer] pause card shown after \(String(format: "%.1f", now - (pausedSince ?? now)))s")
+        } else if !visible, showPauseCard {
+            hidePauseCard(reason: isRebuildingItem ? "rebuild" : (panelOpen ? "panel" : "rule"))
+        }
+    }
+
+    private func hidePauseCard(reason: String) {
+        guard showPauseCard else { return }
+        showPauseCard = false
+        print("[NativePlayer] pause card hidden reason=\(reason)")
     }
 
     /// Vertical room the system contextual-action pill occupies above the bottom inset on tvOS 26,
