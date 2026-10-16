@@ -89,9 +89,12 @@ struct PlayerSettingsPane: View {
                 isOn: Binding(get: { model.matchFrameRate }, set: { model.setMatchFrameRate($0) }),
                 descriptionID: .playerMatchFrameRate
             )
+            // B10 (BUG-166, Steven's rc4 verdict: DV colours green/magenta): a DV profile 5 stream
+            // the router sends to mpv uses gpu-next whatever this toggle says (mpv's `gpu` VO has
+            // no RPU processing); the subtitle says so.
             SettingsToggleRow(
                 title: String(localized: "Enhanced Video Renderer"),
-                subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video."),
+                subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video. Dolby Vision profile 5 streams that play on mpv always use it."),
                 isOn: Binding(get: { model.enhancedRenderer }, set: { model.setEnhancedRenderer($0) }),
                 descriptionID: .playerEnhancedRenderer
             )

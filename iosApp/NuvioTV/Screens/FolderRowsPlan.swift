@@ -19,16 +19,51 @@ nonisolated enum FolderPageLayout: Hashable, Sendable {
     case rows
     case grid
 
-    /// Classic Home keeps today's grid for every folder. Stage opens the Rows page unless the viewer
-    /// chose Grid for this folder (Edit › Layout, stored device-locally by `FolderLayoutStore`).
-    static func resolve(homeLayout: HomeLayout, gridOverride: Bool) -> FolderPageLayout {
-        homeLayout == .classic || gridOverride ? .grid : .rows
+    /// Classic Home keeps today's grid for every folder. Stage opens the Rows page unless the
+    /// Settings default says Grid (`defaultGrid`, Settings › Home Screen › Collections Layout,
+    /// FEAT-71) or this folder has a stored Grid choice (`gridOverride`, `FolderLayoutStore`).
+    static func resolve(homeLayout: HomeLayout, gridOverride: Bool, defaultGrid: Bool) -> FolderPageLayout {
+        homeLayout == .classic || gridOverride || defaultGrid ? .grid : .rows
+    }
+}
+
+/// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "shouldn't remain visible
+/// on the first row … it breaks the immersive feel … move this option into the settings"): the
+/// Stage folder page's layout, one device-local choice for every folder (Settings › Home Screen ›
+/// Collections Layout, shown only while Home Layout is Stage). Classic folders are always the grid.
+nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
+    case rows
+    case grid
+
+    /// The `UserDefaults` key (device-local `@AppStorage`, not synced), like `home_layout`.
+    static let defaultsKey = "folder_layout_default"
+    /// Rows, the Stage folder page as it shipped.
+    static let defaultValue: FolderLayoutDefault = .rows
+
+    /// nil, blank or unknown resolves to `defaultValue`.
+    static func resolve(_ raw: String?) -> FolderLayoutDefault {
+        guard let raw else { return defaultValue }
+        return FolderLayoutDefault(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            ?? defaultValue
+    }
+
+    var isGrid: Bool { self == .grid }
+
+    /// The Settings picker label ("Rows" and "Grid" already exist in the string catalog).
+    var label: String {
+        switch self {
+        case .rows: return String(localized: "Rows")
+        case .grid: return String(localized: "Grid")
+        }
     }
 }
 
 /// The device-local per-folder Grid choice (P2-6): one `@AppStorage` string, entries joined by
 /// "\n", entry = "\(collectionId)\u{1F}\(folderId)" (folder ids are unique per COLLECTION only).
-/// Only Grid choices are stored; a folder with no entry follows the Home layout. The synced
+/// Only Grid choices are stored; a folder with no entry follows the Home layout and the Settings
+/// default (`FolderLayoutDefault`). FEAT-71: the TV can no longer WRITE an entry (the Edit band's
+/// Layout picker moved to Settings as one default for every folder); entries stored before keep
+/// opening their folder as the grid, and the store and its tests stay for them. The synced
 /// `Collection.viewMode` stays ignored on TV: its default is `TABBED_GRID`, so it cannot tell
 /// "chose grid" from "never touched".
 ///
@@ -244,9 +279,10 @@ nonisolated enum FolderRowsPlan {
     /// folder's own page must still open on the folder). The same id and type as the Home preview
     /// (`nuvio-folder://…`, `nuvio.folder`, so `isCollectionHero` gates trailers and enrichment), the
     /// folder title as its name, the collection title as the meta line, `folderHeroDescription` as
-    /// the synopsis, and no artwork at all.
+    /// the synopsis when `showsDetails` (B1, Show Catalog Details in Headings; nil when off, the
+    /// default), and no artwork at all.
     @MainActor
-    static func plainFolderPreview(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview {
+    static func plainFolderPreview(collection: NuvioCollection, folder: CollectionFolder, showsDetails: Bool) -> MetaPreview {
         MetaPreview(
             id: "\(collectionHeroIdScheme)\(collection.id)/\(folder.id)",
             type: collectionHeroType,
@@ -255,7 +291,7 @@ nonisolated enum FolderRowsPlan {
             banner: nil,
             logo: nil,
             posterShape: .poster,
-            description: HomeView.folderHeroDescription(collection: collection, folder: folder),
+            description: showsDetails ? HomeView.folderHeroDescription(collection: collection, folder: folder) : nil,
             releaseInfo: collection.title.trimmingCharacters(in: .whitespacesAndNewlines),
             rawReleaseDate: nil,
             popularity: nil,
@@ -298,16 +334,18 @@ nonisolated enum FolderStageInput {
     /// One focus report. `report` is the card key, or nil when focus left a row (Up to the Edit
     /// band, a push). Returns the new state and whether the report goes to the stage.
     ///
-    /// - Before following: the first card report records the initial card; the initial card again
-    ///   or a nil report changes nothing (Up to the Edit band and back keeps the folder on stage and
-    ///   the logo docked); any other card starts following and is forwarded.
+    /// - Before following: the first card report records the initial card AND is forwarded
+    ///   (FEAT-70, Steven's rc4 verdict: the first title's art and synopsis as soon as the folder
+    ///   opens; `follows` stays false, so the folder logo stays docked); the initial card again or a
+    ///   nil report forwards nothing and changes nothing (Up to the Edit band and back keeps the
+    ///   logo docked); any other card starts following and is forwarded.
     /// - Following: every report is forwarded, the initial card and nil reports included (the
     ///   stage's own funnel handles a cross-row nil). There is no path back.
     static func step(_ state: State, report: String?) -> (state: State, forward: Bool) {
         if state.follows { return (state, true) }
         guard let report else { return (state, false) }
         guard state.initialCard != nil else {
-            return (State(initialCard: report, follows: false), false)
+            return (State(initialCard: report, follows: false), true)   // FEAT-70: the initial seed
         }
         guard startsFollowing(initial: state.initialCard, report: report) else { return (state, false) }
         return (State(initialCard: state.initialCard, follows: true), true)

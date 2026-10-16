@@ -10290,8 +10290,13 @@ extension NuvioTVUITests {
         XCTAssertEqual(tok(opened, "row"), "0", "the page opens on its first row: \(opened)")
         XCTAssertEqual(tok(opened, "tab"), "1", "row 0 is the first source tab (tab 0 is All, omitted): \(opened)")
         XCTAssertEqual(tok(opened, "docked"), "1", "the folder title is docked in the stage until the first move (Q1): \(opened)")
-        XCTAssertEqual(tok(opened, "disp"), Self.folderRowsFolderIdentity, "the stage shows the folder when the page opens: \(opened)")
-        XCTAssertEqual(tok(openStage, "fitem"), "-", "the stage must not follow the initial landing (Q1): \(openStage)")
+        // FEAT-70 (rc4 verdict): the initial landing seeds the stage with row 0's first item (the
+        // folder intro shows only until then) while the folder title stays docked.
+        XCTAssertNotEqual(tok(openStage, "fitem"), "-", "the initial landing must seed the stage with row 0's first item (FEAT-70): \(openStage)")
+        XCTAssertTrue(pollUntil(4, step: 0.25) {
+            self.tok(self.stageProbeLabel(app, "folder_rows_state"), "disp") != Self.folderRowsFolderIdentity
+        }, "the stage must leave the folder intro for row 0's first item once the row lands (FEAT-70): \(stageProbeLabel(app, "folder_rows_state"))")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "docked"), "1", "the folder title stays docked until the first move (FEAT-70)")
         let logo = app.descendants(matching: .any)["folder_stage_logo"].firstMatch
         XCTAssertTrue(logo.waitForExistence(timeout: 4), "folder_stage_logo is missing")
         XCTAssertTrue(logo.staticTexts[Self.folderRowsFolderTitle].exists, "the folder's title must be a staticText inside folder_stage_logo")
@@ -10411,8 +10416,9 @@ extension NuvioTVUITests {
         shot(app, "105c_rows_again")
     }
 
-    /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage ignores the initial landing
-    /// (`fitem=-` until the first move); back from a Detail opened on row 1 the page is on the same
+    /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage takes row 0's first item on
+    /// the initial landing with the title still docked (FEAT-70; was `fitem=-` until the first move);
+    /// back from a Detail opened on row 1 the page is on the same
     /// row and card; leaving the folder returns Home focus to its tile.
     func test106FolderRowsExitRestoresFocus() throws {
         let app = launchStageWithFolderRows()
@@ -10428,8 +10434,11 @@ extension NuvioTVUITests {
             return
         }
         pause(1.0)
-        XCTAssertEqual(tok(stageProbeLabel(app, "debug_stage_folder"), "fitem"), "-",
-                       "the folder stage must not follow the initial landing: fitem stays '-' until the first move")
+        // FEAT-70: the initial landing seeds the stage (fitem = row 0's first card), docked.
+        XCTAssertNotEqual(tok(stageProbeLabel(app, "debug_stage_folder"), "fitem"), "-",
+                          "the folder stage must take row 0's first item on the initial landing (FEAT-70)")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "docked"), "1",
+                       "the folder title stays docked until the first move")
         remote.press(.down)
         pause(2.5)
         XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "1", "Down must page to row 1")

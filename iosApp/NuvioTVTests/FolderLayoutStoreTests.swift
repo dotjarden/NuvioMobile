@@ -9,13 +9,37 @@ final class FolderLayoutStoreTests: XCTestCase {
     // MARK: - FolderPageLayout
 
     func testClassicIsAlwaysTheGrid() {
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .classic, gridOverride: false), .grid)
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .classic, gridOverride: true), .grid)
+        for override in [false, true] {
+            for defaultGrid in [false, true] {
+                XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .classic, gridOverride: override,
+                                                        defaultGrid: defaultGrid), .grid)
+            }
+        }
     }
 
     func testStageOpensRowsUnlessTheFolderChoseGrid() {
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: false), .rows)
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: true), .grid)
+        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: false, defaultGrid: false), .rows)
+        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: true, defaultGrid: false), .grid)
+    }
+
+    /// FEAT-71: the Settings default opens every Stage folder as the grid; a stored per-folder Grid
+    /// choice still wins over a Rows default.
+    func testStageFollowsTheSettingsDefault() {
+        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: false, defaultGrid: true), .grid)
+        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, gridOverride: true, defaultGrid: true), .grid)
+    }
+
+    func testFolderLayoutDefaultKeyAndResolve() {
+        XCTAssertEqual(FolderLayoutDefault.defaultsKey, "folder_layout_default")
+        XCTAssertEqual(FolderLayoutDefault.defaultValue, .rows)
+        XCTAssertEqual(FolderLayoutDefault.resolve(nil), .rows)
+        XCTAssertEqual(FolderLayoutDefault.resolve(""), .rows)
+        XCTAssertEqual(FolderLayoutDefault.resolve("bogus"), .rows)
+        XCTAssertEqual(FolderLayoutDefault.resolve("grid"), .grid)
+        XCTAssertEqual(FolderLayoutDefault.resolve(" Grid "), .grid)
+        XCTAssertEqual(FolderLayoutDefault.resolve("rows"), .rows)
+        XCTAssertTrue(FolderLayoutDefault.grid.isGrid)
+        XCTAssertFalse(FolderLayoutDefault.rows.isGrid)
     }
 
     // MARK: - Keys

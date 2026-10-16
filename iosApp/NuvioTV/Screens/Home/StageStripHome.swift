@@ -69,6 +69,9 @@ struct StageStripHome: View {
     /// changes re-run the trailer funnel).
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// B1 (BUG-145 + FEAT-67): Show Catalog Details in Headings (`HeadingDetailsSetting`, default
+    /// off) gates the headings' add-on name and the folder previews' "name · N sources" line.
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
@@ -264,8 +267,9 @@ struct StageStripHome: View {
             .environment(\.posterStyle, geo.fits ? posterStyle : posterStyle.withHeight(geo.layoutPosterHeight))
             // D1: settings only (Trailers on Focus + Background), never per focus (the BUG-19 rule).
             .environment(\.trailerPlaysInHero, backgroundTrailerMode)
-            // §5 (Stage only): catalog headings carry their add-on's name ("Popular · Cinemeta").
-            .environment(\.rowHeadingShowsAddon, true)
+            // §5 (Stage only): catalog headings carry their add-on's name ("Popular · Cinemeta"),
+            // B1: only with Show Catalog Details in Headings on (Steven's rc4 no-go, default off).
+            .environment(\.rowHeadingShowsAddon, catalogDetailsInHeadings)
         }
     }
 
@@ -343,7 +347,8 @@ struct StageStripHome: View {
     private func collectionRow(_ collection: NuvioCollection) -> some View {
         CollectionRowView(collection: collection, onFolderFocusChange: { folder in
             // A folder with neither a backdrop nor a logo reports nil, and the stage keeps its title.
-            stage.report(folder.flatMap { HomeRowPreviews.folder(collection: collection, folder: $0) },
+            stage.report(folder.flatMap { HomeRowPreviews.folder(collection: collection, folder: $0,
+                                                                 showsDetails: catalogDetailsInHeadings) },
                          source: collection.id,
                          prefetch: { HomeRowPreviews.collectionArtURLs(collection) })
         })
@@ -381,7 +386,9 @@ struct StageStripHome: View {
         case .catalog(let section):
             return section.items.first
         case .collection(let collection):
-            return collection.folders.first.flatMap { HomeRowPreviews.folder(collection: collection, folder: $0) }
+            return collection.folders.first.flatMap {
+                HomeRowPreviews.folder(collection: collection, folder: $0, showsDetails: catalogDetailsInHeadings)
+            }
         }
     }
 

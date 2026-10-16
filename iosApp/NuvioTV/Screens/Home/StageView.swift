@@ -20,6 +20,12 @@ struct StageView: View {
     /// S3: while the stage displays this identity its logo slot draws at opacity 0 (the folder page
     /// docks its own logo there); the meta line and synopsis still draw.
     let hidesLogoWhenDisplaying: String?
+    /// FEAT-70 (Steven, rc4 verdict 2026-10-16: a collection should show the first title's art and
+    /// synopsis as soon as it opens): the folder page now seeds the stage with row 0's first item on
+    /// the initial landing while its own folder logo stays DOCKED in this slot until the first move.
+    /// So the slot is hidden while the folder logo is docked, whatever the stage displays (the item
+    /// and the folder logo would otherwise draw on top of each other). Home and Discover pass false.
+    let hidesLogo: Bool
     /// S7: the DEBUG readout's identifier. The folder page passes `debug_stage_folder`, so a folder
     /// pushed over Home never yields two `debug_stage` elements.
     let probeID: String
@@ -27,10 +33,12 @@ struct StageView: View {
     init(controller: StageController,
          geometry: StripGeometry,
          hidesLogoWhenDisplaying: String? = nil,
+         hidesLogo: Bool = false,
          probeID: String = "debug_stage") {
         self.controller = controller
         self.geometry = geometry
         self.hidesLogoWhenDisplaying = hidesLogoWhenDisplaying
+        self.hidesLogo = hidesLogo
         self.probeID = probeID
     }
 
@@ -42,6 +50,7 @@ struct StageView: View {
             StageTextBlock(swap: controller.swap,
                            geometry: geometry,
                            hidesLogoWhenDisplaying: hidesLogoWhenDisplaying,
+                           hidesLogo: hidesLogo,
                            copySource: controller.copySource)
             #if DEBUG
             StageDebugLabel(debug: controller.swap.debug, geometry: geometry, probeID: probeID)
@@ -190,16 +199,21 @@ struct StageTextBlock: View {
     @ObservedObject var swap: StageSwapDriver
     let geometry: StripGeometry
     let hidesLogoWhenDisplaying: String?
+    /// FEAT-70: see `StageView.hidesLogo`.
+    let hidesLogo: Bool
     /// W2-A's Continue Watching copy input (`StageController.copySource`); a nil lookup = Classic copy.
     @ObservedObject var copySource: StageCopySource
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(swap: StageSwapDriver,
          geometry: StripGeometry,
          hidesLogoWhenDisplaying: String?,
+         hidesLogo: Bool = false,
          copySource: StageCopySource) {
         _swap = ObservedObject(wrappedValue: swap)
         self.geometry = geometry
         self.hidesLogoWhenDisplaying = hidesLogoWhenDisplaying
+        self.hidesLogo = hidesLogo
         _copySource = ObservedObject(wrappedValue: copySource)
     }
 
@@ -222,7 +236,11 @@ struct StageTextBlock: View {
                     HeroLogo(item: shown.item, image: shown.logo, maxHeight: geometry.logoSlot, ink: shown.logoInk)
                         .frame(height: geometry.logoSlot, alignment: .bottomLeading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .opacity(shown.identity == hidesLogoWhenDisplaying ? 0 : 1)   // S3
+                        // S3; FEAT-70: also hidden while the folder page's logo is docked here.
+                        // Shown on the folder logo's rise with the strip's page curve.
+                        .opacity(hidesLogo || shown.identity == hidesLogoWhenDisplaying ? 0 : 1)
+                        .animation(reduceMotion ? nil : .easeOut(duration: StageStripTuning.pageSeconds),
+                                   value: hidesLogo)
 
                     Text(copy.meta)
                         .font(Theme.Font.metaStrong)

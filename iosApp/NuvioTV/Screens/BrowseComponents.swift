@@ -69,9 +69,11 @@ private struct TrailerPlaysInHeroKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// Home Stage & Strip (P1 §5, W2-A): the Stage strip asks its catalog rows to follow the heading
-/// with the add-on's name in secondary text ("Popular · Cinemeta"), one line. False everywhere else,
-/// so Classic Home, Search, Library and every other `CatalogRowView` host keep the plain heading.
+/// Home Stage & Strip (P1 §5, W2-A): the Stage strip (and Discover) asks its catalog rows to follow
+/// the heading with the add-on's name in secondary text ("Popular · Cinemeta"), one line, only when
+/// Show Catalog Details in Headings is on (B1, `HeadingDetailsSetting`, default off: Steven's rc4
+/// no-go). False everywhere else, so Classic Home, Search, Library and every other `CatalogRowView`
+/// host keep the plain heading.
 private struct RowHeadingShowsAddonKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -5143,25 +5145,18 @@ struct CatalogRowView: View {
     /// `RowLeadingEdgeClip` opens for it. See that type's header for the whole BUG-92 argument;
     /// this is the attachment it documents and deliberately did not make itself.
     private var leadingEdgeAllowance: CGFloat {
-        // Codex beta.18 r4 (P2): the widest thing the first card can be is the EXPANDED inline trailer
-        // tile (`posterStyle.height * 16/9` for a portrait card, see InlineTrailerCard's tile
-        // geometry), and the focus lift scales that whole label — size the bleed off the maximum,
-        // not the resting poster width, or the first playing trailer gets a hard clipped edge.
+        // BUG-164 (Steven, rc4: the far-left poster cut on its left edge with No Zoom on Focus ON,
+        // and a glitch there while its trailer plays): the rule moved into
+        // `RowLeadingEdgeClip.rowAllowance`, a pure function with the measured numbers. Zoom-on is
+        // the formula this property used to inline (16:9 tile width × the lift, + accent ring +
+        // shadow), byte-identical; No Zoom opens for the still focus shadow's visible reach (44 pt)
+        // instead of ring + radius (26 pt), which cut the shadow into a hard line.
         let restingWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
-        let posterWidth = max(restingWidth, rowArtworkHeight * 16 / 9)
-        // No lift at all in No Zoom mode (`CardFocusMode.still` — `PosterCard.swift` swaps in
-        // `StillCardButtonStyle` + `.focusEffectDisabled(true)`, which scales nothing), so only the
-        // ring can bleed there. Otherwise this recomputes `PosterCard.swift`'s own
-        // `cardLiftScale(artworkHeight:)` from the SAME public constant, because that function is
-        // `private` to that file and one call site does not justify a new cross-file symbol. If it
-        // is ever made internal, call it instead of keeping two copies of the formula in step.
-        let liftScale = noZoomOnFocus ? 1 : 1 + 2 * Theme.Size.heroPinnedRowFocusLiftAllowance / rowArtworkHeight
-        // Mirrors `PosterCard.swift`'s `ringInset(accentFocusRing:noZoomOnFocus:)` — either ring
-        // reserves the same band, and neither reserves anything when both are off.
-        let ring: CGFloat = (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
-        return RowLeadingEdgeClip.allowance(posterWidth: posterWidth,
-                                            liftScale: liftScale,
-                                            ringWidth: ring)
+        return RowLeadingEdgeClip.rowAllowance(noZoomOnFocus: noZoomOnFocus,
+                                               accentFocusRing: accentFocusRing,
+                                               restingWidth: restingWidth,
+                                               artworkHeight: rowArtworkHeight,
+                                               liftRise: Theme.Size.heroPinnedRowFocusLiftAllowance)
     }
 
     /// beta.19-rc1 verdict (review r1, B P2-2): see `trailingFadeHeldFor`. Only while the held item
@@ -5172,7 +5167,9 @@ struct CatalogRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim (Steven, rc4: Stage headings "still slightly too high"): heading →
+        // shelf spacing is `StripGeometry.headingGap` (12) inside the strip, `md` (16) elsewhere.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Classic keeps the title as a plain sibling above the shelf. PINNED mode instead
             // overlays the title INSIDE the shelf's top reach band (below) so the focused
             // cards' frames — which the focus engine's scroll-to-reveal aligns — physically
@@ -5245,8 +5242,13 @@ struct CatalogRowView: View {
                             // style, the artwork and the tile read it. Portrait rows only: in a
                             // landscape row the base card never fades, the system lift raises card
                             // and tile as one object and no edge shows (review r1 P2-1).
+                            // BUG-164: never in No Zoom on Focus (`CardSystemLiftStyle.resolve`): the
+                            // tile's manual lift scaled the far-left trailer 35.6 pt past the row's
+                            // leading clip, the rc4 "glitch on the left" while it plays.
                             .environment(\.cardSystemLiftStyle,
-                                         tileShowingItemId == item.id && !posterStyle.landscapeCatalogRows ? .lift : .highlight)
+                                         CardSystemLiftStyle.resolve(tileShowing: tileShowingItemId == item.id,
+                                                                     landscapeRow: posterStyle.landscapeCatalogRows,
+                                                                     noZoomOnFocus: noZoomOnFocus))
                             // A lift SwiftUI draws itself needs an explicit zIndex to sit above the
                             // row neighbours (the FEAT-14/BUG-36 rule in PosterCard); the system
                             // lift gets its own compositor layer and needs none.

@@ -25,11 +25,13 @@ struct StripRowHeading: View {
 struct StripLoadingRow: View {
     let heading: String
     @Environment(\.posterStyle) private var style
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     var body: some View {
         let width = style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
         let height = style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim: the strip's heading gap, as the loaded row.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             StripRowHeading(text: heading)
             HStack(spacing: Theme.Spacing.rowGap) {
                 ForEach(0..<StripRowsPlan.skeletonCount, id: \.self) { _ in
@@ -48,9 +50,11 @@ struct StripLoadingRow: View {
 struct StripMessageRow: View {
     let heading: String
     let message: LocalizedStringKey
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim: the strip's heading gap, as the loaded row.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             StripRowHeading(text: heading)
             Text(message)
                 .font(Theme.Font.body)

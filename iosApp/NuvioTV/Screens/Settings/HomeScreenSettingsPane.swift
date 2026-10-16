@@ -33,6 +33,9 @@ struct HomeScreenSettingsPane: View {
     /// through `HomeLayout`, so the flip applies as soon as the picker writes it. An unset or
     /// unknown value reads as the default (Stage).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+    /// FEAT-71 (Steven, rc4 verdict 2026-10-16): the Stage folder page's Rows / Grid choice, moved out
+    /// of the folder page's Edit band into Settings (`FolderLayoutDefault`, device-local).
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefaultRaw = FolderLayoutDefault.defaultValue.rawValue
 
     /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
     /// Default ON. Local-only, not synced; the wash layer reads the same key
@@ -345,6 +348,21 @@ struct HomeScreenSettingsPane: View {
                 descriptionID: .homeLayout,
                 label: { $0.label }
             )
+
+            // FEAT-71: how a collection folder opens on the Stage. Classic folders are always the
+            // grid, so the row shows only in Stage (its stored value is kept either way).
+            if isStage {
+                SettingsPickerRow(
+                    title: String(localized: "Collections Layout"),
+                    selection: Binding(
+                        get: { FolderLayoutDefault.resolve(folderLayoutDefaultRaw) },
+                        set: { folderLayoutDefaultRaw = $0.rawValue }
+                    ),
+                    options: FolderLayoutDefault.allCases,
+                    descriptionID: .homeCollectionsLayout,
+                    label: { $0.label }
+                )
+            }
 
             // The wash is part of the stage (it fills the background behind the focused title), so
             // there is nothing for the switch to control in Classic. Its stored value is kept.

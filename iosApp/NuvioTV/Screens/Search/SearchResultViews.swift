@@ -52,12 +52,14 @@ struct SearchSuggestionRow: View {
 
 // MARK: - c. Top result
 
-/// B3 c: the search's first answer, bigger than a row card: the poster beside its name, a meta line
-/// and where it was found. Grouped mode only (the view model has no Top result per add-on).
+/// B3 c: the search's first answer, bigger than a row card: the poster beside its name and a meta
+/// line. Grouped mode only (the view model has no Top result per add-on).
+///
+/// B8 (FEAT-72; Steven, beta.19-rc4 verdict 2026-10-16: "title, year, type only"): the card no
+/// longer prints where the title was found or its IMDb rating. The rows below keep their own
+/// "Found in …" footnote (`SearchView.cardFootnote`).
 struct SearchTopResultCard: View {
     let item: MetaPreview
-    /// "Found in Cinemeta and Torrentio", or nil.
-    let foundIn: String?
     /// Focus took the card (drives the wash).
     let onFocus: (MetaPreview) -> Void
 
@@ -85,12 +87,6 @@ struct SearchTopResultCard: View {
                                 .foregroundStyle(Theme.Palette.textSecondary)
                                 .lineLimit(1)
                         }
-                        if let foundIn {
-                            Text(verbatim: foundIn)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(Theme.Palette.textSecondary)
-                                .lineLimit(2)
-                        }
                     }
                     .frame(maxWidth: 760, alignment: .leading)
                 }
@@ -107,21 +103,26 @@ struct SearchTopResultCard: View {
         .accessibilityIdentifier("search.topResult")
     }
 
-    /// "Series · 2021 · IMDb 8.0": the type only when it isn't a movie (the poster says that much),
-    /// then the year and a real IMDb rating (never "0.0" or "N/A", BUG-142).
+    /// "Movie · 2009", "Series · 2021": B8 (FEAT-72) always prints the type, then the year when
+    /// there is one, and no rating. nil only when the type is blank and there is no year.
     static func metaLine(_ item: MetaPreview) -> String? {
         var parts: [String] = []
-        switch item.type.lowercased() {
-        case "series": parts.append(String(localized: "Series"))
-        case "anime": parts.append(String(localized: "Anime"))
-        case "tv": parts.append(String(localized: "TV"))
-        default: break
-        }
+        if let type = typeLabel(item.type) { parts.append(type) }
         if let year = nonBlank(item.releaseInfo) { parts.append(year) }
-        if let rating = nonBlank(item.imdbRating), let value = Double(rating), value > 0 {
-            parts.append("IMDb \(rating)")
-        }
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// The localized label for the four known types; anything else is the raw type capitalized
+    /// ("channel" → "Channel"), nil when blank.
+    static func typeLabel(_ type: String) -> String? {
+        guard let raw = nonBlank(type) else { return nil }
+        switch raw.lowercased() {
+        case "movie": return String(localized: "Movie")
+        case "series": return String(localized: "Series")
+        case "anime": return String(localized: "Anime")
+        case "tv": return String(localized: "TV")
+        default: return raw.capitalized
+        }
     }
 
     private static func nonBlank(_ text: String?) -> String? {

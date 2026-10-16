@@ -65,11 +65,12 @@ struct PlayerScreen: View {
                                    onPlaybackHealthy: onPlaybackHealthy)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
-                                routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote,
+                                routingNote: mpvRoutingNote,
                                 onPlaybackFailed: annotated(.mpv),
                                 onPlaybackHealthy: onPlaybackHealthy,
                                 startWatchdogShortened: forcedMPV && nativeFailedBeforeStart,
-                                nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0)
+                                nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0,
+                                forcesGpuNext: mpvForcesGpuNext)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.
@@ -96,6 +97,21 @@ struct PlayerScreen: View {
             nativeSecondsPlayed = 0
             nativeFailedBeforeStart = false
         }
+    }
+
+    /// B10 (BUG-166): mpv renders a Dolby Vision profile 5 stream with `gpu-next`. The router flags
+    /// the streams it sends to mpv; a native run that fell over carries the same probe.
+    private var mpvForcesGpuNext: Bool {
+        if forcedMPV { return PlayerEngineRouter.mpvNeedsGpuNext(probe: probe) }
+        return decision?.prefersGpuNext ?? false
+    }
+
+    /// The Stream Info / loading line for the mpv screen: the router's note, or "mpv · fallback"
+    /// after a native failure, "· gpu-next" appended when B10 forces it.
+    private var mpvRoutingNote: String? {
+        guard forcedMPV else { return decision?.displayNote }
+        let note = String(localized: "mpv \u{00B7} fallback")
+        return mpvForcesGpuNext ? "\(note) \u{00B7} gpu-next" : note
     }
 
     /// Tags a failure with the reporting engine and whether the other engine could take over.

@@ -110,6 +110,10 @@ struct HomeView: View {
     /// `PinnedRowTitleTracking`, where nothing in Home moves on a flag flip and the previous mode's
     /// geometry would otherwise stand until something happened to scroll.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// B1 (BUG-159 revert + FEAT-67; Steven, rc4 verdict 2026-10-16): Show Catalog Details in
+    /// Headings (`HeadingDetailsSetting`, default off) gates the folder previews' "name · N sources"
+    /// line on both the hero-ON folder box and the hero-OFF panel.
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
     /// Paired with `noZoomOnFocus` above — `FocusModeFlags` carries both, and the ring branch is the
     /// one that could make the lift height-dependent again (BUG-93 made the two zoom modes equal).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
@@ -3249,7 +3253,8 @@ struct HomeView: View {
     /// Home Stage & Strip (P1 E6): the body (and its history) lives in `HomeRowPreviews.folder`,
     /// which the Stage strip and the folder Rows page use too (S6).
     private func folderHeroPreview(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {
-        HomeRowPreviews.folder(collection: collection, folder: folder)
+        // B1: the folder line ("Aventure · 8 sources") only with Show Catalog Details in Headings on.
+        HomeRowPreviews.folder(collection: collection, folder: folder, showsDetails: catalogDetailsInHeadings)
     }
 
     /// rc14 (BUG-119): the one-line description the hero-off panel shows under a focused
@@ -5395,7 +5400,8 @@ struct ContinueWatchingRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
             // CatalogRowView's structural comment — out-of-bounds frames froze the focus
             // engine; all paddings must stay positive).
@@ -6766,7 +6772,12 @@ struct HomeHeroForeground: View {
     /// `description`). A folder has no synopsis, so the box's own bottom `heroMetaSlotHeight` carries
     /// that one line in `Theme.Font.meta` and the wordmark takes the rest (`HeroFolderBoxLayout`).
     /// The line budget for TITLE heroes (rt4) is untouched: this is the folder branch only. A
-    /// preview with no description (none ships one today) keeps the full-height wordmark.
+    /// preview with no description keeps the full-height wordmark.
+    ///
+    /// B1 (rc4 verdict 2026-10-16): that reading was wrong. Steven's 10-08 words were about the
+    /// Stage heading's add-on name and he wants the source count off BOTH Homes, so the line now
+    /// rides Show Catalog Details in Headings (`HeadingDetailsSetting`, default off): off, the
+    /// preview's description is nil and this box shows the wordmark alone, as before rc4.
     @ViewBuilder
     private func folderBox(height: CGFloat) -> some View {
         let line = synopsis.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -69,8 +69,17 @@ final class DiscoverRowsPlanTests: XCTestCase {
     }
 
     func testHeadingSkipsABlankOrRepeatedAddon() {
-        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Sci-Fi", addonName: " "), "Sci-Fi")
-        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Cinemeta Popular", addonName: "Cinemeta"), "Cinemeta Popular")
+        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Sci-Fi", addonName: " ", showsAddon: true), "Sci-Fi")
+        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Cinemeta Popular", addonName: "Cinemeta", showsAddon: true),
+                       "Cinemeta Popular")
+    }
+
+    /// B1 (BUG-145 + FEAT-67): Show Catalog Details in Headings off (the default) → the bare title.
+    func testHeadingWithoutDetailsIsTheBareTitle() {
+        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Sci-Fi", addonName: "Cinemeta", showsAddon: true),
+                       "Sci-Fi \u{00B7} Cinemeta")
+        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Sci-Fi", addonName: "Cinemeta", showsAddon: false), "Sci-Fi")
+        XCTAssertEqual(DiscoverRowsPlan.heading(title: "Sci-Fi", addonName: " ", showsAddon: false), "Sci-Fi")
     }
 
     func testBlankGenresAreDropped() {

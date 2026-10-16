@@ -365,6 +365,12 @@ final class MPVTVPlayerViewController: UIViewController {
     private var swallowMenuRelease = false
     /// A consumed Menu's action, performed when the press ends (never while it is down).
     private var pendingMenuAction: MenuPrecedence.Action?
+    /// BUG-165: when the exit Menu was decided (`systemUptime`), for the `[MenuProbe]` timing lines
+    /// that say where the press's later phases and the cover's teardown land relative to it.
+    private var exitDecidedAt: TimeInterval?
+    private func sinceExitMs() -> Int {
+        exitDecidedAt.map { Int((ProcessInfo.processInfo.systemUptime - $0) * 1000) } ?? -1
+    }
 
     #if DEBUG
     /// Diagnostic for the "consumed Menu still dismisses the cover" class: who sits above this
@@ -445,6 +451,10 @@ final class MPVTVPlayerViewController: UIViewController {
     var startWatchdogShortened = false
     /// Seconds the native engine played before it fell back to this player (added to `secondsPlayed`).
     var nativeSecondsPlayedBeforeFallback: Double = 0
+    /// B10 (BUG-166): the router sent a Dolby Vision profile 5 stream here, so `setupMpv` uses
+    /// `gpu-next` whatever Enhanced Video Renderer says. Set by the representable right after init,
+    /// before `viewDidLoad` runs `setupMpv`.
+    var forcesGpuNext = false
     private var startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.defaultLimitSeconds)
     private var startWatchdogTimer: Timer?
     /// Main thread: a failure was already reported (every path shares this one-shot).
@@ -671,6 +681,8 @@ final class MPVTVPlayerViewController: UIViewController {
         pressesDown.removeAll()         // a press begun under a cover never ended on this controller
         becomeFirstResponder()
         gateCoverMenuTap(enabled: false)
+        // BUG-165: the Menu shield lives on the window (idempotent); armed only at the exit press.
+        if let window = view.window { MenuExitShield.shared.install(on: window) }
         if !didLoad {
             didLoad = true
             computeResumePosition()
@@ -725,9 +737,17 @@ final class MPVTVPlayerViewController: UIViewController {
         // Failure reporting stays armed while a full-screen cover (the post-play card) merely
         // covers the player: Replay comes back to this same controller.
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
-        print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer)")
-        if isLeavingPlayer { closeFailover() }
-        gateCoverMenuTap(enabled: true)
+        print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) sinceExit=\(sinceExitMs())ms")
+        if isLeavingPlayer {
+            closeFailover()
+        } else {
+            // A full-screen cover over the player (the post-play card): give the hosting cover its
+            // Menu recogniser back for the card's own dismissal. BUG-165: NOT on the way out. The
+            // player's cover is being torn down; re-enabling its recogniser mid-press let it see
+            // the exit press's release (the one `gateCoverMenuTap` had hidden from it) and act on
+            // a half press over a view that was already leaving.
+            gateCoverMenuTap(enabled: true)
+        }
         // An exit inside the Aspect flash's 2 s still stores the resting mode (review r1 P2 #1).
         if aspectPillDirty {
             aspectFlashWork?.cancel()
@@ -835,10 +855,18 @@ final class MPVTVPlayerViewController: UIViewController {
         // `gpu-next` (libplacebo) via Settings → Playback → Enhanced Video Renderer for better HDR
         // tone-mapping (dynamic peak detection, DV/HDR10+). Never on the simulator, where
         // libplacebo's vo asserts ("vo: hit program assert").
+        //
+        // B10 (BUG-166; Steven's rc4 verdict, "DV colours wrong", green/magenta): `gpu` has no
+        // Dolby Vision RPU processing, so a profile 5 stream (IPTPQc2, no HDR10 base layer) renders
+        // as plain BT.2020 PQ. The router flags every DV P5 it sends here (`forcesGpuNext`), and
+        // that forces `gpu-next` with the toggle off. Still hardware only.
         var videoOutput = "gpu"
         #if !targetEnvironment(simulator)
         if UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey) {
             videoOutput = "gpu-next"
+        } else if forcesGpuNext {
+            videoOutput = "gpu-next"
+            print("[MPV] vo=gpu-next reason=dv-p5")
         }
         #endif
 
@@ -2525,10 +2553,21 @@ final class MPVTVPlayerViewController: UIViewController {
                     upNextShowing: state.upNextVisible?() ?? false,
                     pillFocused: state.transport.focusedPill != nil,
                     barUp: state.controlsVisible)
+                NSLog("[MenuProbe] menu began action=%@ leaving=%d window=%d", String(describing: action),
+                      isLeavingPlayer ? 1 : 0, view.window == nil ? 0 : 1)
                 switch action {
                 case .panel:
                     break           // the panel host closes itself; never reaches here in practice
                 case .exit:
+                    // BUG-165: arm the window shield BEFORE the cover starts going away, so this
+                    // press's release and any Menu that lands during the dismissal are claimed
+                    // instead of running up a chain that ends in "leave the app". Disarmed by
+                    // `MPVPlayerScreen.onDisappear` once the cover is gone.
+                    exitDecidedAt = ProcessInfo.processInfo.systemUptime
+                    MenuExitShield.shared.arm(reason: "mpv-exit")
+                    #if DEBUG
+                    dumpMenuResponderChain(tag: "exit")
+                    #endif
                     closeFailover()
                     onExit?()
                 case .cancelMode, .dismissUpNext, .hidePill, .hideBar:
@@ -2558,6 +2597,10 @@ final class MPVTVPlayerViewController: UIViewController {
         // The light tap recognises at touch-up: the release restarts the click window.
         lastClickUptime = ProcessInfo.processInfo.systemUptime
         for press in presses { pressesDown.remove(ObjectIdentifier(press)) }
+        if presses.contains(where: { $0.type == .menu }) {
+            NSLog("[MenuProbe] menu ended swallow=%d sinceExit=%dms window=%d", swallowMenuRelease ? 1 : 0,
+                  sinceExitMs(), view.window == nil ? 0 : 1)
+        }
         if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
             swallowMenuRelease = false
             handled = true
@@ -2588,6 +2631,10 @@ final class MPVTVPlayerViewController: UIViewController {
         var handled = false
         lastClickUptime = ProcessInfo.processInfo.systemUptime
         for press in presses { pressesDown.remove(ObjectIdentifier(press)) }
+        if presses.contains(where: { $0.type == .menu }) {
+            NSLog("[MenuProbe] menu cancelled swallow=%d sinceExit=%dms window=%d", swallowMenuRelease ? 1 : 0,
+                  sinceExitMs(), view.window == nil ? 0 : 1)
+        }
         if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
             swallowMenuRelease = false
             handled = true
@@ -3607,7 +3654,20 @@ final class MPVTVPlayerViewController: UIViewController {
         // callback is running and none can start: shutdown's last wakeup never reaches the relay
         // (and the relay already turns one that slips in earlier into a no-op).
         mpv_set_wakeup_callback(ctx, nil, nil)
-        mpv_terminate_destroy(ctx)
+        // BUG-165 (rc4 verdict): `mpv_terminate_destroy` tears the Vulkan/Metal VO down and waits
+        // for mpv's threads; on the main thread (this controller's deinit) that was seconds of a
+        // frozen black screen between the exit press and the picker (Steven's video: ~6 s), during
+        // which every remote press queued up and was delivered to whatever was under the cover
+        // afterwards. The destroy now runs on `eventQueue` (serial: every queued mpv call drains
+        // first, and nothing enqueues after `mpv` went nil above). The Metal layer is mpv's `wid`,
+        // so the block keeps it alive until the VO has let go of it.
+        let layer = metalLayer
+        let started = ProcessInfo.processInfo.systemUptime
+        eventQueue.async {
+            mpv_terminate_destroy(ctx)
+            _ = layer
+            NSLog("[MPV] terminate_destroy took=%dms", Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
+        }
         // Plain property writes (no weak reference formed): the store goes with the controller.
         seekPreviewSource = nil
         previewStore = nil
@@ -3941,9 +4001,13 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let onPlaybackHealthy: ((Double) -> Void)?
     let startWatchdogShortened: Bool
     let nativeSecondsPlayedBeforeFallback: Double
+    /// B10 (BUG-166): see `MPVTVPlayerViewController.forcesGpuNext`.
+    let forcesGpuNext: Bool
 
     func makeUIViewController(context ctx: Context) -> MPVTVPlayerViewController {
         let controller = MPVTVPlayerViewController(context: context, state: state)
+        // Before anything touches `controller.view`: `viewDidLoad` runs `setupMpv`, which reads it.
+        controller.forcesGpuNext = forcesGpuNext
         controller.onExit = onExit
         controller.onPlaybackFailed = onPlaybackFailed
         controller.onPlaybackHealthy = onPlaybackHealthy
@@ -3989,6 +4053,9 @@ struct MPVPlayerScreen: View {
     var startWatchdogShortened = false
     /// Seconds the native engine played before falling back to this screen.
     var nativeSecondsPlayedBeforeFallback: Double = 0
+    /// B10 (BUG-166): a Dolby Vision profile 5 stream routed to mpv renders with `gpu-next`
+    /// (`EngineDecision.prefersGpuNext`). Read once, when the controller is made.
+    var forcesGpuNext = false
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -4013,10 +4080,12 @@ struct MPVPlayerScreen: View {
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
          onPlaybackHealthy: ((Double) -> Void)? = nil,
          startWatchdogShortened: Bool = false,
-         nativeSecondsPlayedBeforeFallback: Double = 0) {
+         nativeSecondsPlayedBeforeFallback: Double = 0,
+         forcesGpuNext: Bool = false) {
         self.context = context
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
+        self.forcesGpuNext = forcesGpuNext
         self.onPlaybackFailed = onPlaybackFailed
         self.onPlaybackHealthy = onPlaybackHealthy
         self.startWatchdogShortened = startWatchdogShortened
@@ -4063,7 +4132,8 @@ struct MPVPlayerScreen: View {
                 onPlaybackFailed: onPlaybackFailed,
                 onPlaybackHealthy: onPlaybackHealthy,
                 startWatchdogShortened: startWatchdogShortened,
-                nativeSecondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback
+                nativeSecondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback,
+                forcesGpuNext: forcesGpuNext
             )
             .ignoresSafeArea()
 
@@ -4212,6 +4282,8 @@ struct MPVPlayerScreen: View {
         .onDisappear {
             upNext.stop()
             UIApplication.shared.isIdleTimerDisabled = false
+            // BUG-165: the cover is gone; Menu presses go back to whatever is under it.
+            MenuExitShield.shared.disarm(reason: "player screen gone")
         }
         .onChange(of: state.positionSec) { _, position in
             upNext.skipIntervals = state.skipIntervals

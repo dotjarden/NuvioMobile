@@ -24,6 +24,8 @@ struct UpcomingRow: View {
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
     @Environment(\.pinnedRowIsLast) private var isLastRow
     @Environment(\.posterStyle) private var posterStyle
+    /// BUG-146 second trim: nil outside the Stage strip (Classic keeps `md` under the heading).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     /// rc14 (BUG-122): see `ContinueWatchingRow.shortRowCompensation` — structural twin.
     private var shortRowCompensation: CGFloat {
@@ -35,7 +37,8 @@ struct UpcomingRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
             // CatalogRowView's structural comment — all paddings must stay positive).
             if cardTopReach == 0 {

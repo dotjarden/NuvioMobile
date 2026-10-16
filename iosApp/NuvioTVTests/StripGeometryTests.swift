@@ -2,7 +2,7 @@ import XCTest
 @testable import NuvioTV
 
 /// Home Stage & Strip (P1 §2, §9.3): `StripGeometry` against the spec's 16-row table, the Open Sans
-/// spot checks, landscape catalog rows, the 168/169 dp fit boundary (#23, moved from 164/165 by BUG-146), the stage block insets,
+/// spot checks, landscape catalog rows, the 170/171 dp fit boundary (#23, moved from 164/165 by BUG-146 and its second trim), the stage block insets,
 /// `pixelCeil`, the peek, and `pageOpacity`. Font metrics are passed explicitly (system: title 38,
 /// caption 23, synopsis line 30), so the table does not depend on the simulator's live metrics.
 @MainActor
@@ -46,26 +46,30 @@ final class StripGeometryTests: XCTestCase {
     }
 
     /// P1 §2's table (system font, titleH 38, peek 44, synLH 30). BUG-146 (2026-10-15): the catalog
-    /// row's shelf top padding in the strip is `sm` 12, not `lg` 24, so every titles-on row is 12 pt
-    /// shorter and its stage 12 pt taller. Titles-off rows are unchanged: the collection row
-    /// (heading + 16 + 12 + poster + 12 + caption + 12) dominates them either way.
+    /// row's shelf top padding in the strip is `sm` 12, not `lg` 24, so every titles-on row was 12 pt
+    /// shorter and its stage 12 pt taller (titles-off rows were held by the collection row).
+    /// BUG-146 second trim (2026-10-16): the heading gap in the strip is `headingGap` 12, not `md` 16,
+    /// in BOTH the catalog and the collection row, so every row is 4 pt shorter and every stage 4 pt
+    /// taller (re-derived from `make`, not subtracted). One row changes shape: 154 dp titles-off
+    /// zoom-on's stage crosses `compactLogoBelowStage` (479.5 → 483.5), so its logo slot grows from
+    /// 110 to 150 and the synopsis slot SHRINKS (169.5 → 133.5, 5 → 4 lines).
     private let table: [TableRow] = [
-        TableRow(dp: 105, titles: true, noZoom: false, rowHeight: 408.5, page: 448.5, strip: 492.5, stage: 587.5, logo: 150, synopsisSlot: 237.5, lines: 5),
-        TableRow(dp: 105, titles: true, noZoom: true, rowHeight: 408.5, page: 408.5, strip: 452.5, stage: 627.5, logo: 150, synopsisSlot: 277.5, lines: 5),
-        TableRow(dp: 105, titles: false, noZoom: false, rowHeight: 388, page: 428, strip: 472, stage: 608, logo: 150, synopsisSlot: 258, lines: 5),
-        TableRow(dp: 105, titles: false, noZoom: true, rowHeight: 388, page: 388, strip: 432, stage: 648, logo: 150, synopsisSlot: 298, lines: 5),
-        TableRow(dp: 126, titles: true, noZoom: false, rowHeight: 463.5, page: 503.5, strip: 547.5, stage: 532.5, logo: 150, synopsisSlot: 182.5, lines: 5),
-        TableRow(dp: 126, titles: true, noZoom: true, rowHeight: 463.5, page: 463.5, strip: 507.5, stage: 572.5, logo: 150, synopsisSlot: 222.5, lines: 5),
-        TableRow(dp: 126, titles: false, noZoom: false, rowHeight: 443, page: 483, strip: 527, stage: 553, logo: 150, synopsisSlot: 203, lines: 5),
-        TableRow(dp: 126, titles: false, noZoom: true, rowHeight: 443, page: 443, strip: 487, stage: 593, logo: 150, synopsisSlot: 243, lines: 5),
-        TableRow(dp: 134, titles: true, noZoom: false, rowHeight: 484.5, page: 524.5, strip: 568.5, stage: 511.5, logo: 150, synopsisSlot: 161.5, lines: 5),
-        TableRow(dp: 134, titles: true, noZoom: true, rowHeight: 484.5, page: 484.5, strip: 528.5, stage: 551.5, logo: 150, synopsisSlot: 201.5, lines: 5),
-        TableRow(dp: 134, titles: false, noZoom: false, rowHeight: 464, page: 504, strip: 548, stage: 532, logo: 150, synopsisSlot: 182, lines: 5),
-        TableRow(dp: 134, titles: false, noZoom: true, rowHeight: 464, page: 464, strip: 508, stage: 572, logo: 150, synopsisSlot: 222, lines: 5),
-        TableRow(dp: 154, titles: true, noZoom: false, rowHeight: 537, page: 577, strip: 621, stage: 459, logo: 110, synopsisSlot: 149, lines: 5),
-        TableRow(dp: 154, titles: true, noZoom: true, rowHeight: 537, page: 537, strip: 581, stage: 499, logo: 150, synopsisSlot: 149, lines: 5),
-        TableRow(dp: 154, titles: false, noZoom: false, rowHeight: 516.5, page: 556.5, strip: 600.5, stage: 479.5, logo: 110, synopsisSlot: 169.5, lines: 5),
-        TableRow(dp: 154, titles: false, noZoom: true, rowHeight: 516.5, page: 516.5, strip: 560.5, stage: 519.5, logo: 150, synopsisSlot: 169.5, lines: 5),
+        TableRow(dp: 105, titles: true, noZoom: false, rowHeight: 404.5, page: 444.5, strip: 488.5, stage: 591.5, logo: 150, synopsisSlot: 241.5, lines: 5),
+        TableRow(dp: 105, titles: true, noZoom: true, rowHeight: 404.5, page: 404.5, strip: 448.5, stage: 631.5, logo: 150, synopsisSlot: 281.5, lines: 5),
+        TableRow(dp: 105, titles: false, noZoom: false, rowHeight: 384, page: 424, strip: 468, stage: 612, logo: 150, synopsisSlot: 262, lines: 5),
+        TableRow(dp: 105, titles: false, noZoom: true, rowHeight: 384, page: 384, strip: 428, stage: 652, logo: 150, synopsisSlot: 302, lines: 5),
+        TableRow(dp: 126, titles: true, noZoom: false, rowHeight: 459.5, page: 499.5, strip: 543.5, stage: 536.5, logo: 150, synopsisSlot: 186.5, lines: 5),
+        TableRow(dp: 126, titles: true, noZoom: true, rowHeight: 459.5, page: 459.5, strip: 503.5, stage: 576.5, logo: 150, synopsisSlot: 226.5, lines: 5),
+        TableRow(dp: 126, titles: false, noZoom: false, rowHeight: 439, page: 479, strip: 523, stage: 557, logo: 150, synopsisSlot: 207, lines: 5),
+        TableRow(dp: 126, titles: false, noZoom: true, rowHeight: 439, page: 439, strip: 483, stage: 597, logo: 150, synopsisSlot: 247, lines: 5),
+        TableRow(dp: 134, titles: true, noZoom: false, rowHeight: 480.5, page: 520.5, strip: 564.5, stage: 515.5, logo: 150, synopsisSlot: 165.5, lines: 5),
+        TableRow(dp: 134, titles: true, noZoom: true, rowHeight: 480.5, page: 480.5, strip: 524.5, stage: 555.5, logo: 150, synopsisSlot: 205.5, lines: 5),
+        TableRow(dp: 134, titles: false, noZoom: false, rowHeight: 460, page: 500, strip: 544, stage: 536, logo: 150, synopsisSlot: 186, lines: 5),
+        TableRow(dp: 134, titles: false, noZoom: true, rowHeight: 460, page: 460, strip: 504, stage: 576, logo: 150, synopsisSlot: 226, lines: 5),
+        TableRow(dp: 154, titles: true, noZoom: false, rowHeight: 533, page: 573, strip: 617, stage: 463, logo: 110, synopsisSlot: 153, lines: 5),
+        TableRow(dp: 154, titles: true, noZoom: true, rowHeight: 533, page: 533, strip: 577, stage: 503, logo: 150, synopsisSlot: 153, lines: 5),
+        TableRow(dp: 154, titles: false, noZoom: false, rowHeight: 512.5, page: 552.5, strip: 596.5, stage: 483.5, logo: 150, synopsisSlot: 133.5, lines: 4),
+        TableRow(dp: 154, titles: false, noZoom: true, rowHeight: 512.5, page: 512.5, strip: 556.5, stage: 523.5, logo: 150, synopsisSlot: 173.5, lines: 5),
     ]
 
     func testSpecTable() {
@@ -88,51 +92,53 @@ final class StripGeometryTests: XCTestCase {
         }
     }
 
-    /// The spike's Medium numbers (515.5 / 559.5 / 520.5) less BUG-146's 12 pt.
+    /// The spike's Medium numbers (515.5 / 559.5 / 520.5) less BUG-146's 12 pt and its second
+    /// trim's 4 pt.
     func testMediumMatchesTheSpike() {
         let g = StripGeometry.make(inputs(dp: 126, titles: true, noZoom: false))
-        XCTAssertEqual(g.pageHeight, 503.5, accuracy: 0.001)
-        XCTAssertEqual(g.stripHeight, 547.5, accuracy: 0.001)
-        XCTAssertEqual(g.stageHeight, 532.5, accuracy: 0.001)
+        XCTAssertEqual(g.pageHeight, 499.5, accuracy: 0.001)
+        XCTAssertEqual(g.stripHeight, 543.5, accuracy: 0.001)
+        XCTAssertEqual(g.stageHeight, 536.5, accuracy: 0.001)
     }
 
     func testOpenSansSpotChecks() {
         let medium = StripGeometry.make(inputs(dp: 126, titles: true, noZoom: false,
                                                titleHeight: 38.84, synopsisLine: 31.32))
-        XCTAssertEqual(medium.rowHeight, 464.5, accuracy: 0.001)
-        XCTAssertEqual(medium.pageHeight, 504.5, accuracy: 0.001)
-        XCTAssertEqual(medium.stripHeight, 549.5, accuracy: 0.001)
-        XCTAssertEqual(medium.stageHeight, 530.5, accuracy: 0.001)
+        XCTAssertEqual(medium.rowHeight, 460.5, accuracy: 0.001)
+        XCTAssertEqual(medium.pageHeight, 500.5, accuracy: 0.001)
+        XCTAssertEqual(medium.stripHeight, 545.5, accuracy: 0.001)
+        XCTAssertEqual(medium.stageHeight, 534.5, accuracy: 0.001)
         XCTAssertEqual(medium.synopsisLines, 5)
 
         let large = StripGeometry.make(inputs(dp: 154, titles: true, noZoom: false,
                                               titleHeight: 38.84, synopsisLine: 31.32))
-        XCTAssertEqual(large.pageHeight, 578, accuracy: 0.001)
-        XCTAssertEqual(large.stripHeight, 623, accuracy: 0.001)
-        XCTAssertEqual(large.stageHeight, 457, accuracy: 0.001)
+        XCTAssertEqual(large.pageHeight, 574, accuracy: 0.001)
+        XCTAssertEqual(large.stripHeight, 619, accuracy: 0.001)
+        XCTAssertEqual(large.stageHeight, 461, accuracy: 0.001)
         XCTAssertEqual(large.synopsisLines, 4)
     }
 
     func testLandscapeCatalogRowsUseTheCollectionRule() {
         let g = StripGeometry.make(inputs(dp: 126, titles: true, noZoom: false, landscape: true))
-        XCTAssertEqual(g.rowHeight, 443, accuracy: 0.001)
-        XCTAssertEqual(g.stageHeight, 553, accuracy: 0.001)
+        XCTAssertEqual(g.rowHeight, 439, accuracy: 0.001)
+        XCTAssertEqual(g.stageHeight, 557, accuracy: 0.001)
     }
 
-    /// BUG-146 moved the boundary from 164/165 dp to 168/169 dp (12 pt more room per row).
+    /// BUG-146 moved the boundary from 164/165 dp to 168/169 dp (12 pt more room per row), and its
+    /// second trim to 170/171 dp (4 pt more).
     func testFitBoundary() {
-        let fits = StripGeometry.make(inputs(dp: 168, titles: true, noZoom: false))
+        let fits = StripGeometry.make(inputs(dp: 170, titles: true, noZoom: false))
         XCTAssertTrue(fits.fits)
-        XCTAssertEqual(fits.stageHeight, 422.5, accuracy: 0.001)
+        XCTAssertEqual(fits.stageHeight, 421, accuracy: 0.001)
 
-        let tooTall = StripGeometry.make(inputs(dp: 169, titles: true, noZoom: false))
+        let tooTall = StripGeometry.make(inputs(dp: 171, titles: true, noZoom: false))
         XCTAssertFalse(tooTall.fits)
-        XCTAssertEqual(tooTall.layoutPosterHeight, 442.5, accuracy: 0.001)
+        XCTAssertEqual(tooTall.layoutPosterHeight, 446.5, accuracy: 0.001)
         XCTAssertEqual(tooTall.rowHeight, 576, accuracy: 0.001)
         XCTAssertEqual(tooTall.pageHeight, 616, accuracy: 0.001)
         XCTAssertEqual(tooTall.stageHeight, 420, accuracy: 0.001)
         XCTAssertEqual(tooTall.stripHeight, 660, accuracy: 0.001)
-        XCTAssertEqual(tooTall.requestedPosterHeight, 169 * Self.dpToPoint * 1.5, accuracy: 0.001)
+        XCTAssertEqual(tooTall.requestedPosterHeight, 171 * Self.dpToPoint * 1.5, accuracy: 0.001)
     }
 
     /// The clamp never leaves the stage under the floor, whatever font and row shape dominates.
@@ -150,6 +156,15 @@ final class StripGeometryTests: XCTestCase {
             XCTAssertEqual(g.stageHeight + g.stripHeight, 1080, accuracy: 0.001, label)
             XCTAssertLessThan(g.layoutPosterHeight, 200 * Self.dpToPoint * 1.5, label)
         }
+    }
+
+    /// BUG-146 second trim: 12 under a strip heading, Classic's 16 everywhere else; the lift (20)
+    /// clears the heading's line box by 4 inside the 24 pt heading → shelf gap.
+    func testHeadingGapIsKeyedOnTheStrip() {
+        XCTAssertEqual(StripGeometry.headingGap(inStrip: true), 12)
+        XCTAssertEqual(StripGeometry.headingGap(inStrip: false), Theme.Spacing.md)
+        XCTAssertEqual(StripGeometry.headingGap + StripGeometry.shelfTopPadding
+                       - Theme.Size.heroPinnedRowFocusLiftAllowance, 4)
     }
 
     func testStageBlockInsets() {

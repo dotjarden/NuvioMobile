@@ -94,6 +94,9 @@ struct DiscoverRowsPage: View {
     /// Held, never observed: read at Menu-press time and in the page-start write only.
     @Environment(\.navigationChrome) private var navigationChrome
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// B1 (BUG-145 + FEAT-67): Show Catalog Details in Headings (`HeadingDetailsSetting`, default
+    /// off) gates the add-on name after the genre headings.
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
 
     init(model: DiscoverRowsViewModel,
          host: DiscoverHost,
@@ -265,8 +268,8 @@ struct DiscoverRowsPage: View {
                     // largest height that fits, as on Home.
                     .environment(\.posterStyle, geo.fits ? posterStyle : posterStyle.withHeight(geo.layoutPosterHeight))
                     // A1: genre headings name their add-on ("Sci-Fi · Cinemeta"), as Stage Home's
-                    // catalog headings do.
-                    .environment(\.rowHeadingShowsAddon, true)
+                    // catalog headings do; B1: only with Show Catalog Details in Headings on.
+                    .environment(\.rowHeadingShowsAddon, catalogDetailsInHeadings)
                 }
             }
         }
@@ -291,16 +294,22 @@ struct DiscoverRowsPage: View {
             case .loading:
                 // The strip mounts the rows around the focused one (`StripMountWindow`): a mounted
                 // loading row is the lazy-load trigger.
-                StripLoadingRow(heading: row.heading)
+                StripLoadingRow(heading: shownHeading(row))
                     .onAppear { model.rowAppeared(key) }
             case .failed:
-                DiscoverFailedRow(rowKey: row.id, heading: row.heading) {
+                DiscoverFailedRow(rowKey: row.id, heading: shownHeading(row)) {
                     model.retry(row.id)
                 }
             case .empty:
-                StripMessageRow(heading: row.heading, message: "Nothing here yet.")
+                StripMessageRow(heading: shownHeading(row), message: "Nothing here yet.")
             }
         }
+    }
+
+    /// B1: a non-loaded row's heading under Show Catalog Details in Headings (the loaded row reads
+    /// the same rule through `\.rowHeadingShowsAddon`).
+    private func shownHeading(_ row: StripRow) -> String {
+        model.heading(forRow: row.id, showsAddon: catalogDetailsInHeadings) ?? row.heading
     }
 
     /// Page states, left-aligned at the top of the strip area.
@@ -688,11 +697,13 @@ private struct DiscoverFailedRow: View {
     let onRetry: () -> Void
 
     @Environment(\.pinnedRowFocusOwnership) private var ownership
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
     @FocusState private var chipFocused: Bool
     @State private var owns = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 (second trim): the strip's heading gap, as the other strip rows.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             StripRowHeading(text: heading)
             HStack(spacing: Theme.Spacing.lg) {
                 Text("Couldn't load this source.")

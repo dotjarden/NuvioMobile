@@ -28,6 +28,8 @@ import SwiftUI
 ///
 /// ## How BrowseComponents should attach this (NOT done here — a different wave owns that file)
 ///
+/// (Historical. BUG-164 moved the allowance rule into `rowAllowance` below; `CatalogRowView` calls it.)
+///
 /// Attach the clip to the `LazyHStack` — the `ScrollView`'s CONTENT — right where
 /// `.scrollClipDisabled()` already lives, in `CatalogRowView.body` (`BrowseComponents.swift`
 /// ~L3044-3107):
@@ -94,8 +96,8 @@ struct RowLeadingEdgeClip: Shape {
     ///   `Theme.Size.landscapeWidth` for landscape rows) — what the lift scales ABOUT THE CENTRE
     ///   of, so half of the width growth bleeds left and half right.
     /// - `liftScale`: the scale factor a focused card's artwork is drawn at. `1.0` means no lift
-    ///   bleed at all (No Zoom's `CardFocusMode.still`, which scales nothing) — only `ringWidth`
-    ///   then contributes. A zoom-on row should pass the same per-artwork-height scale
+    ///   bleed at all — only `ringWidth` and the shadow then contribute. (BUG-164: No Zoom no longer
+    ///   comes through here; `rowAllowance` gives it `shadowReach()`.) A zoom-on row should pass the same per-artwork-height scale
     ///   `PosterCard.swift`'s `cardLiftScale(artworkHeight:)` computes (both `.systemLift` and
     ///   `.manualScale` are calibrated to the identical `Theme.Size.heroPinnedRowFocusLiftAllowance`
     ///   rise, so one formula covers both — see the attachment snippet above for why this file
@@ -125,5 +127,66 @@ struct RowLeadingEdgeClip: Shape {
     static func allowance(posterWidth: CGFloat, liftScale: CGFloat, ringWidth: CGFloat,
                           shadowRadius: CGFloat = cardShadowRadius) -> CGFloat {
         ceil(posterWidth * (liftScale - 1) / 2) + ringWidth + shadowRadius
+    }
+
+    // ── BUG-164 (Steven, beta.19-rc4 verdict 2026-10-16) ──────────────────────────────────────────
+    //
+    // "The poster on the far left was partially cut off along its left edge … the bug occurs when I
+    // enable No Zoom on Focus", plus "a visual glitch on the left side of the screen when the trailer
+    // for the poster on the far left is playing". With No Zoom ON the old allowance collapsed to
+    // ring (4) + shadow radius (22) = 26 pt, because `liftScale` was 1. What the first card really
+    // draws past its leading edge in No Zoom:
+    //
+    // - the still ring: nothing. It is a `strokeBorder` INSIDE the card frame (PosterCard's
+    //   `CardFocusTreatment.still`, the inline tile's `.strokeBorder`), and the artwork is inset by
+    //   the reserved 4 pt band.
+    // - the still focus shadow (`CardFocusTreatment.still`: a black fill at the card's frame,
+    //   `.shadow(color: .black.opacity(0.6), radius: 22, y: 10)`): measured with `ImageRenderer`,
+    //   it darkens the background 29 % at the edge, 7.1 % at 26 pt (where the clip cut it: a hard
+    //   vertical line on the Stage's bright wash), 1.2 % at 42, 0.8 % at 44, one 8-bit step from 46
+    //   and 0 by 50. The visible reach of a SwiftUI shadow is about TWICE its radius, not its radius.
+    // - the inline trailer tile: nothing. It grows out of the poster's top-LEADING corner
+    //   (`InlineTrailerCard.expandingCard`, rightward only, UX-4a), its shadow is 0 whenever a ring
+    //   band is reserved (No Zoom reserves one), and since BUG-164 it no longer draws Batch A's
+    //   BUG-158 manual lift in No Zoom (`CardSystemLiftStyle.resolve`). Before that fix the tile
+    //   scaled about its centre by `1 + 2 × 20 / h`, i.e. 16/9·h × 20/h = 35.6 pt to the left at
+    //   EVERY poster size, plus a radius-22 shadow, against the 26 pt opening: the "glitch" while
+    //   the far-left trailer plays.
+    //
+    // So the No Zoom branch opens for the shadow's visible reach (44 pt) and nothing else. The
+    // zoom-on branch is the formula above, unchanged and byte-identical (its lift bleed already
+    // carries the 16:9 tile width; `RowLeadingEdgeClipTests` pins both).
+
+    /// BUG-164: how far past the casting edge a drop shadow stays visible, per point of radius
+    /// (measured, see above: ≤ 0.8 % darkness from 2 × radius out).
+    static let shadowReachPerRadius: CGFloat = 2
+
+    /// BUG-164: the visible reach of a `.shadow(radius:)` past the view that casts it.
+    static func shadowReach(radius: CGFloat = cardShadowRadius) -> CGFloat {
+        ceil(radius * shadowReachPerRadius)
+    }
+
+    /// The leading-edge allowance a catalog row opens for its first card (`CatalogRowView`), as a
+    /// pure function of the two Appearance settings and the row's card geometry.
+    ///
+    /// - `noZoomOnFocus`: No Zoom on Focus. Nothing scales and every ring draws inside the card, so
+    ///   only the still focus shadow bleeds: `shadowReach()` (BUG-164).
+    /// - `accentFocusRing`: adds `ringWidth` to the zoom-on branch, as before (`ringInset`'s rule).
+    /// - `restingWidth`: the row's card width at rest (portrait poster or landscape card).
+    /// - `artworkHeight`: the row's artwork height (the lift scale and the 16:9 tile derive from it).
+    /// - `liftRise`: the zoom-on lift's rise (`Theme.Size.heroPinnedRowFocusLiftAllowance`).
+    ///
+    /// Zoom-on: Codex beta.18 r4 (P2): the widest thing the first card can be is the EXPANDED inline
+    /// trailer tile (`artworkHeight × 16/9`), and the lift scales that whole label, so the bleed is
+    /// sized off the maximum, not the resting width. The scale is `PosterCard.swift`'s
+    /// `cardLiftScale(artworkHeight:)` (private there) recomputed from the same constant.
+    static func rowAllowance(noZoomOnFocus: Bool, accentFocusRing: Bool, restingWidth: CGFloat,
+                             artworkHeight: CGFloat, liftRise: CGFloat) -> CGFloat {
+        if noZoomOnFocus { return shadowReach() }
+        let posterWidth = max(restingWidth, artworkHeight * 16 / 9)
+        let liftScale = 1 + 2 * liftRise / artworkHeight
+        return allowance(posterWidth: posterWidth,
+                         liftScale: liftScale,
+                         ringWidth: accentFocusRing ? ringWidth : 0)
     }
 }

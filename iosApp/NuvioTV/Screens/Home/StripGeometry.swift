@@ -174,11 +174,12 @@ nonisolated struct StripGeometry: Equatable, Sendable {
                              screenHeight: i.screenHeight)
     }
 
-    /// `CatalogRowView` without pinned reaches: heading, `md` 16, the shelf's STRIP top padding
-    /// (`shelfTopPadding`, `sm` 12), the art, the caption chrome when titles show
-    /// (`PinnedRowTitle.cardLockupCaptionChrome`), and the shelf's `lg` 24 bottom padding.
+    /// `CatalogRowView` without pinned reaches: heading, the strip's heading gap (`headingGap`,
+    /// `sm` 12), the shelf's STRIP top padding (`shelfTopPadding`, `sm` 12), the art, the caption
+    /// chrome when titles show (`PinnedRowTitle.cardLockupCaptionChrome`), and the shelf's `lg` 24
+    /// bottom padding.
     static func catalogRowHeight(art: CGFloat, titles: Bool, titleHeight: CGFloat) -> CGFloat {
-        titleHeight + Theme.Spacing.md + shelfTopPadding + art
+        titleHeight + headingGap + shelfTopPadding + art
             + (titles ? PinnedRowTitle.cardLockupCaptionChrome : 0) + Theme.Spacing.lg
     }
 
@@ -188,15 +189,36 @@ nonisolated struct StripGeometry: Equatable, Sendable {
     /// shelf's TOP padding shrinks, and only inside the strip (`StripShelfPadding`, keyed on
     /// `\.stripFocusMemory` like `StripHeadingLineLimit`), so Classic's pinned rows keep their reach
     /// budget (BUG-87/89) byte for byte. The focus lift is not paid out of this band: it is the
-    /// page's own `focusLift` above the row, and a lifted card grows 20 pt up into a 28 pt gap
-    /// (16 + 12), so it still clears the heading by 8 pt (0 lift with No Zoom).
+    /// page's own `focusLift` above the row, and a lifted card grows 20 pt up into the gap
+    /// (`headingGap` 12 + this 12 = 24 since BUG-146's second trim), so it still clears the heading
+    /// by 4 pt (0 lift with No Zoom).
     nonisolated static let shelfTopPadding: CGFloat = Theme.Spacing.sm
 
+    /// BUG-146 second trim (Steven, beta.19-rc4 verdict 2026-10-16: the Stage headings are "still
+    /// slightly too high, move them down a little further"): the row VStack's spacing between a
+    /// strip row's heading and its shelf, `md` 16 → `sm` 12, so heading → shelf is 12 + 12 = 24
+    /// (was 28; Classic stays `md` + `lg` = 40). Used by every strip row that draws a heading over a
+    /// shelf (`CatalogRowView`, `CollectionRowView`, `StripLoadingRow`, `StripMessageRow`) through
+    /// `headingGap(inStrip:)`, keyed on `\.stripFocusMemory` exactly as `StripShelfPadding` is, and
+    /// by `catalogRowHeight` / `collectionRowHeightMax`.
+    ///
+    /// Lift clearance: a zoom-on lift rises 20 pt into the 24, clearing the heading's line box by
+    /// 4 pt. The accent ring does NOT eat into that: it is a `strokeBorder` inside the artwork frame
+    /// and rises with the artwork (BUG-93, `PinnedRowTitle.focusLiftAllowance` charges the ring the
+    /// same 20), so ring mode clears by the same 4 pt and nothing touches. The lift's drop shadow
+    /// (radius 22, y + 10) reaches up over the heading's line box as it already did at 28.
+    nonisolated static let headingGap: CGFloat = Theme.Spacing.sm
+
+    /// BUG-146: `headingGap` inside the strip, Classic's `md` 16 everywhere else.
+    nonisolated static func headingGap(inStrip: Bool) -> CGFloat {
+        inStrip ? headingGap : Theme.Spacing.md
+    }
+
     /// `CollectionRowView` without pinned reaches, at its tallest tile (a poster-shaped folder with
-    /// its per-folder caption): heading, `md` 16, `sm` 12 top padding, the poster, `sm` 12 caption
-    /// spacing, the caption line, `sm` 12 bottom padding.
+    /// its per-folder caption): heading, `headingGap` 12 (BUG-146), `sm` 12 top padding, the poster,
+    /// `sm` 12 caption spacing, the caption line, `sm` 12 bottom padding.
     static func collectionRowHeightMax(posterHeight: CGFloat, titleHeight: CGFloat, captionLine: CGFloat) -> CGFloat {
-        titleHeight + Theme.Spacing.md + Theme.Spacing.sm + posterHeight + Theme.Spacing.sm
+        titleHeight + headingGap + Theme.Spacing.sm + posterHeight + Theme.Spacing.sm
             + captionLine + Theme.Spacing.sm
     }
 

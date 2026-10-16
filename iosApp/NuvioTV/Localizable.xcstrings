@@ -45344,36 +45344,36 @@
         }
       }
     },
-    "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental — Apple TV hardware only (ignored on the Simulator). Applies to the next video.": {
+    "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental — Apple TV hardware only (ignored on the Simulator). Applies to the next video. Dolby Vision profile 5 streams that play on mpv always use it.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verwende den gpu-next (libplacebo) Renderer für besseres HDR-Tone-Mapping. Experimentell – nur Apple-TV-Hardware (wird im Simulator ignoriert). Gilt für das nächste Video."
+            "value": "Verwende den gpu-next (libplacebo) Renderer für besseres HDR-Tone-Mapping. Experimentell – nur Apple-TV-Hardware (wird im Simulator ignoriert). Gilt für das nächste Video. Dolby-Vision-Streams mit Profil 5, die auf mpv laufen, verwenden ihn immer."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usa el renderizador gpu-next (libplacebo) para mejor mapeo de tonos HDR. Experimental — solo hardware de Apple TV (ignorado en el Simulador). Se aplica al siguiente vídeo."
+            "value": "Usa el renderizador gpu-next (libplacebo) para mejor mapeo de tonos HDR. Experimental — solo hardware de Apple TV (ignorado en el Simulador). Se aplica al siguiente vídeo. Las transmisiones Dolby Vision de perfil 5 que se reproducen en mpv siempre lo usan."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Utilise le moteur gpu-next (libplacebo) pour un meilleur tone-mapping HDR. Expérimental — matériel Apple TV uniquement (ignoré sur le simulateur). S'applique à la prochaine vidéo."
+            "value": "Utilise le moteur gpu-next (libplacebo) pour un meilleur tone-mapping HDR. Expérimental — matériel Apple TV uniquement (ignoré sur le simulateur). S'applique à la prochaine vidéo. Les flux Dolby Vision profil 5 lus sur mpv l’utilisent toujours."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usa il renderer gpu-next (libplacebo) per una migliore mappatura dei toni HDR. Sperimentale — solo hardware Apple TV (ignorato sul simulatore). Si applica al video successivo."
+            "value": "Usa il renderer gpu-next (libplacebo) per una migliore mappatura dei toni HDR. Sperimentale — solo hardware Apple TV (ignorato sul simulatore). Si applica al video successivo. I flussi Dolby Vision profilo 5 riprodotti su mpv lo usano sempre."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dùng trình kết xuất gpu-next (libplacebo) để tone-map HDR tốt hơn. Thử nghiệm — chỉ trên phần cứng Apple TV (bỏ qua trên Simulator). Áp dụng cho video tiếp theo."
+            "value": "Dùng trình kết xuất gpu-next (libplacebo) để tone-map HDR tốt hơn. Thử nghiệm — chỉ trên phần cứng Apple TV (bỏ qua trên Simulator). Áp dụng cho video tiếp theo. Luồng Dolby Vision cấu hình 5 phát trên mpv luôn dùng trình này."
           }
         }
       }
@@ -45446,36 +45446,36 @@
         }
       }
     },
-    "Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default.": {
+    "Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default. Dolby Vision profile 5 streams that play on mpv always use it.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verwendet einen anderen Video-Renderer für bessere HDR-Farben. Er ist experimentell, funktioniert nur auf einem echten Apple TV und gilt für das nächste Video. Standardmäßig aus."
+            "value": "Verwendet einen anderen Video-Renderer für bessere HDR-Farben. Er ist experimentell, funktioniert nur auf einem echten Apple TV und gilt für das nächste Video. Standardmäßig aus. Dolby-Vision-Streams mit Profil 5, die auf mpv laufen, verwenden ihn immer."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usa otro renderizador de vídeo para un mejor color HDR. Es experimental, solo funciona en un Apple TV real y se aplica al siguiente vídeo. Desactivado por defecto."
+            "value": "Usa otro renderizador de vídeo para un mejor color HDR. Es experimental, solo funciona en un Apple TV real y se aplica al siguiente vídeo. Desactivado por defecto. Las transmisiones Dolby Vision de perfil 5 que se reproducen en mpv siempre lo usan."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Utilise un autre moteur de rendu vidéo pour de meilleures couleurs HDR. Expérimental, il ne fonctionne que sur une vraie Apple TV et s’applique à la prochaine vidéo. Désactivé par défaut."
+            "value": "Utilise un autre moteur de rendu vidéo pour de meilleures couleurs HDR. Expérimental, il ne fonctionne que sur une vraie Apple TV et s’applique à la prochaine vidéo. Désactivé par défaut. Les flux Dolby Vision profil 5 lus sur mpv l’utilisent toujours."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usa un diverso renderer video per un colore HDR migliore. È sperimentale, funziona solo su una vera Apple TV e si applica al prossimo video. Disattivato per impostazione predefinita."
+            "value": "Usa un diverso renderer video per un colore HDR migliore. È sperimentale, funziona solo su una vera Apple TV e si applica al prossimo video. Disattivato per impostazione predefinita. I flussi Dolby Vision profilo 5 riprodotti su mpv lo usano sempre."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dùng bộ kết xuất video khác để có màu HDR tốt hơn. Đây là tính năng thử nghiệm, chỉ hoạt động trên Apple TV thật và áp dụng cho video tiếp theo. Mặc định tắt."
+            "value": "Dùng bộ kết xuất video khác để có màu HDR tốt hơn. Đây là tính năng thử nghiệm, chỉ hoạt động trên Apple TV thật và áp dụng cho video tiếp theo. Mặc định tắt. Luồng Dolby Vision cấu hình 5 phát trên mpv luôn dùng trình này."
           }
         }
       }
@@ -49426,6 +49426,244 @@
           "stringUnit": {
             "state": "translated",
             "value": "−1 s"
+          }
+        }
+      }
+    },
+    "Show Catalog Details in Headings": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Katalogdetails in Überschriften zeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar detalles del catálogo en los títulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les détails du catalogue dans les titres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra i dettagli del catalogo nei titoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện chi tiết danh mục trong tiêu đề"
+          }
+        }
+      }
+    },
+    "Row headings name their add-on; folders show their source count": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeilenüberschriften nennen ihr Add-on; Ordner zeigen ihre Quellenanzahl"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los títulos de fila nombran su complemento; las carpetas muestran su número de fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les titres de rangée nomment leur extension ; les dossiers affichent leur nombre de sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I titoli delle righe indicano il loro add-on; le cartelle mostrano il numero di fonti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiêu đề hàng ghi tên tiện ích; thư mục hiện số nguồn"
+          }
+        }
+      }
+    },
+    "Headings and folders show the name only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überschriften und Ordner zeigen nur den Namen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los títulos y las carpetas muestran solo el nombre"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les titres et les dossiers n’affichent que le nom"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Titoli e cartelle mostrano solo il nome"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiêu đề và thư mục chỉ hiện tên"
+          }
+        }
+      }
+    },
+    "Adds the add-on's name after row headings on the Stage and Discover, and the source count under a collection folder on both Home layouts. Off by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fügt auf der Stage und in Entdecken den Namen des Add-ons hinter Zeilenüberschriften hinzu und in beiden Home-Layouts die Quellenanzahl unter einem Sammlungsordner. Standardmäßig aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añade el nombre del complemento tras los títulos de fila en el Escenario y en Descubrir, y el número de fuentes bajo una carpeta de colección en ambos diseños de Inicio. Desactivado por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajoute le nom de l’extension après les titres de rangée sur la Scène et dans Découvrir, et le nombre de sources sous un dossier de collection dans les deux mises en page de l’accueil. Désactivé par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiunge il nome dell’add-on dopo i titoli delle righe nello Stage e in Scopri, e il numero di fonti sotto una cartella di raccolta in entrambi i layout della Home. Disattivato per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thêm tên tiện ích sau tiêu đề hàng trên Stage và Khám phá, và số nguồn dưới thư mục bộ sưu tập ở cả hai bố cục Trang chủ. Mặc định tắt."
+          }
+        }
+      }
+    },
+    "Movie": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Película"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phim"
+          }
+        }
+      }
+    },
+    "Collections Layout": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammlungslayout"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diseño de colecciones"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposition des collections"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Layout delle raccolte"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bố cục bộ sưu tập"
+          }
+        }
+      }
+    },
+    "How a collection folder opens on the Stage. Rows shows the focused title at the top with one row per source below it. Grid shows every title of the selected source as a grid of posters. Default: Rows.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wie sich ein Sammlungsordner in Stage öffnet. Reihen zeigt den fokussierten Titel oben und darunter eine Reihe pro Quelle. Raster zeigt alle Titel der gewählten Quelle als Posterraster. Standard: Reihen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cómo se abre una carpeta de colección en Stage. Filas muestra el título enfocado arriba y una fila por fuente debajo. Cuadrícula muestra todos los títulos de la fuente seleccionada como una cuadrícula de pósteres. Predeterminado: Filas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comment un dossier de collection s’ouvre dans Stage. Lignes affiche le titre sélectionné en haut et une ligne par source en dessous. Grille affiche tous les titres de la source choisie sous forme de grille d’affiches. Par défaut : Lignes."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Come si apre una cartella di raccolta in Stage. Righe mostra il titolo selezionato in alto e una riga per fonte sotto. Griglia mostra tutti i titoli della fonte selezionata come una griglia di locandine. Predefinito: Righe."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cách một thư mục bộ sưu tập mở trong Stage. Hàng hiển thị tiêu đề đang chọn ở trên cùng và một hàng cho mỗi nguồn bên dưới. Lưới hiển thị mọi tiêu đề của nguồn đã chọn dưới dạng lưới áp phích. Mặc định: Hàng."
           }
         }
       }

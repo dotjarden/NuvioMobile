@@ -23,8 +23,12 @@ enum MenuPrecedence {
         return .exit
     }
 
-    /// Every action but `.exit` consumes the press, so its release must not reach UIKit either.
-    static func swallowsRelease(_ action: Action) -> Bool { action != .exit && action != .panel }
+    /// Every consumed action swallows its release too, so UIKit never sees a half press.
+    /// BUG-165 (rc4 verdict): `.exit` used to let its release run up the responder chain while the
+    /// cover's dismissal was in flight; an unhandled Menu at the end of that chain is "leave the
+    /// app" on tvOS, which is what Steven's remote and the device rig both hit. Only `.panel` keeps
+    /// its release (the presented panel owns the whole press).
+    static func swallowsRelease(_ action: Action) -> Bool { action != .panel }
 }
 
 /// The Siri Remote's touch surface reports a light tap at touch-up even when the touch was a click

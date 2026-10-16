@@ -205,6 +205,15 @@ final class DiscoverRowsViewModel: ObservableObject {
         activate(option, specs: newSpecs, reason: "sources")
     }
 
+    /// B1 (BUG-145 + FEAT-67): what a loading, failed or empty row's heading reads under Show
+    /// Catalog Details in Headings. Computed from the row's spec at draw time, so flipping the
+    /// setting re-renders the shown rows without rebuilding the specs or the selection cache.
+    /// nil for a key with no spec (the caller keeps `StripRow.heading`).
+    func heading(forRow key: String, showsAddon: Bool) -> String? {
+        guard let spec = specs.first(where: { $0.key == key }) else { return nil }
+        return DiscoverRowsPlan.heading(title: spec.title, addonName: spec.addonName, showsAddon: showsAddon)
+    }
+
     // MARK: Selection
 
     /// The Catalog pill's choices for `type`.

@@ -16,10 +16,17 @@ nonisolated enum PlaybackEngine: String, Sendable {
 nonisolated struct EngineDecision: Equatable, Sendable {
     let engine: PlaybackEngine
     let reason: String
+    /// B10 (BUG-166; Steven's rc4 verdict, "DV colours wrong"): mpv must render this stream with
+    /// `gpu-next` (libplacebo), whatever Enhanced Video Renderer says. Set by `route` for a Dolby
+    /// Vision profile 5 stream sent to mpv: the default `gpu` VO has no RPU processing and paints
+    /// P5's IPTPQc2 picture green and magenta.
+    var prefersGpuNext: Bool = false
 
-    /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd".
+    /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd";
+    /// "· gpu-next" is appended when `prefersGpuNext` (B10).
     var displayNote: String {
-        "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
+        let base = "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
+        return prefersGpuNext ? "\(base) \u{00B7} gpu-next" : base
     }
 }
 
@@ -28,6 +35,19 @@ nonisolated enum PlayerEngineRouter {
     /// `dvP7FelToMpv` is its FEL-fidelity sub-setting (send Profile 7 FEL files to mpv instead of
     /// discarding their enhancement layer in the 8.1 conversion).
     static func route(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool = false) -> EngineDecision {
+        var decision = decide(probe: probe, nativeDVEnabled: nativeDVEnabled, dvP7FelToMpv: dvP7FelToMpv)
+        if decision.engine == .mpv, mpvNeedsGpuNext(probe: probe) { decision.prefersGpuNext = true }
+        return decision
+    }
+
+    /// B10 (BUG-166): a Dolby Vision profile 5 stream that plays on mpv needs `gpu-next`: whatever
+    /// sent it there (P5 in MP4 today, or a native failure falling over). `PlayerScreen` asks this
+    /// for the native → mpv fallback too.
+    static func mpvNeedsGpuNext(probe: ProbeResult?) -> Bool {
+        probe?.dolbyVision?.profile == 5
+    }
+
+    private static func decide(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool) -> EngineDecision {
         guard nativeDVEnabled else { return EngineDecision(engine: .mpv, reason: "native engine off") }
         guard let p = probe else { return EngineDecision(engine: .mpv, reason: "probe unavailable") }
         guard p.seekable else { return EngineDecision(engine: .mpv, reason: "source not seekable") }

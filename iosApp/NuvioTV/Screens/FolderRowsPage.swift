@@ -14,8 +14,8 @@ import SwiftUI
 //        ├─ Color.clear  stageHeight               nothing focusable over the stage
 //        └─ StripPager   stripHeight               one row per source tab, no "All" (S4)
 //
-// The Edit band (Layout picker + Edit Filters) is `FolderDetailView`'s, mounted outside the
-// Rows/Grid switch so choosing a layout keeps focus on it (§2.6).
+// The Edit band (Edit Filters; FEAT-71 moved the Layout picker to Settings and hides the band at
+// rest) is `FolderDetailView`'s, mounted outside the Rows/Grid switch (§2.6).
 //
 // Remote (§2.7): Down/Up page one row per press (P1's strip); Up from the top row reaches the Edit
 // band (the strip never consumes it); Menu pops from any row (`menuPagesToTop: false` installs no
@@ -35,8 +35,8 @@ struct FolderRowsPage: View {
     /// when it changes, so `FolderDetailView` re-renders at the crossing, never per hop.
     @Binding var rowsAtTop: Bool
     /// §2.3's initial focus (the first card once a row is focusable). False when this page was
-    /// mounted by a layout switch (Edit › Layout › Rows): choosing a layout keeps focus on the Edit
-    /// menu (§2.6), so the page must not pull it into the strip.
+    /// mounted by a layout switch while the folder was open (Home Layout or Collections Layout
+    /// flipped in Settings, FEAT-71): focus stays where it is.
     let requestsInitialFocus: Bool
 
     /// Held for its lifetime, never observed: it publishes nothing (#5).
@@ -64,6 +64,8 @@ struct FolderRowsPage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// B1: Show Catalog Details in Headings (`HeadingDetailsSetting`), the folder line's gate.
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
 
     var body: some View {
         let geo = geometry
@@ -77,11 +79,15 @@ struct FolderRowsPage: View {
             // S2 / S8: the wash observes the swap driver's wash feed itself, so this page never
             // re-renders on a swap; switched off, it draws nothing and the background shows through.
             AmbientWashLayer(feed: stage.swap.washFeed, probeID: "debug_wash_folder")
-            // S3: while the stage displays the folder, its own logo slot is empty; the folder logo
-            // layer below owns that slot (one logo in the slot at a time).
+            // S3: while the folder logo is docked, the stage's own logo slot is empty; the folder
+            // logo layer below owns that slot (one logo in the slot at a time). FEAT-70: docked now
+            // outlives the folder on stage (the initial landing seeds row 0's first item while the
+            // folder logo stays docked until the first move), so the slot hides on `docked`, not
+            // only while the folder is displayed.
             StageView(controller: stage,
                       geometry: geo,
                       hidesLogoWhenDisplaying: folderIdentity,
+                      hidesLogo: FolderStageLogo.docked(followsFocus: followsFocus),
                       probeID: "debug_stage_folder")
             FolderStageLogoLayer(title: model.folderTitle,
                                  logoUrl: model.titleLogoUrl,
@@ -281,8 +287,10 @@ struct FolderRowsPage: View {
     /// for a folder with neither a backdrop nor a logo, `plainFolderPreview` (same id and type).
     private var folderPreview: MetaPreview? {
         guard let collection = model.collection, let folder = model.folder else { return nil }
-        return HomeRowPreviews.folder(collection: collection, folder: folder)
-            ?? FolderRowsPlan.plainFolderPreview(collection: collection, folder: folder)
+        // B1: the "name · N sources" line only with Show Catalog Details in Headings on.
+        return HomeRowPreviews.folder(collection: collection, folder: folder, showsDetails: catalogDetailsInHeadings)
+            ?? FolderRowsPlan.plainFolderPreview(collection: collection, folder: folder,
+                                                 showsDetails: catalogDetailsInHeadings)
     }
 
     /// First paint (S2): the folder at once, no fade. Stage art is the folder's `heroBackdropUrl`
@@ -293,9 +301,13 @@ struct FolderRowsPage: View {
         stage.seed(preview, washFallback: FolderRowsPlan.nonBlank(model.folder?.coverImageUrl))
     }
 
-    /// Q1, through `FolderStageInput.step`: until the first move the stage keeps the folder (the
-    /// initial landing and focus leaving a row are not moves); from the first move on, every report
-    /// goes to P1's funnel (`StageController.report`), as on Home.
+    /// Q1, through `FolderStageInput.step`. FEAT-70 (Steven, rc4 verdict 2026-10-16: "the synopsis and
+    /// the first movie's artwork aren't displayed immediately"): the initial landing now goes to the
+    /// stage (row 0's first item: its art, wash and synopsis), while the folder logo stays docked and
+    /// the stage's own logo slot stays hidden until the first move; the folder intro shows only until
+    /// that landing. A repeat of the initial card or focus leaving a row before the first move is
+    /// still not a move; from the first move on every report goes to P1's funnel
+    /// (`StageController.report`), as on Home.
     private func cardReported(_ item: MetaPreview?, row: FolderStripRow, section: HomeCatalogSection) {
         let pageBox = box
         let card = item.map { FolderStageInput.cardKey(rowId: row.id, itemId: $0.id) }
@@ -311,6 +323,8 @@ struct FolderRowsPage: View {
             ArtworkStore.prefetch(section.items.prefix(8)
                 .flatMap { heroBackdropPrefetchURLs(for: $0) }
                 .compactMap(URL.init(string:)))
+            // FEAT-70: the stage takes this item now (forwarded below), the folder logo stays docked.
+            StageStripProbe.shared.log("folder initial-item card=\(card ?? "-") forward=\(forward ? 1 : 0)")
         }
         if after.follows != followsFocus {
             followsFocus = after.follows

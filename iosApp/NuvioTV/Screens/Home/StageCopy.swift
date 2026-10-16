@@ -16,8 +16,9 @@ extension StageCopy {
     /// No `progress` (the title is not in Continue Watching, or the host installed no lookup, e.g.
     /// the folder Rows page): Classic's meta line (`HomeHeroForeground.metaLine`: release · up to
     /// three genres) and the item's description. A collection folder's preview carries its
-    /// collection title as `releaseInfo` and `HomeView.folderHeroDescription` as its description,
-    /// so a folder reads through the same three slots.
+    /// collection title as `releaseInfo` and, with Show Catalog Details in Headings on (B1,
+    /// `HeadingDetailsSetting`), `HomeView.folderHeroDescription` as its description, so a folder
+    /// reads through the same three slots; with it off (the default) the synopsis slot is empty.
     ///
     /// W2-A, Continue-Watching-aware: with `progress`, the meta line is
     /// `S1 E3 · <episode title> · 45m left` (each part only when it is known; nothing known falls
@@ -131,7 +132,7 @@ extension StageCopy {
         return { item in index[StageCopy.progressKey(type: item.type, id: item.id)] }
     }
 
-    // MARK: Row headings (W2-A, Stage only)
+    // MARK: Row headings (W2-A, Stage and Discover, under `HeadingDetailsSetting`)
 
     /// The add-on name the strip prints after a catalog row's heading ("Popular · Cinemeta"), or
     /// nil when the name is blank or the heading already carries it (case- and
@@ -166,5 +167,21 @@ extension StageCopy {
         a.trimmingCharacters(in: .whitespacesAndNewlines)
             .compare(b.trimmingCharacters(in: .whitespacesAndNewlines),
                      options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
+}
+
+/// B1 (BUG-145 + BUG-159 + FEAT-67; Steven, beta.19-rc4 verdict 2026-10-16, "a no-go"): Appearance ›
+/// "Show Catalog Details in Headings", `show_catalog_details_in_headings` (device-local, read with
+/// `@AppStorage` like every other Appearance look key). ON is rc4 exactly: Stage and Discover row
+/// headings name their add-on ("Popular · Cinemeta", `StageCopy.headingAddon`) and a collection
+/// folder's preview carries "Aventure · 8 sources" (`HomeView.folderHeroDescription`) on both Homes
+/// and the folder page. OFF (the default) prints the name only: he read the add-on suffix as the
+/// "Show catalog type in title" toggle being broken, and the source count as clutter.
+nonisolated enum HeadingDetailsSetting {
+    static let defaultsKey = "show_catalog_details_in_headings"
+    static let defaultValue = false
+
+    static func current(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: defaultsKey) == nil ? defaultValue : defaults.bool(forKey: defaultsKey)
     }
 }

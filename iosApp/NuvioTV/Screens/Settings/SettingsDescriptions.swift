@@ -54,6 +54,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceOledBlack = "appearance.oledBlack"
     // beta.19-rc1 verdict (F, FEAT-54): the row edge fade, promoted from the Developer A/B.
     case appearanceRowEdgeFade = "appearance.rowEdgeFade"
+    // B1 (BUG-145 + BUG-159 + FEAT-67, Steven's rc4 verdict): Show Catalog Details in Headings.
+    case appearanceHeadingDetails = "appearance.headingDetails"
     case appearanceSettingsStyle = "appearance.settingsStyle"
     case appearanceNavigation = "appearance.navigation"
     // Home Stage & Strip (H9, FEAT-45): the Rail row under Navigation, shown only with Rail.
@@ -85,6 +87,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     // two "Stage" ids sit beside the Classic ids they replace while Home Layout is Stage.
     case homeLayout = "home.layout"
     case homeAmbientBackground = "home.ambientBackground"
+    case homeCollectionsLayout = "home.collectionsLayout"
     case homeUpcoming = "home.upcoming"
     case homeRefreshAddons = "home.refreshAddons"
     case homeShowHero = "home.showHero"
@@ -255,6 +258,7 @@ enum SettingsDescriptions {
         case .appearanceNoZoomOnFocus: return LocalizedStringResource("Stops cards from growing when focused. They keep their size and show focus with a highlight and shadow. Off by default.")
         case .appearanceOledBlack: return LocalizedStringResource("Makes the app background pure black, which suits OLED screens. Cards keep their own colors so they still stand out.")
         case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Off by default.")
+        case .appearanceHeadingDetails: return LocalizedStringResource("Adds the add-on's name after row headings on the Stage and Discover, and the source count under a collection folder on both Home layouts. Off by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.")
         case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Hidden keeps it off screen until you press Left from the first card or Menu. Default: Always Visible.")
@@ -283,6 +287,7 @@ enum SettingsDescriptions {
         // Home Stage & Strip (H8): copy passed SlopMonster 5/5 (W2-C); translated at the end of the batch.
         case .homeLayout: return LocalizedStringResource("Stage puts the focused title at the top of the screen with one row of posters below it. Up and Down move a whole row at a time. Classic keeps the previous Home, with a banner above rows that scroll. Default: Stage.")
         case .homeAmbientBackground: return LocalizedStringResource("Fills the Stage background with a soft, blurred wash of the focused title's colors. With OLED True Black on, the wash is dimmed. On by default.")
+        case .homeCollectionsLayout: return LocalizedStringResource("How a collection folder opens on the Stage. Rows shows the focused title at the top with one row per source below it. Grid shows every title of the selected source as a grid of posters. Default: Rows.")
         case .homeUpcoming: return LocalizedStringResource("Adds a row under Continue Watching with the next episodes of your shows that air in the next 14 days. On by default.")
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
@@ -330,7 +335,7 @@ enum SettingsDescriptions {
         case .playerPauseInfoCard: return LocalizedStringResource("Shows the title, source and time left after you have been paused for a while. Works in both players. On by default.")
         case .playerLoadingScreen: return LocalizedStringResource("Shows the poster, the title and what the player is doing (connecting, preparing, buffering) while a video starts, in both players. Off shows a plain spinner. On by default.")
         case .playerMatchFrameRate: return LocalizedStringResource("Switches the TV to the video's own frame rate and dynamic range while it plays. Off by default.")
-        case .playerEnhancedRenderer: return LocalizedStringResource("Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default.")
+        case .playerEnhancedRenderer: return LocalizedStringResource("Uses a different video renderer for better HDR color. It is experimental, works only on a real Apple TV and applies to the next video. Off by default. Dolby Vision profile 5 streams that play on mpv always use it.")
         case .playerNativeDolbyVision: return LocalizedStringResource("Plays Dolby Vision and HDR10 files in Apple's own player for true Dolby Vision on Apple TV 4K. Everything else stays on the mpv player. On by default.")
         case .playerP7FelMpv: return LocalizedStringResource("Some Dolby Vision discs (Profile 7 FEL) carry extra picture data that native playback must drop. This keeps those files on the mpv player as plain HDR10 so nothing is dropped. Off by default.")
         case .playerStreamingBuffer: return LocalizedStringResource("Sets how much memory the player may use to store video ahead of time. A larger buffer helps on a shaky connection. Default: Default.")

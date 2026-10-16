@@ -74,6 +74,9 @@ struct AppearanceSettingsPane: View {
     /// BUG-118 A/B. Device-local, live: every row's `RowEdgeEffectStyleModifier` reads the same key,
     /// so a change applies at once. Off by default (`RowEdgeFadeSetting.defaultValue`).
     @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
+    /// B1 (BUG-145 + FEAT-67): Show Catalog Details in Headings, device-local, live: the Stage,
+    /// Discover, Classic Home and the folder page read the same key (`HeadingDetailsSetting`).
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
 
     private static let settingsStyleOptions: [(value: String, label: String)] = [
         ("default", String(localized: "Default")),
@@ -264,6 +267,20 @@ struct AppearanceSettingsPane: View {
                     label: { $0.label }
                 )
                 .accessibilityIdentifier("appearance_row_edge_fade")
+
+                // B1 (BUG-145 + BUG-159 + FEAT-67; Steven, beta.19-rc4 verdict 2026-10-16, "a
+                // no-go"): the add-on name after Stage and Discover row headings and the
+                // "Aventure · 8 sources" line under a focused collection folder on both Homes.
+                // Default OFF (name only); ON is rc4's behaviour.
+                SettingsToggleRow(
+                    title: String(localized: "Show Catalog Details in Headings"),
+                    subtitle: catalogDetailsInHeadings
+                        ? String(localized: "Row headings name their add-on; folders show their source count")
+                        : String(localized: "Headings and folders show the name only"),
+                    isOn: $catalogDetailsInHeadings,
+                    descriptionID: .appearanceHeadingDetails
+                )
+                .accessibilityIdentifier("appearance_heading_details")
             }
 
             // FEAT-38: pure black background for OLED screens. Backed by

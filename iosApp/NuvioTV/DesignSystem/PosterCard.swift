@@ -768,6 +768,19 @@ extension View {
 enum CardSystemLiftStyle: Equatable {
     case highlight
     case lift
+
+    /// The style `CatalogRowView` puts on a card's link. `.lift` only for the card whose tile is
+    /// showing, in a portrait row, with zoom ON.
+    ///
+    /// BUG-164 (Steven, rc4 verdict 2026-10-16: "a visual glitch on the left side of the screen
+    /// when the trailer for the poster on the far left is playing", with No Zoom on Focus ON): Batch
+    /// A set `.lift` whatever the zoom setting, so in No Zoom the tile drew ring mode's manual scale
+    /// + shadow (`InlineTrailerCard.expandedTile`), a zoom the setting promises never happens, and on
+    /// the first card it grew 35.6 pt past the row's leading clip. The `.lift` state exists only to
+    /// switch the SYSTEM treatment off (zoom ON); No Zoom never has one (`StillCardButtonStyle`).
+    static func resolve(tileShowing: Bool, landscapeRow: Bool, noZoomOnFocus: Bool) -> CardSystemLiftStyle {
+        tileShowing && !landscapeRow && !noZoomOnFocus ? .lift : .highlight
+    }
 }
 
 private struct CardSystemLiftStyleKey: EnvironmentKey {

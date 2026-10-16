@@ -21,6 +21,7 @@ import SharedCore
 // the whole catalog. Headings are the genre (or catalog) name with the add-on after it, so the
 // strip reads "Sci-Fi · Cinemeta" (`StageCopy.headingAddon`, the rule `CatalogRowView` applies to a
 // loaded row under `\.rowHeadingShowsAddon`); a loading or settled-empty row draws the same text.
+// B1 (rc4 verdict): the add-on part only with Show Catalog Details in Headings on (default off).
 //
 // Everything here is a pure function of its inputs (the shared Kotlin types it reads are values),
 // so `DiscoverRowsPlanTests` and `DiscoverLoadSchedulerTests` pin it without a view host.
@@ -36,8 +37,10 @@ nonisolated struct DiscoverRowSpec: Equatable, Sendable {
     let order: Int
     /// The section title: the genre ("Sci-Fi"), or the catalog's name on a no-genre catalog.
     let title: String
-    /// What a loading or message row draws: `title · add-on` (or `title` when the add-on name is
-    /// blank or already in the title), the same text the loaded row's heading reads.
+    /// `title · add-on` (or `title` when the add-on name is blank or already in the title), the
+    /// heading with Show Catalog Details in Headings on. B1: the page draws a loading or message
+    /// row's heading through `DiscoverRowsViewModel.heading(forRow:showsAddon:)`, so with the
+    /// setting off (the default) it reads `title`, the same text the loaded row's heading reads.
     let heading: String
     /// The section subtitle: the type's label ("Movies").
     let subtitle: String
@@ -124,9 +127,12 @@ nonisolated enum DiscoverRowsPlan {
         return clashes ? "\(option.catalogName) \u{00B7} \(option.addonName)" : option.catalogName
     }
 
-    /// The row heading text (`title · add-on`), `StageCopy.headingAddon`'s rule.
-    static func heading(title: String, addonName: String) -> String {
-        guard let addon = StageCopy.headingAddon(title: title, addonName: addonName) else { return title }
+    /// The row heading text (`title · add-on`), `StageCopy.headingAddon`'s rule. B1 (BUG-145 +
+    /// FEAT-67, Steven's rc4 no-go): `showsAddon` is Show Catalog Details in Headings
+    /// (`HeadingDetailsSetting`); off, the bare title.
+    static func heading(title: String, addonName: String, showsAddon: Bool) -> String {
+        guard showsAddon,
+              let addon = StageCopy.headingAddon(title: title, addonName: addonName) else { return title }
         return "\(title) \u{00B7} \(addon)"
     }
 
@@ -140,7 +146,7 @@ nonisolated enum DiscoverRowsPlan {
                 DiscoverRowSpec(key: "discover|\(option.key)|g\(index)",
                                 order: index,
                                 title: genre,
-                                heading: heading(title: genre, addonName: option.addonName),
+                                heading: heading(title: genre, addonName: option.addonName, showsAddon: true),
                                 subtitle: subtitle,
                                 addonName: option.addonName,
                                 manifestUrl: option.manifestUrl,
@@ -167,7 +173,8 @@ nonisolated enum DiscoverRowsPlan {
             return DiscoverRowSpec(key: "discover|\(selected.type)|c\(index)",
                                    order: index,
                                    title: option.catalogName,
-                                   heading: heading(title: option.catalogName, addonName: option.addonName),
+                                   heading: heading(title: option.catalogName, addonName: option.addonName,
+                                                    showsAddon: true),
                                    subtitle: subtitle,
                                    addonName: option.addonName,
                                    manifestUrl: option.manifestUrl,
@@ -188,7 +195,8 @@ nonisolated enum DiscoverRowsPlan {
 
     /// The row's section. Every Kotlin argument is passed (the ObjC export drops defaults). nil for
     /// an empty page. `addonName` is the catalog's add-on, so the loaded heading reads
-    /// "Sci-Fi · Cinemeta" under `\.rowHeadingShowsAddon`.
+    /// "Sci-Fi · Cinemeta" under `\.rowHeadingShowsAddon` (B1: set from Show Catalog Details in
+    /// Headings).
     static func section(_ spec: DiscoverRowSpec, page: DiscoverRowPage) -> HomeCatalogSection? {
         guard !page.items.isEmpty else { return nil }
         let target = CatalogTargetAddon(manifestUrl: spec.manifestUrl,

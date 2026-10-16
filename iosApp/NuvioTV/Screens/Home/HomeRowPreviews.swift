@@ -19,7 +19,13 @@ enum HomeRowPreviews {
     /// preview. Nil when the folder carries neither a backdrop nor a logo — such a folder has
     /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
     /// poster-shaped cover across the backdrop.
-    static func folder(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {
+    ///
+    /// B1 (BUG-145 + BUG-159 + FEAT-67, Steven's rc4 no-go on "Aventure · 8 sources"): the
+    /// `description` line rides `showsDetails` (Show Catalog Details in Headings,
+    /// `HeadingDetailsSetting`, default off). Off, it is nil: the hero-ON folder box keeps the
+    /// full-height wordmark and the hero-OFF panel's synopsis slot stays empty; the meta line
+    /// (`releaseInfo`, the collection title) is unchanged either way.
+    static func folder(collection: NuvioCollection, folder: CollectionFolder, showsDetails: Bool) -> MetaPreview? {
         let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !(backdrop?.isEmpty ?? true) || !(logo?.isEmpty ?? true) else { return nil }
@@ -42,8 +48,10 @@ enum HomeRowPreviews {
             // three-slot column again — see `HomeHeroForeground.nuvioLayout` — so the folder
             // needs text for its meta line and synopsis slot or the panel reads as "no title or
             // description" (Steven, 2026-09-13). The carousel's merged logo-only box ignores
-            // both fields, so H-2's "no caption under the wordmark" stands there.
-            description: HomeView.folderHeroDescription(collection: collection, folder: folder),
+            // both fields, so H-2's "no caption under the wordmark" stands there. B1 (rc4
+            // verdict, 2026-10-16): he now wants the source-count line gone, so it is behind
+            // `showsDetails`; the collection title still fills the meta line.
+            description: showsDetails ? HomeView.folderHeroDescription(collection: collection, folder: folder) : nil,
             releaseInfo: collection.title.trimmingCharacters(in: .whitespacesAndNewlines),
             rawReleaseDate: nil,
             popularity: nil,

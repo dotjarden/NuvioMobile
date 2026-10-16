@@ -37,7 +37,8 @@ final class PlayerRemoteRulesTests: XCTestCase {
         XCTAssertTrue(MenuPrecedence.swallowsRelease(.dismissUpNext))
         XCTAssertTrue(MenuPrecedence.swallowsRelease(.hidePill))
         XCTAssertTrue(MenuPrecedence.swallowsRelease(.hideBar))
-        XCTAssertFalse(MenuPrecedence.swallowsRelease(.exit))
+        // BUG-165: the exit press's release is swallowed too (an unhandled release leaves the app).
+        XCTAssertTrue(MenuPrecedence.swallowsRelease(.exit))
         XCTAssertFalse(MenuPrecedence.swallowsRelease(.panel))
     }
 

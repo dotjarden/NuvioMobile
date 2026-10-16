@@ -70,6 +70,8 @@ struct CollectionRowView: View {
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
     @Environment(\.pinnedRowIsLast) private var isLastRow
     @Environment(\.posterStyle) private var style
+    /// BUG-146 second trim: nil outside the Stage strip (Classic keeps `md` under the heading).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
 
     /// rc14 (BUG-122): see `PinnedRowGeometry.shortRowLayoutCompensation`. The natural shelf is
     /// `shelfMinHeight`'s pre-floor value — the tallest tile plus its caption chrome, inside the
@@ -279,7 +281,9 @@ struct CollectionRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere;
+        // `StripGeometry.collectionRowHeightMax` assumes the same.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
             // CatalogRowView's structural comment — out-of-bounds frames froze the focus
             // engine; all paddings must stay positive).
@@ -1262,12 +1266,13 @@ nonisolated enum FolderHeaderGeometry {
 ///
 /// Home Stage & Strip (H5, FEAT-43; P2 spec §2): a folder follows the Home layout. Classic Home
 /// keeps this grid exactly (`gridPage`, with its Edit Filters button). Stage Home opens the folder
-/// as a stage-and-strip page (`FolderRowsPage`), and the grid stays available per folder through
-/// the Edit menu (`FolderEditMenuBand`: Layout › Rows / Grid, plus Edit Filters), which replaces
-/// the Edit Filters button in Stage and is mounted OUTSIDE the Rows/Grid switch, so choosing a
-/// layout keeps focus on it. Both layouts share the one view model; the per-folder Grid choice is
-/// device-local (`FolderLayoutStore`). `home_layout` and the choice are read live, so a folder left
-/// open while Home Layout flips in Settings shows the new layout on return.
+/// as a stage-and-strip page (`FolderRowsPage`), or as the grid when Settings › Home Screen ›
+/// Collections Layout says Grid (FEAT-71, `FolderLayoutDefault`; a per-folder Grid choice stored
+/// before FEAT-71 still wins, `FolderLayoutStore`). In Stage the Edit menu (`FolderEditMenuBand`,
+/// Edit Filters only since FEAT-71) replaces the Edit Filters button and is mounted OUTSIDE the
+/// Rows/Grid switch. Both layouts share the one view model. `home_layout`, the default and the
+/// per-folder choice are read live, so a folder left open while either setting flips in Settings
+/// shows the new layout on return.
 struct FolderDetailView: View {
     @StateObject private var model: FolderDetailViewModel
 
@@ -1278,14 +1283,17 @@ struct FolderDetailView: View {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
-    /// P2 §2.1: the device-local per-folder Grid choices (`FolderLayoutStore`).
+    /// P2 §2.1: the device-local per-folder Grid choices (`FolderLayoutStore`). Read only since
+    /// FEAT-71 (nothing on the TV writes it any more).
     @AppStorage(FolderLayoutStore.defaultsKey) private var folderLayoutRaw = ""
+    /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live.
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefaultRaw = FolderLayoutDefault.defaultValue.rawValue
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
     /// (true while the strip's focused row is its top focusable row, or before any row had focus).
     @State private var rowsAtTop = true
-    /// A layout switch happened while this page was open (Edit › Layout, or Home Layout flipped in
-    /// Settings): a Rows page mounted by it leaves focus where it is instead of pulling it to the
-    /// first card (P2 §2.6: choosing a layout keeps focus on the Edit menu).
+    /// A layout switch happened while this page was open (Home Layout or, since FEAT-71, Collections
+    /// Layout flipped in Settings): a Rows page mounted by it leaves focus where it is instead of
+    /// pulling it to the first card (P2 §2.6).
     @State private var layoutSwitched = false
     /// Drives the TMDB filter editor cover for the selected tab's tmdb source (Grid) or the source
     /// picked in the Edit menu (Rows).
@@ -1323,27 +1331,15 @@ struct FolderDetailView: View {
 
     private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
 
-    /// P2 §2.1: Classic → the grid; Stage → Rows unless this folder has a stored Grid choice.
+    /// P2 §2.1: Classic → the grid; Stage → Rows unless the Settings default (FEAT-71) or this
+    /// folder's stored Grid choice says Grid.
     private var pageLayout: FolderPageLayout {
         FolderPageLayout.resolve(
             homeLayout: homeLayout,
             gridOverride: FolderLayoutStore.isGrid(folderLayoutRaw,
                                                    collectionId: model.collectionId,
-                                                   folderId: model.folderId)
-        )
-    }
-
-    /// The Edit menu's Layout picker: writes (or clears) this folder's Grid choice.
-    private var layoutBinding: Binding<FolderPageLayout> {
-        Binding(
-            get: { pageLayout },
-            set: { newLayout in
-                let updated = FolderLayoutStore.setting(folderLayoutRaw,
-                                                        grid: newLayout == .grid,
-                                                        collectionId: model.collectionId,
-                                                        folderId: model.folderId)
-                if updated != folderLayoutRaw { folderLayoutRaw = updated }
-            }
+                                                   folderId: model.folderId),
+            defaultGrid: FolderLayoutDefault.resolve(folderLayoutDefaultRaw).isGrid
         )
     }
 
@@ -1360,7 +1356,7 @@ struct FolderDetailView: View {
                 // §2.6: visible and enabled at the top of the page (the strip's top focusable row,
                 // or the grid not scrolled), the existing Edit Filters rule.
                 FolderEditMenuBand(model: model,
-                                   layout: layoutBinding,
+                                   layout: layout,
                                    isActive: layout == .rows ? rowsAtTop : !gridScrolled,
                                    editing: $editing)
             }
@@ -1762,48 +1758,61 @@ struct FolderDetailView: View {
 }
 
 /// Home Stage & Strip (P2 §2.6): the folder page's Edit menu in Stage, in place of the Edit Filters
-/// button: Layout › Rows / Grid (this folder's device-local choice), then Edit Filters — one entry
-/// per filter-editable source on the Rows page, the selected tab's on the Grid page (today's label).
-/// Always present in Stage, so it is also the page's focus anchor while nothing else is focusable
-/// (BUG-47).
+/// button: Edit Filters, one entry per filter-editable source on the Rows page, the selected tab's on
+/// the Grid page (today's label).
 ///
-/// Mounted once by `FolderDetailView`, outside the Rows/Grid switch, so picking a layout keeps focus
-/// on it. A full-width focus section (the Library L1 pattern): Up from ANY card of the strip's top
-/// row (or from the grid's chips) reaches it, and Down returns to the row the strip shows (its own
-/// focus section). Visible, enabled and a focus section only at the top of the page (`isActive`),
-/// faded like the Edit Filters button it replaces; elsewhere it is hidden and never a focus target.
+/// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "breaks the immersive
+/// feel"; video 1 `v1-140` shows the "Modifier" pill top-right while row 0 holds focus): the Layout
+/// picker moved to Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), and the band
+/// is HIDDEN AT REST. It draws only while its Menu holds focus (Up from row 0 lands on it and shows
+/// it); otherwise it is invisible but still the page's top focus section, so it stays reachable.
+/// With no filter-editable source it mounts nothing focusable at all (an invisible focus target
+/// with nothing to offer would just swallow an Up press). That also drops the band's role as the
+/// page's BUG-47 anchor for such folders while their first rows load; the Rows page pulls focus to
+/// the first card as soon as a row is focusable (`requestInitialFocus`).
+///
+/// Mounted once by `FolderDetailView`, outside the Rows/Grid switch. A full-width focus section (the
+/// Library L1 pattern): Up from ANY card of the strip's top row (or from the grid's chips) reaches
+/// it, and Down returns to the row the strip shows (its own focus section). A focus section only at
+/// the top of the page (`isActive`); elsewhere it is hidden and never a focus target.
 struct FolderEditMenuBand: View {
     @ObservedObject var model: FolderDetailViewModel
-    @Binding var layout: FolderPageLayout
+    /// The page's current layout: decides which sources the menu lists (FEAT-71: no longer a binding).
+    let layout: FolderPageLayout
     /// Rows: the strip's focused row is its top focusable row (or none has had focus yet). Grid: the
     /// grid has not scrolled.
     let isActive: Bool
     @Binding var editing: FolderDetailViewModel.EditableSource?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// FEAT-71: the band shows only while its Menu holds focus.
+    @FocusState private var menuFocused: Bool
 
     var body: some View {
         // The band is a focus section only while it is active. Faded out, a section with only a
         // disabled Menu in it still caught Up from a lower strip row (focus landed on the empty
         // section, then bounced to whichever card sat under it: end-of-Wave-2 FA87 walk). Hidden,
-        // it keeps its place and is never a focus target.
+        // it keeps its place and is never a focus target. FEAT-71: and with nothing to edit there is
+        // no band at all.
         Group {
-            if isActive {
+            if filterEntries.isEmpty {
+                EmptyView()
+            } else if isActive {
                 band.focusSection()
             } else {
                 band.hidden()
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
+        // FEAT-71: hidden at rest, shown while focused (opacity only: layout and the focus section
+        // are unchanged, so Up from row 0 still finds it).
+        .opacity(menuFocused ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: menuFocused)
     }
 
     private var band: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             Menu {
-                Picker(String(localized: "Layout"), selection: $layout) {
-                    Text("Rows").tag(FolderPageLayout.rows)
-                    Text("Grid").tag(FolderPageLayout.grid)
-                }
                 ForEach(filterEntries) { source in
                     Button {
                         editing = source
@@ -1820,6 +1829,7 @@ struct FolderEditMenuBand: View {
             .menuStyle(.button)
             .buttonStyle(.bordered)
             .disabled(!isActive)
+            .focused($menuFocused)
             .accessibilityIdentifier("folder.editMenu")
         }
         .padding(.top, FolderHeaderGeometry.restTop)

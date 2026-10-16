@@ -378,7 +378,9 @@ final class FolderRowsPlanTests: XCTestCase {
         XCTAssertEqual(FolderStageInput.cardKey(rowId: "folder_f1_1", itemId: nil), "folder_f1_1|-")
     }
 
-    func testStepKeepsTheFolderUntilTheFirstMoveThenFollowsForGood() {
+    /// FEAT-70: the initial landing seeds the stage (forwarded) without starting to follow, so the
+    /// folder logo stays docked until the first move.
+    func testStepSeedsTheInitialItemDockedThenFollowsForGood() {
         let a = FolderStageInput.cardKey(rowId: key(1), itemId: "tt0")
         let b = FolderStageInput.cardKey(rowId: key(1), itemId: "tt1")
 
@@ -387,12 +389,15 @@ final class FolderRowsPlanTests: XCTestCase {
         XCTAssertEqual(step.state, .initial)
         XCTAssertFalse(step.forward)
 
-        // The initial landing is recorded, not forwarded: the stage keeps the folder.
+        // FEAT-70: the initial landing is recorded AND forwarded (the stage shows row 0's first
+        // item), without following: the folder logo stays docked.
         step = FolderStageInput.step(step.state, report: a)
         XCTAssertEqual(step.state, FolderStageInput.State(initialCard: a, follows: false))
-        XCTAssertFalse(step.forward)
+        XCTAssertTrue(step.forward)
+        XCTAssertTrue(FolderStageLogo.docked(followsFocus: step.state.follows))
 
-        // Up to the Edit band (a nil report) and back to the same card: still the folder.
+        // Up to the Edit band (a nil report) and back to the same card: nothing new to forward, still
+        // docked.
         step = FolderStageInput.step(step.state, report: nil)
         XCTAssertFalse(step.forward)
         XCTAssertFalse(step.state.follows)

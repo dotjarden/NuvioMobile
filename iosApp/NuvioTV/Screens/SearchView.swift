@@ -260,7 +260,8 @@ private struct SearchContent: View {
             }
 
             if let top = model.topResult {
-                SearchTopResultCard(item: top, foundIn: model.foundInCaption(for: top)) { item in
+                // B8 (FEAT-72): title, year and type only; the rows keep "Found in …".
+                SearchTopResultCard(item: top) { item in
                     owner.wash.report(item)
                 }
             }

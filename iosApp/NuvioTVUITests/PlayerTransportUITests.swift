@@ -185,6 +185,30 @@ final class PlayerTransportUITests: XCTestCase {
         return app
     }
 
+    // MARK: Exit (BUG-165, Batch B)
+
+    /// BUG-165 (Steven, rc4 verdict): leaving the mpv player with Home underneath sent the app to
+    /// the tvOS home screen. The smoke host presents the player over the ROOT view, which is the
+    /// same shape (nothing under the cover answers a Menu), so this leg is the simulator half of
+    /// the repro: the exit Menu, then a second Menu inside the dismissal (a slow release or a
+    /// double tap), then the app must still be in the foreground once the cover is gone. Without
+    /// `MenuExitShield` the second press reaches the root and the app backgrounds.
+    func testMenuExitOverRootKeepsTheAppForeground() throws {
+        let app = try launchWithBarHidden()
+        remote.press(.menu)                      // bar hidden → `MenuPrecedence.exit`
+        Thread.sleep(forTimeInterval: 0.25)      // inside the cover's dismissal
+        remote.press(.menu)
+        let gone = NSPredicate(format: "exists == false")
+        let exp = XCTNSPredicateExpectation(predicate: gone, object: app.otherElements["player.mpv"])
+        XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 6), .completed, "Menu did not exit the player")
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertEqual(app.state, .runningForeground, "the app left the foreground after the player exit")
+        // Past the shield's ceiling the root gets its Menu back; nothing is pressed here, a Menu on
+        // the smoke root legitimately leaves the app.
+        Thread.sleep(forTimeInterval: 2.0)
+        XCTAssertEqual(app.state, .runningForeground, "the app left the foreground late")
+    }
+
     func testBarGeometryProbe() throws {
         let app = try launchWithBarHidden()
         remote.press(.up)
