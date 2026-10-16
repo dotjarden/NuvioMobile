@@ -398,6 +398,7 @@ struct NativePlayerScreen: View {
         guard let player = coordinator.player else { return }
         let startedAt = ProcessInfo.processInfo.systemUptime
         skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: coordinator.lastPositionSec, now: startedAt)
+        coordinator.noteUserSeek(to: target)   // r1 P3: wins over a B17 rebuild's corrective seek
         // The chip can't re-fire while this is in flight: the planner offers no chip until then.
         if skipPrompt != nil { skipPrompt = nil }
         Task { @MainActor in

@@ -272,6 +272,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Late renditions not yet in the current item (the panel lists them; a pick rebuilds).
     @Published private(set) var lateSubtitleRows: [SubtitleRendition] = []
     @Published private(set) var isRebuildingItem = false
+    /// r1 P3: the last app-issued user seek (chapter pick, skip chip / auto-skip) while a B17
+    /// rebuild is in flight. The rebuild's corrective seek goes there instead of back to the
+    /// captured playhead, so the viewer's seek wins.
+    private var rebuildUserSeekSec: Double?
     /// `none` / `published` / `rebuilt` (the DEBUG probe's `late=` field).
     @Published private(set) var lateState = "none"
     #if DEBUG
@@ -742,6 +746,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             subtitleName: pendingLateSelection ?? currentLegibleName,
             reason: reason, startedUptime: ProcessInfo.processInfo.systemUptime)
         isRebuildingItem = true
+        rebuildUserSeekSec = nil
         observeTask?.cancel()
         subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
         subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
@@ -777,8 +782,14 @@ final class NativePlaybackCoordinator: ObservableObject {
         // (both cancel this task and hand the screen over). Without these guards the corrective
         // seek could complete and `play()` restart a player that was already paused and released:
         // up to the 24 s forward buffer of ghost audio over mpv's start, or after the viewer left.
-        if !landed.isFinite || abs(landed - target.positionSec) > 0.5 {
-            await player.seek(to: CMTime(seconds: target.positionSec, preferredTimescale: 600),
+        // A user seek issued during the rebuild wins over the captured playhead (r1 P3).
+        let wanted = rebuildUserSeekSec ?? target.positionSec
+        if let user = rebuildUserSeekSec {
+            print("[Subs] late rebuild: user seek to \(String(format: "%.1f", user))s during the rebuild wins")
+        }
+        rebuildUserSeekSec = nil
+        if !landed.isFinite || abs(landed - wanted) > 0.5 {
+            await player.seek(to: CMTime(seconds: wanted, preferredTimescale: 600),
                               toleranceBefore: .zero, toleranceAfter: .zero)
             guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after seek") }
         }
@@ -826,6 +837,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// An abandoned rebuild never leaves `syncAudioSelection` / `checkLateSubtitles` gated.
     private func abandonRebuild(_ at: String) {
         isRebuildingItem = false
+        rebuildUserSeekSec = nil
         print("[Subs] late rebuild abandoned \(at) (stopped, swapped or handed to mpv)")
     }
 
@@ -847,7 +859,15 @@ final class NativePlaybackCoordinator: ObservableObject {
         guard let player else { return }
         let target = PlayerChapters.clampedSeek(sec, durationSec: lastDurationSec > 0 ? lastDurationSec : durationSec)
         print("[Chapters] native seek → \(String(format: "%.1f", target))s")
+        noteUserSeek(to: target)
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// Every app-issued user seek reports its target here (chapter pick, the screen's skip seeks).
+    /// Outside a B17 rebuild it does nothing.
+    func noteUserSeek(to sec: Double) {
+        guard isRebuildingItem, sec.isFinite else { return }
+        rebuildUserSeekSec = sec
     }
 
     /// Fetches the Now Playing artwork once per coordinator (poster first, 400×600) and encodes it
