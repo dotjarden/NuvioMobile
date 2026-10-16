@@ -174,7 +174,7 @@ struct PlayerSettingsPane: View {
 }
 
 /// "Default Player" chooser (FEAT-5 follow-up): built-in vs. any installed external player
-/// (Infuse / VLC / Outplayer — whichever the Info.plist allowlist probe finds). When an
+/// (Infuse / VLC / Outplayer / VidHub / SenPlayer — whichever the Info.plist allowlist probe finds). When an
 /// external player is the default, plain Select on a stream row hands off to it instead of the
 /// in-app player, and the row's long-press menu gains a "Play in NuvioTV Player" escape hatch
 /// (StreamPickerView reads the same key).

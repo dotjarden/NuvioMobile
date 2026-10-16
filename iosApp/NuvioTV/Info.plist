@@ -20,7 +20,9 @@
 	     case is a toast, not stranded playback. VidHub (FEAT-21, beta.12): its modern
 	     /play x-callback API explicitly lists Apple TV as a supported platform
 	     (vidhub.okaapps.com/3rd-party-app-integration) — the earlier "no known tvOS build"
-	     reason to keep it off is obsolete. -->
+	     reason to keep it off is obsolete. SenPlayer (FEAT-56, GitHub #5): tvOS 17+,
+	     URL-scheme playback with the stop position returned over x-success since 6.1.1
+	     (the position parameter name is unverified; see ContentView.handleDeepLink's probe). -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>infuse</string>
@@ -28,6 +30,7 @@
 		<string>outplayer</string>
 		<string>open-vidhub</string>
 		<string>vidhub</string>
+		<string>senplayer</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

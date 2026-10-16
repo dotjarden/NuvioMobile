@@ -95,6 +95,33 @@ final class DeepLinkTests: XCTestCase {
         XCTAssertNil(ExternalPlaybackReturnRouter.outcome(of: url("\(installScheme)://external-player/success")))
     }
 
+    // MARK: - FEAT-56 (SenPlayer): return session + probe redaction
+
+    func testInfuseAndSenPlayerReportTheirStopPositionBack() {
+        // Both get `ExternalPlaybackReturn` sessions and x-success / x-error callback URLs from the
+        // picker; every other player gets none (`openExternally`).
+        XCTAssertEqual(StreamPickerView.returnReportingPlayerIds, ["infuse", "senplayer"])
+    }
+
+    func testProbeRedactsOnlyTheLastPlayedUrl() {
+        let callback = url("\(installScheme)://external-player/senplayer/SESSION/success?lastPlayedUrl=https%3A%2F%2Fcdn.example.com%2Frealdebrid%2FSECRET%2Ffile.mkv&position=42.5")
+        let printed = ExternalPlaybackReturnRouter.redactedForProbe(callback)
+        XCTAssertFalse(printed.contains("SECRET"))
+        XCTAssertFalse(printed.contains("cdn.example.com"))
+        XCTAssertTrue(printed.contains("lastPlayedUrl=%3Credacted%3E") || printed.contains("lastPlayedUrl=<redacted>"), printed)
+        XCTAssertTrue(printed.contains("position=42.5"), "the parameter the device test is looking for stays readable")
+        XCTAssertTrue(printed.hasPrefix("\(installScheme)://external-player/senplayer/SESSION/success?"))
+    }
+
+    func testProbeRedactionIsCaseInsensitiveAndLeavesOtherParametersAlone() {
+        let callback = url("\(installScheme)://external-player/senplayer/SESSION/success?LASTPLAYEDURL=x&currentTime=7")
+        let printed = ExternalPlaybackReturnRouter.redactedForProbe(callback)
+        XCTAssertFalse(printed.contains("LASTPLAYEDURL=x"))
+        XCTAssertTrue(printed.contains("currentTime=7"))
+        XCTAssertEqual(ExternalPlaybackReturnRouter.redactedForProbe(url("\(installScheme)://external-player/senplayer/SESSION/error")),
+                       "\(installScheme)://external-player/senplayer/SESSION/error")
+    }
+
     // MARK: - DeepLink.parse
 
     func testParseStillReadsTopShelfTitleLinks() {

@@ -27,12 +27,14 @@ enum AppCallbackScheme {
     }
 }
 
-/// Routes the x-callback return an external player (Infuse) opens on this install's own scheme to
+/// Routes the x-callback return an external player (Infuse, SenPlayer) opens on this install's own scheme to
 /// the shared `ExternalPlaybackReturn`, which matches it to the session `StreamPickerView`
 /// prepared, records the reported position, and clears the session.
 ///
-///   `<scheme>://external-player/infuse/<sessionId>/success?lastPlayedUrl=…&position=<seconds>`
-///   `<scheme>://external-player/infuse/<sessionId>/error?…`
+///   `<scheme>://external-player/<playerId>/<sessionId>/success?lastPlayedUrl=…&position=<seconds>`
+///   `<scheme>://external-player/<playerId>/<sessionId>/error?…`
+///
+/// `playerId` is `infuse` or, since FEAT-56, `senplayer` (`StreamPickerView.returnReportingPlayerIds`).
 ///
 /// `ContentView.handleDeepLink` asks `isCallback` before it ever calls `DeepLink.parse`, so a
 /// callback is consumed here and never assigns `deepLink` (an unrecognised URL used to nil it and
@@ -52,6 +54,21 @@ enum ExternalPlaybackReturnRouter {
     /// pending session was launched with).
     static func isCallback(_ url: URL) -> Bool {
         isCallback(url, callbackScheme: AppCallbackScheme.value)
+    }
+
+    /// The callback as a probe may print it (FEAT-56 `debug.extPlayerProbe`): every query parameter
+    /// name and value kept, except `lastPlayedUrl`'s value, replaced by `<redacted>` (it can carry a
+    /// debrid link with a token). Falls back to the scheme and path alone when the URL does not parse.
+    static func redactedForProbe(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
+        }
+        components.queryItems = components.queryItems?.map { item in
+            item.name.caseInsensitiveCompare("lastPlayedUrl") == .orderedSame
+                ? URLQueryItem(name: item.name, value: "<redacted>")
+                : item
+        }
+        return components.string ?? "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
     }
 
     /// Pure core of `isCallback`, so tests do not depend on the host bundle's plist.

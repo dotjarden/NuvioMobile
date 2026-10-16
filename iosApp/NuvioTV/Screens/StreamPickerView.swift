@@ -107,7 +107,8 @@ struct StreamPickerView: View {
     @State private var didAutoExpand = false
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
-    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21),
+    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21,
+    /// SenPlayer as of FEAT-56),
     /// so testers without any of them installed never see the handoff option at all. Empty ⇒ no
     /// menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
@@ -120,8 +121,12 @@ struct StreamPickerView: View {
     private static let testRowKey = "test-stream"
     /// Spinner key for a "Try Next Source" resolve (its row may be collapsed or off-screen).
     private static let failoverRowKey = "failover-next"
-    /// `ExternalPlayerApp.id` of Infuse, the external player that reports playback back.
-    private static let infusePlayerId = "infuse"
+    /// `ExternalPlayerApp.id`s of the external players that report the stop position back over an
+    /// x-callback return (`ExternalPlaybackReturn`): Infuse (7.6.2+, `x-success` with `position`)
+    /// and, FEAT-56 (GitHub #5), SenPlayer (6.1.1+ returns the current playback time on exit; the
+    /// query parameter name is unverified on hardware — the `debug.extPlayerProbe` print in
+    /// `ContentView.handleDeepLink` shows what it sends). Every other player gets no callback URLs.
+    static let returnReportingPlayerIds: Set<String> = ["infuse", "senplayer"]
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
     init(
@@ -941,9 +946,10 @@ struct StreamPickerView: View {
     /// whose URL builders consume `sub`/`position` (VidHub `/play`, Infuse, VLC) resume and
     /// subtitle like the built-in player instead of starting cold.
     ///
-    /// Orivio batch item 5: an Infuse handoff first prepares a shared external-playback session and
-    /// passes Infuse its x-success / x-error callback URLs on this install's own URL scheme, so the
-    /// position Infuse reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
+    /// Orivio batch item 5: a handoff to a player that reports back (`returnReportingPlayerIds`:
+    /// Infuse, and SenPlayer since FEAT-56) first prepares a shared external-playback session and
+    /// passes the player its x-success / x-error callback URLs on this install's own URL scheme, so
+    /// the position it reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
     /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).
     ///
     /// `autoAttempt` (1-based) marks the first-play auto start handing its pick to the viewer's
@@ -968,15 +974,17 @@ struct StreamPickerView: View {
         var launchSessionId: String?
         var callbackSuccessUrl: String?
         var callbackErrorUrl: String?
-        if playerId == Self.infusePlayerId, let sourceURL = URL(string: urlString) {
+        if Self.returnReportingPlayerIds.contains(playerId), let sourceURL = URL(string: urlString) {
             let session = ExternalPlaybackReturn.shared.prepare(
-                playerId: Self.infusePlayerId,
+                playerId: playerId,
                 sourceUrl: urlString,
-                playbackSession: PlaybackProgressRecorder.playbackSession(for: context(url: sourceURL, stream: stream)),
+                // `listedStream: listed` so a ytId-only stream's session stores no expiring link.
+                playbackSession: PlaybackProgressRecorder.playbackSession(
+                    for: context(url: sourceURL, stream: stream, listedStream: listed)),
                 durationMs: externalDurationMs(progress: progress).map { KotlinLong(value: $0) }
             )
             let callbacks = ExternalPlaybackCallbacks.shared.build(
-                scheme: AppCallbackScheme.value, playerId: Self.infusePlayerId, sessionId: session.id
+                scheme: AppCallbackScheme.value, playerId: playerId, sessionId: session.id
             )
             launchSessionId = session.id
             callbackSuccessUrl = callbacks.first.map { $0 as String }
@@ -995,7 +1003,8 @@ struct StreamPickerView: View {
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,
             skipSegmentsJson: nil,
-            // Infuse only (nil for every other player): where Infuse reports the stop position.
+            // Infuse and SenPlayer only (nil for every other player): where the player reports the
+            // stop position.
             callbackSuccessUrl: callbackSuccessUrl,
             callbackErrorUrl: callbackErrorUrl
         )
