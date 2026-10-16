@@ -1113,6 +1113,14 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.didResumeSeek = true
                         self.onResumeSeekBegin?(resume)
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+                        // r2 P3: `stop()` (Menu during the resume seek) or a mid-play fallback can
+                        // overtake the await. Without this, `play()` restarted a released player
+                        // and a tracker "start" went out after `stop()`'s "stop".
+                        guard !Task.isCancelled, self.player === player, self.playerItem === item,
+                              self.phase == .playing else {
+                            print("[NativePlayer] resume seek overtaken (stopped, swapped or handed to mpv)")
+                            return
+                        }
                         self.lastPositionSec = resume
                         // Where it really landed (default tolerance: can be past the target).
                         self.onResumeSeekCompleted?(CMTimeGetSeconds(player.currentTime()))
