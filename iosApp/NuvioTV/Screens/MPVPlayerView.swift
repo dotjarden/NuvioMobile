@@ -3670,6 +3670,10 @@ final class MPVTVPlayerViewController: UIViewController {
                 let prop = UnsafePointer<mpv_event_property>(OpaquePointer(data)).pointee
                 self.handlePropertyChange(userdata: ev.pointee.reply_userdata, prop: prop)
             }
+            if id == MPV_EVENT_START_FILE {
+                // r1 P3: the ring is evidence about the file being loaded now (event order).
+                self.logRing.clear()
+            }
             if id == MPV_EVENT_END_FILE, let data = ev.pointee.data {
                 let endFile = UnsafePointer<mpv_event_end_file>(OpaquePointer(data)).pointee
                 if endFile.reason == MPV_END_FILE_REASON_ERROR {
@@ -3690,7 +3694,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 print("[MPV] \(level): \(text)", terminator: "")
                 if level == "warn" || level == "error" || level == "fatal" {
                     let prefix = msg.pointee.prefix.map { String(cString: $0) } ?? "mpv"
-                    self.logRing.append("\(prefix): \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    self.logRing.append(prefix: prefix, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 #if DEBUG
                 NSLog("[MPV] %@: %@", level, text.trimmingCharacters(in: .newlines))   // reaches `log stream`

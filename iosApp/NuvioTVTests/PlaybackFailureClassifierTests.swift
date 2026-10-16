@@ -99,6 +99,28 @@ final class PlaybackFailureClassifierTests: XCTestCase {
         XCTAssertEqual(C.applyingPath(C.Verdict(.http, http: 404), pathSatisfied: true), C.Verdict(.http, http: 404))
     }
 
+    /// r1 P3: subtitle-side lines never reach the ring; a file load clears it.
+    func testLogRingKeepsOnlyMainStreamEvidence() {
+        let ring = MPVLogRing()
+        ring.append(prefix: "sub", text: "Connection timed out")
+        ring.append(prefix: "sd_ass", text: "Connection reset by peer")
+        ring.append(prefix: "osd", text: "TLS handshake failed")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out while opening https://subs.example/x.srt")
+        ring.append(prefix: "cplayer", text: "Can not open external file https://subs.example/a.vtt?t=1.")
+        ring.append(prefix: "ffmpeg", text: "HTTP error 404 for https://subs.example/b.ass")
+        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+        // A watchdog fire with only subtitle noise is therefore not network.
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: true).kind, .unknown)
+
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        ring.append(prefix: "stream", text: "HTTP error 403 Forbidden")
+        XCTAssertEqual(ring.snapshot.count, 2)
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: false), C.Verdict(.http, http: 403))
+
+        ring.clear()
+        XCTAssertTrue(ring.snapshot.isEmpty)
+    }
+
     func testRemembersLinkTruthTable() {
         let remembered: [PlaybackFailureKind] = [.http, .decode, .placeholder, .endedEarly, .noMedia, .unknown]
         let transient: [PlaybackFailureKind] = [.network, .offline, .cancelled, .local]

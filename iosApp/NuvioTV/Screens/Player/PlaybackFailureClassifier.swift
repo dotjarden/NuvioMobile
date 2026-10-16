@@ -144,13 +144,34 @@ nonisolated enum PlaybackFailureClassifier {
     }
 }
 
-/// P4 (BUG-143): the last 16 mpv `warn`/`error`/`fatal` log lines, written on the mpv event
-/// queue and read at a failure. Lock-guarded so the main-thread failure paths read it
-/// synchronously; no per-line main-queue hop (C-8).
+/// P4 (BUG-143): the last 16 mpv `warn`/`error`/`fatal` log lines of the CURRENT file, written on
+/// the mpv event queue and read at a failure. Lock-guarded so the main-thread failure paths read it
+/// synchronously; no per-line main-queue hop (C-8). r1 P3: only main-stream evidence is kept:
+/// subtitle-side modules and external subtitle fetches are dropped at append, and `clear()` runs
+/// at `MPV_EVENT_START_FILE`, so a line from before the current load never classifies it.
 nonisolated final class MPVLogRing: @unchecked Sendable {
     static let capacity = 16
     private let lock = NSLock()
     private var lines: [String] = []
+
+    /// mpv module prefixes that only ever speak about subtitles / OSD.
+    static let subtitlePrefixes: Set<String> = ["sub", "osd", "sd_ass", "sd_lavc", "sd_sub", "ass", "sub/ass", "subreader"]
+    private static let subtitleExtensions = #"\.(srt|vtt|webvtt|ass|ssa|sub|ttml|dfxp|smi|sup)(\?|\b)"#
+
+    /// False for a line about a subtitle (its module, an external-file load, a subtitle URL).
+    static func isMainStreamEvidence(prefix: String, text: String) -> Bool {
+        let p = prefix.lowercased()
+        if subtitlePrefixes.contains(p) || p.hasPrefix("sub") || p.hasPrefix("sd_") { return false }
+        let lower = text.lowercased()
+        if lower.contains("external file") || lower.contains("subtitle") { return false }
+        if lower.range(of: subtitleExtensions, options: .regularExpression) != nil { return false }
+        return true
+    }
+
+    func append(prefix: String, text: String) {
+        guard Self.isMainStreamEvidence(prefix: prefix, text: text) else { return }
+        append("\(prefix): \(text)")
+    }
 
     func append(_ line: String) {
         lock.lock()
@@ -158,6 +179,9 @@ nonisolated final class MPVLogRing: @unchecked Sendable {
         if lines.count > Self.capacity { lines.removeFirst(lines.count - Self.capacity) }
         lock.unlock()
     }
+
+    /// A new file load starts: nothing logged before it is evidence about it.
+    func clear() { lock.lock(); lines.removeAll(); lock.unlock() }
 
     var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }
