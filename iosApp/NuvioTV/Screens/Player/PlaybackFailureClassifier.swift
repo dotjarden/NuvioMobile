@@ -18,12 +18,13 @@ nonisolated enum PlaybackFailureClassifier {
 
     /// HTTP evidence wins over network evidence (a refused retry followed by a 404 is a dead link),
     /// network wins over decode (a cut connection garbles the demuxer too). A fired start watchdog
-    /// with no HTTP line is network.
+    /// with no network line is `.unknown`, which IS remembered (spec decision 17): the link never
+    /// produced media while the host was reachable. The caller's `applyingPath` still turns it into
+    /// `.offline` when there was no network path, and a network line in the ring keeps `.network`.
     static func fromMpvLog(_ lines: [String], endFileError: String?, watchdogFired: Bool) -> Verdict {
         let all = lines + (endFileError.map { [$0] } ?? [])
         for line in all { if let status = httpStatus(inLog: line) { return Verdict(.http, http: status) } }
         if all.contains(where: isNetworkLine) { return Verdict(.network) }
-        if watchdogFired { return Verdict(.network) }
         if all.contains(where: isDecodeLine) { return Verdict(.decode) }
         return Verdict(.unknown)
     }

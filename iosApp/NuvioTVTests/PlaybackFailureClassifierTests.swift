@@ -30,8 +30,24 @@ final class PlaybackFailureClassifierTests: XCTestCase {
                      "gnutls: handshake failed"] {
             XCTAssertEqual(log([line]).kind, .network, line)
         }
-        XCTAssertEqual(log([], watchdog: true).kind, .network)
         XCTAssertEqual(log(["ffmpeg: HTTP error 404"], watchdog: true).kind, .http)
+    }
+
+    /// Spec decision 17 (r1 P2): a start watchdog that fired with the host reachable and nothing
+    /// network-side in the ring is evidence against the link, so it is remembered.
+    func testWatchdogWithoutNetworkEvidenceIsRemembered() {
+        let quiet = C.fromMpvLog([], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(quiet.kind, .unknown)
+        XCTAssertTrue(C.applyingPath(quiet, pathSatisfied: true).kind.remembersLink)
+        let noise = C.fromMpvLog(["cplayer: something unrelated"], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(noise.kind, .unknown)
+        // A network line in the ring keeps it transient.
+        let net = C.fromMpvLog(["tcp: Connection timed out"], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(net.kind, .network)
+        XCTAssertFalse(net.kind.remembersLink)
+        // No network path: offline, never remembered.
+        XCTAssertEqual(C.applyingPath(quiet, pathSatisfied: false).kind, .offline)
+        XCTAssertFalse(C.applyingPath(quiet, pathSatisfied: false).kind.remembersLink)
     }
 
     func testMpvDecodeAndUnknown() {
