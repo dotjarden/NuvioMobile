@@ -145,9 +145,12 @@ nonisolated enum PlaybackFailureClassifier {
 
     /// r1 P3: `RemuxSession` / coordinator failure stages that are limits of our own engine, not
     /// evidence against the link (mpv plays these files): `.local`, never remembered.
+    /// r2 P3: `extract extradata` and `video stream` are remux setup steps. `no video stream` is our
+    /// limit too: the remux needs a video track, but mpv plays an audio-only item, so the link is fine.
     static let engineInternalStages: Set<String> = [
         "no segment map", "no usable keyframe index", "server bind failed", "alloc input ctx",
         "packet_alloc", "output context", "audio output context", "audio transcoder init",
+        "extract extradata", "video stream", "no video stream",
     ]
     static func isEngineInternalStage(_ stage: String) -> Bool {
         engineInternalStages.contains(stage) || stage.hasPrefix("DV P7 converter init")

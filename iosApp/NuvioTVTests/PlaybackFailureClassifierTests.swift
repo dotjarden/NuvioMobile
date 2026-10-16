@@ -109,7 +109,8 @@ final class PlaybackFailureClassifierTests: XCTestCase {
         XCTAssertEqual(C.fromNSError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled),
                                      origin: .loopback, midPlay: true).kind, .cancelled)
         for stage in ["no usable keyframe index", "no segment map", "server bind failed", "audio transcoder init",
-                      "DV P7 converter init (extradata not hvcC)"] {
+                      "DV P7 converter init (extradata not hvcC)",
+                      "extract extradata", "video stream", "no video stream"] {   // r2 P3
             XCTAssertEqual(C.fromNativeStage(stage, errorCode: nil, atOpen: false).kind, .local, stage)
             XCTAssertEqual(C.fromNativeStage(stage, errorCode: C.httpNotFound, atOpen: false).kind, .local, stage)
         }
