@@ -326,7 +326,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         // bar. Info lives in the app-drawn swipe-down panel presented by the host instead.
         let model = panelModel
         let openChanged = onPanelOpenChanged
-        host.onOpenPanel = { [weak host] in
+        host.onOpenPanel = { [weak host] _, _ in
             guard let host else { return }
             let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model))
             model.onClose = { [weak panel] in panel?.close(animated: true) }
