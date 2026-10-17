@@ -387,4 +387,66 @@ final class BatchAHomeReturnUITests: XCTestCase {
     func testBatchB_FolderPopRegrabsAfterALateSteal() throws {
         try runFolderPop(steal: true)
     }
+
+    // MARK: - Classic: folder page, Menu back, then Up (perf #1 home split, device pass 2026-10-17)
+
+    /// Device regression on the Home split (Living Room ATV, Test 2, Classic, hero on): Down to a
+    /// collection's folder tile, Select (folder page), Menu back (focus restored on the tile), then
+    /// Up. Expected: focus moves to the row above (Continue Watching here; the guest fixture follows
+    /// no show, so there is no Upcoming row). The regression sent it into the hero CTA with the rows
+    /// left scrolled down. Oracle: `debug_homeReturn own=` after the Up.
+    ///
+    /// Only the in-scroll (classic hero) container runs here. With the Nuvio-style pinned hero, the
+    /// simulator's focus engine takes the hero CTA on this Up on the BASE build as well (3/3 on
+    /// `a802e41f8`, 2026-10-17), while the Apple TV reaches the row above on the base and not on the
+    /// regressed split. That case is device-only: walk it on the TV.
+    private func runClassicFolderPopThenUp(nuvioStyle: Bool) throws {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer { clearSeed() }
+        let arguments = Self.arguments(layout: "classic")
+            + ["-debug.collectionsSeedJsonB64", seed, "-folder_layout_default", "grid",
+               "-hero_nuvio_style", nuvioStyle ? "YES" : "NO"]
+        let app = launch(arguments)
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared (DEBUG build? -home_layout classic honoured?)")
+        }
+        let collectionKey = "zzbatchb-collection"
+        var owned: [String] = []
+        var onFolder = false
+        for _ in 0..<6 where !onFolder {
+            remote.press(.down)
+            pause(1.8)
+            let own = Self.token(label(app, "debug_homeReturn"), "own") ?? "-"
+            if owned.last != own { owned.append(own) }
+            onFolder = own == collectionKey
+        }
+        guard onFolder else {
+            throw XCTSkip("the seeded collection row never took focus (rows=\(owned) \(label(app, "debug_homeReturn"))) — the collections seed is refused on a signed-in account")
+        }
+        let above = owned.dropLast().last(where: { $0 != "-" })
+        note("classic_folder_rows", "\(owned) above=\(above ?? "-")")
+        remote.press(.select)
+        pause(5.0)
+        shot("classic_folder_page")
+        XCTAssertTrue(label(app, "debug_homeReturn").contains("own=-") || !app.descendants(matching: .any)["debug_hero"].isHittable,
+                      "Select on the folder tile should open the folder page")
+        remote.press(.menu)
+        let restored = poll(5.0) { Self.token(label(app, "debug_homeReturn"), "own") == collectionKey }
+        pause(2.0)
+        note("classic_folder_after_pop", label(app, "debug_homeReturn"))
+        XCTAssertTrue(restored, "the pop must restore focus to the folder tile: \(label(app, "debug_homeReturn"))")
+        remote.press(.up)
+        pause(2.5)
+        let afterUp = label(app, "debug_homeReturn")
+        let hero = label(app, "debug_hero")
+        note("classic_folder_after_up", "\(afterUp) | \(hero) | upfallback=\(label(app, "debug_upfallback"))")
+        shot("classic_folder_after_up")
+        XCTAssertEqual(Self.token(afterUp, "own"), above,
+                       "Up from the restored folder tile must reach the row above (\(above ?? "-")), not the hero: \(afterUp) | \(hero)")
+        XCTAssertEqual(Self.token(hero, "foc"), "0", "the hero CTA must not take focus: \(hero)")
+    }
+
+    func testBatchC_ClassicFolderPopThenUp_InScroll() throws {
+        try runClassicFolderPopThenUp(nuvioStyle: false)
+    }
 }

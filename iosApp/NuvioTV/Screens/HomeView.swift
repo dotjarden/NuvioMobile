@@ -1486,7 +1486,11 @@ struct HomeView: View {
                              upcomingRowEnabled: upcomingRowEnabled,
                              shortRowFloorEnabled: pinnedShortRowFloor,
                              lastRowFloor: pinnedLastRowLinkFrameFloor(plan),
-                             systemVideoAutoplayEnabled: systemVideoAutoplayEnabled)
+                             refresh: HomeRowsRefresh(systemVideoAutoplayEnabled: systemVideoAutoplayEnabled,
+                                                      coverDepth: homePath.count,
+                                                      resumeCovered: resume != nil,
+                                                      focusRequest: rowFocusRequest,
+                                                      focusedRowKey: focusedRowKeyState))
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
             // UPWARD by the row band and DOWNWARD past its caption (transparent,

@@ -60,6 +60,34 @@ final class HomeRowActions {
     }
 }
 
+/// The `HomeView` state that still re-renders every row (perf review 2026-10-17, #1).
+///
+/// Before the split, ANY `HomeView` re-render rebuilt every row. The split keeps that for the events
+/// below and drops it for the per-dwell ones (hero focus commits, resolver commits, carousel pages,
+/// settle probe lines), which were the cost:
+///  - `systemVideoAutoplayEnabled` — FEAT-25 (Codex beta.14 r5): the mirrored tvOS Auto-Play Video
+///    Previews preference. `CatalogRowView` reads the system value itself while rendering, so a flip
+///    must re-render the rows (review r1 P1).
+///  - `coverDepth` / `resumeCovered` — a push over Home (`homePath`) or the Continue Watching stream
+///    picker going up or down;
+///  - `focusRequest` — every BUG-156 pop-restore rung and regrab, and every BUG-112 Up-fallback rung
+///    (`HomeView.rowFocusRequest`);
+///  - `focusedRowKey` — focus moving to another ROW (not a card hop inside one).
+///
+/// Device pass 2026-10-17 (Living Room ATV, Test 2, Classic, Nuvio-style hero): without the push /
+/// pop / restore re-renders, Up from a collection tile right after Menu back from its folder page
+/// went into the hero CTA and the rows above (Upcoming, Continue Watching) could not be reached; the
+/// base reached Upcoming. The simulator does not reproduce the difference (its engine takes the CTA
+/// on both builds, `testBatchC_ClassicFolderPopThenUp_Pinned`), so the fix restores the base's
+/// re-renders around that path rather than a narrower guess at the mechanism.
+struct HomeRowsRefresh: Equatable {
+    var systemVideoAutoplayEnabled: Bool
+    var coverDepth: Int
+    var resumeCovered: Bool
+    var focusRequest: PinnedRowFocusRequest
+    var focusedRowKey: String?
+}
+
 /// Home's rows: the placeholder, Continue Watching, Upcoming, then the catalog and collection rows
 /// in the user's Home Rows order. See the header above.
 struct HomeRowsList: View {
@@ -72,11 +100,9 @@ struct HomeRowsList: View {
     let shortRowFloorEnabled: Bool
     /// BUG-87/89 (rc11): `PinnedRowGeometry.lastRowLinkFrameFloor` for the current plan.
     let lastRowFloor: CGFloat
-    /// FEAT-25 (Codex beta.14 r5): `HomeView.systemVideoAutoplayEnabled`, the mirrored tvOS
-    /// Auto-Play Video Previews preference. `CatalogRowView` reads the system value itself while it
-    /// renders; carrying the mirror here (and into the cells' `==`) is what re-renders the rows when
-    /// it flips, as `HomeView`'s full re-render used to (review r1 P1).
-    let systemVideoAutoplayEnabled: Bool
+    /// The `HomeView` state the rows must re-render on, as `HomeView`'s full re-render used to
+    /// (see `HomeRowsRefresh`). Carried into the cells' `==` too.
+    let refresh: HomeRowsRefresh
 
     var body: some View {
         #if DEBUG
@@ -125,7 +151,7 @@ struct HomeRowsList: View {
                 switch row {
                 case .catalog(let section):
                     HomeCatalogRowCell(section: section, actions: actions,
-                                       systemVideoAutoplayEnabled: systemVideoAutoplayEnabled)
+                                       refresh: refresh)
                         .equatable()
                         // BUG-35 (beta.12): localize this row's leading items when it scrolls
                         // into view. LazyVStack fires onAppear per row as it mounts; the shared
@@ -134,7 +160,7 @@ struct HomeRowsList: View {
                         .onAppear { actions.catalogRowAppeared(section.key) }
                 case .collection(let collection):
                     HomeCollectionRowCell(collection: collection, actions: actions,
-                                          systemVideoAutoplayEnabled: systemVideoAutoplayEnabled)
+                                          refresh: refresh)
                         .equatable()
                         // Wave H: warm every folder's hero artwork when the ROW appears, not
                         // when a tile is first focused — the focus report and the artwork it
@@ -253,13 +279,12 @@ struct HomeRowsList: View {
 struct HomeCatalogRowCell: View, Equatable {
     let section: HomeCatalogSection
     let actions: HomeRowActions
-    /// Not read here: it makes a flip of the system preference re-render the row (see
-    /// `HomeRowsList.systemVideoAutoplayEnabled`).
-    let systemVideoAutoplayEnabled: Bool
+    /// Not read here: a change re-renders the row (see `HomeRowsRefresh`).
+    let refresh: HomeRowsRefresh
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.actions === rhs.actions
-            && lhs.systemVideoAutoplayEnabled == rhs.systemVideoAutoplayEnabled
+            && lhs.refresh == rhs.refresh
             && (lhs.section === rhs.section || lhs.section == rhs.section)
     }
 
@@ -277,12 +302,12 @@ struct HomeCatalogRowCell: View, Equatable {
 struct HomeCollectionRowCell: View, Equatable {
     let collection: NuvioCollection
     let actions: HomeRowActions
-    /// See `HomeCatalogRowCell.systemVideoAutoplayEnabled`.
-    let systemVideoAutoplayEnabled: Bool
+    /// See `HomeCatalogRowCell.refresh`.
+    let refresh: HomeRowsRefresh
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.actions === rhs.actions
-            && lhs.systemVideoAutoplayEnabled == rhs.systemVideoAutoplayEnabled
+            && lhs.refresh == rhs.refresh
             && (lhs.collection === rhs.collection || lhs.collection == rhs.collection)
     }
 
