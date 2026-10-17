@@ -214,13 +214,10 @@ struct StageStripHome: View {
         return keys
     }
 
+    /// Perf review 2026-10-17 (#10): a dictionary lookup (`HomeViewModel.rowsByKey`) instead of a
+    /// linear, Kotlin-bridged scan per mounted row.
     private func homeRow(for key: String) -> HomeRow? {
-        model.rows.first { row in
-            switch row {
-            case .catalog(let section): return section.key == key
-            case .collection(let collection): return collection.id == key
-            }
-        }
+        model.rowsByKey[key]
     }
 
     @ViewBuilder
