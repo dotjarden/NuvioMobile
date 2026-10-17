@@ -372,7 +372,7 @@ struct ProfileEditView: View {
                                             lineWidth: avatarId == nil ? 5 : 0
                                         )
                                     )
-                                    .modifier(FocusRingCircle())
+                                    .modifier(SwatchFocusLift())
                                 }
                                 .buttonStyle(.borderless)
                                 .accessibilityLabel(String(localized: "Use color avatar"))
@@ -421,7 +421,7 @@ struct ProfileEditView: View {
                                             lineWidth: (hex == colorHex && avatarId == nil) ? 5 : 0
                                         )
                                     )
-                                    .modifier(FocusRingCircle())
+                                    .modifier(SwatchFocusLift())
                             }
                             .buttonStyle(.borderless)
                             .accessibilityIdentifier("profileEdit.swatch.\(hex)")
@@ -595,7 +595,23 @@ struct ProfileEditView: View {
     }
 }
 
-/// Focus visuals for the circular avatar/color tiles in the profile editor: the system
+/// Focus lift for the colour swatches and the "Color" tile. `.borderless` lifts only the IMAGES in a
+/// label, so a plain coloured circle got no focus indication at all on the Apple TV (device pass
+/// 2026-10-17: focus sat on a swatch with nothing visibly focused). Scales and shadows the label
+/// itself; the white selection ring stays separate.
+private struct SwatchFocusLift: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isFocused ? 1.2 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.55 : 0), radius: isFocused ? 14 : 0, y: isFocused ? 8 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// Focus visuals for the circular avatar tiles in the profile editor: the system
 /// `.borderless` lift carries the focus read (HIG revamp — no accent ring, no custom scale).
 /// Selection keeps its separate white ring.
 private struct FocusRingCircle: ViewModifier {
