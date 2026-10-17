@@ -1093,6 +1093,7 @@ struct HomeView: View {
                             // nothing down the page is left for the focus engine to drag the
                             // scroll back toward while the proxy animates (the classic branch's
                             // whole failure mode).
+                            upInput.noteProgrammaticHeroFocus()
                             heroFocused = true
                             withAnimation(.easeInOut(duration: 0.45)) {
                                 scrollProxy.scrollTo("home_top", anchor: .top)
@@ -1108,7 +1109,10 @@ struct HomeView: View {
                                     withAnimation(.easeInOut(duration: 0.3)) {
                                         scrollProxy.scrollTo("home_top", anchor: .top)
                                     }
-                                    if !heroFocused { heroFocused = true }
+                                    if !heroFocused {
+                                        upInput.noteProgrammaticHeroFocus()
+                                        heroFocused = true
+                                    }
                                 }
                             }
                         } else {
@@ -1129,6 +1133,7 @@ struct HomeView: View {
                                             scrollProxy.scrollTo("home_top", anchor: .top)
                                         }
                                     }
+                                    upInput.noteProgrammaticHeroFocus()
                                     heroFocused = true
                                 }
                             }
@@ -1214,11 +1219,18 @@ struct HomeView: View {
             }
             .onChange(of: heroIndex) { _, _ in
                 lastHeroChange = Date()
+                // Folder-return Up-skip (review r1 P3): a carousel page turn is the viewer acting on
+                // the hero; a redirect still asking the row above must not pull focus away.
+                if activeUpFallbackTarget != nil, activeUpFallbackSource.hasPrefix("redirect") {
+                    logUpFallback("row=\(activeUpFallbackOrigin ?? "-") prev=\(activeUpFallbackTarget ?? "-") action=cancelled reason=carousel src=\(activeUpFallbackSource)")
+                    endUpFallback(reason: "carousel", log: false)
+                }
             }
             // UX-7: focusing the CTA is the carousel reclaiming the hero — drop any row-focused
             // poster immediately (no grace period; this is a deliberate hand-back, not a
             // between-cards focus hop).
             .onChange(of: heroFocused) { _, focused in
+                if focused { upInput.noteHeroGain() }
                 if focused { focusModel.cancelAndRevert() }
                 // BUG-156 (review r2 P2-5, corrected on the device 2026-10-15): the hero taking
                 // focus is the viewer's doing only when an Up INPUT preceded it (`lastUpInputAt`,
@@ -1506,9 +1518,9 @@ struct HomeView: View {
                                                       coverDepth: homePath.count,
                                                       resumeCovered: resume != nil,
                                                       focusRequest: rowFocusRequest,
-                                                      focusedRowKey: focusedRowKeyState,
-                                                      continueWatchingToken: continueWatchingRowToken,
-                                                      upcomingToken: upcomingRowToken))
+                                                      focusedRowKey: focusedRowKeyState),
+                             continueWatchingToken: continueWatchingRowToken,
+                             upcomingToken: upcomingRowToken)
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
             // UPWARD by the row band and DOWNWARD past its caption (transparent,
@@ -1634,6 +1646,7 @@ struct HomeView: View {
         // Up input and does nothing here).
         .onChange(of: heroFocused) { _, focused in
             guard focused else { return }
+            upInput.noteHeroGain()
             if revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "focus") { return }
             // Review r1 P2: the swipe catcher can stamp AFTER the engine's focus update (its own
             // `consumedBeforeCallback` case), so one deferred re-check accepts an input stamped
@@ -2021,39 +2034,57 @@ struct HomeView: View {
         // (never cleared on release) names that row whenever the verdict is `.reveal`.
         let originRow = focusedRowKey ?? upInput.lastOwnedRowKey
         let rowAbove = originRow.flatMap { previousRowTarget(for: $0) }
+        // Review r1 (P2-1): a redirect only for the ENGINE's skip — the hero took focus in the same
+        // update a row released it, around an Up input, with no programmatic hero write (Menu to
+        // the top, the ladder's hero rung, a rail exit) behind it. Any other hero gain keeps the
+        // old behaviour: at most the scroll to the top.
+        let engineSkip = rowAbove != nil
+            && HomeUpIntoHeroGate.isEngineSkip(now: now,
+                                               heroGainedAt: upInput.heroGainedAt,
+                                               rowReleasedAt: upInput.lastRowReleasedAt,
+                                               rowStillOwned: focusedRowKey != nil,
+                                               lastUpInputAt: upInput.lastUpInputAt,
+                                               programmaticHeroAt: upInput.programmaticHeroAt,
+                                               window: Self.upIntoHeroWindow)
         let verdict = HomeUpIntoHeroGate.evaluate(now: now,
                                                   lastUpInputAt: upInput.lastUpInputAt,
                                                   lastRowReleasedAt: upInput.lastRowReleasedAt,
                                                   focusedRowKey: focusedRowKey,
                                                   rowsScrolledPastTop: rowsScrolledPastTop,
-                                                  originHasRowAbove: rowAbove != nil,
+                                                  originHasRowAbove: engineSkip,
                                                   window: Self.upIntoHeroWindow)
         if case .declined(let reason) = verdict { return decline(reason) }
-        // 2026-10-17 (folder-return Up-skip): no Rail-mode decline any more. It came over from
-        // `handleHeroUp` (the Sidebar guard of the time) with the beta.18 gate, but the rail sits
-        // to the LEFT: an Up from a row onto the CTA has nothing to do with it, and declining left
-        // the Living Room ATV (Rail mode) with the rows scrolled down under a focused hero
-        // (`upFallback … declined reason=rail`). Only a rail that HOLDS focus stands this down.
+        // 2026-10-17 (folder-return Up-skip): the redirect runs in Rail mode too (the Living Room
+        // ATV is in Rail mode: `upFallback … declined reason=rail` right after the skip). The rail
+        // sits to the LEFT, so an Up from a row onto the CTA has nothing to do with it; only a rail
+        // that HOLDS focus stands the redirect down. The plain scroll to the top keeps its Rail
+        // decline (review r1 P3: with Hide While Browsing a scroll to the top on an Up would bring
+        // the rail back, against the rc7 "no Up surfaces the chrome" rule).
         guard !navigationChrome.isFocusedChrome else { return decline("railFocused") }
+        guard engineSkip || !NavigationChrome.isRail() else { return decline("rail") }
         guard !PinnedRowSettle.hostCovered else { return decline("covered") }
         guard !tabBarVisibility.homeSurfaceCovered else { return decline("covered") }
         guard resume == nil else { return decline("resume") }
         // review r1 (P3-3): one physical Up can arrive via focus / focus-deferred / handleHeroUp /
         // press-any. A reveal issued inside the last 0.5 s is still scrolling (0.45 s), so a repeat
         // declines WITHOUT bumping `heroUpGeneration`, keeping the landing retry keyed to the first.
-        if let last = upInput.lastRevealAt, now - last < 0.5 { return decline("alreadyRevealing") }
-        upInput.lastRevealAt = now
         let sinceUp = now - upInput.lastUpInputAt
-        // 2026-10-17 (folder-return Up-skip): the Up came from a row that HAS a row above it. The
-        // engine took the CTA only because that row was culled or clipped under the pinned hero
-        // (seen after a folder pop: Up from the restored collection tile skipped Upcoming and
-        // Continue Watching). Scrolling to the top alone would leave focus on the hero, so hand it
-        // to the row above instead.
-        if let origin = originRow, let target = rowAbove {
+        // 2026-10-17 (folder-return Up-skip): the Up came from a row that HAS a row above it, and
+        // the engine handed it to the CTA (a row it could not focus, e.g. Continue Watching after
+        // a pop, see `remountTopRowsAfterPop`). Scrolling to the top alone would leave focus on the
+        // hero, so hand it to the row above instead. Ahead of the `alreadyRevealing` latch (review
+        // r1 P3): one physical Up reaches here from several sources, and a redirect already in
+        // flight for the same row is that same Up.
+        if engineSkip, let origin = originRow, let target = rowAbove {
+            if activeUpFallbackTarget == target.key, activeUpFallbackSource.hasPrefix("redirect") {
+                return decline("alreadyRedirecting")
+            }
             redirectUpIntoHero(from: origin, to: target, proxy: proxy,
                                source: source, sinceUpMs: Int((sinceUp * 1000).rounded()))
             return true
         }
+        if let last = upInput.lastRevealAt, now - last < 0.5 { return decline("alreadyRevealing") }
+        upInput.lastRevealAt = now
         logUpFallback("row=hero prev=row action=top reason=upIntoHero sinceUp=\(Int((sinceUp * 1000).rounded())) src=\(source)")
         heroUpGeneration &+= 1
         let generation = heroUpGeneration
@@ -2082,7 +2113,8 @@ struct HomeView: View {
 
     /// 2026-10-17 (folder-return Up-skip): an Up input moved focus from `origin` straight into the
     /// hero CTA while `target`, the row above `origin`, exists. Gated by `revealTopAfterUpIntoHero`
-    /// (an Up input and a row release inside `upIntoHeroWindow`, rows past the top). Runs as an Up
+    /// (an Up input and a row release inside `upIntoHeroWindow`, and `HomeUpIntoHeroGate.isEngineSkip`;
+    /// the rows need not be past the top). Runs as an Up
     /// fallback attempt (`activeUpFallbackTarget`), so the row's landing logs `action=landed` and
     /// retires the request through `handleRowFocusOwnership`, and any newer row claim (a Down from
     /// the hero, say) supersedes it. Two rungs: scroll the target in and ask at once, then the top
@@ -2093,6 +2125,9 @@ struct HomeView: View {
                                     proxy: ScrollViewProxy,
                                     source: String,
                                     sinceUpMs: Int) {
+        // Review r1 (P2-2): a pop restore still running would rename the origin on its next rung
+        // (or regrab it from the hero) and undo the redirect. The Up is the viewer moving on.
+        retireReturnRestore(reason: "redirect")
         if activeUpFallbackTarget != nil {
             endUpFallback(reason: "restarted", log: false)
         }
@@ -2281,6 +2316,7 @@ struct HomeView: View {
             // mounting row's `.onAppear` to pick back up.
             endUpFallback(reason: "hero", log: false)
             PinnedRowSettle.noteExternalScroll(reason: "upfallback-hero")
+            upInput.noteProgrammaticHeroFocus()
             heroFocused = true
             withAnimation(.easeInOut(duration: 0.3)) {
                 proxy.scrollTo("home_top", anchor: .top)
@@ -2411,6 +2447,8 @@ struct HomeView: View {
                     if rowFocusRequest.rowKey == origin.rowKey, activeUpFallbackTarget == nil { rowFocusRequest = .none }
                     return
                 }
+                // Review r1 (P2-2): an Up fallback or redirect owns the request; leave it alone.
+                guard activeUpFallbackTarget == nil else { return }
                 rowFocusRequestSeq &+= 1
                 rowFocusRequest = HomeReturnFocusMemory.request(for: origin, rung: rung,
                                                                generation: rowFocusRequestSeq)
@@ -2457,6 +2495,15 @@ struct HomeView: View {
                 rebuilt.append("upcoming")
             }
             logHomeReturn("remount rows=\(rebuilt.isEmpty ? "-" : rebuilt.joined(separator: ","))")
+        }
+        // Review r1 (P2-3): Detail opened from a Continue Watching or Upcoming card makes that row
+        // the origin, kept above. If the restore could not land in it (the same dropped writes),
+        // give it its fresh identity once the restore is over and it still does not hold focus.
+        guard origin == "continue-watching" || origin == "upcoming" else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry + 0.1) {
+            guard homePath.isEmpty, resume == nil, focusedRowKey != origin else { return }
+            if origin == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+            logHomeReturn("remount rows=\(origin ?? "-") reason=originMissed")
         }
     }
 
@@ -3214,6 +3261,7 @@ struct HomeView: View {
                 guard homePath.isEmpty, resume == nil else { return false }
                 switch upInput.railReturnTarget {
                 case .hero?:
+                    upInput.noteProgrammaticHeroFocus()
                     heroFocused = true
                     return true
                 case .row(let key)?:
@@ -7220,6 +7268,14 @@ final class HomeRowInputBox {
     var returnFocus = HomeReturnFocusMemory()
     /// BUG-156: stales the rungs of an older pop restore (a new push, a newer pop).
     var returnGeneration = 0
+    /// Folder-return Up-skip (review r1 P2-1): when the hero CTA last gained focus, and when Home
+    /// last WROTE it focus (Menu to the top, the ladder's hero rung, a rail exit). Read by
+    /// `HomeUpIntoHeroGate.isEngineSkip`.
+    var heroGainedAt: TimeInterval?
+    var programmaticHeroAt: TimeInterval?
+
+    func noteHeroGain() { heroGainedAt = ProcessInfo.processInfo.systemUptime }
+    func noteProgrammaticHeroFocus() { programmaticHeroAt = ProcessInfo.processInfo.systemUptime }
 }
 
 /// H9 (P4 §2.5): Classic Home's rail return target — the hero CTA, or a row (its first card).

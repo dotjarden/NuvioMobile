@@ -86,10 +86,6 @@ struct HomeRowsRefresh: Equatable {
     var resumeCovered: Bool
     var focusRequest: PinnedRowFocusRequest
     var focusedRowKey: String?
-    /// Folder-return Up-skip (2026-10-17): the Continue Watching and Upcoming rows' identities,
-    /// renewed after a pop (`HomeView.remountTopRowsAfterPop`).
-    var continueWatchingToken: Int = 0
-    var upcomingToken: Int = 0
 }
 
 /// Home's rows: the placeholder, Continue Watching, Upcoming, then the catalog and collection rows
@@ -107,6 +103,11 @@ struct HomeRowsList: View {
     /// The `HomeView` state the rows must re-render on, as `HomeView`'s full re-render used to
     /// (see `HomeRowsRefresh`). Carried into the cells' `==` too.
     let refresh: HomeRowsRefresh
+    /// Folder-return Up-skip (2026-10-17): the Continue Watching and Upcoming rows' identities,
+    /// renewed after a pop (`HomeView.remountTopRowsAfterPop`). Kept out of `refresh`, which every
+    /// catalog and collection cell compares, so a bump rebuilds these two rows only (review r1 P3).
+    var continueWatchingToken: Int = 0
+    var upcomingToken: Int = 0
 
     var body: some View {
         #if DEBUG
@@ -136,7 +137,7 @@ struct HomeRowsList: View {
             .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
             // Folder-return Up-skip: renewed after a pop (`HomeView.remountTopRowsAfterPop`).
             // A string apart from every catalog key and scroll anchor in this stack.
-            .id("home-cw-row-\(refresh.continueWatchingToken)")
+            .id("home-cw-row-\(continueWatchingToken)")
         }
 
         // Upcoming: next airing episode per followed show, directly under Continue
@@ -150,7 +151,7 @@ struct HomeRowsList: View {
             // rc14 (BUG-122): the short-row floor — see `shortRowLinkFrameFloor`.
             .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
             // Folder-return Up-skip: as Continue Watching above.
-            .id("home-upcoming-row-\(refresh.upcomingToken)")
+            .id("home-upcoming-row-\(upcomingToken)")
         }
 
         // Catalog sections and collection folder-tile rows, interleaved per the

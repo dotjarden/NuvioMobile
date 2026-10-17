@@ -41,4 +41,34 @@ enum HomeUpIntoHeroGate {
         }
         return .reveal
     }
+
+    /// Folder-return Up-skip (review r1 P2-1): whether a hero focus gain is the focus engine
+    /// resolving an Up from a row onto the CTA, as opposed to Home writing the hero focus itself
+    /// (Menu to the top, the BUG-112 ladder's hero rung, a rail exit) or a hero focused earlier
+    /// that now receives an Up. All three must hold:
+    ///  - no programmatic hero write inside `window`;
+    ///  - the gain and the row's release came in the same update (within `sameUpdate`); a row that
+    ///    still owns focus on record (`rowStillOwned`, its release not yet reported) counts as
+    ///    releasing at the gain;
+    ///  - the Up input sits around the gain: up to `inputLead` before it, or up to `inputLag` after
+    ///    it (on hardware the press reaches the app 30–180 ms after the focus update, a slow swipe
+    ///    at gesture end).
+    nonisolated static func isEngineSkip(now: TimeInterval,
+                                         heroGainedAt: TimeInterval?,
+                                         rowReleasedAt: TimeInterval?,
+                                         rowStillOwned: Bool,
+                                         lastUpInputAt: TimeInterval,
+                                         programmaticHeroAt: TimeInterval?,
+                                         window: TimeInterval,
+                                         sameUpdate: TimeInterval = 0.15,
+                                         inputLead: TimeInterval = 0.3,
+                                         inputLag: TimeInterval = 0.6) -> Bool {
+        guard let gained = heroGainedAt, now - gained < window else { return false }
+        if let written = programmaticHeroAt, now - written < window { return false }
+        guard let released = rowStillOwned ? gained : rowReleasedAt,
+              abs(gained - released) < sameUpdate else { return false }
+        guard lastUpInputAt >= 0 else { return false }
+        let offset = lastUpInputAt - gained
+        return offset > -inputLead && offset < inputLag
+    }
 }

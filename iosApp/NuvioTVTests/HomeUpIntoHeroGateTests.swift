@@ -61,4 +61,35 @@ final class HomeUpIntoHeroGateTests: XCTestCase {
         XCTAssertEqual(eval(released: nil, key: nil, past: false, above: true),
                        .declined(reason: "noRowOrigin sinceRelease=none"))
     }
+
+    // MARK: isEngineSkip (review r1 P2-1)
+
+    private func skip(now: TimeInterval = 100.1, gained: TimeInterval? = 100.0, released: TimeInterval? = 100.0,
+                      owned: Bool = false, up: TimeInterval = 100.076, written: TimeInterval? = nil) -> Bool {
+        HomeUpIntoHeroGate.isEngineSkip(now: now, heroGainedAt: gained, rowReleasedAt: released,
+                                        rowStillOwned: owned, lastUpInputAt: up,
+                                        programmaticHeroAt: written, window: window)
+    }
+
+    /// The device case: the row releases and the hero gains in one update, the press arrives 76 ms later.
+    func testEngineSkipPressAfterGain() { XCTAssertTrue(skip()) }
+
+    func testEngineSkipRowNotYetReleased() { XCTAssertTrue(skip(released: nil, owned: true)) }
+
+    func testEngineSkipInputJustBeforeGain() { XCTAssertTrue(skip(up: 99.9)) }
+
+    /// Menu to the top (BUG-27) writes the hero focus: never a skip, even right after an Up.
+    func testProgrammaticHeroWriteIsNotASkip() { XCTAssertFalse(skip(written: 100.0)) }
+
+    /// A hero focused earlier (the release long before) that now receives an Up.
+    func testGainLongAfterReleaseIsNotASkip() { XCTAssertFalse(skip(released: 99.5)) }
+
+    /// The engine's late pop landing on the CTA, then an Up 0.7 s later.
+    func testUpWellAfterGainIsNotASkip() { XCTAssertFalse(skip(now: 100.75, up: 100.7)) }
+
+    func testNoUpInputIsNotASkip() { XCTAssertFalse(skip(up: -1)) }
+
+    func testNoGainIsNotASkip() { XCTAssertFalse(skip(gained: nil)) }
+
+    func testStaleGainIsNotASkip() { XCTAssertFalse(skip(now: 101.0)) }
 }
