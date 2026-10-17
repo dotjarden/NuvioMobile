@@ -37,6 +37,9 @@ struct UpcomingRow: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("UpcomingRow")
+        #endif
         // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see

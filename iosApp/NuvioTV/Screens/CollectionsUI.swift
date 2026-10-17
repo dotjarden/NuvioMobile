@@ -281,6 +281,9 @@ struct CollectionRowView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("CollectionRowView")
+        #endif
         // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere;
         // `StripGeometry.collectionRowHeightMax` assumes the same.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {

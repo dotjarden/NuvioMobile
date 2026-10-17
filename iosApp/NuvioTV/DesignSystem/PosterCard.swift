@@ -1053,6 +1053,9 @@ struct PosterCard: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("PosterCard")
+        #endif
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             // beta.19-rc1 verdict (I1, BUG-134): decoded for the size the card is drawn at (points ×

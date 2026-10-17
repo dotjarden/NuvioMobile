@@ -733,6 +733,9 @@ struct HomeView: View {
     #endif
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("HomeView")
+        #endif
         NavigationStack(path: $homePath) {
             ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
@@ -804,6 +807,7 @@ struct HomeView: View {
                 // BUG-156 (invisible, harness-readable): Classic's remembered card and the last
                 // pop-restore event. A leaf with its own sink, so it never re-renders this body.
                 HomeReturnDebugLabel()
+                HomeBodyCountLabel()
                 // FEAT-30 / H9 (invisible, harness-readable): which navigation chrome this build is
                 // rendering under (`mode=tabs|rail`), the rail's visibility, the leading inset Always
                 // Visible adds to every tab root (36 or 0), and the top compensation applied. `comp`
@@ -5390,6 +5394,9 @@ struct ContinueWatchingRow: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("ContinueWatchingRow")
+        #endif
         // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see

@@ -5177,6 +5177,9 @@ struct CatalogRowView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("CatalogRowView")
+        #endif
         // BUG-146 second trim (Steven, rc4: Stage headings "still slightly too high"): heading →
         // shelf spacing is `StripGeometry.headingGap` (12) inside the strip, `md` (16) elsewhere.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
