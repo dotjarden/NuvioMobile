@@ -1502,7 +1502,7 @@ struct HomeView: View {
             // came back from a push and pop unable to take focus: the engine skipped it and every
             // `@FocusState` write to it was dropped until it was given a fresh identity, while every
             // other row, culled or not, came back fine (simulator bisect in
-            // docs/folder-return-up-skip-root-cause-2026-10-17.md). Built eagerly they are always
+            // docs/folder-return-up-skip-root-cause-2026-10-17.md in the outer repo). Built eagerly they are always
             // realized, and the engine moves into them like any other row. Same spacing as the lazy
             // stack, so the layout is unchanged.
             VStack(alignment: .leading, spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
@@ -1532,9 +1532,13 @@ struct HomeView: View {
 
                 // Lazy so row construction (and each row's poster loads) is deferred to scroll
                 // position (BUG-11, above).
-                LazyVStack(alignment: .leading,
-                           spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
-                    rowsList(pinned: pinned, plan: plan, part: .catalogs)
+                // Review P3-1: only with catalog rows, so an empty one adds no `sectionGap` under
+                // the placeholder in classic. Keyed on the model, never on `pinned`.
+                if !model.rows.isEmpty {
+                    LazyVStack(alignment: .leading,
+                               spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
+                        rowsList(pinned: pinned, plan: plan, part: .catalogs)
+                    }
                 }
 
             }
@@ -1584,8 +1588,8 @@ struct HomeView: View {
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false)
             }
-            // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
-            // hero — the anchor must exist even while the hero row is lazily culled.
+            // Menu-to-top scroll anchor (BUG-27). On the rows stack itself, not the
+            // hero — the anchor must exist whatever the stack has realized.
             // In pinned (Nuvio-style) mode the hero isn't in this stack at all, so the
             // anchor's `.top` is simply the top of the rows region — which, with the
             // hero pinned above the ScrollView, is exactly where "the top" now means.
@@ -2248,8 +2252,8 @@ struct HomeView: View {
     /// `nil` when `rowKey` is the topmost row, or is not a row this screen renders.
     ///
     /// Only the `ForEach` publishes per-row scroll ids (SwiftUI derives them from `HomeRow.id`), so
-    /// CW/Upcoming — plain siblings above it — are revealed through "home_top", the BUG-27 anchor
-    /// on the `LazyVStack` itself. That is the top of the rows region in pinned mode, which reveals
+    /// CW/Upcoming — built eagerly above it — are revealed through "home_top", the BUG-27 anchor
+    /// on the rows stack itself. That is the top of the rows region in pinned mode, which reveals
     /// both of them whole.
     ///
     /// `key` (what this returns, and what every caller compares against `focusedRowKey`) and
@@ -2289,7 +2293,8 @@ struct HomeView: View {
     ///            previous row is still MOUNTED (the common case — it is one row above the fold),
     ///            this alone moves focus and the engine performs its own scroll-to-reveal. No
     ///            programmatic scroll at all, so there is nothing for the engine to pull back.
-    ///  2. t=0.3  REVEAL, then ask again. The row was culled by the `LazyVStack` (or refused the
+    ///  2. t=0.3  REVEAL, then ask again. The row was culled by the `LazyVStack` (catalog rows
+    ///            only: Continue Watching and Upcoming are built eagerly) (or refused the
     ///            write), so the request was dropped. Scroll it into view first; mounting is what
     ///            makes the second write land.
     ///  3. t=0.9  TOP. Still nowhere: scroll to "home_top" and ask once more.
@@ -2910,7 +2915,7 @@ struct HomeView: View {
             .padding(.bottom, Theme.Size.heroPinnedRowsGap)
     }
 
-    /// Content insets for the rows `LazyVStack`. Classic keeps the uniform overscan-safe
+    /// Content insets for the rows stack (`rowsScroll`). Classic keeps the uniform overscan-safe
     /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned uses
     /// `heroPinnedRowsHeadroom` (8) on top: NOT spacing — it is the buffer that absorbs the
     /// device-only BUG-30 walk-up residual (~67pt short of the sim's rest position), which the

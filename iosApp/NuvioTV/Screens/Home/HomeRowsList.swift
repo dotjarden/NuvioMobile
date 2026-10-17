@@ -13,8 +13,9 @@ import SharedCore
 //
 // Everything below is `HomeView.rowsScroll`'s former row content, moved verbatim apart from the
 // callbacks, which now go through `HomeRowActions`. Order, modifiers and environment values are
-// unchanged, and the view sits in the same `LazyVStack` slot (a custom view's content is flattened
-// into the lazy stack, so laziness and spacing are as before).
+// unchanged. Since the folder-return Up-skip fix (2026-10-17) two instances share the rows: `.top`
+// (placeholder, Continue Watching, Upcoming) in an eager `VStack`, `.catalogs` inside the
+// `LazyVStack` (a custom view's content is flattened into the lazy stack, so laziness is as before).
 
 /// The rows' callbacks into `HomeView`. One instance per Home lifetime (`@State` in `HomeView`), so
 /// the reference the rows hold never changes. `HomeView` re-points the closures at its current
@@ -111,7 +112,7 @@ struct HomeRowsList: View {
 
     var body: some View {
         #if DEBUG
-        let _ = HomeBodyCounter.tick("HomeRowsList")
+        let _ = HomeBodyCounter.tick(part == .top ? "HomeRowsList.top" : "HomeRowsList")
         #endif
         switch part {
         case .top: topRows

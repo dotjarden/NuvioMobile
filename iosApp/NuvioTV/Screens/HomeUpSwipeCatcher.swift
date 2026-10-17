@@ -347,7 +347,10 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
             // itself (see `RowsContainerFocus`). Not probe-gated: the redirect reads it.
             let next = (note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext)?
                 .nextFocusedView
-            RowsContainerFocus.isFocused = next.map { RowsContainerFocus.isOversizedContainer($0) } ?? false
+            let item = (note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext)?
+                .nextFocusedItem
+            RowsContainerFocus.isFocused = RowsContainerFocus.isLazyFiller(item)
+                || (next.map { RowsContainerFocus.isOversizedContainer($0) } ?? false)
             if HomeGeometryProbe.enabled {
                 // Part 1 step 6 (investigate, don't ship): his 30–260 ms rung-1 landings prove row
                 // 1 was MOUNTED when the fallback fired, so the `LazyVStack`'s culling is NOT what
@@ -444,6 +447,15 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
 @MainActor
 enum RowsContainerFocus {
     static var isFocused = false
+
+    /// Root-cause pass 2026-10-17 (review P2-2): the focused item IS the `LazyVStack`'s placeholder.
+    /// Matched by SwiftUI's private class name, so the size test below stays as the fallback: since
+    /// Continue Watching and Upcoming left the lazy stack, the container is only as tall as the
+    /// catalog rows, and two or three of them fall under one and a half windows.
+    static func isLazyFiller(_ item: UIFocusItem?) -> Bool {
+        guard let item else { return false }
+        return String(describing: type(of: item)).contains("FocusableFillerItem")
+    }
 
     static func isOversizedContainer(_ view: UIView) -> Bool {
         guard let window = view.window else { return false }
