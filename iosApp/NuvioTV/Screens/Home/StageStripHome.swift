@@ -161,7 +161,7 @@ struct StageStripHome: View {
         // §4.3 seed: once the rows gate opens, the first strip row's first item (the card tvOS
         // focuses at launch), so the first commit is a silent gap-fill: no double paint.
         .onChange(of: seedSignature, initial: true) { _, _ in
-            stage.seed(seedItem)
+            stage.seed(seedItem, rowHeading: seedRowHeading)
         }
         .onChange(of: keys) { _, newKeys in
             stage.memory.prune(keeping: Set(newKeys))
@@ -350,6 +350,8 @@ struct StageStripHome: View {
             stage.report(folder.flatMap { HomeRowPreviews.folder(collection: collection, folder: $0,
                                                                  showsDetails: catalogDetailsInHeadings) },
                          source: collection.id,
+                         // BUG-173: `CollectionRowView` draws `collection.title` as this row's heading.
+                         rowHeading: collection.title,
                          prefetch: { HomeRowPreviews.collectionArtURLs(collection) })
         })
         // Wave H: warm every folder's hero art when the ROW appears, not on first focus.
@@ -365,6 +367,19 @@ struct StageStripHome: View {
         guard model.rowsGateOpen else { return nil }
         for key in rowKeys {
             if let item = firstPreview(ofRow: key) { return item }
+        }
+        return nil
+    }
+
+    /// BUG-173: the seed's row heading when the seed is a collection folder (the collection's title,
+    /// which its row draws as the heading), so a collection-first Home does not print it twice.
+    private var seedRowHeading: String? {
+        guard let item = seedItem, StageCopy.isFolderPreview(item) else { return nil }
+        for key in rowKeys {
+            if case .collection(let collection)? = homeRow(for: key),
+               item.id.hasPrefix("\(collectionHeroIdScheme)\(collection.id)/") {
+                return collection.title
+            }
         }
         return nil
     }

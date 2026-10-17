@@ -117,9 +117,12 @@ final class StageController: ObservableObject {
     /// item), or the folder page's synthetic folder preview with its cover as `washFallback` (S2).
     /// The first commit then lands on the same identity as a silent gap-fill, so launch never paints
     /// twice. Ignored once a real commit has happened; a changed seed before that re-presents.
-    func seed(_ item: MetaPreview?, washFallback: String? = nil) {
+    func seed(_ item: MetaPreview?, washFallback: String? = nil, rowHeading: String? = nil) {
         start()
         guard !hasCommitted, let item else { return }
+        // BUG-173: a collection-first Home seeds a folder; its row heading must be known before
+        // `swap.seed` paints it.
+        copySource.noteRowHeading(rowHeading, for: item)
         let identity = "\(item.type):\(item.id)"
         guard identity != seededIdentity else { return }
         seededIdentity = identity
@@ -134,8 +137,11 @@ final class StageController: ObservableObject {
     /// activity clock. Every row report counts as activity, a nil one (focus leaving a row) included.
     func report(_ item: MetaPreview?,
                 source: String,
+                rowHeading: String? = nil,
                 logoCandidates: () -> [MetaPreview] = { [] },
                 prefetch: () -> [String]) {
+        // BUG-173: before the commit, so the text leaf reads it with the new shown item.
+        copySource.noteRowHeading(rowHeading, for: item)
         if item != nil {
             HomeRowPreviews.warmRow(source: source, item: item, done: &warmedRows,
                                     logoCandidates: logoCandidates, prefetch: prefetch)
@@ -505,6 +511,22 @@ final class StageCopySource: ObservableObject {
     /// changed (`StageController.setContinueWatching`).
     func setProgressLookup(_ lookup: ((MetaPreview) -> WatchProgressEntry?)?) {
         progressLookup = lookup
+    }
+
+    /// BUG-173: the heading of the row each item was reported from, by `"<type>:<id>"`, for
+    /// `StageCopy.make(rowHeading:)`. NOT published: a report always lands before its commit (the
+    /// 0.2 s focus model, or `seed`'s synchronous present), so the text leaf already re-renders for
+    /// the new shown item and reads the heading then; a focus move costs no extra render. Only
+    /// reports that name a heading are kept (Home's collection rows), a few dozen folders at most.
+    private var rowHeadings: [String: String] = [:]
+
+    func noteRowHeading(_ heading: String?, for item: MetaPreview?) {
+        guard let heading, let item else { return }
+        rowHeadings["\(item.type):\(item.id)"] = heading
+    }
+
+    func rowHeading(for item: MetaPreview) -> String? {
+        rowHeadings["\(item.type):\(item.id)"]
     }
 }
 

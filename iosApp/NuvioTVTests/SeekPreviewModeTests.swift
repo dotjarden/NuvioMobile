@@ -51,4 +51,35 @@ final class SeekPreviewModeTests: XCTestCase {
         XCTAssertEqual(SeekPreviewMode.decode.displayName, "Harvest + Decode")
         XCTAssertEqual(SeekPreviewMode.off.displayName, "Off")
     }
+    // MARK: BUG-168 native half (Native I-frame Scan, off by default)
+
+    func testNativeIFramesNeedTheScanRow() {
+        XCTAssertEqual(SeekPreviewMode.nativeIFrameScanKey, "debug.nativeIFrameScan")
+        XCTAssertFalse(SeekPreviewMode.nativeIFrameScanDefault)
+        for mode in SeekPreviewMode.allCases {
+            XCTAssertFalse(mode.allowsNativeIFrames(scanEnabled: false), "\(mode)")
+        }
+        XCTAssertFalse(SeekPreviewMode.off.allowsNativeIFrames(scanEnabled: true))   // Off still wins
+        XCTAssertTrue(SeekPreviewMode.harvest.allowsNativeIFrames(scanEnabled: true))
+        XCTAssertTrue(SeekPreviewMode.decode.allowsNativeIFrames(scanEnabled: true))
+        // The mpv switches do not read the row.
+        XCTAssertTrue(SeekPreviewMode.harvest.allowsHarvest)
+        XCTAssertTrue(SeekPreviewMode.decode.allowsDecode)
+    }
+
+    func testNativeIFramesReadDefaults() throws {
+        let name = "SeekPreviewModeTests.native.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        // Unset: the default mode (harvest) but no rendition.
+        XCTAssertFalse(SeekPreviewMode.nativeIFrameScanEnabled(defaults))
+        XCTAssertFalse(SeekPreviewMode.currentAllowsNativeIFrames(defaults))
+        defaults.set(true, forKey: SeekPreviewMode.nativeIFrameScanKey)
+        XCTAssertTrue(SeekPreviewMode.currentAllowsNativeIFrames(defaults))
+        defaults.set("off", forKey: SeekPreviewMode.defaultsKey)
+        XCTAssertFalse(SeekPreviewMode.currentAllowsNativeIFrames(defaults))
+        defaults.set("decode", forKey: SeekPreviewMode.defaultsKey)
+        defaults.set(false, forKey: SeekPreviewMode.nativeIFrameScanKey)
+        XCTAssertFalse(SeekPreviewMode.currentAllowsNativeIFrames(defaults))
+    }
 }

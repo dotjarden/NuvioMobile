@@ -14,27 +14,56 @@ struct PosterStyle: Equatable {
     var landscapeCatalogRows: Bool = false
     /// BUG-162 (Steven, rc4 verdict 2026-10-16: his add-on's landscape cards "much too small", the
     /// row heading ~120 pt above them at Medium+): true only when `resolved(forSectionItems:)`
-    /// turned this row landscape from its items' `posterShape` (BUG-157). Such a row's card is the
-    /// trailer tile's own geometry, `height` tall and `height × 16/9` wide (`cardWidth` /
-    /// `cardHeight`), so the row is exactly as tall as a portrait row and follows Poster Size. The
-    /// GLOBAL Landscape Posters toggle (`landscapeCatalogRows` without this) keeps 360×203.
+    /// turned this row landscape from its items' `posterShape` (BUG-157). Such a row is planned at
+    /// the portrait height (the slot is `expandedCardHeight`, the poster height), its cards REST at
+    /// the landscape folder-tile size (`cardWidth` / `cardHeight`, D16) and GROW to the trailer
+    /// tile (`expandedCardWidth` / `expandedCardHeight`). The GLOBAL Landscape Posters toggle
+    /// (`landscapeCatalogRows` without this) keeps 360×203 in both states.
     var landscapeFromShape: Bool = false
 
     static let `default` = PosterStyle()
 
-    /// BUG-162: the resting card size of a row drawn with this style. Portrait: the poster.
+    /// BUG-162: the RESTING card size of a row drawn with this style. Portrait: the poster.
     /// Global Landscape Posters: the fixed 360×203 landscape card. Shape landscape (BUG-157 per-row):
-    /// a 16:9 card at the poster's height, the inline trailer tile's size
-    /// (`InlineTrailerCard.expandedWidth`), so the trailer is a pure dissolve on the card.
+    /// D16 (Steven, rc5 verdict 2026-10-17: the 624×351 cards were "much too large", he wants them
+    /// "the same size as the collection posters normally, and only enlarge them when the trailer
+    /// starts"): the landscape folder tile's rule (`FolderTile`, CollectionsUI.swift), `width × 16/9`
+    /// wide × `width` tall, 416×234 at Medium+. The card grows to `expandedCardWidth` ×
+    /// `expandedCardHeight` at the inline trailer's `.wide` stage (`InlineTrailerCard.artworkWidth`).
     var cardWidth: CGFloat {
         guard landscapeCatalogRows else { return width }
-        return landscapeFromShape ? height * (16.0 / 9.0) : Theme.Size.landscapeWidth
+        return landscapeFromShape ? width * (16.0 / 9.0) : Theme.Size.landscapeWidth
     }
 
-    /// BUG-162: see `cardWidth`.
+    /// BUG-162 / D16: see `cardWidth`.
     var cardHeight: CGFloat {
         guard landscapeCatalogRows else { return height }
-        return landscapeFromShape ? height : Theme.Size.landscapeHeight
+        return landscapeFromShape ? width : Theme.Size.landscapeHeight
+    }
+
+    /// BUG-162 / D16: the card's size once its inline trailer reaches the `.wide` stage. Portrait and
+    /// shape-landscape rows: the 16:9 trailer tile at the poster's height (UX-4a; 624×351 at
+    /// Medium+). Global Landscape Posters: the card itself (rest == expanded, the tile is a pure
+    /// dissolve there). The height is also the row's artwork SLOT: a shape row's resting card sits at
+    /// the top of a poster-height slot and grows down into it, so the heading never moves.
+    var expandedCardWidth: CGFloat {
+        landscapeRowGeometry ? Theme.Size.landscapeWidth : height * (16.0 / 9.0)
+    }
+
+    /// BUG-162 / D16: see `expandedCardWidth`.
+    var expandedCardHeight: CGFloat {
+        landscapeRowGeometry ? Theme.Size.landscapeHeight : height
+    }
+
+    /// BUG-162 / D16: the card's artwork size at a morph stage (`expanded` = the inline trailer's
+    /// `.wide` stage, `InlineTrailerModel.layoutExpanded`). One rule for every row kind: portrait
+    /// grows width only (UX-4a), a shape-landscape card grows both ways (D16), the global toggle's
+    /// card never changes. `.reveal` dissolves at the rest size (rc1 R2: never grow while
+    /// translucent), so only `.wide` reads `true`.
+    func artworkSize(expanded: Bool) -> CGSize {
+        expanded
+            ? CGSize(width: expandedCardWidth, height: expandedCardHeight)
+            : CGSize(width: cardWidth, height: cardHeight)
     }
 
     /// BUG-162: the row is a fixed-size landscape row (the global toggle), shorter than a portrait

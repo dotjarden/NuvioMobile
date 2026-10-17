@@ -152,6 +152,22 @@ final class IFrameFragmentTests: XCTestCase {
         XCTAssertTrue(off.hasSuffix("\nmedia.m3u8\n"))
     }
 
+    /// BUG-168 native half: the master the native engine gets in both states of Developer › Native
+    /// I-frame Scan, with Seek Preview Frames at its default (Harvest Only).
+    func testNativeMasterFollowsTheScanRow() throws {
+        let map = try fiveSegmentMap()
+        let mode = SeekPreviewMode.defaultMode
+        let rowOff = map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000,
+                                        iFrames: mode.allowsNativeIFrames(scanEnabled: false))
+        XCTAssertFalse(rowOff.contains("I-FRAME"))
+        XCTAssertEqual(rowOff, map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000))   // pre-P3 master
+        let rowOn = map.masterPlaylist(signaling: hdrSig, bandwidth: 40_000_000,
+                                       iFrames: mode.allowsNativeIFrames(scanEnabled: true))
+        let iframeLines = rowOn.split(separator: "\n").filter { $0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:") }
+        XCTAssertEqual(iframeLines.count, 1)
+        XCTAssertTrue(iframeLines[0].contains("URI=\"\(SegmentMap.iFramePlaylistName)\""), String(iframeLines[0]))
+    }
+
     func testMasterIndependentSegmentsOnlyWhenAsked() throws {
         let map = try fiveSegmentMap()
         let master = map.masterPlaylist(signaling: hdrSig, bandwidth: 1, iFrames: true, independentSegments: true)

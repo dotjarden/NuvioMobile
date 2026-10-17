@@ -1265,6 +1265,9 @@ struct LandscapeCard: View {
     var overlayLeading: String? = nil
     /// Upcoming row: optional `TODAY` / `IN 4 DAYS` pill drawn bottom-trailing on the artwork.
     var overlayTrailing: String? = nil
+    /// FEAT-64: the watched tick on a landscape catalog card (`PosterCard.watchBadge`'s rule and
+    /// view). nil (Continue Watching, Upcoming, every other call site) draws nothing.
+    var watchBadge: PosterWatchBadge? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -1360,6 +1363,16 @@ struct LandscapeCard: View {
                     // BUG-91 gate: same outer-box marker as PosterCard's, so an armed probe run
                     // leaves the landscape cards' button frames unperturbed too.
                     .modifier(DebugAXIdentifier("landscape_card"))
+                    // FEAT-64 (Steven, rc5 verdict 2026-10-17: "marking a film watched shows no
+                    // tick"): inside the artwork group, so it rides `CardArtworkFocusLift` with the
+                    // art (PosterCard's placement), and inside the BUG-64 ring band.
+                    .overlay {
+                        if let watchBadge {
+                            PosterWatchBadgeView(badge: watchBadge)
+                                .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
+                                .padding(inset)
+                        }
+                    }
 
                 if overlayLeading != nil || overlayTrailing != nil {
                     // Upcoming/CW artwork badges: sit above the progress bar (when present) and

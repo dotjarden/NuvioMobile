@@ -157,6 +157,9 @@ struct ContentView: View {
                         rootCoverActive: deepLink != nil
                     )
                     .environmentObject(auth)
+                    // FEAT-64: once a profile is entered, like Library/Detail's own
+                    // `WatchedRepository.ensureLoaded()` (never before the profile is known).
+                    .onAppear { WatchedBadgeIndex.shared.start() }
                 } else {
                     // `reseedNow()` BEFORE `entered = true`: the chosen profile's theme must be
                     // applied while only this picker is mounted, or MainTabView mounts under the
@@ -168,6 +171,10 @@ struct ContentView: View {
         }
         .environment(\.posterStyle, posterStyle.style)
         .environment(\.cardDepthStyle, cardDepth.style)
+        // FEAT-64: the watched tick's one index (`WatchedBadgeIndex`), read per card by
+        // `WatchedBadgeReader`. Started with the main shell (below); the repository's own profile
+        // and sign-out resets flow through it.
+        .environment(WatchedBadgeIndex.shared)
         // NOTE — deliberately NO app-root `.tint(Theme.Palette.accent)`. It looks like the obvious
         // way to make stock controls follow the theme, and it was tried (2026-08-25, sim-verified
         // via test43's `43b` capture): on tvOS it repaints the `Menu { Picker }` row's LABEL PILL

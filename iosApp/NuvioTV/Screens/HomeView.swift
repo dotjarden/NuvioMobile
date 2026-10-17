@@ -1580,8 +1580,10 @@ struct HomeView: View {
                     //
                     // BUG-162 (Batch B): a catalog row the add-on tags as landscape (`posterShape`,
                     // BUG-157) used to be floored here too, its 203 pt cards being a short label on
-                    // the poster regime's reaches. Its cards are the poster height now
-                    // (`PosterStyle.cardHeight`), so it is a uniform catalog row and takes no floor.
+                    // the poster regime's reaches. Its card SLOT is the poster height now (D16, rc5
+                    // verdict: the card rests at the folder-tile size, `PosterStyle.cardHeight`, and
+                    // grows to `expandedCardHeight` inside a poster-height slot), so it is a uniform
+                    // catalog row and takes no floor.
                     .environment(\.rowCardLinkFrameFloor,
                                  pinned && (row.id == model.rows.last?.id
                                             || (pinnedShortRowFloor && Self.isCollectionRow(row)))

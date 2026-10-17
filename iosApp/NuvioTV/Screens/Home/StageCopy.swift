@@ -25,8 +25,22 @@ extension StageCopy {
     /// back to Classic's line) and the synopsis is the progress entry's `pauseDescription` (the
     /// episode's own text) when it has one, else the item's description. A folder never gets this
     /// copy, whatever lookup the host installed.
-    nonisolated static func make(item: MetaPreview, progress: WatchProgressEntry?) -> StageCopy {
-        let plain = StageCopy(meta: classicMeta(item), synopsis: plainSynopsis(item))
+    ///
+    /// BUG-173 (Steven, beta.19-rc5 verdict 2026-10-17: "the collection name appears twice"): on
+    /// Home's strip a folder's meta line is its collection title, and the strip row right under the
+    /// stage carries the same title as its heading. `rowHeading` is the heading of the row the
+    /// shown item was reported from (`StageCopySource.rowHeading(for:)`); a folder preview whose
+    /// meta line reads the same as that heading gets an empty meta line, so the name shows once (the
+    /// logo, or the folder's name, still fills the logo slot). The rule is here and not in
+    /// `HomeRowPreviews.folder`, because Classic's hero-OFF panel draws the same preview and needs
+    /// that line (rc14 BUG-119). nil (the folder Rows page intro, whose row headings are catalogs,
+    /// and Discover) keeps the line. Only folder previews are matched: a title whose release text
+    /// happens to equal its row's heading is untouched.
+    nonisolated static func make(item: MetaPreview, progress: WatchProgressEntry?,
+                                 rowHeading: String? = nil) -> StageCopy {
+        let classic = classicMeta(item)
+        let repeatsHeading = isFolderPreview(item) && rowHeading.map { sameText(classic, $0) } == true
+        let plain = StageCopy(meta: repeatsHeading ? "" : classic, synopsis: plainSynopsis(item))
         guard let progress, !isFolderPreview(item) else { return plain }
         let meta = continueWatchingMeta(progress, item: item)
         let pause: String? = progress.pauseDescription

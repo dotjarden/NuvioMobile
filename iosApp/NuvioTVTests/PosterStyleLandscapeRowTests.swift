@@ -106,25 +106,101 @@ final class PosterStyleLandscapeRowTests: XCTestCase {
         XCTAssertTrue(style.landscapeRowGeometry, "the global toggle's rows are the short 203 pt rows")
     }
 
-    func testShapeLandscapeIsTheTileAtThePosterHeight() {
+    /// BUG-162 / D16 (Steven, rc5 verdict 2026-10-17): a shape-landscape card RESTS at the landscape
+    /// folder tile's size (`FolderTile`: `width × 16/9` × `width`, 416×234 at Medium+) and GROWS to
+    /// the trailer tile at the poster height (624×351) at the `.wide` stage.
+    func testShapeLandscapeRestsAtTheFolderTileSize() {
         let base = mediumPlus()
         let style = base.resolved(forSectionItems: (0..<4).map { item("s\($0)", .landscape) })
         XCTAssertTrue(style.landscapeFromShape)
-        XCTAssertEqual(style.cardHeight, base.height, "as tall as the portrait row")
-        XCTAssertEqual(style.cardWidth, base.height * 16 / 9, accuracy: 0.001)
-        XCTAssertEqual(style.cardWidth, InlineTrailerCard.expandedWidth(style), accuracy: 0.001,
-                       "the trailer tile's own width: a pure dissolve, no morph")
+        XCTAssertEqual(style.cardWidth, base.width * 16 / 9, accuracy: 0.001)
+        XCTAssertEqual(style.cardHeight, base.width, accuracy: 0.001, "the folder tile's height")
+        XCTAssertEqual(style.cardWidth, 416, accuracy: 0.5, "416 × 234 at Medium+")
+        XCTAssertEqual(style.cardHeight, 234, accuracy: 0.5)
         XCTAssertFalse(style.landscapeRowGeometry, "planned as a portrait-height row")
-        XCTAssertGreaterThan(style.cardHeight, Theme.Size.landscapeHeight)
+    }
+
+    func testShapeLandscapeGrowsToTheTileAtThePosterHeight() {
+        let base = mediumPlus()
+        let style = base.resolved(forSectionItems: (0..<4).map { item("s\($0)", .landscape) })
+        XCTAssertEqual(style.expandedCardHeight, base.height, "grows to the portrait row's height")
+        XCTAssertEqual(style.expandedCardWidth, base.height * 16 / 9, accuracy: 0.001)
+        XCTAssertEqual(style.expandedCardWidth, InlineTrailerCard.expandedWidth(style), accuracy: 0.001,
+                       "the same tile a portrait card grows to")
+        XCTAssertEqual(style.expandedCardWidth, 624, accuracy: 0.5)
+        XCTAssertEqual(style.expandedCardHeight, 351, accuracy: 0.5)
+        XCTAssertGreaterThan(style.expandedCardHeight, style.cardHeight)
     }
 
     func testShapeLandscapeFollowsPosterSize() {
         let items = (0..<3).map { item("p\($0)", .landscape) }
+        for dp in [105.0, 126.0, 134.0, 154.0] {
+            var base = PosterStyle()
+            base.width = CGFloat(dp) * (Theme.Size.posterWidth / 126)
+            base.height = base.width * 1.5
+            let style = base.resolved(forSectionItems: items)
+            XCTAssertEqual(style.cardWidth, base.width * 16 / 9, accuracy: 0.001, "rest width at \(dp) dp")
+            XCTAssertEqual(style.cardHeight, base.width, accuracy: 0.001, "rest height at \(dp) dp")
+            XCTAssertEqual(style.expandedCardWidth, base.height * 16 / 9, accuracy: 0.001, "grown width at \(dp) dp")
+            XCTAssertEqual(style.expandedCardHeight, base.height, accuracy: 0.001, "grown height at \(dp) dp")
+        }
         let small = PosterStyle().withHeight(300).resolved(forSectionItems: items)
         let large = PosterStyle().withHeight(400).resolved(forSectionItems: items)
-        XCTAssertEqual(small.cardHeight, 300)
-        XCTAssertEqual(large.cardHeight, 400)
+        XCTAssertEqual(small.expandedCardHeight, 300)
+        XCTAssertEqual(large.expandedCardHeight, 400)
         XCTAssertLessThan(small.cardWidth, large.cardWidth)
+    }
+
+    /// The stage → artwork-size table `InlineTrailerCard.artworkWidth/Height` read
+    /// (`PosterStyle.artworkSize(expanded:)`; `expanded` = `.wide`, `.reveal` dissolves at rest).
+    func testArtworkSizeByStageForTheThreeRowKinds() {
+        let portrait = mediumPlus()
+        XCTAssertEqual(portrait.artworkSize(expanded: false), CGSize(width: portrait.width, height: portrait.height))
+        XCTAssertEqual(portrait.artworkSize(expanded: true).width, portrait.height * 16 / 9, accuracy: 0.001)
+        XCTAssertEqual(portrait.artworkSize(expanded: true).height, portrait.height, "UX-4a: height never changes")
+
+        let shape = portrait.resolved(forSectionItems: (0..<3).map { item("a\($0)", .landscape) })
+        XCTAssertEqual(shape.artworkSize(expanded: false), CGSize(width: shape.cardWidth, height: shape.cardHeight))
+        XCTAssertEqual(shape.artworkSize(expanded: true),
+                       CGSize(width: shape.expandedCardWidth, height: shape.expandedCardHeight))
+
+        var global = portrait
+        global.landscapeCatalogRows = true
+        let landscapeCard = CGSize(width: Theme.Size.landscapeWidth, height: Theme.Size.landscapeHeight)
+        XCTAssertEqual(global.artworkSize(expanded: false), landscapeCard)
+        XCTAssertEqual(global.artworkSize(expanded: true), landscapeCard, "the global toggle's tile never grows")
+        XCTAssertEqual(global.expandedCardWidth, global.cardWidth)
+        XCTAssertEqual(global.expandedCardHeight, global.cardHeight)
+    }
+
+    /// The morph scroll (M3) gets the card's own rest → `.wide` widths. A shape row's card 3 at
+    /// Medium+ (leading 3 × (416 + 28) = 1332, grown trailing 1956) overflows a 1920 row and
+    /// scrolls; the old portrait widths (234 → 624, leading 786) called it a fit.
+    func testMorphScrollPlansAShapeLandscapeGrow() {
+        let shape = mediumPlus().resolved(forSectionItems: (0..<10).map { item("m\($0)", .landscape) })
+        let gap = Theme.Spacing.rowGap
+        let count: CGFloat = 10
+        let content = count * shape.cardWidth + (count - 1) * gap
+        let plan = RowMorphScroll.plan(index: 3, restingWidth: shape.cardWidth,
+                                       expandedWidth: shape.expandedCardWidth, gap: gap,
+                                       visibleMinX: 0, viewportWidth: 1920, contentWidth: content,
+                                       insetLeading: 0, contentAlreadyGrown: false)
+        let trailing = 3 * (shape.cardWidth + gap) + shape.expandedCardWidth
+        XCTAssertEqual(plan.offset ?? -1, trailing - 1920, accuracy: 0.001)
+        XCTAssertTrue(plan.overflowsViewport)
+        let old = RowMorphScroll.plan(index: 3, restingWidth: shape.width,
+                                      expandedWidth: InlineTrailerCard.expandedWidth(shape), gap: gap,
+                                      visibleMinX: 0, viewportWidth: 1920, contentWidth: content,
+                                      insetLeading: 0, contentAlreadyGrown: false)
+        XCTAssertNil(old.offset, "the pre-D16 widths missed the overflow")
+
+        var global = mediumPlus()
+        global.landscapeCatalogRows = true
+        XCTAssertNil(RowMorphScroll.plan(index: 9, restingWidth: global.cardWidth,
+                                         expandedWidth: global.expandedCardWidth, gap: gap,
+                                         visibleMinX: 0, viewportWidth: 1920, contentWidth: 4000,
+                                         insetLeading: 0, contentAlreadyGrown: false).offset,
+                     "the global toggle's card never grows: nothing to scroll for")
     }
 
     func testGlobalToggleNeverTurnsIntoAShapeRow() {

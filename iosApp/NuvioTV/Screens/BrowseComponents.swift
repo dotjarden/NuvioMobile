@@ -5107,8 +5107,11 @@ struct CatalogRowView: View {
         inheritedPosterStyle.resolved(forSectionItems: section.items)
     }
     private var rowArtworkHeight: CGFloat {
-        // BUG-162: `cardHeight` (a shape-landscape row is as tall as a portrait row).
-        posterStyle.cardHeight
+        // BUG-162 / D16: the row's artwork SLOT, `expandedCardHeight`: a shape-landscape card rests
+        // smaller (folder-tile size) at the slot's top and grows into it with its trailer, so the
+        // row, the pinned title clamp and the leading-edge allowance (sized off the grown 16:9
+        // tile) keep the portrait-height numbers. Equal to `cardHeight` on every other row.
+        posterStyle.expandedCardHeight
     }
 
     /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
@@ -5156,7 +5159,8 @@ struct CatalogRowView: View {
         // the formula this property used to inline (16:9 tile width × the lift, + accent ring +
         // shadow), byte-identical; No Zoom opens for the still focus shadow's visible reach (44 pt)
         // instead of ring + radius (26 pt), which cut the shadow into a hard line.
-        // BUG-162: the row's real card width (a shape-landscape card is `height × 16/9`).
+        // BUG-162 / D16: the row's real resting card width (a shape-landscape card rests at
+        // `width × 16/9`); the grown tile's 16:9 width comes from `rowArtworkHeight` inside.
         let restingWidth = posterStyle.cardWidth
         return RowLeadingEdgeClip.rowAllowance(noZoomOnFocus: noZoomOnFocus,
                                                accentFocusRing: accentFocusRing,
@@ -5209,7 +5213,13 @@ struct CatalogRowView: View {
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.rowGap) {
+                    // BUG-162 / D16 + BUG-146 (Steven, rc5): TOP-aligned on every row, so every
+                    // card's art top sits on one line under the heading. A centre-aligned stack sank
+                    // the shorter cards whenever one card laid out taller (Search's focused footnote
+                    // card with Hide Titles ON is 16 pt taller; the See All tile on a shape-landscape
+                    // row is shorter than the slot its neighbours reserve). Rows whose cards are all
+                    // one height (Home's) lay out exactly as before.
+                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
                         ForEach(section.items, id: \.id) { item in
                             Group {
                                 if let onSelect {
@@ -5447,12 +5457,17 @@ struct CatalogRowView: View {
                 // The footnote is drawn by the card itself, hanging under its caption so it
                 // follows the caption's focus drop (device pass 2026-10-06: a line laid out here
                 // collided with the dropped caption on the focused card).
-                InlineTrailerCard(item: item,
-                                  enabled: inlineTrailersActive,
-                                  onExpansionChange: { expanded in
-                                      expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
-                                  },
-                                  footnote: focusedItemId == item.id ? cardFootnote(item) : nil)
+                // FEAT-64: the watched tick, read per card inside `WatchedBadgeReader`'s leaf so a
+                // mark re-renders that card and not this row.
+                WatchedBadgeReader(item: item) { badge in
+                    InlineTrailerCard(item: item,
+                                      enabled: inlineTrailersActive,
+                                      onExpansionChange: { expanded in
+                                          expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                                      },
+                                      footnote: focusedItemId == item.id ? cardFootnote(item) : nil,
+                                      watchBadge: badge)
+                }
                 // Fixed-height sizer (a hidden caption line): the row reserves the footnote's
                 // line so nothing below moves when focus changes.
                 Text(" ")
@@ -5462,9 +5477,12 @@ struct CatalogRowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
-                expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
-            })
+            // FEAT-64: see the footnote branch above.
+            WatchedBadgeReader(item: item) { badge in
+                InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
+                    expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                }, watchBadge: badge)
+            }
         }
     }
 
@@ -5575,8 +5593,12 @@ struct CatalogRowView: View {
                                                           margins: rowEdgeMargins,
                                                           rampLength: rowEdgeRampLength)
         let plan = RowMorphScroll.plan(index: index,
-                                       restingWidth: posterStyle.width,
-                                       expandedWidth: InlineTrailerCard.expandedWidth(posterStyle),
+                                       // BUG-162 / D16: the card's own rest → `.wide` widths
+                                       // (`PosterStyle.artworkSize`): portrait 234 → 624, shape
+                                       // landscape 416 → 624 at Medium+, the global toggle's card
+                                       // 360 → 360 (it never grows, so nothing to scroll for).
+                                       restingWidth: posterStyle.cardWidth,
+                                       expandedWidth: posterStyle.expandedCardWidth,
                                        gap: Theme.Spacing.rowGap,
                                        visibleMinX: sample.paddedVisibleMinX,
                                        viewportWidth: sample.viewportWidth,
@@ -5723,8 +5745,9 @@ struct CatalogRowView: View {
 struct SeeAllCard: View {
     @Environment(\.posterStyle) private var style
 
-    // BUG-162: the row's resting card size, including a shape-landscape row's 16:9 card at the
-    // poster height.
+    // BUG-162 / D16: the row's RESTING card size, including a shape-landscape row's folder-tile
+    // size (`width × 16/9` × `width`). The row's stack is top-aligned, so this shorter tile's art
+    // top lines up with its neighbours' inside their poster-height slot.
     private var tileWidth: CGFloat { style.cardWidth }
     private var tileHeight: CGFloat { style.cardHeight }
 
@@ -5763,8 +5786,11 @@ struct PosterCardView: View {
     let item: MetaPreview
     /// See `PosterCard.footnote`.
     var footnote: String? = nil
+    /// FEAT-64: see `PosterCard.watchBadge` (catalog rows pass it through `InlineTrailerCard`).
+    var watchBadge: PosterWatchBadge? = nil
 
     var body: some View {
-        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl, footnote: footnote)
+        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl,
+                   watchBadge: watchBadge, footnote: footnote)
     }
 }

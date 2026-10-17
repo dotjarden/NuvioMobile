@@ -2119,6 +2119,10 @@ struct InlineTrailerCard: View {
     /// Search & Discover batch 2026-10-06: Search's "Found in …" line, handed to the card so it
     /// hangs under the caption and rides the focus drop (see `PosterCard.footnote`).
     var footnote: String? = nil
+    /// FEAT-64: the watched tick, passed straight to the base card (`WatchedBadgeReader` in
+    /// `CatalogRowView.card(for:)`). The trailer tile draws none: it covers the base card only
+    /// while it plays.
+    var watchBadge: PosterWatchBadge? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var posterStyle
@@ -2154,6 +2158,11 @@ struct InlineTrailerCard: View {
     /// `debug_trailerTile`'s `x=` field — see that overlay's doc comment for why `.global` and not
     /// a named coordinate space.
     @State private var debugTileGlobalOriginX: CGFloat = 0
+    /// BUG-162 / D16 (rc5 promises): the BASE card's measured frame in `.global` space, fed to
+    /// `debug_trailerTile`'s ` base=` field. The base card stays in the tree under the tile at the
+    /// row's REST size, so the UI leg reads the resting art size from layout (the card button's
+    /// accessibility frame is the whole poster-height slot on a shape row).
+    @State private var debugBaseFrame: CGRect = .zero
     #endif
 
     /// Landscape rows prefer the wide banner; a poster fallback is cropped to 16:9 by the tile's
@@ -2170,7 +2179,8 @@ struct InlineTrailerCard: View {
     }
 
     /// The expanded tile's width for a portrait row: a 16:9 tile at the poster's own height
-    /// (UX-4a). Shared with `CatalogRowView`'s morph-scroll math (M3).
+    /// (UX-4a). BUG-162 / D16: the card and the morph-scroll math (M3) read
+    /// `PosterStyle.expandedCardWidth` now, which equals this for portrait and shape-landscape rows.
     static func expandedWidth(_ style: PosterStyle) -> CGFloat {
         style.height * (16.0 / 9.0)
     }
@@ -2258,8 +2268,40 @@ struct InlineTrailerCard: View {
     var body: some View {
         if enabled {
             expandingCard
+        } else if posterStyle.landscapeFromShape {
+            // BUG-162 / D16: no trailer, but the row still reserves the poster-height slot, so a
+            // shape row is the same height with trailers on or off (the strip and Classic's pinned
+            // planners size it as a portrait row either way, `landscapeRowGeometry` false).
+            ZStack(alignment: .topLeading) {
+                shapeSlotSizer
+                baseCard
+            }
         } else {
             baseCard
+        }
+    }
+
+    /// BUG-162 / D16 (Steven, rc5 verdict: wide cards at rest "the same size as the collection
+    /// posters normally, and only enlarge them when the trailer starts"): a shape-landscape card
+    /// rests at the folder-tile size (416×234 at Medium+) at the TOP of a poster-height slot and
+    /// grows DOWN into it at `.wide`, so the row never breathes and the heading above never moves.
+    /// This invisible sizer holds that slot at every stage: the expanded artwork height plus the
+    /// caption line the expanded tile carries (`expandedTile`'s `showsOverlayTitle`, the same
+    /// `md` gap and `cardTitle` line). Nothing for portrait or global-toggle rows, whose artwork
+    /// height never changes.
+    @ViewBuilder
+    private var shapeSlotSizer: some View {
+        if posterStyle.landscapeFromShape {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Color.clear.frame(width: 0, height: posterStyle.expandedCardHeight)
+                if posterStyle.showTitle {
+                    Text(verbatim: " ")
+                        .font(Theme.Font.cardTitle)
+                        .lineLimit(1)
+                }
+            }
+            .hidden()
+            .accessibilityHidden(true)
         }
     }
 
@@ -2268,18 +2310,20 @@ struct InlineTrailerCard: View {
     @ViewBuilder
     private var baseCard: some View {
         if posterStyle.landscapeCatalogRows {
-            // BUG-162: the row's card size (`PosterStyle.cardWidth`/`cardHeight`): 360×203 under
-            // the global Landscape Posters toggle, the poster height × 16/9 on a shape row.
+            // BUG-162: the row's RESTING card size (`PosterStyle.cardWidth`/`cardHeight`): 360×203
+            // under the global Landscape Posters toggle, the folder-tile size on a shape row (D16;
+            // the tile above grows past it at `.wide`, this card stays at rest and fades under it).
             LandscapeCard(
                 title: item.name,
                 imageURL: Self.landscapeArtworkURL(item),
                 width: posterStyle.cardWidth,
                 height: posterStyle.cardHeight,
                 depthSurface: .posters,
-                footnote: footnote
+                footnote: footnote,
+                watchBadge: watchBadge
             )
         } else {
-            PosterCardView(item: item, footnote: footnote)
+            PosterCardView(item: item, footnote: footnote, watchBadge: watchBadge)
         }
     }
 
@@ -2302,10 +2346,25 @@ struct InlineTrailerCard: View {
     /// — so the blanket `.animation(value:)` here was removed.
     private var expandingCard: some View {
         ZStack(alignment: .topLeading) {
+            // BUG-162 / D16: the poster-height slot a shape-landscape card grows down into.
+            shapeSlotSizer
+
             baseCard
                 // The portrait card (and, BUG-163, a shape-landscape card) is crossfaded out. Under
                 // the global Landscape Posters toggle the base card stays (see `fadesBaseCard`).
                 .opacity(fadesBaseCard && model.tileVisible ? 0 : 1)
+                #if DEBUG
+                // BUG-162 / D16: see `debugBaseFrame`. Only while the tile shows (the probe's own gate).
+                .background {
+                    if model.tileVisible {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { debugBaseFrame = proxy.frame(in: .global) }
+                                .onChange(of: proxy.frame(in: .global)) { _, frame in debugBaseFrame = frame }
+                        }
+                    }
+                }
+                #endif
 
             expandedTile
         }
@@ -2354,11 +2413,11 @@ struct InlineTrailerCard: View {
         model.hostsTile = true
         let poster: String? = item.poster
         // I1 (critique #3): the tile's resting size, so the loader decodes the banner at the size the
-        // tile is drawn at. Same numbers as `artworkWidth` / `artworkHeight` at `.wide`.
-        // BUG-162/163: a landscape row's tile is its card (`cardWidth` × `cardHeight`).
-        let tile = posterStyle.landscapeCatalogRows
-            ? CGSize(width: posterStyle.cardWidth, height: posterStyle.cardHeight)
-            : CGSize(width: Self.expandedWidth(posterStyle), height: posterStyle.height)
+        // tile is drawn at. Same numbers as `artworkWidth` / `artworkHeight` at `.wide`: the 16:9
+        // tile at the poster height for portrait and (BUG-162 / D16) shape-landscape rows, which
+        // dissolve at the smaller rest size and grow into it; the card itself under the global
+        // Landscape Posters toggle. Decoded once at the largest size it is drawn at.
+        let tile = posterStyle.artworkSize(expanded: true)
         model.tileArtSource = InlineTileArtSource(primary: Self.landscapeArtworkURL(item), fallback: poster, tileSize: tile)
         model.restSource = rowRestSource
     }
@@ -2591,10 +2650,11 @@ struct InlineTrailerCard: View {
         // beta.19-rc1 verdict (M3/R2): shown while the tile is VISIBLE (`tileVisible`), with five
         // fields appended: ` stage=<reveal|wide> gate=<auto|1|2|3> gateRest=<s|-> gateStart=<s>
         // via=<rest|ceiling>` — the gate's seconds-since-focus (test85: `gateStart − gateRest ≥
-        // 0.95` under Automatic; test88: `gate=2`, `gateStart ≥ 2.0`) — then R1's ` ring=`.
+        // 0.95` under Automatic; test88: `gate=2`, `gateStart ≥ 2.0`) — then R1's ` ring=`, then
+        // (BUG-162 / D16) ` base=<w>x<h> baseY=<y>`: the base card's measured rest frame (`debugBaseFrame`).
         .overlay(alignment: .topLeading) {
             if model.tileVisible {
-                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields)")
+                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields) base=\(Self.debugFmt(debugBaseFrame.width))x\(Self.debugFmt(debugBaseFrame.height)) baseY=\(Self.debugFmt(debugBaseFrame.minY))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_trailerTile")
@@ -2672,18 +2732,21 @@ struct InlineTrailerCard: View {
     /// whatever Poster Size the user runs.
     /// beta.19-rc1 verdict (R2): wide only at `.wide` — the `.reveal` stage dissolves at the
     /// poster's own width, so the tile never grows while translucent.
+    ///
+    /// BUG-162 / D16 (Steven, rc5: wide cards "much too large", grow them "only when the trailer
+    /// starts"): a shape-landscape row takes the same staged morph, growing in BOTH directions from
+    /// the folder-tile rest size (416×234 at Medium+) to the tile at the poster height (624×351),
+    /// out of the card's top-leading corner and down into the slot `shapeSlotSizer` reserves. The
+    /// global Landscape Posters toggle's tile is its card in both stages (rest == expanded). One
+    /// view whose frame animates with the stage transaction, never a swap (`PosterStyle.artworkSize`).
     private var artworkWidth: CGFloat {
-        // BUG-162: a landscape row's tile never grows; it is the card (the shape row's card is
-        // already `expandedWidth` wide, so `.wide` changes nothing there either).
-        if posterStyle.landscapeCatalogRows { return posterStyle.cardWidth }
-        return model.layoutExpanded ? Self.expandedWidth(posterStyle) : posterStyle.width
+        posterStyle.artworkSize(expanded: model.layoutExpanded).width
     }
 
-    /// Landscape rows are already the target geometry: no width change, the tile dissolves in.
-    /// Portrait rows: constant height in BOTH states (see artworkWidth).
+    /// Portrait rows: constant height in BOTH states (see artworkWidth). Shape-landscape rows grow
+    /// down at `.wide` (BUG-162 / D16); global landscape rows never change.
     private var artworkHeight: CGFloat {
-        if posterStyle.landscapeCatalogRows { return posterStyle.cardHeight }  // BUG-162
-        return posterStyle.height
+        posterStyle.artworkSize(expanded: model.layoutExpanded).height
     }
 }
 

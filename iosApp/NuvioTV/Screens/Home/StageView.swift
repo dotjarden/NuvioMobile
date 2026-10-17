@@ -231,7 +231,10 @@ struct StageTextBlock: View {
                 .accessibilityIdentifier("stage_text_slot_bounds")
             #endif
             if let shown = output.shown {
-                let copy = StageCopy.make(item: shown.item, progress: progressLookup?(shown.item))
+                // BUG-173: the heading of the row the shown item came from (Home's collection
+                // rows only), so a folder's collection title is not printed twice.
+                let copy = StageCopy.make(item: shown.item, progress: progressLookup?(shown.item),
+                                          rowHeading: copySource.rowHeading(for: shown.item))
                 VStack(alignment: .leading, spacing: StripGeometry.slotGap) {
                     HeroLogo(item: shown.item, image: shown.logo, maxHeight: geometry.logoSlot, ink: shown.logoInk)
                         .frame(height: geometry.logoSlot, alignment: .bottomLeading)

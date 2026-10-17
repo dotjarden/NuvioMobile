@@ -983,7 +983,10 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false,
                                     // Player P3: the I-frame rendition (FF/RW scan) follows Developer ›
                                     // Seek Preview Frames; Off = the pre-P3 master. Read per playback.
-                                    iFrames: SeekPreviewMode.current().allowsIFrames,
+                                    // BUG-168: and only with Developer › Native I-frame Scan (A/B) on
+                                    // (off by default), because AVKit's scrub preview never asks for
+                                    // an I-frame on tvOS 27 and shows an empty box instead.
+                                    iFrames: SeekPreviewMode.currentAllowsNativeIFrames(),
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server

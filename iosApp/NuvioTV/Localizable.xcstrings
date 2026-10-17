@@ -5310,6 +5310,40 @@
         }
       }
     },
+    "An A/B switch for the picture track the Apple TV player uses to fast forward and rewind. Off, the default, shows the time only while you scrub, with no empty preview box. On shows pictures while you fast forward or rewind, but the box over the scrubber stays empty: tvOS does not fill it.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter für die Bildspur, die der Apple TV-Player zum Vor- und Zurückspulen nutzt. Aus, der Standard, zeigt beim Suchen nur die Zeit, ohne leeres Vorschaufeld. Ein zeigt Bilder beim Vor- und Zurückspulen, aber das Feld über der Zeitleiste bleibt leer: tvOS füllt es nicht."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para la pista de imágenes que usa el reproductor de Apple TV para avanzar y retroceder. Desactivado, el valor predeterminado, muestra solo el tiempo al desplazarte, sin un recuadro de vista previa vacío. Activado muestra imágenes al avanzar o retroceder, pero el recuadro sobre la barra sigue vacío: tvOS no lo rellena."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interrupteur A/B pour la piste d’images que le lecteur Apple TV utilise pour l’avance et le retour rapides. Désactivé, la valeur par défaut, n’affiche que la durée pendant la recherche, sans cadre d’aperçu vide. Activé affiche des images pendant l’avance ou le retour rapide, mais le cadre au-dessus de la barre reste vide : tvOS ne le remplit pas."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per la traccia di immagini che il lettore Apple TV usa per avanzare e riavvolgere. Disattivato, il predefinito, mostra solo il tempo durante la ricerca, senza riquadro di anteprima vuoto. Attivato mostra immagini durante l’avanzamento o il riavvolgimento, ma il riquadro sopra la barra resta vuoto: tvOS non lo riempie."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho rãnh hình ảnh mà trình phát Apple TV dùng để tua nhanh và tua lại. Tắt, mặc định, chỉ hiện thời gian khi tua, không có khung xem trước trống. Bật hiện hình ảnh khi tua nhanh hoặc tua lại, nhưng khung phía trên thanh tua vẫn trống: tvOS không lấp đầy nó."
+          }
+        }
+      }
+    },
     "An A/B switch that changes how Home's top edge scrolls, to test a tab bar that reappears clipped. Try it only if asked.": {
       "localizations": {
         "de": {
@@ -33573,6 +33607,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ảnh xem trước khi tua (A/B)"
+          }
+        }
+      }
+    },
+    "Native I-frame Scan (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native I-Frame-Suche (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escaneo de I-frames nativo (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balayage I-frame natif (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scansione I-frame nativa (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quét I-frame gốc (A/B)"
           }
         }
       }

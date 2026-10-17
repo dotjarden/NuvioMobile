@@ -12,8 +12,10 @@ import XCTest
 ///    inside a collection (`rail_state … shown=0`) and shows it again on Home.
 ///  - `testLandscapeShapeCatalogDrawsLandscapeCards` (BUG-157): a stub add-on whose catalog tags
 ///    every item `posterShape: "landscape"` draws cards wider than tall with the global Landscape
-///    Posters toggle off. Batch B (BUG-162/163): the cards are the portrait height, 16:9 wide, the
-///    heading sits right above them and the in-row trailer's picture shows. Installs the add-on
+///    Posters toggle off. Batch B (BUG-163): the in-row trailer's picture shows. rc5 promises
+///    (BUG-162 / D16): the cards REST at the landscape folder-tile size (`width × 16/9` × `width`),
+///    the heading sits as far above them as above a portrait row, and the trailer tile GROWS to
+///    the poster height, its top on the rest card's top. Installs the add-on
 ///    through the DEBUG `-debug.addonManifestUrls` knob and removes it with
 ///    `-debug.addonManifestRemoveMatching` (the Add-ons keyboard skipped the leg on most runs).
 ///
@@ -326,16 +328,21 @@ final class BatchAFolderUITests: XCTestCase {
         return label[range.upperBound...].split(separator: " ").first.map(String.init)
     }
 
-    /// BUG-157 + BUG-162 + BUG-163. Steven's setup (rc4 video): Stage Home, Medium+, Hide Titles ON,
-    /// No Zoom on Focus ON, trailers in the row. The stub add-on comes in through the DEBUG
+    /// BUG-157 + BUG-162 / D16 + BUG-163. Steven's setup (rc4 video): Stage Home, Medium+, Hide
+    /// Titles ON, No Zoom on Focus ON, trailers in the row. The stub add-on comes in through the DEBUG
     /// `-debug.addonManifestUrls` knob (the Add-ons keyboard made this leg skip on most runs).
+    /// `-debug.cardGeometryProbe YES` publishes each card's artwork box (`poster_card`,
+    /// `landscape_card`): a shape card's button is the whole poster-height SLOT now, so the button
+    /// frame no longer says how big the resting art is.
     ///  1. the stub row's cards are landscape (BUG-157);
-    ///  2. they are as tall as the portrait card focused one row up, 16:9 wide (BUG-162 (a));
-    ///  3. the heading sits right above them, not ~120 pt up (BUG-162 (b));
-    ///  4. the trailer tile has the card's size (`debug_trailerTile outer=`) and reaches a stage;
-    ///  5. once `event=play host=card`, the card region MOVES between two screenshots (BUG-163: the
+    ///  2. they rest at the folder-tile size, `style.width × 16/9` × `style.width` (233.97 pt tall
+    ///     at the leg's Medium+ = 134 dp override), not the poster height (D16);
+    ///  3. the heading → art gap equals the portrait row's (the art is top-aligned in its slot);
+    ///  4. the trailer tile reaches `.wide` at the poster height × 16/9 (`debug_trailerTile outer=`),
+    ///     its top on the rest card's top (it grows DOWN, the heading never moves);
+    ///  5. once `event=play host=card`, the tile region MOVES between two screenshots (BUG-163: the
     ///     audio played under a still picture). YouTube extraction can be blocked from this Mac
-    ///     (`LOGIN_REQUIRED`); then 5 is recorded as device-owed, not failed.
+    ///     (`LOGIN_REQUIRED`); then 4/5 are recorded as device-owed, not failed.
     func testLandscapeShapeCatalogDrawsLandscapeCards() throws {
         let stub = DiscoveryStubServer(routes: [
             (prefix: "\(Self.landscapeStubPath)manifest.json", body: Self.landscapeManifest),
@@ -367,14 +374,27 @@ final class BatchAFolderUITests: XCTestCase {
         }
         pause(14)
 
-        // Walk the strip down to the stub row, keeping the last portrait frame seen on the way.
+        /// The heading line right above `frame`: the static text whose bottom is closest above it.
+        func headingGap(above frame: CGRect) -> CGFloat? {
+            let gaps = app.staticTexts.allElementsBoundByIndex
+                .map(\.frame)
+                .filter { $0.height > 0 && $0.maxY <= frame.minY + 2 && $0.maxX > frame.minX }
+                .map { frame.minY - $0.maxY }
+            return gaps.min()
+        }
+
+        // Walk the strip down to the stub row, keeping the last portrait row seen on the way.
         var portraitFrame: CGRect?
+        var portraitGap: CGFloat?
         var found = false
         for _ in 0..<16 {
             // Hide Titles leaves the card buttons unlabelled: `debug_strip foc=<rowKey>/<itemId>`.
             if probe(app, "debug_strip").contains("/zzland") { found = true; break }
             let frame = focusedElement(app).frame
-            if frame.height > 0, frame.width / frame.height < 0.9 { portraitFrame = frame }
+            if frame.height > 0, frame.width / frame.height < 0.9 {
+                portraitFrame = frame
+                portraitGap = headingGap(above: frame)
+            }
             remote.press(.down)
             pause(2.5)
         }
@@ -382,57 +402,91 @@ final class BatchAFolderUITests: XCTestCase {
         note("landscape-0-requests", stub.requestLog.joined(separator: ", "))
         XCTAssertTrue(found, "no stub card took focus on Home (strip=\(probe(app, "debug_strip")), requests=\(stub.requestLog))")
         guard found else { return }
+        // When the stub row is Home's first row there is no portrait row on the way down: the gap
+        // check below then falls back to a bound (a detour Down/Up let the next row's trailer take
+        // focus before the reading). The top-of-slot check is the structural half either way: the
+        // slot is the portrait height, so art at its top sits where a portrait row's art sits.
         let focused = focusedElement(app).frame
-        let neighbour = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ZZLand 2")).firstMatch
-        let rest = neighbour.exists ? neighbour.frame : .zero
-        let heading = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ZZ Landscape Row")).firstMatch
-        let headingFrame = heading.exists ? heading.frame : .zero
-        note("landscape-1-row", "focused=\(focused) neighbour=\(rest) portrait=\(String(describing: portraitFrame)) heading=\(headingFrame)")
+        // The resting art: a shape card's button is its whole poster-height SLOT (D16), so the
+        // button frame says nothing about the art. The base card stays in the tree under the trailer
+        // tile at the rest size, and `debug_trailerTile` publishes its MEASURED frame (` base=` /
+        // ` baseY=`), so the leg waits for the tile (any stage) and reads it there.
+        var tileLabel: String?
+        var tileFrame: CGRect = .zero
+        func readTile() -> Bool {
+            let tile = app.descendants(matching: .any)["debug_trailerTile"].firstMatch
+            guard tile.exists else { return false }
+            tileLabel = tile.label
+            tileFrame = tile.frame
+            return true
+        }
+        for _ in 0..<40 {
+            if readTile() { break }
+            pause(0.5)
+        }
+        var rest = CGRect.zero
+        if let label = tileLabel, let size = Self.token(label, "base"), let y = Self.token(label, "baseY").flatMap(Double.init) {
+            let parts = size.split(separator: "x").compactMap { Double($0) }
+            if parts.count == 2 { rest = CGRect(x: focused.minX, y: y, width: parts[0], height: parts[1]) }
+        }
+        let gap = headingGap(above: focused)
+        note("landscape-1-row", "focused=\(focused) rest=\(rest) portrait=\(String(describing: portraitFrame)) gap=\(String(describing: gap)) portraitGap=\(String(describing: portraitGap)) tile=\(tileLabel ?? "-")")
+        guard tileLabel != nil else {
+            note("landscape-video", "DEVICE-OWED: no trailer tile within 20 s (extraction unavailable on this host?): the rest size and the grow are unverified here")
+            XCTAssertGreaterThan(focused.width / max(focused.height, 1), 1.0, "BUG-157: the landscape-shape card's slot is not wider than tall (\(focused))")
+            return
+        }
 
         // 1. BUG-157: 16:9 is 1.78, a portrait poster 0.67.
-        XCTAssertGreaterThan(focused.width / max(focused.height, 1), 1.4,
-                             "BUG-157: the focused card of a landscape-shape catalog is not landscape (\(focused))")
-        if rest.height > 0 {
-            XCTAssertGreaterThan(rest.width / rest.height, 1.4,
-                                 "BUG-157: a resting card of the landscape-shape row is not landscape (\(rest))")
-        }
-        // 2. BUG-162 (a): the portrait card's height, 16:9 wide.
-        XCTAssertEqual(focused.width, focused.height * 16 / 9, accuracy: 3,
-                       "BUG-162: the landscape card is not 16:9 at its height (\(focused))")
+        XCTAssertGreaterThan(rest.height, 0, "no ` base=` field on the tile probe (\(tileLabel ?? "-"))")
+        guard rest.height > 0 else { return }
+        XCTAssertGreaterThan(rest.width / rest.height, 1.4,
+                             "BUG-157: a card of the landscape-shape row is not landscape (\(rest))")
+        // 2. D16: the folder-tile size at Medium+ (134 dp × 220/126 = 233.97 wide poster).
+        let styleWidth: CGFloat = 134 * 220 / 126
+        let styleHeight = styleWidth * 1.5
+        XCTAssertEqual(rest.height, styleWidth, accuracy: 3,
+                       "BUG-162 / D16: the resting landscape card is not the folder tile's height (\(rest))")
+        XCTAssertEqual(rest.width, styleWidth * 16 / 9, accuracy: 3,
+                       "BUG-162 / D16: the resting landscape card is not the folder tile's width (\(rest))")
         if let portraitFrame {
-            XCTAssertEqual(focused.height, portraitFrame.height, accuracy: 3,
-                           "BUG-162: the landscape card (\(focused)) is not as tall as the portrait card one row up (\(portraitFrame))")
-        } else {
-            XCTAssertGreaterThan(focused.height, 260, "BUG-162: the landscape card is still the 203 pt Continue Watching size (\(focused))")
+            XCTAssertEqual(portraitFrame.height, styleHeight, accuracy: 3, "the portrait reference is not Medium+ (\(portraitFrame))")
         }
-        // 3. BUG-162 (b): heading → card gap (12 heading gap + 12 shelf top in the strip, plus slack).
-        if headingFrame.height > 0 {
-            let gap = focused.minY - headingFrame.maxY
+        // 3. The rest art sits at the TOP of its slot, and the heading sits as far above it as above
+        //    a portrait row's art.
+        XCTAssertEqual(rest.minY, focused.minY, accuracy: 3,
+                       "D16: the resting art (\(rest)) is not at the top of its slot (\(focused))")
+        if let gap, let portraitGap {
+            XCTAssertEqual(gap, portraitGap, accuracy: 3,
+                           "BUG-162: heading → landscape art \(gap) pt, heading → portrait art \(portraitGap) pt")
+        } else if let gap {
             XCTAssertLessThan(gap, 48, "BUG-162: the row heading floats \(gap) pt above the landscape cards")
         }
 
-        // 4. The tile: the card's size, and a stage.
-        var tileLabel: String?
+        // 4. The tile: reaches `.wide` at the poster height, growing down from the rest card's top.
         for _ in 0..<40 {
-            let tile = app.descendants(matching: .any)["debug_trailerTile"].firstMatch
-            if tile.exists { tileLabel = tile.label; break }
+            if readTile(), tileLabel?.contains("stage=wide") == true { break }
             pause(0.5)
         }
-        note("landscape-2-tile", tileLabel ?? "debug_trailerTile <absent>; morph=\(probe(app, "debug_trailerMorph"))")
+        if tileLabel?.contains("stage=wide") != true { tileLabel = nil }
+        note("landscape-2-tile", (tileLabel ?? "debug_trailerTile <no wide stage>; morph=\(probe(app, "debug_trailerMorph"))") + " frame=\(tileFrame)")
         guard let tileLabel else {
-            note("landscape-video", "DEVICE-OWED: no trailer tile within 20 s (extraction unavailable on this host?)")
+            note("landscape-video", "DEVICE-OWED: no wide trailer tile within 20 s (extraction unavailable on this host?) — the grow is unverified here")
             return
         }
+        shot("landscape-2-wide")
+        var grown = CGSize.zero
         if let outer = Self.token(tileLabel, "outer") {
             let parts = outer.split(separator: "x").compactMap { Double($0) }
-            if parts.count == 2 {
-                XCTAssertEqual(CGFloat(parts[0]), focused.width, accuracy: 3, "BUG-163: the tile is not the card's width (\(tileLabel))")
-                XCTAssertEqual(CGFloat(parts[1]), focused.height, accuracy: 3, "BUG-163: the tile is not the card's height (\(tileLabel))")
-            }
+            if parts.count == 2 { grown = CGSize(width: parts[0], height: parts[1]) }
         }
-        XCTAssertNotNil(Self.token(tileLabel, "stage"), "the tile reports no stage (\(tileLabel))")
+        XCTAssertEqual(grown.height, styleHeight, accuracy: 3, "D16: the wide tile is not the poster height (\(tileLabel))")
+        XCTAssertEqual(grown.width, styleHeight * 16 / 9, accuracy: 3, "D16: the wide tile is not 16:9 at the poster height (\(tileLabel))")
+        // The probe text is a top-leading overlay on the tile: its top is the tile's top.
+        XCTAssertEqual(tileFrame.minY, rest.minY, accuracy: 3,
+                       "D16: the tile's top (\(tileFrame.minY)) moved off the rest card's top (\(rest.minY)): the row breathed")
 
-        // 5. The video shows: wait for playback, then compare two frames of the card region.
+        // 5. The video shows: wait for playback, then compare two frames of the tile region.
         var playing = false
         for _ in 0..<60 {
             if probe(app, "debug_trailerMorph").contains("event=play host=card") { playing = true; break }
@@ -450,7 +504,7 @@ final class BatchAFolderUITests: XCTestCase {
         attachment.name = "landscape-3-playing"
         attachment.lifetime = .keepAlways
         add(attachment)
-        let card = focusedElement(app).frame
+        let card = CGRect(origin: CGPoint(x: tileFrame.minX, y: rest.minY), size: grown)
         let diff = Self.meanDifference(first, second, in: card, screenWidth: app.frame.width)
         note("landscape-3-playing", "card=\(card) diff=\(diff.map { String(format: "%.2f", $0) } ?? "nil") morph=\(probe(app, "debug_trailerMorph"))")
         if let diff {

@@ -126,6 +126,9 @@ struct DeveloperSettingsPane: View {
     @AppStorage(HarvestCrashSentinel.disabledKey) private var harvestDisabledByCrash = false
     /// Player P3: where the seek preview gets its pictures, both engines (`SeekPreviewMode`).
     @AppStorage(SeekPreviewMode.defaultsKey) private var seekPreviewMode = SeekPreviewMode.defaultMode.rawValue
+    /// BUG-168 native half: the native engine's I-frame rendition, off by default
+    /// (`SeekPreviewMode.allowsNativeIFrames(scanEnabled:)`).
+    @AppStorage(SeekPreviewMode.nativeIFrameScanKey) private var nativeIFrameScan = SeekPreviewMode.nativeIFrameScanDefault
     /// Player P4 (P3-F9): how the mpv harvest copies a frame. Unset = off (Video Renderer), the
     /// same default `HarvestScreenshotPath.softwareEnabled` reads (P4-F3).
     @AppStorage(HarvestScreenshotPath.defaultsKey) private var harvestScreenshotSW = HarvestScreenshotPath.defaultSoftware
@@ -271,6 +274,15 @@ struct DeveloperSettingsPane: View {
             options: SeekPreviewMode.allCases.map(\.rawValue),
             descriptionID: .devSeekPreviewMode,
             label: { raw in SeekPreviewMode.parse(raw).displayName }
+        )
+
+        // BUG-168 (Steven, rc5 verdict 2026-10-17: "a transparent box" on the native player): Off
+        // by default, so AVKit shows the time only while scrubbing; On brings back the FF/RW scan
+        // pictures, with the empty scrub box tvOS 27 draws alongside them.
+        SettingsToggleRow(
+            title: String(localized: "Native I-frame Scan (A/B)"),
+            isOn: $nativeIFrameScan,
+            descriptionID: .devNativeIFrameScan
         )
 
         SettingsToggleRow(

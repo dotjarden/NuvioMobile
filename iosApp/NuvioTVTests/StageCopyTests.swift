@@ -152,6 +152,57 @@ final class StageCopyTests: XCTestCase {
         XCTAssertFalse(StageCopy.isFolderPreview(preview()))
     }
 
+    // MARK: BUG-173 (the collection title once on Home)
+
+    private func folderPreview(collectionTitle: String = "Services de Streaming") -> MetaPreview {
+        preview(id: "nuvio-folder://col/f1", type: "nuvio.folder", name: "Netflix",
+                description: nil, releaseInfo: collectionTitle, genres: [])
+    }
+
+    func testFolderUnderItsOwnHeadingDropsTheMetaLine() {
+        let copy = StageCopy.make(item: folderPreview(), progress: nil, rowHeading: "Services de Streaming")
+        XCTAssertEqual(copy, StageCopy(meta: "", synopsis: ""))
+    }
+
+    func testHeadingMatchIgnoresCaseDiacriticsAndSpaces() {
+        let copy = StageCopy.make(item: folderPreview(collectionTitle: "Séries Animées"),
+                                  progress: nil, rowHeading: "  series animees ")
+        XCTAssertEqual(copy.meta, "")
+    }
+
+    func testFolderUnderADifferentHeadingKeepsTheMetaLine() {
+        let copy = StageCopy.make(item: folderPreview(), progress: nil, rowHeading: "Popular")
+        XCTAssertEqual(copy.meta, "Services de Streaming")
+    }
+
+    func testFolderWithNoHeadingKeepsTheMetaLine() {
+        // The folder Rows page intro and Discover pass no heading (their rows are catalogs).
+        XCTAssertEqual(StageCopy.make(item: folderPreview(), progress: nil).meta, "Services de Streaming")
+    }
+
+    func testATitleWhoseReleaseTextEqualsTheHeadingIsUntouched() {
+        let title = preview(releaseInfo: "2024", genres: [])
+        XCTAssertEqual(StageCopy.make(item: title, progress: nil, rowHeading: "2024").meta, "2024")
+    }
+
+    func testFolderKeepsItsSynopsisWhenTheMetaLineDrops() {
+        let folder = preview(id: "nuvio-folder://col/f1", type: "nuvio.folder", name: "Netflix",
+                             description: "Aventure · 8 sources", releaseInfo: "Services", genres: [])
+        XCTAssertEqual(StageCopy.make(item: folder, progress: nil, rowHeading: "Services"),
+                       StageCopy(meta: "", synopsis: "Aventure · 8 sources"))
+    }
+
+    func testCopySourceRemembersTheReportedHeading() {
+        let source = StageCopySource()
+        let folder = folderPreview()
+        XCTAssertNil(source.rowHeading(for: folder))
+        source.noteRowHeading(nil, for: folder)
+        XCTAssertNil(source.rowHeading(for: folder))
+        source.noteRowHeading("Services de Streaming", for: folder)
+        XCTAssertEqual(source.rowHeading(for: folder), "Services de Streaming")
+        XCTAssertNil(source.rowHeading(for: preview()))
+    }
+
     // MARK: Time left
 
     func testRemainingLabelBoundaries() {
