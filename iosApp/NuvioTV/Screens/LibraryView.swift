@@ -388,6 +388,8 @@ struct LibraryView: View {
                 ProgressView()
             }
         }
+        // Full-width section, same as `sourceChips`: Down from "Debrid Cloud" reaches Refresh.
+        .focusRow(alignment: .leading)
 
         ForEach(cloud.providers, id: \.providerId) { provider in
             CloudProviderSection(

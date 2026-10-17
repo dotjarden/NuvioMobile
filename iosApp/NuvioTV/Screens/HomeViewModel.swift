@@ -498,8 +498,10 @@ final class HomeViewModel: ObservableObject {
         // the hero and the rows under it always paint together, exactly once, per head.
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeUiState else { return }
-            self.isLoading = state.isLoading
-            self.errorMessage = state.errorMessage
+            // Assigned only on change: `@Published` fires on equal writes too, and every Home
+            // emission would otherwise invalidate HomeView's whole body and its visible rows.
+            if self.isLoading != state.isLoading { self.isLoading = state.isLoading }
+            if self.errorMessage != state.errorMessage { self.errorMessage = state.errorMessage }
 
             // Codex r1 (P2): the carousel TAIL moved while the painted head survived. Kotlin
             // added or removed a non-head hero entry (an addon's hero-source catalog finishing,
@@ -939,9 +941,13 @@ final class HomeViewModel: ObservableObject {
     /// watcher that can change what the row contains: the progress entries themselves, the active
     /// progress source, and the Trakt continue-watching days cap.
     private func refreshContinueWatching() {
-        continueWatching = WatchProgressRepository.shared.continueWatchingRow(
+        // Kotlin data classes bridge `equals` as `isEqual`, so `!=` is a structural compare. The
+        // progress flow emits on every playback save while Home sits under the player; an
+        // unchanged row must not republish.
+        let next = WatchProgressRepository.shared.continueWatchingRow(
             limit: ContinueWatchingRowKt.ContinueWatchingRowScanLimit
         )
+        if next != continueWatching { continueWatching = next }
         refreshShuffleParentIds()
     }
 
@@ -1023,7 +1029,7 @@ final class HomeViewModel: ObservableObject {
             let gen = pipelineGeneration
             upcomingWatcher = FlowWatcherKt.watch(UpcomingEpisodesRepository.shared.uiState) { [weak self] emitted in
                 guard let self, self.pipelineGeneration == gen, let state = emitted as? UpcomingEpisodesUiState else { return }
-                self.upcoming = state.items
+                if self.upcoming != state.items { self.upcoming = state.items }
             }
             UpcomingEpisodesRepository.shared.ensureStarted()
         } else {

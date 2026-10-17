@@ -350,6 +350,7 @@ struct ProfileEditView: View {
                         .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 700)
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                        .focusRow()
 
                     // Cloud avatar catalog (hidden when empty — guest mode / offline).
                     if !model.avatars.isEmpty {
@@ -399,6 +400,7 @@ struct ProfileEditView: View {
                             .padding(.horizontal, Theme.Spacing.lg)
                             .padding(.vertical, Theme.Spacing.md)
                         }
+                        .focusRow()
                     }
 
                     // Color palette (used when no catalog avatar is selected).
@@ -420,8 +422,10 @@ struct ProfileEditView: View {
                                     .modifier(FocusRingCircle())
                             }
                             .buttonStyle(.borderless)
+                            .accessibilityIdentifier("profileEdit.swatch.\(hex)")
                         }
                     }
+                    .focusRow()
 
                     // PIN lock — existing profiles on cloud accounts only (RPCs need a session).
                     if let profile = liveProfile, model.isCloudAccount {
@@ -453,6 +457,7 @@ struct ProfileEditView: View {
                                 .buttonStyle(.chip)
                             }
                         }
+                        .focusRow()
                     }
 
                     Button { save() } label: {
@@ -465,6 +470,8 @@ struct ProfileEditView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.Palette.accent)
                     .disabled(model.isBusy)
+                    .accessibilityIdentifier("profileEdit.save")
+                    .focusRow()
 
                     if let profile = target.profile, model.profiles.count > 1 {
                         Button(role: .destructive) {
@@ -475,6 +482,7 @@ struct ProfileEditView: View {
                                 .foregroundStyle(.red)
                         }
                         .buttonStyle(.chip)
+                        .focusRow()
                     }
                 }
                 .padding(Theme.Spacing.screen)

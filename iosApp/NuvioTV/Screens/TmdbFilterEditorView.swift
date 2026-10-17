@@ -511,7 +511,8 @@ struct TmdbFilterEditorView: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
         }
-        .focusSection()
+        // Full-width: Down from a chip right of the buttons still lands on Save / Cancel / Clear.
+        .focusRow(alignment: .leading)
     }
 }
 
@@ -576,6 +577,9 @@ private struct FilterTextRow: View {
                 .foregroundStyle(invalid ? Color.red : Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
         }
+        // The field is capped at 1100 pt but the chip rows run to the full content width; a
+        // full-width section keeps the field reachable from a chip further right.
+        .focusRow(alignment: .leading)
         .onChange(of: text) { _, _ in commit() }
         // External change (quick chip toggle / Clear All Filters) → re-seed the local text.
         .onChange(of: value) { _, newValue in
@@ -616,6 +620,7 @@ private struct FilterChipRow: View {
                 }
                 .padding(.vertical, Theme.Spacing.xs)
             }
+            .focusSection()
         }
     }
 }

@@ -80,11 +80,11 @@ struct PlayerSubtitlesTab: View {
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus")
             delayButton(String(localized: "+1 s")) { applyDelay(delayMs + 1000) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus1")
-            if delayMs != 0 {
-                Button(String(localized: "Reset")) { applyDelay(0) }
-                    .font(Theme.Font.meta)
-                    .accessibilityIdentifier("player.panel.subtitleDelay.reset")
-            }
+            // Always mounted: removing Reset when it reached 0 took the focused control away and
+            // the engine dropped focus somewhere else in the panel. At 0 it is a no-op.
+            Button(String(localized: "Reset")) { if delayMs != 0 { applyDelay(0) } }
+                .font(Theme.Font.meta)
+                .accessibilityIdentifier("player.panel.subtitleDelay.reset")
         }
     }
 

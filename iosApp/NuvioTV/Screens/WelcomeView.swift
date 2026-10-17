@@ -90,6 +90,7 @@ struct WelcomeView: View {
                         .buttonStyle(.glassProminent)
                         .tint(Theme.Palette.accent)
                         .prefersDefaultFocus(true, in: focusNamespace)
+                        .focusRow()
                     } else {
                         // Self-hosted server without `tv_login`: email sign-in is the only
                         // account path, so it takes the primary slot and default focus.
@@ -113,6 +114,7 @@ struct WelcomeView: View {
                         .buttonStyle(.glassProminent)
                         .tint(Theme.Palette.accent)
                         .prefersDefaultFocus(true, in: focusNamespace)
+                        .focusRow()
                     }
 
                     VStack(spacing: Theme.Spacing.md) {
@@ -180,6 +182,9 @@ struct WelcomeView: View {
                                 .buttonStyle(.glass)
                             }
                         }
+                        // The pill row is far wider than the 640 pt primary button: as full-width
+                        // sections, Up from an outer pill reaches the primary action.
+                        .focusRow()
                     }
                 }
                 .focusScope(focusNamespace)

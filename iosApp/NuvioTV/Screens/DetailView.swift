@@ -421,7 +421,9 @@ struct DetailView: View {
     /// stops firing once fully saturated. BUG-41: lives in `ScrollDimModel` (a tiny
     /// `ObservableObject`), not a plain `@State` on `DetailView` — see that type's doc comment for
     /// why the indirection matters for scroll smoothness.
-    @StateObject private var dimModel = ScrollDimModel()
+    // `@State`, not `@StateObject`: holding the model must not subscribe DetailView's whole body to
+    // every dim step and scroll latch flip. Only `ScrollDimOverlay` and `DetailTopScrim` observe it.
+    @State private var dimModel = ScrollDimModel()
 
     /// BUG-41: hysteresis latch on `dimModel.value` — true once it reaches 0.80, false again once
     /// it drops below 0.55 (scrolling back up). Gates the hero-trailer `AVPlayerLayer` mount at
@@ -2504,7 +2506,8 @@ struct DetailView: View {
                     }
                 }
             }
-            .focusSection()
+            // Full-width: a section that hugs its chips was skipped by Up/Down from the right side.
+            .focusRow(alignment: .leading)
         }
     }
 
@@ -2630,7 +2633,9 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             .frame(maxWidth: 1100, alignment: .leading)
-            .focusSection()
+            // Section full-width (content still capped at 1100): comments are the last row, and
+            // Down from a card right of 1100 pt found nothing.
+            .focusRow(alignment: .leading)
         }
     }
 

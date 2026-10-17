@@ -726,11 +726,9 @@ struct StreamPickerView: View {
         VStack(spacing: Theme.Spacing.xxs) {
             let logo: String? = stream.addonLogo
             if let logo, !logo.isEmpty, let url = URL(string: logo) {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    Color.clear
-                }
+                // Cached + downsampled: the same logo repeats on every row of a group, and the
+                // uncached `AsyncImage` refetched and re-decoded it as each row was realized.
+                CachedAsyncImage(url: url, contentMode: .fit, decodeSize: .points(width: 44, height: 44))
                 .frame(width: 44, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }

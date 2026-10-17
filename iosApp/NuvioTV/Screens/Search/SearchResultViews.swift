@@ -99,6 +99,9 @@ struct SearchTopResultCard: View {
                 if isFocused { onFocus(item) }
             }
         }
+        // Full-width section: the card is leading-aligned and ~1000 pt wide, so a chip or row
+        // card further right had nothing under/above it and skipped the top result.
+        .focusRow(alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("search.topResult")
     }
@@ -220,7 +223,7 @@ struct SearchEmptyStateView: View {
                 .accessibilityIdentifier(actionID)
             }
         }
-        .focusSection()
+        .focusRow(alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("search.emptyState")
     }
@@ -253,7 +256,7 @@ struct DiscoverEntryRow: View {
                 DiscoverEntryTile(title: String(localized: "Series"), systemImage: "tv", type: "series")
             }
             .padding(.vertical, Theme.Spacing.xs)
-            .focusSection()
+            .focusRow(alignment: .leading)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("search.discoverEntry")

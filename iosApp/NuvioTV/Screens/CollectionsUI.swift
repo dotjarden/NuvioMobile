@@ -1716,6 +1716,9 @@ struct FolderDetailView: View {
         }
         // F: a focused chip's lift and shadow are not clipped, and the edge fade can reach the bezel.
         .scrollClipDisabled()
+        // One Up/Down target: from the Edit Filters button or the grid, focus enters the chips on
+        // the nearest one instead of skipping the row when no chip sits straight above/below.
+        .focusSection()
     }
 
     /// On-device TMDB Discover filter editing for the selected tmdb tab (upstream 0fc4616b's
@@ -1740,6 +1743,9 @@ struct FolderDetailView: View {
                 .disabled(gridScrolled)
                 .accessibilityIdentifier("folder.editFilters")
             }
+            // Full-width (the Spacer) focus section, as `FolderEditMenuBand` does in Stage: Up from
+            // a chip or card anywhere along the page reaches the corner button.
+            .focusSection()
             .padding(.top, FolderHeaderGeometry.restTop)
             .padding(.trailing, Theme.Spacing.screen)
             .opacity(gridScrolled ? 0 : 1)

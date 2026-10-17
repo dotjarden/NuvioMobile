@@ -1769,13 +1769,17 @@ final class MPVTVPlayerViewController: UIViewController {
         // synchronous reads stall for seconds while the core fills its cache early in playback).
         let snap = cachedProps()
 
-        state.durationSec = snap.duration
-        state.positionSec = max(snap.position, 0)
+        // Equality-gated: `@Published` fires on equal writes, and this runs every tick, so a
+        // paused player would otherwise re-render the overlay and transport bar twice a second.
+        let position = max(snap.position, 0)
+        if state.durationSec != snap.duration { state.durationSec = snap.duration }
+        if state.positionSec != position { state.positionSec = position }
         // Paused → playing without input (the pause-card-off rule left no hide timer armed):
         // re-arm the hide so the bar does not stay up until the next press.
         if state.isPaused && !snap.paused && state.controlsVisible { scheduleHide() }
-        state.isPaused = snap.paused
-        state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        if state.isPaused != snap.paused { state.isPaused = snap.paused }
+        let buffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        if state.isBuffering != buffering { state.isBuffering = buffering }
         samplePlayClock(snap)
         if !startupStages.started {
             // B24: a percentage only while mpv is really waiting on its cache; the position
@@ -1803,8 +1807,8 @@ final class MPVTVPlayerViewController: UIViewController {
         }
 
         // Transport bar mirror + preview model inputs (P1).
-        transport.durationSec = snap.duration
-        state.transport.durationSec = snap.duration
+        if transport.durationSec != snap.duration { transport.durationSec = snap.duration }
+        if state.transport.durationSec != snap.duration { state.transport.durationSec = snap.duration }
         // The published chapter list is re-derived from the untrimmed one whenever the duration
         // moves: end markers drop once the duration is known (review r1 P2 #2), and come back if a
         // growing duration passes them (review r2 P3 #5).
@@ -1815,9 +1819,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 state.transport.chapters = next
             }
         }
-        state.transport.positionSec = max(snap.position, 0)
-        state.transport.isPaused = snap.paused
-        state.transport.playbackSpeed = state.playbackSpeed
+        if state.transport.positionSec != position { state.transport.positionSec = position }
+        if state.transport.isPaused != snap.paused { state.transport.isPaused = snap.paused }
+        if state.transport.playbackSpeed != state.playbackSpeed { state.transport.playbackSpeed = state.playbackSpeed }
         if case .scanning = transport.mode {
             if snap.eof { apply(transport.endScanInPlace()) }
             else {

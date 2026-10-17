@@ -79,9 +79,8 @@ struct MPVPlaybackTab: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
                 .frame(width: 150)
             Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
-            if value != 0 {
-                Button(String(localized: "Reset")) { apply(0) }.font(Theme.Font.meta)
-            }
+            // Always mounted (see PlayerSubtitlesTab): a Reset that vanished on press dropped focus.
+            Button(String(localized: "Reset")) { if value != 0 { apply(0) } }.font(Theme.Font.meta)
         }
     }
 }
