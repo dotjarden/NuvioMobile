@@ -343,6 +343,11 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
 
         private func noteFocusUpdate(_ note: Notification) {
             focusGeneration &+= 1
+            // Folder-return Up-skip (review r3): whether focus now sits on Home's rows container
+            // itself (see `RowsContainerFocus`). Not probe-gated: the redirect reads it.
+            let next = (note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext)?
+                .nextFocusedView
+            RowsContainerFocus.isFocused = next.map { RowsContainerFocus.isOversizedContainer($0) } ?? false
             if HomeGeometryProbe.enabled {
                 // Part 1 step 6 (investigate, don't ship): his 30–260 ms rung-1 landings prove row
                 // 1 was MOUNTED when the fallback fired, so the `LazyVStack`'s culling is NOT what
@@ -424,5 +429,25 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
             guard let window, let system = UIFocusSystem.focusSystem(for: window) else { return nil }
             return system.focusedItem.map { ObjectIdentifier($0 as AnyObject) }
         }
+    }
+}
+
+/// Folder-return Up-skip (device pass 2026-10-17, review r3): the rows `ScrollView` carries
+/// `.onMoveCommand`, which makes it a focusable container on tvOS. An Up that finds no row above
+/// (Continue Watching or Upcoming culled under the pinned hero) can land focus on that container:
+/// `[Focus] next=PlatformGroupContainer frame={{0, -408.5}, {1840, 5127}}`. Nothing a viewer can
+/// see is focused then. Recognised by size: a focused view taller than one and a half windows is
+/// that container (a card is ~600 pt, a whole row ~430 pt tall). Updated on every focus update by
+/// `HomeUpSwipeCatcher.CatcherView`; read by `HomeView.redirectIfUpStrandedFocus`, the redirect's
+/// rungs and its give-up, so none of them act while focus is on the tab bar, the rail, a hold menu
+/// or anything else no row reports.
+@MainActor
+enum RowsContainerFocus {
+    static var isFocused = false
+
+    static func isOversizedContainer(_ view: UIView) -> Bool {
+        guard let window = view.window else { return false }
+        let frame = view.convert(view.bounds, to: window)
+        return frame.height > window.bounds.height * 1.5 && frame.width > window.bounds.width * 0.6
     }
 }

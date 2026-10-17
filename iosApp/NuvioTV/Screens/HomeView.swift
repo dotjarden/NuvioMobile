@@ -2147,9 +2147,12 @@ struct HomeView: View {
         upInput.revealGeneration &+= 1
         heroUpGeneration &+= 1
         logUpFallback("row=\(origin) prev=\(target.key) action=redirect reason=upIntoHero anchor=\(target.anchor) sinceUp=\(sinceUpMs) src=\(source)")
-        // The hero, or nothing Home tracks (the rows container itself, see `redirectIfUpStrandedFocus`).
+        // The hero, or the rows container itself (`RowsContainerFocus`, review r3: never "no row
+        // owns focus", which is also the tab bar, the rail or a hold menu).
         func stillRedirecting() -> Bool {
-            generation == upFallbackGeneration && (heroFocused || focusedRowKey == nil)
+            generation == upFallbackGeneration
+                && (heroFocused || (focusedRowKey == nil && RowsContainerFocus.isFocused))
+                && !navigationChrome.isFocusedChrome
                 && !PinnedRowSettle.hostCovered && !tabBarVisibility.homeSurfaceCovered && resume == nil
         }
         // Device pass 2026-10-17: on the Apple TV a write issued while the target row is still
@@ -2188,7 +2191,7 @@ struct HomeView: View {
             endUpFallback(reason: "giveup", log: false)
             // Focus stranded on the rows container (no row, no hero): never leave it invisible.
             // The CTA is always mounted, and the rows already sit at the top.
-            if focusedRowKey == nil, !heroFocused, homePath.isEmpty, resume == nil,
+            if focusedRowKey == nil, !heroFocused, RowsContainerFocus.isFocused, homePath.isEmpty, resume == nil,
                !tabBarVisibility.homeSurfaceCovered, !navigationChrome.isFocusedChrome {
                 logUpFallback("row=\(origin) prev=hero action=hero reason=stranded src=redirect-\(source)")
                 upInput.noteProgrammaticHeroFocus()
@@ -2205,19 +2208,20 @@ struct HomeView: View {
     /// focused, no row and not the hero owns focus, and the next Up does nothing. Runs on every Up
     /// press and swipe (the window-level catcher), right after the input stamp, and once more 0.25 s
     /// later (the release can be reported after the press). Redirects only when: Home is uncovered
-    /// and Classic pinned, the rail does not hold focus, neither a row nor the hero owns focus, a row
+    /// and Classic pinned, the rail does not hold focus, focus is on the rows container
+    /// (`RowsContainerFocus`) with neither a row nor the hero owning it, a row
     /// released focus inside `upIntoHeroWindow`, and that row has a row above it.
     private func redirectIfUpStrandedFocus(pinned: Bool, proxy: ScrollViewProxy, source: String, deferred: Bool = false) {
         guard pinned, heroHeaderVisible, !isStageLayout, homePath.isEmpty, resume == nil,
               !PinnedRowSettle.hostCovered, !tabBarVisibility.homeSurfaceCovered,
               !navigationChrome.isFocusedChrome else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        let stranded = !heroFocused && focusedRowKey == nil
+        let stranded = !heroFocused && focusedRowKey == nil && RowsContainerFocus.isFocused
         let releasedNow = upInput.lastRowReleasedAt.map { now - $0 < Self.upIntoHeroWindow } ?? false
         guard stranded, releasedNow,
               let origin = upInput.lastOwnedRowKey,
               let target = previousRowTarget(for: origin) else {
-            if !deferred, !heroFocused, focusedRowKey == nil {
+            if !deferred, !heroFocused, focusedRowKey == nil, RowsContainerFocus.isFocused {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     redirectIfUpStrandedFocus(pinned: pinned, proxy: proxy, source: source, deferred: true)
                 }
@@ -2225,6 +2229,8 @@ struct HomeView: View {
             return
         }
         if activeUpFallbackTarget == target.key, activeUpFallbackSource.hasPrefix("redirect") { return }
+        // Review r3 (P3-2): a BUG-112 ladder in flight owns the attempt.
+        if activeUpFallbackTarget != nil, !activeUpFallbackSource.hasPrefix("redirect") { return }
         let sinceUp = Int(((now - upInput.lastUpInputAt) * 1000).rounded())
         logUpFallback("row=\(origin) prev=\(target.key) action=stranded src=\(source)\(deferred ? "-deferred" : "")")
         redirectUpIntoHero(from: origin, to: target, proxy: proxy, source: "stranded-\(source)", sinceUpMs: sinceUp)

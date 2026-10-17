@@ -129,6 +129,7 @@ enum HomeGeometryProbe {
         guard enabled, focusObserver == nil else { return }
         focusObserver = NotificationCenter.default.addObserver(
             forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
             let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
             let view = context?.nextFocusedView
             let frame = view.flatMap { v in v.window.map { v.convert(v.bounds, to: $0) } } ?? .zero
@@ -136,6 +137,7 @@ enum HomeGeometryProbe {
             NSLog("[Focus] next=%@ frame=%@ label=%@ heading=%d",
                   view.map { String(describing: type(of: $0)) } ?? "nil",
                   NSCoder.string(for: frame), label, Int(context?.focusHeading.rawValue ?? 0))
+            }
         }
     }
     @MainActor private static var focusObserver: NSObjectProtocol?
