@@ -5457,8 +5457,9 @@ struct CatalogRowView: View {
                 // The footnote is drawn by the card itself, hanging under its caption so it
                 // follows the caption's focus drop (device pass 2026-10-06: a line laid out here
                 // collided with the dropped caption on the focused card).
-                // FEAT-64: the watched tick, read per card inside `WatchedBadgeReader`'s leaf so a
-                // mark re-renders that card and not this row.
+                // FEAT-64: the watched tick, read inside `WatchedBadgeReader`'s leaf so the row
+                // itself never observes the index. A mark republishes one deduped snapshot, which
+                // re-renders every visible card leaf once (acceptable at mark frequency).
                 WatchedBadgeReader(item: item) { badge in
                     InlineTrailerCard(item: item,
                                       enabled: inlineTrailersActive,
@@ -5535,7 +5536,10 @@ struct CatalogRowView: View {
             if trailingFadeHeldFor == itemId { trailingFadeHeldFor = nil }
             return
         }
-        guard !posterStyle.landscapeCatalogRows,
+        // D16 (rc5 verdict, review r1 P1): a shape-landscape card now GROWS (416×234 → 624×351 at
+        // Medium+), so it needs the morph scroll like a portrait card. Only the global Landscape
+        // Posters toggle (`landscapeRowGeometry`, 360 → 360, `plan` returns nil) is skipped.
+        guard !posterStyle.landscapeRowGeometry,
               let index = section.items.firstIndex(where: { $0.id == itemId }) else { return }
         hScroll.wideItemId = itemId
         // H3: supersede any still-pending pass from a previous expansion rather than letting both

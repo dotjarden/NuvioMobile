@@ -98,8 +98,10 @@ final class WatchedBadgeIndex {
     /// Subscribes to the repository's two flows. Idempotent; the root calls it once the profile is
     /// entered.
     func start() {
-        guard watchers.isEmpty else { return }
+        // Review r1 P3: every main-shell appearance re-arms the repository (idempotent), so a
+        // sign-out → sign-in in the same process gets the provider's alternate keys back.
         WatchedRepository.shared.ensureLoaded()
+        guard watchers.isEmpty else { return }
         watchers.append(FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? WatchedUiState else { return }
             self.receive(watchedKeys: state.watchedKeys, fullyWatchedSeriesKeys: nil)
