@@ -416,16 +416,18 @@ final class BatchAHomeReturnUITests: XCTestCase {
     /// no show, so there is no Upcoming row). The regression sent it into the hero CTA with the rows
     /// left scrolled down. Oracle: `debug_homeReturn own=` after the Up.
     ///
-    /// Only the in-scroll (classic hero) container runs here. With the Nuvio-style pinned hero, the
-    /// simulator's focus engine takes the hero CTA on this Up on the BASE build as well (3/3 on
-    /// `a802e41f8`, 2026-10-17), while the Apple TV reaches the row above on the base and not on the
-    /// regressed split. That case is device-only: walk it on the TV.
+    /// `_Pinned` (Nuvio-style hero) is the folder-return Up-skip leg (2026-10-17). It failed 3/3 on
+    /// the base before the fix: Continue Watching could not take focus after the pop, the BUG-112
+    /// ladder's writes to it were dropped and its last rung handed focus to the hero CTA. Fixed by
+    /// `HomeView.remountTopRowsAfterPop`.
     private func runClassicFolderPopThenUp(nuvioStyle: Bool) throws {
         let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
         defer { clearSeed() }
         let arguments = Self.arguments(layout: "classic")
             + ["-debug.collectionsSeedJsonB64", seed, "-folder_layout_default", "grid",
-               "-hero_nuvio_style", nuvioStyle ? "YES" : "NO"]
+               "-hero_nuvio_style", nuvioStyle ? "YES" : "NO",
+               // `[HomeScrollProbe] upFallback` / `[HomeReturn]` lines in the console for a failure.
+               "-debug.homeScrollProbe", "YES"]
         let app = launch(arguments)
         guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
             throw HarnessAbort("debug_homeReturn never appeared (DEBUG build? -home_layout classic honoured?)")
@@ -466,7 +468,58 @@ final class BatchAHomeReturnUITests: XCTestCase {
         XCTAssertEqual(Self.token(hero, "foc"), "0", "the hero CTA must not take focus: \(hero)")
     }
 
+    /// Folder-return Up-skip (2026-10-17): the same class from a Detail push lower down. Down to the
+    /// third row under Continue Watching, Select (Detail), Menu back, then Up once per row: every Up
+    /// must reach the row above it, and the last must reach Continue Watching, never the hero CTA.
+    /// Rows kept alive offscreen through a push and pop came back unable to take focus.
+    func testBatchC_ClassicDetailPopThenUpWalk_Pinned() throws {
+        let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
+        defer { clearSeed() }
+        let arguments = Self.arguments(layout: "classic")
+            + ["-debug.collectionsSeedJsonB64", seed, "-folder_layout_default", "grid",
+               "-hero_nuvio_style", "YES", "-debug.homeScrollProbe", "YES"]
+        let app = launch(arguments)
+        guard poll(30, step: 0.5, { !label(app, "debug_homeReturn").isEmpty }) else {
+            throw HarnessAbort("debug_homeReturn never appeared (DEBUG build? -home_layout classic honoured?)")
+        }
+        var owned: [String] = []
+        for _ in 0..<4 {
+            remote.press(.down)
+            pause(1.8)
+            let own = Self.token(label(app, "debug_homeReturn"), "own") ?? "-"
+            if own != "-", owned.last != own { owned.append(own) }
+        }
+        note("detail_walk_rows", "\(owned)")
+        guard owned.count >= 3, owned.first == "continue-watching", let origin = owned.last else {
+            throw XCTSkip("the fixture did not give three rows under Continue Watching: \(owned)")
+        }
+        remote.press(.select)
+        guard poll(20, step: 0.5, { self.detailPageUp(app) }) else {
+            throw HarnessAbort("Select on a catalog card did not open its Detail page")
+        }
+        pause(2.0)
+        remote.press(.menu)
+        let restored = poll(5.0) { Self.token(label(app, "debug_homeReturn"), "own") == origin }
+        pause(2.0)
+        note("detail_walk_after_pop", label(app, "debug_homeReturn"))
+        XCTAssertTrue(restored, "the pop must restore focus to \(origin): \(label(app, "debug_homeReturn"))")
+        for expected in owned.dropLast().reversed() {
+            remote.press(.up)
+            pause(2.5)
+            let afterUp = label(app, "debug_homeReturn")
+            let hero = label(app, "debug_hero")
+            note("detail_walk_up_to_\(expected)", "\(afterUp) | \(hero) | upfallback=\(label(app, "debug_upfallback"))")
+            XCTAssertEqual(Self.token(afterUp, "own"), expected,
+                           "Up must reach \(expected), not the hero: \(afterUp) | \(hero)")
+            if Self.token(afterUp, "own") != expected { shot("detail_walk_miss_\(expected)"); break }
+        }
+    }
+
     func testBatchC_ClassicFolderPopThenUp_InScroll() throws {
         try runClassicFolderPopThenUp(nuvioStyle: false)
+    }
+
+    func testBatchC_ClassicFolderPopThenUp_Pinned() throws {
+        try runClassicFolderPopThenUp(nuvioStyle: true)
     }
 }

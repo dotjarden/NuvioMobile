@@ -6,9 +6,10 @@ final class HomeUpIntoHeroGateTests: XCTestCase {
     private let window: TimeInterval = 0.8
 
     private func eval(now: TimeInterval = 100, up: TimeInterval = 99.9, released: TimeInterval? = nil,
-                      key: String? = "row", past: Bool = true) -> HomeUpIntoHeroGate.Verdict {
+                      key: String? = "row", past: Bool = true, above: Bool = false) -> HomeUpIntoHeroGate.Verdict {
         HomeUpIntoHeroGate.evaluate(now: now, lastUpInputAt: up, lastRowReleasedAt: released,
-                                    focusedRowKey: key, rowsScrolledPastTop: past, window: window)
+                                    focusedRowKey: key, rowsScrolledPastTop: past,
+                                    originHasRowAbove: above, window: window)
     }
 
     func testStampInsideWindowReveals() {
@@ -43,5 +44,21 @@ final class HomeUpIntoHeroGateTests: XCTestCase {
 
     func testNotPastTopDeclinesFirst() {
         XCTAssertEqual(eval(up: 50, released: nil, key: nil, past: false), .declined(reason: "notPastTop"))
+    }
+
+    /// 2026-10-17 (folder-return Up-skip): an origin with a row above waives the past-top check
+    /// (the engine scrolls to the CTA before the gate runs), but still needs the Up input and the
+    /// row origin.
+    func testRowAboveWaivesNotPastTop() {
+        XCTAssertEqual(eval(released: 99.9, key: nil, past: false, above: true), .reveal)
+    }
+
+    func testRowAboveStillNeedsFreshInput() {
+        XCTAssertEqual(eval(up: 98.0, past: false, above: true), .declined(reason: "staleInput sinceUp=2000"))
+    }
+
+    func testRowAboveStillNeedsRowOrigin() {
+        XCTAssertEqual(eval(released: nil, key: nil, past: false, above: true),
+                       .declined(reason: "noRowOrigin sinceRelease=none"))
     }
 }

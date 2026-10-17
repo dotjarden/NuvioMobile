@@ -16,13 +16,19 @@ enum HomeUpIntoHeroGate {
     /// `window`). `lastUpInputAt == -1` means never.
     /// review r1 (P3-3): `alreadyRevealing` (a reveal within the last 0.5 s) is declined by
     /// `HomeView.revealTopAfterUpIntoHero` itself via `HomeRowInputBox.lastRevealAt`, after this gate.
+    ///
+    /// 2026-10-17 (folder-return Up-skip): `originHasRowAbove` waives the past-top check. A row with
+    /// a row above it never legitimately hands an Up to the hero, so that gain is a skip wherever
+    /// the rows sit; and after a folder pop the engine's own scroll toward the CTA brings the rows
+    /// back to the top BEFORE this runs, so the past-top reading said `notPastTop` on every skip.
     nonisolated static func evaluate(now: TimeInterval,
                                      lastUpInputAt: TimeInterval,
                                      lastRowReleasedAt: TimeInterval?,
                                      focusedRowKey: String?,
                                      rowsScrolledPastTop: Bool,
+                                     originHasRowAbove: Bool = false,
                                      window: TimeInterval) -> Verdict {
-        guard rowsScrolledPastTop else { return .declined(reason: "notPastTop") }
+        guard rowsScrolledPastTop || originHasRowAbove else { return .declined(reason: "notPastTop") }
         let sinceUp = now - lastUpInputAt
         guard sinceUp < window else {
             return .declined(reason: "staleInput sinceUp=\(Int((sinceUp * 1000).rounded()))")
