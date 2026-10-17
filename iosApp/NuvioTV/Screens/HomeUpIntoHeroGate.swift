@@ -51,8 +51,8 @@ enum HomeUpIntoHeroGate {
     ///    still owns focus on record (`rowStillOwned`, its release not yet reported) counts as
     ///    releasing at the gain;
     ///  - the Up input sits around the gain: up to `inputLead` before it, or up to `inputLag` after
-    ///    it (on hardware the press reaches the app 30–180 ms after the focus update, a slow swipe
-    ///    at gesture end).
+    ///    it (`window` by default; on hardware the press reaches the app 30–180 ms after the focus
+    ///    update, a slow swipe at gesture end).
     nonisolated static func isEngineSkip(now: TimeInterval,
                                          heroGainedAt: TimeInterval?,
                                          rowReleasedAt: TimeInterval?,
@@ -62,13 +62,15 @@ enum HomeUpIntoHeroGate {
                                          window: TimeInterval,
                                          sameUpdate: TimeInterval = 0.15,
                                          inputLead: TimeInterval = 0.3,
-                                         inputLag: TimeInterval = 0.6) -> Bool {
+                                         inputLag: TimeInterval? = nil) -> Bool {
         guard let gained = heroGainedAt, now - gained < window else { return false }
         if let written = programmaticHeroAt, now - written < window { return false }
         guard let released = rowStillOwned ? gained : rowReleasedAt,
               abs(gained - released) < sameUpdate else { return false }
         guard lastUpInputAt >= 0 else { return false }
         let offset = lastUpInputAt - gained
-        return offset > -inputLead && offset < inputLag
+        // Review r2 (P3-2): the lag defaults to the whole window, so a slow swipe recognised at
+        // gesture end still counts.
+        return offset > -inputLead && offset < (inputLag ?? window)
     }
 }

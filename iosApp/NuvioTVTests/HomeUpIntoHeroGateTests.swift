@@ -84,8 +84,16 @@ final class HomeUpIntoHeroGateTests: XCTestCase {
     /// A hero focused earlier (the release long before) that now receives an Up.
     func testGainLongAfterReleaseIsNotASkip() { XCTAssertFalse(skip(released: 99.5)) }
 
-    /// The engine's late pop landing on the CTA, then an Up 0.7 s later.
-    func testUpWellAfterGainIsNotASkip() { XCTAssertFalse(skip(now: 100.75, up: 100.7)) }
+    /// The engine's late pop landing on the CTA, then an Up 0.85 s later (past the window).
+    func testUpWellAfterGainIsNotASkip() { XCTAssertFalse(skip(now: 100.86, up: 100.85)) }
+
+    /// Review r2 (P3-2) boundaries: a slow swipe stamped 0.7 s after the gain still counts; a
+    /// release 0.2 s away from the gain does not; an input 0.31 s BEFORE the gain does not.
+    func testSlowSwipeAfterGainIsASkip() { XCTAssertTrue(skip(now: 100.75, up: 100.7)) }
+
+    func testReleaseTwoTenthsFromGainIsNotASkip() { XCTAssertFalse(skip(released: 99.8)) }
+
+    func testInputWellBeforeGainIsNotASkip() { XCTAssertFalse(skip(up: 99.69)) }
 
     func testNoUpInputIsNotASkip() { XCTAssertFalse(skip(up: -1)) }
 

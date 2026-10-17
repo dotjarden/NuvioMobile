@@ -1957,6 +1957,7 @@ struct HomeView: View {
             // a row hop never re-renders Home), and never cleared on release, unlike
             // `focusedRowKey`, so it still names the row while the rail holds focus.
             upInput.lastOwnedRowKey = rowKey
+            if rowKey == upInput.popOriginRowKey { upInput.popOriginOwned = true }
             #if DEBUG
             HomeReturnDebug.shared.setOwn(rowKey)
             #endif
@@ -2384,6 +2385,7 @@ struct HomeView: View {
     /// pager, `StageStripHome.syncCover`).
     private func notePushFromHome() {
         upInput.returnGeneration &+= 1
+        upInput.popSerial &+= 1
         guard !isStageLayout else {
             upInput.returnFocus.notePush(focusedRowKey: nil, lastOwnedRowKey: nil,
                                          sinceRowRelease: nil, heroFocused: true)
@@ -2481,8 +2483,13 @@ struct HomeView: View {
     private func remountTopRowsAfterPop() {
         guard !isStageLayout else { return }
         let origin = upInput.returnOrigin?.rowKey
+        // Review r2 (P3-1): a newer push or pop voids both closures below.
+        upInput.popSerial &+= 1
+        let serial = upInput.popSerial
+        upInput.popOriginRowKey = origin
+        upInput.popOriginOwned = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            guard homePath.isEmpty, resume == nil else { return }
+            guard serial == upInput.popSerial, homePath.isEmpty, resume == nil else { return }
             var rebuilt: [String] = []
             if !model.continueWatching.isEmpty,
                focusedRowKey != "continue-watching", origin != "continue-watching" {
@@ -2501,7 +2508,10 @@ struct HomeView: View {
         // give it its fresh identity once the restore is over and it still does not hold focus.
         guard origin == "continue-watching" || origin == "upcoming" else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry + 0.1) {
-            guard homePath.isEmpty, resume == nil, focusedRowKey != origin else { return }
+            // Only when the origin never took focus since this pop (review r2 P3-1): a restore that
+            // landed and a viewer who then moved on must keep the row and its card position.
+            guard serial == upInput.popSerial, homePath.isEmpty, resume == nil,
+                  !upInput.popOriginOwned, focusedRowKey != origin else { return }
             if origin == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
             logHomeReturn("remount rows=\(origin ?? "-") reason=originMissed")
         }
@@ -2532,6 +2542,25 @@ struct HomeView: View {
             retireReturnRestore(reason: "hero sinceUp=\(Int(sinceUp * 1000))")
             return
         }
+        // Folder-return Up-skip (review r2 P2-A): on hardware the Up press reaches the app 30–180 ms
+        // AFTER the focus update it caused, so a gain with no input on record yet may still be the
+        // viewer's Up (the engine skipping to the CTA, which `redirectUpIntoHero` handles). Wait
+        // past that lag before treating it as the engine's late restoration; an Up that arrived
+        // around the gain retires the restore instead.
+        let generation = upInput.returnGeneration
+        let gained = upInput.heroGainedAt ?? ProcessInfo.processInfo.systemUptime
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.heroRegrabDelay) {
+            guard generation == upInput.returnGeneration, upInput.returnPending, heroFocused else { return }
+            if upInput.lastUpInputAt >= 0, upInput.lastUpInputAt > gained - 0.3 {
+                retireReturnRestore(reason: "hero late-up")
+                return
+            }
+            regrabOriginFromHero()
+        }
+    }
+    private static let heroRegrabDelay: TimeInterval = 0.2
+
+    private func regrabOriginFromHero() {
         // The engine fired its default-candidate restoration TWICE on the device (0.59 s and
         // 0.98 s after the pop), so one re-grab was not enough; up to `heroRegrabLimit` inside the
         // restore's life (`HomeReturnFocusMemory.expiry`), each one logged.
@@ -7273,6 +7302,11 @@ final class HomeRowInputBox {
     /// `HomeUpIntoHeroGate.isEngineSkip`.
     var heroGainedAt: TimeInterval?
     var programmaticHeroAt: TimeInterval?
+    /// Folder-return Up-skip (review r2 P3-1): bumped on every push and pop from Home's root so a
+    /// pop's delayed remounts stand down; the pop's origin row and whether it has owned focus since.
+    var popSerial = 0
+    var popOriginRowKey: String?
+    var popOriginOwned = false
 
     func noteHeroGain() { heroGainedAt = ProcessInfo.processInfo.systemUptime }
     func noteProgrammaticHeroFocus() { programmaticHeroAt = ProcessInfo.processInfo.systemUptime }
