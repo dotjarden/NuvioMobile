@@ -33,17 +33,23 @@ final class ProfilesViewModel: ObservableObject {
         ProfileRepository.shared.loadCachedProfiles()
         watcher = FlowWatcherKt.watch(ProfileRepository.shared.state) { [weak self] emitted in
             guard let self, let state = emitted as? ProfileState else { return }
-            self.profiles = state.profiles
-            self.activeProfile = state.activeProfile
-            self.rememberLastProfile = state.rememberLastProfileEnabled
+            // Written only on change: ContentView observes this model at the app root, and the
+            // periodic sync re-emits unchanged state. NuvioProfile is a Kotlin data class
+            // (`isEqual` = structural), so `!=` compares contents.
+            if self.profiles != state.profiles { self.profiles = state.profiles }
+            if self.activeProfile != state.activeProfile { self.activeProfile = state.activeProfile }
+            if self.rememberLastProfile != state.rememberLastProfileEnabled {
+                self.rememberLastProfile = state.rememberLastProfileEnabled
+            }
         }
         avatarsWatcher = FlowWatcherKt.watch(AvatarRepository.shared.avatars) { [weak self] emitted in
             guard let self, let items = emitted as? [AvatarCatalogItem] else { return }
-            self.avatars = items
+            if self.avatars != items { self.avatars = items }
         }
         authWatcher = FlowWatcherKt.watch(AuthRepository.shared.state) { [weak self] emitted in
             guard let self else { return }
-            self.isCloudAccount = (emitted as? AuthStateAuthenticated)?.isAnonymous == false
+            let cloud = (emitted as? AuthStateAuthenticated)?.isAnonymous == false
+            if self.isCloudAccount != cloud { self.isCloudAccount = cloud }
         }
         // Hydrates from cache, then fetches the catalog RPC (no-ops without a cloud session).
         AvatarRepository.shared.fetchAvatars { _ in }

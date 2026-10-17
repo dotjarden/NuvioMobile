@@ -825,7 +825,8 @@ struct DebridKeyEntryRow: View {
                     .font(SettingsRowFont.subtitle)
                     .settingsDescription(descriptionID, title: String(localized: "Save Key"), systemImage: "checkmark")
             }
-            .disabled(key.isEmpty)
+            // Not `.disabled(key.isEmpty)`: saving clears the field, which disabled the focused
+            // button and threw focus elsewhere. The action already ignores an empty key.
             .focused($saveFocused)
         }
         .modifier(SettingsRestPlatter(explicitFocus: fieldFocused || saveFocused))

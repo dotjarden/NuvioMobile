@@ -108,8 +108,9 @@ final class SubtitleDelayProbeTests: XCTestCase {
         XCTAssertTrue(valueLabel.waitForExistence(timeout: 3), "no subtitle delay value label")
         shot("02-timing-row-entered")
 
-        // Normalize to +0.00 s first: if a Reset chip is present (delay != 0 from a prior run),
-        // hunt to it and press it before the scripted +1/+1/reset sequence below.
+        // Normalize to +0.00 s first: Reset is always mounted now (a no-op at 0, so it no longer
+        // drops focus when pressed); hunt to it and press it before the scripted +1/+1/reset
+        // sequence below.
         if app.buttons["player.panel.subtitleDelay.reset"].exists {
             for _ in 0..<5 { remote.press(.right) }   // hunt to the right wall (reset is last)
             pause(1)

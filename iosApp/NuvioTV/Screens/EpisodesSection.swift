@@ -25,6 +25,10 @@ struct EpisodesSection: View {
     /// Left/Right press (a body evaluation) does not re-read the date and re-parse every episode.
     /// A reference held in `@State`: filling it never invalidates the view.
     @State private var airedCountCache = AiredUnwatchedCountCache()
+    /// Grouping, season order and season posters, computed once per `MetaDetails` object. The body
+    /// re-runs on every Left/Right (the `focusedEpisodeId` FocusState lives here), and regrouping
+    /// re-sorted every episode with Kotlin reads in the comparator on each press.
+    @State private var groupingCache = EpisodeGroupingCache()
 
     private func airedUnwatchedCount(season: Int?, episodes: [MetaVideo]) -> Int {
         airedCountCache.count(
@@ -46,8 +50,16 @@ struct EpisodesSection: View {
     }
 
     var body: some View {
-        let grouped = Self.groupedEpisodes(meta.videos)
-        let seasons = grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) }
+        let grouping = groupingCache.resolve(meta) { meta in
+            let grouped = Self.groupedEpisodes(meta.videos)
+            return EpisodeGroupingCache.Grouping(
+                grouped: grouped,
+                seasons: grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) },
+                posterBySeason: Self.seasonPosters(grouped, meta: meta)
+            )
+        }
+        let grouped = grouping.grouped
+        let seasons = grouping.seasons
         let current = selectedSeason ?? seasons.first
         let episodes = current.flatMap { grouped[$0] } ?? []
 
@@ -60,7 +72,7 @@ struct EpisodesSection: View {
                 // posters when any season has one, text chips otherwise; the poster's fallback is
                 // the show poster. No new setting this cycle (mobile's Posters/Text toggle stays
                 // out until someone asks), so no new strings either.
-                let posterBySeason = Self.seasonPosters(grouped, meta: meta)
+                let posterBySeason = grouping.posterBySeason
                 if posterBySeason.values.contains(where: { $0 != nil }) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
@@ -375,7 +387,10 @@ private struct EpisodeThumbCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack(alignment: .bottom) {
-                CachedAsyncImage(string: thumbnailURL)
+                // Decoded at the card's focused size (×1.2 covers the lift), not the 1920 px default.
+                CachedAsyncImage(string: thumbnailURL,
+                                 decodeSize: .points(width: Theme.Size.episodeWidth * 1.2,
+                                                     height: Theme.Size.episodeHeight * 1.2))
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
                     .blur(radius: hidesSpoiler ? EpisodeSpoilerRules.stillBlurRadius : 0, opaque: true)
                     // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
@@ -550,6 +565,28 @@ struct SeasonPosterCard: View {
 
 /// Review r1 #4: see `EpisodesSection.airedCountCache`. Today's date is read once per Detail visit
 /// (the section's lifetime), the count once per key.
+/// See `EpisodesSection.groupingCache`. Holds the `MetaDetails` it was built from (a strong
+/// reference, so identity can't be confused with a freed object's reused address); a new object
+/// (enrichment, a reload) rebuilds. Filling it never invalidates the view.
+final class EpisodeGroupingCache {
+    struct Grouping {
+        let grouped: [Int: [MetaVideo]]
+        let seasons: [Int]
+        let posterBySeason: [Int: String?]
+    }
+
+    private var source: MetaDetails?
+    private var cached: Grouping?
+
+    func resolve(_ meta: MetaDetails, build: (MetaDetails) -> Grouping) -> Grouping {
+        if let cached, source === meta { return cached }
+        let next = build(meta)
+        source = meta
+        cached = next
+        return next
+    }
+}
+
 final class AiredUnwatchedCountCache {
     struct Key: Equatable {
         /// Review r2 #4: the meta's stable id, not `ObjectIdentifier(meta)` — the cache does not

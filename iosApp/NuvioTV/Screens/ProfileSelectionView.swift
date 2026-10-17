@@ -13,7 +13,7 @@ struct ProfileAvatar: View {
     var body: some View {
         ZStack {
             if let url = imageUrl {
-                CachedAsyncImage(string: url)
+                CachedAsyncImage(string: url, decodeSize: .points(width: size * 1.2, height: size * 1.2))
                     .clipShape(Circle())
             } else {
                 Circle().fill(Color(hexString: profile.avatarColorHex) ?? Theme.Palette.accent)
@@ -329,10 +329,11 @@ struct ProfileEditView: View {
                     // Preview
                     ZStack {
                         if let item = selectedCatalogItem {
-                            CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath))
+                            CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath),
+                                             decodeSize: .points(width: 180, height: 180))
                                 .clipShape(Circle())
                         } else if let url = originalCustomAvatarUrl, avatarId == nil {
-                            CachedAsyncImage(string: url)
+                            CachedAsyncImage(string: url, decodeSize: .points(width: 180, height: 180))
                                 .clipShape(Circle())
                         } else {
                             Circle().fill(Color(hexString: colorHex) ?? Theme.Palette.accent)
@@ -378,7 +379,8 @@ struct ProfileEditView: View {
 
                                 ForEach(model.avatars, id: \.id) { item in
                                     Button { avatarId = item.id } label: {
-                                        CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath))
+                                        CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath),
+                                                         decodeSize: .points(width: 120, height: 120))
                                             .frame(width: 100, height: 100)
                                             .clipShape(Circle())
                                             .overlay(
@@ -469,7 +471,8 @@ struct ProfileEditView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.Palette.accent)
-                    .disabled(model.isBusy)
+                    // Not `.disabled(isBusy)`: Save is the only control in its row, so disabling it on
+                    // press left the row nothing to focus and focus jumped. `save()` guards instead.
                     .accessibilityIdentifier("profileEdit.save")
                     .focusRow()
 
@@ -560,6 +563,7 @@ struct ProfileEditView: View {
     // MARK: - Save
 
     private func save() {
+        guard !model.isBusy else { return }
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         let finalName = trimmed.isEmpty ? String(localized: "Profile") : trimmed
 

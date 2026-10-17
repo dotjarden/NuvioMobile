@@ -114,7 +114,7 @@ private struct BadgeUrlEntryRow: View {
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
             Button {
-                if !url.isEmpty {
+                if !url.isEmpty, !isImporting {
                     onImport(url)
                     url = ""
                 }
@@ -130,7 +130,7 @@ private struct BadgeUrlEntryRow: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isImporting)
+            // Not `.disabled(isImporting)`: the pressed button lost focus. Guarded in the action.
         }
     }
 }

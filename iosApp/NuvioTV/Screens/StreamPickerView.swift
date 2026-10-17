@@ -728,7 +728,10 @@ struct StreamPickerView: View {
             if let logo, !logo.isEmpty, let url = URL(string: logo) {
                 // Cached + downsampled: the same logo repeats on every row of a group, and the
                 // uncached `AsyncImage` refetched and re-decoded it as each row was realized.
-                CachedAsyncImage(url: url, contentMode: .fit, decodeSize: .points(width: 44, height: 44))
+                // Clear while loading and on failure, like the old AsyncImage: add-on logos often
+                // 404, and a shimmer or grey film tile on every row of the group is noise.
+                CachedAsyncImage(url: url, contentMode: .fit, decodeSize: .points(width: 44, height: 44),
+                                 loading: { Color.clear }, failure: { Color.clear })
                 .frame(width: 44, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }

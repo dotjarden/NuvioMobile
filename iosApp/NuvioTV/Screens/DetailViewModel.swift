@@ -216,7 +216,7 @@ final class DetailViewModel: ObservableObject {
         }
         libraryWatcher = FlowWatcherKt.watch(LibraryRepository.shared.uiState) { [weak self] _ in
             guard let self else { return }
-            self.refreshFlags()
+            self.refreshFlags(episodes: false)
         }
         progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
@@ -226,18 +226,18 @@ final class DetailViewModel: ObservableObject {
         cwPrefsWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
             if let state = emitted as? ContinueWatchingPreferencesUiState { self.latestCwPrefs = state }
-            self.refreshFlags()
+            self.refreshFlags(episodes: false)
         }
         // C: an addon install/removal/toggle changes what `computeIsPlayEnabled()` sees.
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] _ in
-            self?.refreshFlags()
+            self?.refreshFlags(episodes: false)
         }
         // Episode shuffle: the per-profile settings (global switch + per-show enable/mode).
         EpisodeShuffleRepository.shared.ensureLoaded()
         shuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
             if let profile = emitted as? EpisodeShuffleProfile { self.latestShuffleProfile = profile }
-            self.refreshFlags()
+            self.refreshFlags(episodes: false)
         }
         // rc14 (Steven rc13 verdict, 2026-09-30): episode-ratings visibility setting.
         MetaScreenSettingsRepository.shared.ensureLoaded()
@@ -550,15 +550,26 @@ final class DetailViewModel: ObservableObject {
         LibraryRepository.shared.toggleSaved(item: item)
     }
 
-    private func refreshFlags() {
-        isWatched = WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil)
-        isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
-        watchedEpisodeKeys = computeWatchedEpisodeKeys()
+    /// Recomputes the action-button flags. Every write is equality-gated: seven watchers call
+    /// this, `@Published` fires on equal writes too, and each publish re-renders DetailView and
+    /// EpisodesSection. Kotlin data classes bridge `equals` as `isEqual`, so `!=` is structural.
+    ///
+    /// `episodes: false` skips the per-episode watched scan (two Kotlin lookups per episode, so
+    /// 1,000+ on a long series) for emissions that cannot change it: library, add-ons,
+    /// continue-watching prefs, shuffle settings. Only the detail, watched and progress flows can.
+    private func refreshFlags(episodes: Bool = true) {
+        assign(\.isWatched, WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil))
+        assign(\.isSaved, LibraryRepository.shared.isSaved(id: id, type: type))
+        if episodes { assign(\.watchedEpisodeKeys, computeWatchedEpisodeKeys()) }
         refreshShuffle()
-        seriesAction = computeSeriesAction()
-        isPlayEnabled = computeIsPlayEnabled()
-        let resumable = computeHasResumableProgress()
-        if hasResumableProgress != resumable { hasResumableProgress = resumable }
+        assign(\.seriesAction, computeSeriesAction())
+        assign(\.isPlayEnabled, computeIsPlayEnabled())
+        assign(\.hasResumableProgress, computeHasResumableProgress())
+    }
+
+    /// Writes a published value only when it changed.
+    private func assign<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<DetailViewModel, T>, _ value: T) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     /// FEAT-35: see `hasResumableProgress`. Series read the primary action computed just above;
@@ -608,8 +619,8 @@ final class DetailViewModel: ObservableObject {
     /// `computeSeriesAction()`, which reads the same shared session.
     private func refreshShuffle() {
         guard let meta, EpisodesSection.isSeriesLike(meta), let profile = latestShuffleProfile else {
-            shuffleOffered = false
-            shuffleSettings = EpisodeShuffleSettings(enabled: false, includeWatched: false)
+            assign(\.shuffleOffered, false)
+            assign(\.shuffleSettings, EpisodeShuffleSettings(enabled: false, includeWatched: false))
             clearShufflePick()
             return
         }
@@ -617,10 +628,10 @@ final class DetailViewModel: ObservableObject {
         let hasEpisodes = meta.videos.contains {
             ($0.season?.intValue ?? 0) > 0 && ($0.episode?.intValue ?? 0) > 0
         }
-        shuffleOffered = profile.available
+        assign(\.shuffleOffered, profile.available
             && Self.shuffleContentTypes.contains(meta.type.lowercased())
-            && (settings.enabled || hasEpisodes)
-        shuffleSettings = settings
+            && (settings.enabled || hasEpisodes))
+        assign(\.shuffleSettings, settings)
 
         let profileId = ProfileRepository.shared.activeProfileId
         let shuffle = EpisodeShuffleRepository.shared.shuffle
@@ -643,29 +654,29 @@ final class DetailViewModel: ObservableObject {
             includeWatched: settings.includeWatched, watched: watched, progress: progress,
             surface: .detail, current: nil, visit: Self.shuffleVisit, preferredVideoId: nil
         )
-        shufflePick = pick
+        assign(\.shufflePick, pick)
         if let pick {
-            shufflePickPlayable = PlaybackAvailability.companion.current(type: type).canPlay(
+            assign(\.shufflePickPlayable, PlaybackAvailability.companion.current(type: type).canPlay(
                 type: type, videoId: pick.id, parentMetaId: id,
                 seasonNumber: pick.season, episodeNumber: pick.episode
-            )
-            shuffleCaughtUp = false
+            ))
+            assign(\.shuffleCaughtUp, false)
         } else {
-            shufflePickPlayable = false
+            assign(\.shufflePickPlayable, false)
             // Caught up vs nothing to shuffle at all: probe the All pool on a THROWAWAY session so
             // the shared one's history and selections stay untouched.
-            shuffleCaughtUp = !settings.includeWatched && EpisodeShuffle().select(
+            assign(\.shuffleCaughtUp, !settings.includeWatched && EpisodeShuffle().select(
                 profileId: profileId, contentId: meta.id, videos: meta.videos,
                 includeWatched: true, watched: watched, progress: progress,
                 surface: .detail, current: nil, visit: Self.shuffleVisit, preferredVideoId: nil
-            ) != nil
+            ) != nil)
         }
     }
 
     private func clearShufflePick() {
-        shufflePick = nil
-        shufflePickPlayable = true
-        shuffleCaughtUp = false
+        assign(\.shufflePick, nil)
+        assign(\.shufflePickPlayable, true)
+        assign(\.shuffleCaughtUp, false)
     }
 
     /// Once watch progress for the pick the user started lands (written after the play began),

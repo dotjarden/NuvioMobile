@@ -63,7 +63,10 @@ struct AddonsView: View {
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
 
             HStack(spacing: 20) {
+                // Not `.disabled` while installing: that disabled the button the user had just
+                // pressed and focus jumped away. Guarded in the action instead.
                 Button {
+                    guard !model.isInstalling else { return }
                     model.install(newUrl)
                     newUrl = ""
                 } label: {
@@ -71,18 +74,17 @@ struct AddonsView: View {
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.isInstalling)
 
                 #if DEBUG
                 if DebugConfig.hasManifestURL {
                     Button {
+                        guard !model.isInstalling else { return }
                         model.install(DebugConfig.manifestURL)
                     } label: {
                         Label("Quick install (from DebugConfig)", systemImage: "wrench.and.screwdriver")
                             .padding(.horizontal, 16).padding(.vertical, 6)
                     }
                     .buttonStyle(.chip)
-                    .disabled(model.isInstalling)
                 }
                 #endif
 

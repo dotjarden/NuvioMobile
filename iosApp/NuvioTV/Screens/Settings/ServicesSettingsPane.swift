@@ -228,9 +228,9 @@ struct ServicesSettingsPane: View {
                 systemImage: "checkmark.circle.fill",
                 descriptionID: .servicesMdblist
             ) {
+                guard !mdblist.isBusy else { return }
                 confirmingMdbListDisconnect = true
             }
-            .disabled(mdblist.isBusy)
             // Search & Discover batch (B7, upstream a9797ff8): pick which lists show in the Library.
             SettingsLinkRow(
                 title: String(localized: "Library lists"),
@@ -262,9 +262,10 @@ struct ServicesSettingsPane: View {
                 systemImage: "antenna.radiowaves.left.and.right",
                 descriptionID: .servicesMdblist
             ) {
+                // Not `.disabled(isBusy)`: the pressed row lost focus while the code was requested.
+                guard !mdblist.isBusy else { return }
                 mdblist.connect()
             }
-            .disabled(mdblist.isBusy)
             if let error = mdblist.errorMessage {
                 Text(error)
                     .font(Theme.Font.caption)

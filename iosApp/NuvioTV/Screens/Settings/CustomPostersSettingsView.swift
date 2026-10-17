@@ -103,9 +103,10 @@ struct CustomPostersSettingsView: View {
                     title: String(localized: "Clear Pattern"),
                     systemImage: "trash"
                 ) {
-                    model.clearPattern()
+                    // Not `.disabled(!hasPattern)`: clearing disabled the focused row and focus
+                    // jumped. A no-op once there is nothing to clear.
+                    if model.hasPattern { model.clearPattern() }
                 }
-                .disabled(!model.hasPattern)
             }
 
             SettingsSection(String(localized: "Apply To")) {

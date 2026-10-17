@@ -494,7 +494,7 @@ private struct PluginRepoEntryRow: View {
             .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Repository manifest URL"), systemImage: "puzzlepiece.extension", focused: fieldFocused)
 
             Button {
-                if !url.isEmpty {
+                if !url.isEmpty, !isInstalling {
                     onInstall(url)
                     url = ""
                 }
@@ -510,7 +510,7 @@ private struct PluginRepoEntryRow: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isInstalling)
+            // Not `.disabled(isInstalling)`: the pressed button lost focus. Guarded in the action.
         }
     }
 }
