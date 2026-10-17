@@ -755,6 +755,10 @@ struct HomeView: View {
     /// (sets it) and `handleRowFocusOwnership` (reads it to tell a landed claim from a
     /// diversion) — every other transition retires through `endUpFallback`, which always
     /// clears it back to nil.
+    /// Folder-return Up-skip (2026-10-17): identity tokens for the Continue Watching and Upcoming
+    /// rows, bumped by `remountTopRowsAfterPop`. See that function.
+    @State private var continueWatchingRowToken = 0
+    @State private var upcomingRowToken = 0
     @State private var activeUpFallbackTarget: String?
     /// The row the live attempt started FROM, captured at `beginUpFallback` — the `landed`
     /// probe line reads it rather than `focusedRowKey`, which can be nil for a beat while the
@@ -1395,6 +1399,7 @@ struct HomeView: View {
             // rather than undoing the landing.
             if oldCount > 0, count == 0 {
                 restoreRowAfterPop()
+                remountTopRowsAfterPop()
             }
         }
         // beta.19-rc1 verdict (M5, BUG-138): the other two covers the hero focus freeze honours —
@@ -1460,27 +1465,6 @@ struct HomeView: View {
     /// hero is what hides rows scrolled past the viewport top (it replaces the fade mask the sim
     /// pass falsified). The focus lift stays inside the clip because the content insets below
     /// keep every card away from the viewport edges.
-    /// Perf review 2026-10-17 (#1): the rows region — placeholder, Continue Watching, Upcoming and
-    /// every catalog / collection row — is its own view that observes only `HomeViewModel` and
-    /// takes stable inputs (one `HomeRowActions` reference, the pinned floors as values). A hero
-    /// focus commit, a carousel page, a settle probe line or any other state this body owns no
-    /// longer re-renders a single row. `part` picks the eager top rows or the lazy catalog rows
-    /// (folder-return Up-skip, see `rowsScroll`).
-    private func rowsList(pinned: Bool, plan: PinnedRowGeometry.Plan, part: HomeRowsList.Part) -> HomeRowsList {
-        HomeRowsList(model: model,
-                     actions: rowActions,
-                     pinned: pinned,
-                     upcomingRowEnabled: upcomingRowEnabled,
-                     shortRowFloorEnabled: pinnedShortRowFloor,
-                     lastRowFloor: pinnedLastRowLinkFrameFloor(plan),
-                     refresh: HomeRowsRefresh(systemVideoAutoplayEnabled: systemVideoAutoplayEnabled,
-                                              coverDepth: homePath.count,
-                                              resumeCovered: resume != nil,
-                                              focusRequest: rowFocusRequest,
-                                              focusedRowKey: focusedRowKeyState),
-                     part: part)
-    }
-
     @ViewBuilder
     private func rowsScroll(pinned: Bool, settleReveal: Bool, proxy: ScrollViewProxy,
                             plan: PinnedRowGeometry.Plan) -> some View {
@@ -1495,17 +1479,8 @@ struct HomeView: View {
             // own frame, so no external gap is needed and every focusable frame stays inside
             // its row's focus section (out-of-bounds frames froze the focus engine — device
             // rounds 5–7, sim-reproduced). Classic keeps the plain 48pt sectionGap.
-            //
-            // Folder-return Up-skip (2026-10-17): the classic hero, Continue Watching and Upcoming
-            // sit in a plain `VStack` ABOVE the lazy rows, so they are never culled. As the first
-            // children of the `LazyVStack`, Continue Watching (the row right under the pinned hero)
-            // came back from a push and pop unable to take focus: the engine skipped it and every
-            // `@FocusState` write to it was dropped until it was given a fresh identity, while every
-            // other row, culled or not, came back fine (simulator bisect in
-            // docs/folder-return-up-skip-root-cause-2026-10-17.md in the outer repo). Built eagerly they are always
-            // realized, and the engine moves into them like any other row. Same spacing as the lazy
-            // stack, so the layout is unchanged.
-            VStack(alignment: .leading, spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
+            LazyVStack(alignment: .leading,
+                       spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
                 if !heroItems.isEmpty && !pinned {
                     // Classic only: the hero scrolls away with the rows, its info panel
                     // sitting on the lower third of the backdrop, Detail-style.
@@ -1528,19 +1503,24 @@ struct HomeView: View {
                     heroCarousel(compact: false, topReach: Self.classicHeroTopReach, plan: plan)
                 }
 
-                rowsList(pinned: pinned, plan: plan, part: .top)
-
-                // Lazy so row construction (and each row's poster loads) is deferred to scroll
-                // position (BUG-11, above).
-                // Review P3-1: only with catalog rows, so an empty one adds no `sectionGap` under
-                // the placeholder in classic. Keyed on the model, never on `pinned`.
-                if !model.rows.isEmpty {
-                    LazyVStack(alignment: .leading,
-                               spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
-                        rowsList(pinned: pinned, plan: plan, part: .catalogs)
-                    }
-                }
-
+                // Perf review 2026-10-17 (#1): the rows region — placeholder, Continue Watching,
+                // Upcoming and every catalog / collection row — is its own view that observes only
+                // `HomeViewModel` and takes stable inputs (one `HomeRowActions` reference, the
+                // pinned floors as values). A hero focus commit, a carousel page, a settle probe
+                // line or any other state this body owns no longer re-renders a single row.
+                HomeRowsList(model: model,
+                             actions: rowActions,
+                             pinned: pinned,
+                             upcomingRowEnabled: upcomingRowEnabled,
+                             shortRowFloorEnabled: pinnedShortRowFloor,
+                             lastRowFloor: pinnedLastRowLinkFrameFloor(plan),
+                             refresh: HomeRowsRefresh(systemVideoAutoplayEnabled: systemVideoAutoplayEnabled,
+                                                      coverDepth: homePath.count,
+                                                      resumeCovered: resume != nil,
+                                                      focusRequest: rowFocusRequest,
+                                                      focusedRowKey: focusedRowKeyState),
+                             continueWatchingToken: continueWatchingRowToken,
+                             upcomingToken: upcomingRowToken)
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
             // UPWARD by the row band and DOWNWARD past its caption (transparent,
@@ -1588,8 +1568,8 @@ struct HomeView: View {
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false)
             }
-            // Menu-to-top scroll anchor (BUG-27). On the rows stack itself, not the
-            // hero — the anchor must exist whatever the stack has realized.
+            // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
+            // hero — the anchor must exist even while the hero row is lazily culled.
             // In pinned (Nuvio-style) mode the hero isn't in this stack at all, so the
             // anchor's `.top` is simply the top of the rows region — which, with the
             // hero pinned above the ScrollView, is exactly where "the top" now means.
@@ -1981,6 +1961,7 @@ struct HomeView: View {
             // a row hop never re-renders Home), and never cleared on release, unlike
             // `focusedRowKey`, so it still names the row while the rail holds focus.
             upInput.lastOwnedRowKey = rowKey
+            if rowKey == upInput.popOriginRowKey { upInput.popOriginOwned = true }
             #if DEBUG
             HomeReturnDebug.shared.setOwn(rowKey)
             #endif
@@ -2096,8 +2077,8 @@ struct HomeView: View {
         // declines WITHOUT bumping `heroUpGeneration`, keeping the landing retry keyed to the first.
         let sinceUp = now - upInput.lastUpInputAt
         // 2026-10-17 (folder-return Up-skip): the Up came from a row that HAS a row above it, and
-        // the engine handed it to the CTA (a row above it the engine found no candidate in).
-        // Scrolling to the top alone would leave focus on the
+        // the engine handed it to the CTA (a row it could not focus, e.g. Continue Watching after
+        // a pop, see `remountTopRowsAfterPop`). Scrolling to the top alone would leave focus on the
         // hero, so hand it to the row above instead. Ahead of the `alreadyRevealing` latch (review
         // r1 P3): one physical Up reaches here from several sources, and a redirect already in
         // flight for the same row is that same Up.
@@ -2142,9 +2123,10 @@ struct HomeView: View {
     /// container itself (`redirectIfUpStrandedFocus`), while `target`, the row above `origin`,
     /// exists. Runs as an Up fallback attempt (`activeUpFallbackTarget`), so the row's landing logs
     /// `action=landed` and retires the request through `handleRowFocusOwnership`, and any newer row
-    /// claim (a Down from the hero, say) supersedes it. Order, from the device pass: scroll the target
-    /// in alone, ask at 0.4 s and 0.8 s (asks issued mid-scroll were dropped), give up at 1.3 s; a
-    /// give-up with focus on nothing hands it to the CTA.
+    /// claim (a Down from the hero, say) supersedes it. Order, from the device pass: re-identify a
+    /// Continue Watching / Upcoming target (its asks were dropped otherwise), scroll the target in
+    /// alone, ask at 0.4 s and 0.8 s (asks issued mid-scroll were dropped), re-identify once more at
+    /// 0.6 s if still unlanded, give up at 1.3 s; a give-up with focus on nothing hands it to the CTA.
     private func redirectUpIntoHero(from origin: String,
                                     to target: (key: String, anchor: String),
                                     proxy: ScrollViewProxy,
@@ -2177,6 +2159,14 @@ struct HomeView: View {
         // off screen or mid-scroll is dropped (`[HomeReturn] apply … after=nil` on every rung that
         // scrolled and asked at once), while Down from the CTA reaches the same row. So the scroll
         // goes first, alone, and the asks follow once it has settled.
+        // Device pass 2026-10-17: Continue Watching dropped every ask from the CTA even on screen
+        // and settled (`apply … after=nil`), where Down from the CTA focused it at once; a fresh
+        // identity takes the ask. Given now, before the scroll brings the row in, so the first ask
+        // can land; once more at 0.6 s below if it has not.
+        if target.key == "continue-watching" || target.key == "upcoming" {
+            if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+            logHomeReturn("remount rows=\(target.key) reason=redirect")
+        }
         PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-redirect")
         withAnimation(.easeInOut(duration: 0.3)) {
             proxy.scrollTo(target.anchor, anchor: .top)
@@ -2186,6 +2176,13 @@ struct HomeView: View {
                 guard stillRedirecting() else { return }
                 logUpFallback("row=\(origin) prev=\(target.key) action=redirect-ask n=\(rung) src=\(source)")
                 requestRowFocus(target.key)
+            }
+        }
+        if target.key == "continue-watching" || target.key == "upcoming" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                guard stillRedirecting() else { return }
+                if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+                logHomeReturn("remount rows=\(target.key) reason=redirectMissed")
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
@@ -2252,8 +2249,8 @@ struct HomeView: View {
     /// `nil` when `rowKey` is the topmost row, or is not a row this screen renders.
     ///
     /// Only the `ForEach` publishes per-row scroll ids (SwiftUI derives them from `HomeRow.id`), so
-    /// CW/Upcoming — built eagerly above it — are revealed through "home_top", the BUG-27 anchor
-    /// on the rows stack itself. That is the top of the rows region in pinned mode, which reveals
+    /// CW/Upcoming — plain siblings above it — are revealed through "home_top", the BUG-27 anchor
+    /// on the `LazyVStack` itself. That is the top of the rows region in pinned mode, which reveals
     /// both of them whole.
     ///
     /// `key` (what this returns, and what every caller compares against `focusedRowKey`) and
@@ -2293,8 +2290,7 @@ struct HomeView: View {
     ///            previous row is still MOUNTED (the common case — it is one row above the fold),
     ///            this alone moves focus and the engine performs its own scroll-to-reveal. No
     ///            programmatic scroll at all, so there is nothing for the engine to pull back.
-    ///  2. t=0.3  REVEAL, then ask again. The row was culled by the `LazyVStack` (catalog rows
-    ///            only: Continue Watching and Upcoming are built eagerly) (or refused the
+    ///  2. t=0.3  REVEAL, then ask again. The row was culled by the `LazyVStack` (or refused the
     ///            write), so the request was dropped. Scroll it into view first; mounting is what
     ///            makes the second write land.
     ///  3. t=0.9  TOP. Still nowhere: scroll to "home_top" and ask once more.
@@ -2461,6 +2457,7 @@ struct HomeView: View {
     /// pager, `StageStripHome.syncCover`).
     private func notePushFromHome() {
         upInput.returnGeneration &+= 1
+        upInput.popSerial &+= 1
         guard !isStageLayout else {
             upInput.returnFocus.notePush(focusedRowKey: nil, lastOwnedRowKey: nil,
                                          sinceRowRelease: nil, heroFocused: true)
@@ -2536,6 +2533,63 @@ struct HomeView: View {
             guard generation == upInput.returnGeneration else { return }   // landed, or newer
             logHomeReturn("restore row=\(origin.rowKey) \(focusedRowKey == origin.rowKey ? "landed=1 late" : "expired")")
             endReturnRestore(origin: origin)
+        }
+    }
+
+    /// Folder-return Up-skip (2026-10-17; Living Room ATV, Test 2, Classic, Nuvio-style hero; the
+    /// simulator reproduces it, `testBatchC_ClassicFolderPopThenUp_Pinned` and
+    /// `testBatchC_ClassicDetailPopThenUpWalk_Pinned`): after a push from Home and the pop back, the
+    /// Continue Watching and Upcoming rows could no longer take focus. The engine found no Up
+    /// candidate in them (the hero CTA took the Up, or the BUG-112 ladder ran), every `@FocusState`
+    /// write the ladder sent them was dropped (`focusedVideoId` stayed nil with the row on screen
+    /// and its buttons enabled), and Down from the hero skipped them too. Catalog and collection
+    /// rows, the `ForEach` cells, came back fine. A fresh identity for the two rows, given once the
+    /// pop has settled, makes them focusable again (the ladder's scroll rung then lands).
+    ///
+    /// The root cause inside SwiftUI is not known; this is a workaround with a narrow footprint.
+    /// Root-cause pass 2026-10-17 (docs/folder-return-up-skip-root-cause-2026-10-17.md in the outer
+    /// repo): building the two rows eagerly above the `LazyVStack` cured Continue Watching on the
+    /// simulator, but on the Apple TV Down from Continue Watching then stopped reaching Upcoming
+    /// after 3–6 pops, which this workaround never does; so the re-identify stays. A
+    /// row that holds focus or is the pop's origin keeps its identity (rebuilding it would drop the
+    /// focus the restore puts there). The cost of a rebuild is the row's horizontal position: it
+    /// comes back on its first card. 0.6 s is after the pop transition (the restore's own writes
+    /// are dropped until ~0.7 s on both builds) and before most viewers press Up; an Up that beats it
+    /// falls to `redirectUpIntoHero` or the ladder, which re-ask the rebuilt row.
+    private func remountTopRowsAfterPop() {
+        guard !isStageLayout else { return }
+        let origin = upInput.returnOrigin?.rowKey
+        // Review r2 (P3-1): a newer push or pop voids both closures below.
+        upInput.popSerial &+= 1
+        let serial = upInput.popSerial
+        upInput.popOriginRowKey = origin
+        upInput.popOriginOwned = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard serial == upInput.popSerial, homePath.isEmpty, resume == nil else { return }
+            var rebuilt: [String] = []
+            if !model.continueWatching.isEmpty,
+               focusedRowKey != "continue-watching", origin != "continue-watching" {
+                continueWatchingRowToken &+= 1
+                rebuilt.append("continue-watching")
+            }
+            if upcomingRowEnabled, !model.upcoming.isEmpty,
+               focusedRowKey != "upcoming", origin != "upcoming" {
+                upcomingRowToken &+= 1
+                rebuilt.append("upcoming")
+            }
+            logHomeReturn("remount rows=\(rebuilt.isEmpty ? "-" : rebuilt.joined(separator: ","))")
+        }
+        // Review r1 (P2-3): Detail opened from a Continue Watching or Upcoming card makes that row
+        // the origin, kept above. If the restore could not land in it (the same dropped writes),
+        // give it its fresh identity once the restore is over and it still does not hold focus.
+        guard origin == "continue-watching" || origin == "upcoming" else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + HomeReturnFocusMemory.expiry + 0.1) {
+            // Only when the origin never took focus since this pop (review r2 P3-1): a restore that
+            // landed and a viewer who then moved on must keep the row and its card position.
+            guard serial == upInput.popSerial, homePath.isEmpty, resume == nil,
+                  !upInput.popOriginOwned, focusedRowKey != origin else { return }
+            if origin == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+            logHomeReturn("remount rows=\(origin ?? "-") reason=originMissed")
         }
     }
 
@@ -2915,7 +2969,7 @@ struct HomeView: View {
             .padding(.bottom, Theme.Size.heroPinnedRowsGap)
     }
 
-    /// Content insets for the rows stack (`rowsScroll`). Classic keeps the uniform overscan-safe
+    /// Content insets for the rows `LazyVStack`. Classic keeps the uniform overscan-safe
     /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned uses
     /// `heroPinnedRowsHeadroom` (8) on top: NOT spacing — it is the buffer that absorbs the
     /// device-only BUG-30 walk-up residual (~67pt short of the sim's rest position), which the
@@ -7325,6 +7379,11 @@ final class HomeRowInputBox {
     /// `HomeUpIntoHeroGate.isEngineSkip`.
     var heroGainedAt: TimeInterval?
     var programmaticHeroAt: TimeInterval?
+    /// Folder-return Up-skip (review r2 P3-1): bumped on every push and pop from Home's root so a
+    /// pop's delayed remounts stand down; the pop's origin row and whether it has owned focus since.
+    var popSerial = 0
+    var popOriginRowKey: String?
+    var popOriginOwned = false
 
     func noteHeroGain() { heroGainedAt = ProcessInfo.processInfo.systemUptime }
     func noteProgrammaticHeroFocus() { programmaticHeroAt = ProcessInfo.processInfo.systemUptime }

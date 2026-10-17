@@ -15,7 +15,7 @@ final class HomeBodyCounter: ObservableObject {
     static let shared = HomeBodyCounter()
 
     /// Names in the order the label prints them.
-    static let names = ["HomeView", "HomeRowsList", "HomeRowsList.top", "CatalogRowView", "ContinueWatchingRow",
+    static let names = ["HomeView", "HomeRowsList", "CatalogRowView", "ContinueWatchingRow",
                         "UpcomingRow", "CollectionRowView", "InlineTrailerCard", "PosterCard",
                         // W2-5 (a): the Stage strip's host, pager, page slots and each row's focus
                         // modifier, so a Stage Down walk can see where a page's fan-out runs.

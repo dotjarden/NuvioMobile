@@ -13,9 +13,8 @@ import SharedCore
 //
 // Everything below is `HomeView.rowsScroll`'s former row content, moved verbatim apart from the
 // callbacks, which now go through `HomeRowActions`. Order, modifiers and environment values are
-// unchanged. Since the folder-return Up-skip fix (2026-10-17) two instances share the rows: `.top`
-// (placeholder, Continue Watching, Upcoming) in an eager `VStack`, `.catalogs` inside the
-// `LazyVStack` (a custom view's content is flattened into the lazy stack, so laziness is as before).
+// unchanged, and the view sits in the same `LazyVStack` slot (a custom view's content is flattened
+// into the lazy stack, so laziness and spacing are as before).
 
 /// The rows' callbacks into `HomeView`. One instance per Home lifetime (`@State` in `HomeView`), so
 /// the reference the rows hold never changes. `HomeView` re-points the closures at its current
@@ -104,24 +103,18 @@ struct HomeRowsList: View {
     /// The `HomeView` state the rows must re-render on, as `HomeView`'s full re-render used to
     /// (see `HomeRowsRefresh`). Carried into the cells' `==` too.
     let refresh: HomeRowsRefresh
-    /// Folder-return Up-skip (2026-10-17): `HomeView.rowsScroll` builds the top rows (placeholder,
-    /// Continue Watching, Upcoming) eagerly above the `LazyVStack` and the catalog / collection rows
-    /// inside it, from two instances of this view. See `rowsScroll` for why.
-    enum Part { case top, catalogs }
-    let part: Part
+    /// Folder-return Up-skip (2026-10-17): the Continue Watching and Upcoming rows' identities,
+    /// renewed after a pop (`HomeView.remountTopRowsAfterPop`). Kept out of `refresh`, which every
+    /// catalog and collection cell compares, so a bump rebuilds these two rows only (review r1 P3).
+    var continueWatchingToken: Int = 0
+    var upcomingToken: Int = 0
 
     var body: some View {
         #if DEBUG
-        let _ = HomeBodyCounter.tick(part == .top ? "HomeRowsList.top" : "HomeRowsList")
+        let _ = HomeBodyCounter.tick("HomeRowsList")
         #endif
-        switch part {
-        case .top: topRows
-        case .catalogs: catalogRows
-        }
-    }
+        let lastRowId = model.rows.last?.id
 
-    @ViewBuilder
-    private var topRows: some View {
         if model.rows.isEmpty {
             placeholder
         }
@@ -142,6 +135,9 @@ struct HomeRowsList: View {
             )
             // rc14 (BUG-122): the short-row floor — see `shortRowLinkFrameFloor`.
             .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
+            // Folder-return Up-skip: renewed after a pop (`HomeView.remountTopRowsAfterPop`).
+            // A string apart from every catalog key and scroll anchor in this stack.
+            .id("home-cw-row-\(continueWatchingToken)")
         }
 
         // Upcoming: next airing episode per followed show, directly under Continue
@@ -154,12 +150,10 @@ struct HomeRowsList: View {
             )
             // rc14 (BUG-122): the short-row floor — see `shortRowLinkFrameFloor`.
             .environment(\.rowCardLinkFrameFloor, shortRowLinkFrameFloor)
+            // Folder-return Up-skip: as Continue Watching above.
+            .id("home-upcoming-row-\(upcomingToken)")
         }
-    }
 
-    @ViewBuilder
-    private var catalogRows: some View {
-        let lastRowId = model.rows.last?.id
         // Catalog sections and collection folder-tile rows, interleaved per the
         // user's Home Rows settings order.
         ForEach(model.rows) { row in
