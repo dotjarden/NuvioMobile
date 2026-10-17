@@ -1755,12 +1755,11 @@ struct FolderDetailView: View {
 /// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "breaks the immersive
 /// feel"; video 1 `v1-140` shows the "Modifier" pill top-right while row 0 holds focus): the Layout
 /// picker moved to Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), and the band
-/// is HIDDEN AT REST. It draws only while its Menu holds focus (Up from row 0 lands on it and shows
+/// is HIDDEN AT REST. It draws only while its pill holds focus (Up from row 0 lands on it and shows
 /// it); otherwise it is invisible but still the page's top focus section, so it stays reachable.
-/// With no filter-editable source it mounts nothing focusable at all (an invisible focus target
-/// with nothing to offer would just swallow an Up press). That also drops the band's role as the
-/// page's BUG-47 anchor for such folders while their first rows load; the Rows page pulls focus to
-/// the first card as soon as a row is focusable (`requestInitialFocus`).
+/// With no filter-editable source the pill is a Go Back button instead of the Edit menu (review r1
+/// P1-2): the band stays the page's BUG-47 anchor while a folder's first rows load, and the Rows
+/// page pulls focus to the first card as soon as a row is focusable (`requestInitialFocus`).
 ///
 /// Mounted once by `FolderDetailView`, outside the Rows/Grid switch. A full-width focus section (the
 /// Library L1 pattern): Up from ANY card of the strip's top row (or from the grid's chips) reaches
@@ -1778,6 +1777,8 @@ struct FolderEditMenuBand: View {
     @Environment(\.dismiss) private var dismiss
     /// FEAT-71: the band shows only while its pill holds focus.
     @FocusState private var menuFocused: Bool
+    /// The at-rest opacity: invisible to a viewer, still a focus target (opacity 0 is not).
+    static let hiddenOpacity: Double = 0.011
 
     var body: some View {
         // The band is a focus section only while it is active. Faded out, a section with only a
@@ -1799,8 +1800,11 @@ struct FolderEditMenuBand: View {
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
         // FEAT-71: hidden at rest, shown while focused (opacity only: layout and the focus section
-        // are unchanged, so Up from row 0 still finds it).
-        .opacity(menuFocused ? 1 : 0)
+        // are unchanged, so Up from row 0 still finds it). Device pass 2026-10-16: at opacity 0 the
+        // pill was NOT a focus target on hardware (Up from row 0 logged `moveFail heading=up`), the
+        // focus engine skips a fully transparent item; `hiddenOpacity` is as close to invisible as
+        // the engine allows (the probe labels use the same value).
+        .opacity(menuFocused ? 1 : Self.hiddenOpacity)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: menuFocused)
     }
 

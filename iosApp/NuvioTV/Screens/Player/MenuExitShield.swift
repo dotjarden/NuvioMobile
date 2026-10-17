@@ -22,7 +22,7 @@ import UIKit
 /// changes. The SwiftUI cover dismisses on Menu through exactly this kind of recogniser on its
 /// `UITransitionView`, which is why a recognised press pre-empts the chain.
 @MainActor
-final class MenuExitShield: NSObject {
+final class MenuExitShield: NSObject, UIGestureRecognizerDelegate {
     static let shared = MenuExitShield()
 
     /// The armed window's ceiling: a host that never calls `disarm` (no `MPVPlayerScreen`) gets
@@ -47,6 +47,7 @@ final class MenuExitShield: NSObject {
         // Press-only: a light tap of the Siri Remote surface must never be read as a Menu.
         tap.allowedTouchTypes = []
         tap.cancelsTouchesInView = false
+        tap.delegate = self
         tap.isEnabled = false
         window.addGestureRecognizer(tap)
         recognizer = tap
@@ -87,15 +88,18 @@ final class MenuExitShield: NSObject {
         NSLog("[MenuProbe] shield disarmed reason=%@ held=%dms swallowed=%d", reason, Int(held * 1000), swallowedCount)
     }
 
+    /// The rule decides BEFORE a press is claimed (review r2 P3-4): a Menu that begins after the
+    /// ceiling but before the disarm timer fired is left to the responder chain.
+    nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        MainActor.assumeIsolated {
+            let claims = MenuExitShieldRule.claims(armedAt: armedAt, now: ProcessInfo.processInfo.systemUptime)
+            if !claims { disarm(reason: "ceiling") }
+            return claims
+        }
+    }
+
     @objc private func handleMenu(_ sender: UITapGestureRecognizer) {
         guard sender.state == .ended else { return }
-        // The disarm timer and this recogniser both run on main; a press that recognises after the
-        // ceiling but before the timer fired is not ours (review r1 P3-3: the rule is the one
-        // decision, in the code and in its test).
-        guard MenuExitShieldRule.claims(armedAt: armedAt, now: ProcessInfo.processInfo.systemUptime) else {
-            disarm(reason: "ceiling")
-            return
-        }
         swallowedCount += 1
         let age = armedAt.map { Int((ProcessInfo.processInfo.systemUptime - $0) * 1000) } ?? -1
         NSLog("[MenuProbe] shield swallowed menu n=%d age=%dms", swallowedCount, age)

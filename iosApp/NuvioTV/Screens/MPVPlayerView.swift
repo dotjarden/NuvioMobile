@@ -737,7 +737,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // Failure reporting stays armed while a full-screen cover (the post-play card) merely
         // covers the player: Replay comes back to this same controller.
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
-        print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) sinceExit=\(sinceExitMs())ms")
+        print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) cover=\(coverIsBeingDismissed ? 1 : 0) sinceExit=\(sinceExitMs())ms")
         if isLeavingPlayer { closeFailover() }
         // The hosting cover gets its Menu recogniser back whenever the cover itself stays: a
         // full-screen cover over the player (the post-play card) and, review r1 P1-1, an in-place
@@ -3674,12 +3674,12 @@ final class MPVTVPlayerViewController: UIViewController {
         // enqueues after `mpv` went nil above). The Metal layer is mpv's `wid`, so the block keeps it
         // alive until the VO has let go of it, and hands its last reference back to main (review r1
         // P3-2: a CALayer should not deallocate on a background queue).
-        let layer = metalLayer
+        let layerRef = Unmanaged.passRetained(metalLayer)   // +1 held across the destroy, released on main
         let started = ProcessInfo.processInfo.systemUptime
         eventQueue.async {
             mpv_terminate_destroy(ctx)
             NSLog("[MPV] terminate_destroy took=%dms", Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
-            DispatchQueue.main.async { _ = layer }
+            DispatchQueue.main.async { layerRef.release() }
         }
         // Plain property writes (no weak reference formed): the store goes with the controller.
         seekPreviewSource = nil

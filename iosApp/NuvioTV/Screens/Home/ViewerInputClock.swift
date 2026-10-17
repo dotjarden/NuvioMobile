@@ -71,6 +71,12 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
     private let onInput: (String) -> Void
     private var touchStart: CGPoint?
     private var swipeReported = false
+    /// Review r2 P2-1: presses still down. A press end used to fail the recognizer while a clickpad
+    /// touch was still tracked (a thumb resting on the pad across a Back press), after which it saw
+    /// nothing until the thumb lifted: a Down click or swipe without lifting was never stamped and
+    /// the restore read the viewer's move as the engine's. The recognizer now fails itself only
+    /// once no press AND no touch is down.
+    private var pressesDown = 0
 
     init(onInput: @escaping (String) -> Void) {
         self.onInput = onInput
@@ -86,6 +92,7 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent) {
         super.pressesBegan(presses, with: event)
+        pressesDown += presses.count
         for press in presses {
             if let kind = Self.kind(of: press.type) { onInput(kind) }
         }
@@ -93,11 +100,13 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent) {
         super.pressesEnded(presses, with: event)
+        pressesDown = max(0, pressesDown - presses.count)
         failIfIdle()
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent) {
         super.pressesCancelled(presses, with: event)
+        pressesDown = max(0, pressesDown - presses.count)
         failIfIdle()
     }
 
@@ -132,10 +141,13 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
         super.reset()
         touchStart = nil
         swipeReported = false
+        pressesDown = 0
     }
 
-    /// Back to `.possible` for the next sequence, never through `.began`.
+    /// Back to `.possible` for the next sequence, never through `.began`, and only once nothing is
+    /// still down (a resting thumb keeps the recognizer listening for the next press or swipe).
     private func failIfIdle() {
+        guard pressesDown == 0, touchStart == nil else { return }
         if state == .possible { state = .failed }
     }
 

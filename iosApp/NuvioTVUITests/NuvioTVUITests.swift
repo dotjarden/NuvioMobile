@@ -10402,6 +10402,39 @@ extension NuvioTVUITests {
         XCTAssertFalse(gridShowing(rows), "the grid must not be mounted on the Rows page")
     }
 
+    /// FEAT-71 + review r1 P1-2 (Batch B): the band is invisible at rest but still the page's top
+    /// focus section. Up from row 0's first card must land on its pill (`folder.editMenu` with
+    /// filter-editable sources, `folder.goBack` without), which then shows; Down returns to row 0.
+    /// The 10-16 device pass found an opacity-0 pill unfocusable on hardware (`moveFail heading=up`),
+    /// which is why the band rests at `FolderEditMenuBand.hiddenOpacity`, never 0.
+    func test107FolderBandReachableFromRow0() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        remote.press(.select)
+        guard let opened = openSeededFolderRowsPage(app) else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        XCTAssertEqual(tok(opened, "row"), "0", "the page must settle on row 0 first: \(opened)")
+        pause(1.0)
+        let pill = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR identifier == %@",
+                                                                        "folder.editMenu", "folder.goBack")).firstMatch
+        XCTAssertTrue(pill.exists, "the band's pill must be mounted (Edit menu or Go Back)")
+        XCTAssertTrue(moveFocus(app, .up, untilFrameOf: pill, max: 3),
+                      "Up from row 0 must reach the band's pill (it is invisible at rest, never unfocusable)")
+        shot(app, "107a_band_focused")
+        remote.press(.down)
+        pause(1.5)
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "0",
+                       "Down from the band must return to row 0: \(stageProbeLabel(app, "folder_rows_state"))")
+    }
+
     /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage takes row 0's first item on
     /// the initial landing with the title still docked (FEAT-70; was `fitem=-` until the first move);
     /// back from a Detail opened on row 1 the page is on the same
