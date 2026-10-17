@@ -89,6 +89,13 @@ final class MenuExitShield: NSObject {
 
     @objc private func handleMenu(_ sender: UITapGestureRecognizer) {
         guard sender.state == .ended else { return }
+        // The disarm timer and this recogniser both run on main; a press that recognises after the
+        // ceiling but before the timer fired is not ours (review r1 P3-3: the rule is the one
+        // decision, in the code and in its test).
+        guard MenuExitShieldRule.claims(armedAt: armedAt, now: ProcessInfo.processInfo.systemUptime) else {
+            disarm(reason: "ceiling")
+            return
+        }
         swallowedCount += 1
         let age = armedAt.map { Int((ProcessInfo.processInfo.systemUptime - $0) * 1000) } ?? -1
         NSLog("[MenuProbe] shield swallowed menu n=%d age=%dms", swallowedCount, age)

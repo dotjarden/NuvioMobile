@@ -738,16 +738,15 @@ final class MPVTVPlayerViewController: UIViewController {
         // covers the player: Replay comes back to this same controller.
         // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
         print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer) sinceExit=\(sinceExitMs())ms")
-        if isLeavingPlayer {
-            closeFailover()
-        } else {
-            // A full-screen cover over the player (the post-play card): give the hosting cover its
-            // Menu recogniser back for the card's own dismissal. BUG-165: NOT on the way out. The
-            // player's cover is being torn down; re-enabling its recogniser mid-press let it see
-            // the exit press's release (the one `gateCoverMenuTap` had hidden from it) and act on
-            // a half press over a view that was already leaving.
-            gateCoverMenuTap(enabled: true)
-        }
+        if isLeavingPlayer { closeFailover() }
+        // The hosting cover gets its Menu recogniser back whenever the cover itself stays: a
+        // full-screen cover over the player (the post-play card) and, review r1 P1-1, an in-place
+        // swap of this controller inside the same cover (Up Next / failover: `StreamPickerView`'s
+        // `.id(ctx.id)` moves this controller out of its parent while the cover lives on, and the
+        // next `PlayerScreen`'s probe screen and the native engine both rely on that recogniser
+        // for their Menu). BUG-165: not while the cover is being dismissed; re-enabling it mid-press
+        // let it see the exit press's release over a view that was already leaving.
+        if !coverIsBeingDismissed { gateCoverMenuTap(enabled: true) }
         // An exit inside the Aspect flash's 2 s still stores the resting mode (review r1 P2 #1).
         if aspectPillDirty {
             aspectFlashWork?.cancel()
@@ -3599,6 +3598,18 @@ final class MPVTVPlayerViewController: UIViewController {
         return false
     }
 
+    /// BUG-165 / review r1 P1-1: the presentation this controller sits in is going away (an
+    /// ancestor `isBeingDismissed`), as opposed to this controller being swapped out of a parent
+    /// that stays (`isMovingFromParent` alone, the Up Next / failover `.id` swap).
+    private var coverIsBeingDismissed: Bool {
+        var node: UIViewController? = self
+        while let current = node {
+            if current.isBeingDismissed { return true }
+            node = current.parent
+        }
+        return false
+    }
+
     /// The viewer is leaving or the player is going away: no failure may be reported from here on.
     private func closeFailover() {
         failoverClosed = true
@@ -3655,18 +3666,20 @@ final class MPVTVPlayerViewController: UIViewController {
         // (and the relay already turns one that slips in earlier into a no-op).
         mpv_set_wakeup_callback(ctx, nil, nil)
         // BUG-165 (rc4 verdict): `mpv_terminate_destroy` tears the Vulkan/Metal VO down and waits
-        // for mpv's threads; on the main thread (this controller's deinit) that was seconds of a
-        // frozen black screen between the exit press and the picker (Steven's video: ~6 s), during
-        // which every remote press queued up and was delivered to whatever was under the cover
-        // afterwards. The destroy now runs on `eventQueue` (serial: every queued mpv call drains
-        // first, and nothing enqueues after `mpv` went nil above). The Metal layer is mpv's `wid`,
-        // so the block keeps it alive until the VO has let go of it.
+        // for mpv's threads. It used to run on the main thread in this controller's deinit; the
+        // device pass measured it at 76–132 ms there (Steven's ~6 s of black on exit is NOT this
+        // call), but a main-thread stall of any length between the exit press and the picker is a
+        // window in which remote presses queue up and land on whatever is under the cover. The
+        // destroy now runs on `eventQueue` (serial: every queued mpv call drains first, and nothing
+        // enqueues after `mpv` went nil above). The Metal layer is mpv's `wid`, so the block keeps it
+        // alive until the VO has let go of it, and hands its last reference back to main (review r1
+        // P3-2: a CALayer should not deallocate on a background queue).
         let layer = metalLayer
         let started = ProcessInfo.processInfo.systemUptime
         eventQueue.async {
             mpv_terminate_destroy(ctx)
-            _ = layer
             NSLog("[MPV] terminate_destroy took=%dms", Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
+            DispatchQueue.main.async { _ = layer }
         }
         // Plain property writes (no weak reference formed): the store goes with the controller.
         seekPreviewSource = nil

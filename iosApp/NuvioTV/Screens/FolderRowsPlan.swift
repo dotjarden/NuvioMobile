@@ -7,7 +7,7 @@ import SharedCore
 // (`FolderRowsPage`): the folder (then the focused title) on the stage, and one strip row per
 // source tab below it, in tab order, without the "All" tab. Everything here is a pure function of
 // the shared `FolderDetailRepository` state (mapped to `FolderTabSnapshot` by the view model) and a
-// few page facts, so `FolderRowsPlanTests`, `FolderLayoutStoreTests` and `FolderStageLogoTests` pin
+// few page facts, so `FolderRowsPlanTests`, `FolderLayoutDefaultTests` and `FolderStageLogoTests` pin
 // it without a view host.
 //
 // Classic Home keeps today's folder grid exactly (`FolderPageLayout.resolve`).
@@ -21,16 +21,20 @@ nonisolated enum FolderPageLayout: Hashable, Sendable {
 
     /// Classic Home keeps today's grid for every folder. Stage opens the Rows page unless the
     /// Settings default says Grid (`defaultGrid`, Settings › Home Screen › Collections Layout,
-    /// FEAT-71) or this folder has a stored Grid choice (`gridOverride`, `FolderLayoutStore`).
-    static func resolve(homeLayout: HomeLayout, gridOverride: Bool, defaultGrid: Bool) -> FolderPageLayout {
-        homeLayout == .classic || gridOverride || defaultGrid ? .grid : .rows
+    /// FEAT-71). Review r1 P2-1: the pre-FEAT-71 per-folder Grid choices (`folder_layout_grid`) are
+    /// no longer read: with the band's picker gone nothing could undo one, so a folder set to Grid
+    /// in rc4 would have ignored "Collections Layout: Rows" for good.
+    static func resolve(homeLayout: HomeLayout, defaultGrid: Bool) -> FolderPageLayout {
+        homeLayout == .classic || defaultGrid ? .grid : .rows
     }
 }
 
 /// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "shouldn't remain visible
-/// on the first row … it breaks the immersive feel … move this option into the settings"): the
-/// Stage folder page's layout, one device-local choice for every folder (Settings › Home Screen ›
-/// Collections Layout, shown only while Home Layout is Stage). Classic folders are always the grid.
+/// on the first row of the Home screen"): the Layout choice lives in Settings › Home Screen ›
+/// Collections Layout. The rc3/rc4 per-folder store (`folder_layout_grid`, written by the band's
+/// picker) is gone with the picker; a stale value under that key is ignored (review r1 P2-1). The
+/// synced `Collection.viewMode` stays ignored on TV: its default is `TABBED_GRID`, so it cannot
+/// tell "chose grid" from "never touched".
 nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     case rows
     case grid
@@ -58,51 +62,6 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     }
 }
 
-/// The device-local per-folder Grid choice (P2-6): one `@AppStorage` string, entries joined by
-/// "\n", entry = "\(collectionId)\u{1F}\(folderId)" (folder ids are unique per COLLECTION only).
-/// Only Grid choices are stored; a folder with no entry follows the Home layout and the Settings
-/// default (`FolderLayoutDefault`). FEAT-71: the TV can no longer WRITE an entry (the Edit band's
-/// Layout picker moved to Settings as one default for every folder); entries stored before keep
-/// opening their folder as the grid, and the store and its tests stay for them. The synced
-/// `Collection.viewMode` stays ignored on TV: its default is `TABBED_GRID`, so it cannot tell
-/// "chose grid" from "never touched".
-///
-/// `-folder_layout_grid ""` as a launch argument shadows every stored choice for the whole process
-/// (the argument domain wins over the app domain), which is what the folder UI legs pass.
-nonisolated enum FolderLayoutStore {
-    static let defaultsKey = "folder_layout_grid"
-    /// Oldest entries drop off past this, so the string stays bounded however many folders exist.
-    static let maxEntries = 200
-
-    static func entryKey(collectionId: String, folderId: String) -> String {
-        "\(collectionId)\u{1F}\(folderId)"
-    }
-
-    /// The stored entries in order (oldest first). Blank and whitespace-only lines are ignored.
-    static func entries(_ raw: String) -> [String] {
-        raw.split(separator: "\n", omittingEmptySubsequences: true)
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-    }
-
-    static func isGrid(_ raw: String, collectionId: String, folderId: String) -> Bool {
-        entries(raw).contains(entryKey(collectionId: collectionId, folderId: folderId))
-    }
-
-    /// The new raw string. `grid == true` appends the entry (deduplicated, newest last, the oldest
-    /// dropped past `maxEntries`); `grid == false` removes it.
-    static func setting(_ raw: String, grid: Bool, collectionId: String, folderId: String) -> String {
-        let key = entryKey(collectionId: collectionId, folderId: folderId)
-        var list = entries(raw).filter { $0 != key }
-        if grid {
-            list.append(key)
-            if list.count > maxEntries {
-                list.removeFirst(list.count - maxEntries)
-            }
-        }
-        return list.joined(separator: "\n")
-    }
-}
 
 // MARK: - Per-tab snapshot (§2.3)
 

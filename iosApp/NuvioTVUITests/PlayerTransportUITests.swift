@@ -191,8 +191,10 @@ final class PlayerTransportUITests: XCTestCase {
     /// the tvOS home screen. The smoke host presents the player over the ROOT view, which is the
     /// same shape (nothing under the cover answers a Menu), so this leg is the simulator half of
     /// the repro: the exit Menu, then a second Menu inside the dismissal (a slow release or a
-    /// double tap), then the app must still be in the foreground once the cover is gone. Without
-    /// `MenuExitShield` the second press reaches the root and the app backgrounds.
+    /// double tap), then the app must still be in the foreground once the cover is gone. The
+    /// control leg below passes with the shield off too (the dismissing cover takes the second
+    /// press on the simulator), so this leg guards the exit-then-double-Menu path itself, not the
+    /// shield; the shield's own proof needs the device (`[MenuProbe] shield swallowed`).
     func testMenuExitOverRootKeepsTheAppForeground() throws {
         try menuExitOverRoot(shieldOff: false)
     }

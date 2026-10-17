@@ -4117,7 +4117,7 @@ final class NuvioTVUITests: XCTestCase {
     /// Cinemeta catalogs, which load, and a missing add-on, which fails at once ("Addon not found")
     /// so the page's removal rule runs (`rows=3 removed=1`). No `titleLogoUrl`, so the folder title
     /// is a staticText inside `folder_stage_logo`. Legs that read it (test104–108) pass
-    /// `-folder_layout_grid ""`, which shadows any stored Grid choice, except test105, which writes
+    /// `-folder_layout_grid ""`, which shadows any stored Grid choice (FEAT-71 moved the Layout pick to Settings; test105 drives `-folder_layout_default`),
     /// that choice through the Edit menu; every one re-seeds `"[]"` in its `defer`.
     private static let folderRowsSeedJson = """
     [{"id":"zzfolderrows-collection","title":"ZZFolderRows","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderrows-folder","title":"ZZFolderRowsFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","coverImageUrl":"https://images.metahub.space/poster/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"imdbRating"},{"provider":"addon","addonId":"zz.missing.addon","type":"movie","catalogId":"zzmissing"}]}]}]
@@ -9873,7 +9873,7 @@ extension NuvioTVUITests {
 
     /// Stage Home seeded with the P2 folder fixture (`folderRowsSeedJson`). Trailers off and no
     /// Upcoming row keep the walk deterministic; `-folder_layout_grid ""` shadows any stored Grid
-    /// choice, except for test105, which writes that choice and passes `shadowGridChoice: false`.
+    /// choice (`shadowGridChoice: false` is kept for a leg that wants the stored choices live).
     private func launchStageWithFolderRows(extraArguments: [String] = [], shadowGridChoice: Bool = true) -> XCUIApplication {
         var arguments = ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
                          "-home_upcoming_row_enabled", "NO",
@@ -10363,57 +10363,43 @@ extension NuvioTVUITests {
         shot(app, "104c_memory")
     }
 
-    /// P2 §4.3 test105: the folder's Edit menu offers Layout › Grid / Rows. Picking Grid swaps in
-    /// today's grid (chips, `folder_header_state`) with focus kept on the Edit menu, the choice
-    /// survives leaving and reopening the folder, and Rows brings the strip back. No
-    /// `-folder_layout_grid` shadow here: this leg writes that choice.
-    func test105FolderRowsGridOption() throws {
-        let app = launchStageWithFolderRows(shadowGridChoice: false)
+    /// FEAT-71 (Batch B, B7): the Layout picker left the folder page's band for Settings › Home
+    /// Screen › Collections Layout (device-local `folder_layout_default`). The setting is driven
+    /// through its launch argument (the argument domain shadows the stored value, as the other
+    /// device-local keys do in these legs): Grid opens the seeded folder as today's grid with its
+    /// chips, Rows (the default) opens the strip, and the band no longer offers a Layout entry.
+    func test105FolderRowsDefaultLayoutSetting() throws {
+        func gridShowing(_ app: XCUIApplication) -> Bool { app.descendants(matching: .any)["folder_header_state"].exists }
+        func rowsShowing(_ app: XCUIApplication) -> Bool { !stageProbeLabel(app, "folder_rows_state").isEmpty }
+
+        let grid = launchStageWithFolderRows(extraArguments: ["-folder_layout_default", "grid"])
+        guard focusSeededFolderTile(grid) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        remote.press(.select)
+        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing(grid) || rowsShowing(grid) }, "the folder page never appeared")
+        pause(2.0)
+        shot(grid, "105a_default_grid")
+        XCTAssertTrue(gridShowing(grid), "Collections Layout = Grid must open the folder as the grid (folder_header_state)")
+        XCTAssertTrue(grid.buttons["All"].exists, "the grid's chips must be there, All included")
+        XCTAssertFalse(rowsShowing(grid), "folder_rows_state must not be mounted on the grid")
+        XCTAssertFalse(grid.descendants(matching: .any)["Layout"].exists, "the band must not offer a Layout entry any more")
+
+        let rows = launchStageWithFolderRows(extraArguments: ["-folder_layout_default", "rows"])
         defer {
             let restored = launchToHomeWithSeededCollections("[]")
             XCTAssertTrue(restored.state == .runningForeground)
         }
-        // A `Menu`: its resolved AX type is not guaranteed to be a plain button, so match any type.
-        let editMenu = app.descendants(matching: .any)["folder.editMenu"].firstMatch
-        func gridShowing() -> Bool { app.descendants(matching: .any)["folder_header_state"].exists }
-        func rowsShowing() -> Bool { !stageProbeLabel(app, "folder_rows_state").isEmpty }
-        func focusEditMenu() -> Bool { moveFocus(app, .up, untilFrameOf: editMenu, max: 4) }
-
-        guard focusSeededFolderTile(app) else {
-            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        guard focusSeededFolderTile(rows) else {
+            throw XCTSkip("the seeded folder tile never took focus on the second launch")
         }
         remote.press(.select)
-        XCTAssertTrue(pollUntil(15, step: 0.5) { rowsShowing() || gridShowing() }, "the folder page never appeared")
+        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing(rows) || rowsShowing(rows) }, "the folder page never reappeared")
         pause(2.0)
-        if gridShowing() {
-            // A Grid choice an interrupted earlier run left behind: back to Rows first.
-            XCTAssertTrue(focusEditMenu(), "could not focus folder.editMenu on the grid page")
-            try chooseMenuOption(app, "Rows", submenu: "Layout", what: "folder Layout (reset)")
-            XCTAssertTrue(pollUntil(6) { rowsShowing() }, "Rows did not come back after the reset")
-            pause(2.0)
-        }
-        XCTAssertTrue(focusEditMenu(), "Up from the strip's first row must reach folder.editMenu (the Edit band)")
-        try chooseMenuOption(app, "Grid", submenu: "Layout", what: "folder Layout › Grid")
-        shot(app, "105a_grid")
-        XCTAssertTrue(pollUntil(6) { gridShowing() }, "Grid must swap in today's grid (folder_header_state)")
-        XCTAssertTrue(app.buttons["All"].exists, "the grid's chips must be back, All included")
-        XCTAssertFalse(rowsShowing(), "folder_rows_state must leave with the Rows page")
-        XCTAssertTrue(hasFocusByFrame(app, editMenu), "choosing a layout must keep focus on the Edit menu (P2 §2.6)")
-
-        remote.press(.menu)
-        pause(3.0)
-        XCTAssertTrue(focusSeededFolderTile(app), "leaving the folder must return Home focus to the folder tile")
-        remote.press(.select)
-        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing() || rowsShowing() }, "the folder page never reappeared")
-        pause(2.0)
-        XCTAssertTrue(gridShowing(), "the Grid choice must persist when the folder is reopened")
-        shot(app, "105b_reopened_grid")
-
-        XCTAssertTrue(focusEditMenu(), "Up from the grid must reach folder.editMenu")
-        try chooseMenuOption(app, "Rows", submenu: "Layout", what: "folder Layout › Rows")
-        XCTAssertTrue(pollUntil(6) { rowsShowing() }, "Rows must bring the strip back")
-        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "mode"), "rows")
-        shot(app, "105c_rows_again")
+        shot(rows, "105b_default_rows")
+        XCTAssertTrue(rowsShowing(rows), "Collections Layout = Rows must open the strip")
+        XCTAssertEqual(tok(stageProbeLabel(rows, "folder_rows_state"), "mode"), "rows")
+        XCTAssertFalse(gridShowing(rows), "the grid must not be mounted on the Rows page")
     }
 
     /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage takes row 0's first item on

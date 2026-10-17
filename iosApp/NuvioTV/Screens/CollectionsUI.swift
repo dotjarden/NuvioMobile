@@ -1268,7 +1268,7 @@ nonisolated enum FolderHeaderGeometry {
 /// keeps this grid exactly (`gridPage`, with its Edit Filters button). Stage Home opens the folder
 /// as a stage-and-strip page (`FolderRowsPage`), or as the grid when Settings › Home Screen ›
 /// Collections Layout says Grid (FEAT-71, `FolderLayoutDefault`; a per-folder Grid choice stored
-/// before FEAT-71 still wins, `FolderLayoutStore`). In Stage the Edit menu (`FolderEditMenuBand`,
+/// before FEAT-71 is ignored since review r1 P2-1). In Stage the Edit menu (`FolderEditMenuBand`,
 /// Edit Filters only since FEAT-71) replaces the Edit Filters button and is mounted OUTSIDE the
 /// Rows/Grid switch. Both layouts share the one view model. `home_layout`, the default and the
 /// per-folder choice are read live, so a folder left open while either setting flips in Settings
@@ -1283,9 +1283,6 @@ struct FolderDetailView: View {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
-    /// P2 §2.1: the device-local per-folder Grid choices (`FolderLayoutStore`). Read only since
-    /// FEAT-71 (nothing on the TV writes it any more).
-    @AppStorage(FolderLayoutStore.defaultsKey) private var folderLayoutRaw = ""
     /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live.
     @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefaultRaw = FolderLayoutDefault.defaultValue.rawValue
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
@@ -1331,16 +1328,10 @@ struct FolderDetailView: View {
 
     private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
 
-    /// P2 §2.1: Classic → the grid; Stage → Rows unless the Settings default (FEAT-71) or this
-    /// folder's stored Grid choice says Grid.
+    /// P2 §2.1: Classic → the grid; Stage → Rows unless the Settings default (FEAT-71) says Grid.
     private var pageLayout: FolderPageLayout {
-        FolderPageLayout.resolve(
-            homeLayout: homeLayout,
-            gridOverride: FolderLayoutStore.isGrid(folderLayoutRaw,
-                                                   collectionId: model.collectionId,
-                                                   folderId: model.folderId),
-            defaultGrid: FolderLayoutDefault.resolve(folderLayoutDefaultRaw).isGrid
-        )
+        FolderPageLayout.resolve(homeLayout: homeLayout,
+                                 defaultGrid: FolderLayoutDefault.resolve(folderLayoutDefaultRaw).isGrid)
     }
 
     var body: some View {
@@ -1784,7 +1775,8 @@ struct FolderEditMenuBand: View {
     let isActive: Bool
     @Binding var editing: FolderDetailViewModel.EditableSource?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// FEAT-71: the band shows only while its Menu holds focus.
+    @Environment(\.dismiss) private var dismiss
+    /// FEAT-71: the band shows only while its pill holds focus.
     @FocusState private var menuFocused: Bool
 
     var body: some View {
@@ -1793,10 +1785,13 @@ struct FolderEditMenuBand: View {
         // section, then bounced to whichever card sat under it: end-of-Wave-2 FA87 walk). Hidden,
         // it keeps its place and is never a focus target. FEAT-71: and with nothing to edit there is
         // no band at all.
+        // Review r1 P1-2 (the BUG-47 eject class): with nothing to edit the band used to mount
+        // nothing, and a loading folder (every add-on-only folder, and every folder before its first
+        // emission) then had no focusable view at all: a Menu left the app. The band now always
+        // exists while active; with no filter entries its pill is a Go Back button instead of the
+        // Edit menu, still invisible until focused.
         Group {
-            if filterEntries.isEmpty {
-                EmptyView()
-            } else if isActive {
+            if isActive {
                 band.focusSection()
             } else {
                 band.hidden()
@@ -1812,25 +1807,38 @@ struct FolderEditMenuBand: View {
     private var band: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            Menu {
-                ForEach(filterEntries) { source in
-                    Button {
-                        editing = source
-                    } label: {
-                        Label(entryTitle(for: source), systemImage: "line.3.horizontal.decrease.circle")
-                    }
+            if filterEntries.isEmpty {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Go Back", systemImage: "chevron.backward")
+                        .font(Theme.Font.meta)
                 }
-            } label: {
-                Label("Edit", systemImage: "slider.horizontal.3")
-                    .font(Theme.Font.meta)
+                .buttonStyle(.bordered)
+                .disabled(!isActive)
+                .focused($menuFocused)
+                .accessibilityIdentifier("folder.goBack")
+            } else {
+                Menu {
+                    ForEach(filterEntries) { source in
+                        Button {
+                            editing = source
+                        } label: {
+                            Label(entryTitle(for: source), systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                    }
+                } label: {
+                    Label("Edit", systemImage: "slider.horizontal.3")
+                        .font(Theme.Font.meta)
+                }
+                // HIG contract: system styles only. If `.button` does not draw a bordered pill on tvOS,
+                // drop both modifiers and keep the system Menu look.
+                .menuStyle(.button)
+                .buttonStyle(.bordered)
+                .disabled(!isActive)
+                .focused($menuFocused)
+                .accessibilityIdentifier("folder.editMenu")
             }
-            // HIG contract: system styles only. If `.button` does not draw a bordered pill on tvOS,
-            // drop both modifiers and keep the system Menu look.
-            .menuStyle(.button)
-            .buttonStyle(.bordered)
-            .disabled(!isActive)
-            .focused($menuFocused)
-            .accessibilityIdentifier("folder.editMenu")
         }
         .padding(.top, FolderHeaderGeometry.restTop)
         .padding(.trailing, Theme.Spacing.screen)

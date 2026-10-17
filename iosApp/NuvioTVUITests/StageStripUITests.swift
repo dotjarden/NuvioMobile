@@ -874,8 +874,12 @@ final class StageStripUITests: XCTestCase {
         let geo = try requireGeometry(app)
         note("S13_geometry", stage(app))
         XCTAssertTrue(geo.fits, "Large must fit the stage's 420 pt floor (fits=1): \(stage(app))")
-        XCTAssertEqual(geo.stageH, 448, accuracy: 4, "Large stage height (P1 447, Gate 1 449): \(stage(app))")
-        XCTAssertEqual(geo.page, 588.5, accuracy: 3, "Large page height (P1 589, Gate 1 588): \(stage(app))")
+        // BUG-146 second trim (Batch B, B6): heading → shelf lost 4 pt on the strip, so every page
+        // is 4 pt shorter and every stage 4 pt taller than Batch A's (which were 12 pt shorter / taller
+        // than P1's: P1 447 / 589, Gate 1 449 / 588, Batch A 452 / 584.5, now 463 / 573 in the unit
+        // table, 461 / 574 with the live fonts).
+        XCTAssertEqual(geo.stageH, 463, accuracy: 4, "Large stage height (B6 463, live fonts 461): \(stage(app))")
+        XCTAssertEqual(geo.page, 573, accuracy: 3, "Large page height (B6 573, live fonts 574): \(stage(app))")
         XCTAssertLessThan(geo.stageH, 480, "Large compresses the stage's logo slot (stage < 480): \(stage(app))")
         XCTAssertEqual(geo.stageH + geo.stripH, 1080, accuracy: 1, "stage + strip must fill the screen: \(stage(app))")
         XCTAssertEqual(geo.stripH - geo.page, 44, accuracy: 4, "the strip is one page plus the heading peek: \(stage(app))")
@@ -975,15 +979,26 @@ final class StageStripUITests: XCTestCase {
     // MARK: - testS16
 
     /// W2-A §5: in Stage a catalog row's heading carries its add-on ("Popular · Cinemeta").
+    /// B1 (Batch B, BUG-145 / FEAT-67): the add-on suffix is behind Appearance › "Show Catalog
+    /// Details in Headings", OFF by default (Steven's no-go), so the default launch shows bare
+    /// headings and the suffix needs the setting's launch argument.
     func testS16_AddonHeadings() throws {
-        let app = launch(Self.stageArguments())
+        let suffix = "\u{00B7} Cinemeta"
+        let plain = launch(Self.stageArguments())
+        let plainGeo = try requireGeometry(plain)
+        try requireStrip(plain, plainGeo)
+        pause(1.5)
+        XCTAssertFalse(plain.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", suffix)).firstMatch.exists,
+                       "with the setting OFF (default) no Stage heading may carry its add-on")
+        shot("S16_headings_off")
+
+        let app = launch(Self.stageArguments() + ["-show_catalog_details_in_headings", "YES"])
         let geo = try requireGeometry(app)
         try requireStrip(app, geo)
         pause(1.5)
-        let suffix = "\u{00B7} Cinemeta"
         let headings = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", suffix))
         XCTAssertTrue(headings.firstMatch.waitForExistence(timeout: 5),
-                      "no Stage row heading carries its add-on ('… \(suffix)')")
+                      "with the setting ON no Stage row heading carries its add-on ('… \(suffix)')")
         note("S16_headings", headings.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
         shot("S16_headings")
     }
