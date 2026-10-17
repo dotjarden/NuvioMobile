@@ -446,7 +446,7 @@ struct FolderRowsPage: View {
                                               railArmedSinceLoss: railArmed)
         pageBox.pushOrigin = origin
         let via = origin == nil ? "none" : (current != nil ? "current" : "loss")
-        let input = pageBox.inputBeforeLoss.map { "\($0.kind)/\(Int($0.ago * 1000))" } ?? "-"
+        let input = pageBox.inputBeforeLoss.map { "\($0.kind.rawValue)/\(Int($0.ago * 1000))" } ?? "-"
         StageStripProbe.shared.log("folder push origin=\(origin.map { "\($0.rowKey)/\($0.itemId ?? "-")" } ?? "-") via=\(via) sinceLoss=\(sinceLoss.map { String(Int($0 * 1000)) } ?? "-") input=\(input) rail=\(railArmed ? 1 : 0)")
     }
 
@@ -486,7 +486,7 @@ final class FolderRowsPageBox {
     var lostRow: String?
     var lostItem: String?
     var lostAt: TimeInterval?
-    var inputBeforeLoss: (kind: String, ago: TimeInterval)?
+    var inputBeforeLoss: ViewerInput?
     /// BUG-156 (b): when the rail last armed on this page.
     var railArmedAt: TimeInterval?
     var initialCard: String?

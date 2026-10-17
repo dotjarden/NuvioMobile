@@ -243,7 +243,9 @@ final class StageController: ObservableObject {
     private func attemptUncoverRestore(rowKey: String, itemId: String?, requestedAt: TimeInterval,
                                        generation: Int, attempt: Int) {
         let delay: TimeInterval = attempt == 0 ? 0 : 0.1
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        // A main-actor Task: even with no delay it runs after the current update, never inline.
+        Task { [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard let self, generation == self.uncoverRestoreGeneration else { return }
             // The viewer pressed or swiped before the pager came back: their move, not ours.
             if let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
@@ -303,7 +305,8 @@ final class StageController: ObservableObject {
             let n = target.regrabs
             // Deferred one beat, then re-checked: the press behind a row change can reach the
             // window's recognizer just after the move it caused (`UncoverRestorePolicy.regrabDefer`).
-            DispatchQueue.main.asyncAfter(deadline: .now() + UncoverRestorePolicy.regrabDefer) { [weak self] in
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(UncoverRestorePolicy.regrabDefer))
                 guard let self, generation == self.uncoverRestoreGeneration,
                       let live = self.uncoverRestoreTarget else { return }
                 if UncoverRestorePolicy.viewerMoved(live, viewerInputAt: ViewerInputClock.shared.lastAt) {
@@ -320,7 +323,7 @@ final class StageController: ObservableObject {
     /// The restore is over. `cancelsPager`: the viewer moved, so an in-flight request's later rungs
     /// must not pull focus back to the origin row (the BUG-112 F1/F5 stale-request class).
     private func retireUncover(why: String, rowKey: String, from key: String?, cancelsPager: Bool) {
-        let input = ViewerInputClock.shared.lastKind
+        let input = ViewerInputClock.shared.lastKindLabel
         cancelUncoverRestore()
         if cancelsPager { pagerHandle.cancelRequest(reason: "uncover-\(why)") }
         StageStripProbe.shared.log("restore retired row=\(rowKey) why=\(why) from=\(key ?? "-") input=\(why == "viewer" ? input : "-") source=\(uncoverSource)")
@@ -352,7 +355,7 @@ final class StageController: ObservableObject {
                   let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
             // Not issued yet (the pager is not back): just stand the attempt down.
             cancelUncoverRestore()
-            StageStripProbe.shared.log("restore retired row=- why=viewer from=- input=\(ViewerInputClock.shared.lastKind) pending=1 source=\(uncoverSource)")
+            StageStripProbe.shared.log("restore retired row=- why=viewer from=- input=\(ViewerInputClock.shared.lastKindLabel) pending=1 source=\(uncoverSource)")
         }
     }
 
@@ -364,7 +367,8 @@ final class StageController: ObservableObject {
     private func scheduleDebugSteal(rowKey: String, generation: Int) {
         let ms = UserDefaults.standard.integer(forKey: "debug.uncoverStealMs")
         guard ms > 0 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double(ms) / 1000) { [weak self] in
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(ms))
             guard let self, generation == self.uncoverRestoreGeneration,
                   let live = self.uncoverRestoreTarget, live.regrabs == 0, live.rowKey == rowKey,
                   let steal = self.recentRowKeys.last(where: { $0 != rowKey }) else { return }

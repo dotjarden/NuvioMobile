@@ -105,21 +105,21 @@ nonisolated enum FolderPushOrigin {
     ///     focus at the disappear (the loss has not been reported yet).
     ///   - lost: the row and card the strip left at its last focus loss.
     ///   - sinceLoss: seconds from that loss to the disappear (nil = no loss recorded).
-    ///   - inputBeforeLoss: the last viewer input before the loss (`ViewerInputClock` kind, e.g.
-    ///     "select", "up") and how long before the loss it came; nil without a clock.
+    ///   - inputBeforeLoss: the last viewer input before the loss (`ViewerInput`: its kind and how
+    ///     long before the loss it came); nil without a clock.
     ///   - railArmedSinceLoss: the rail armed after the loss (a Left into the rail, then a tab: not a
     ///     push; the rail's own return route restores that one).
     static func resolve(current: Origin?,
                         lost: Origin?,
                         sinceLoss: TimeInterval?,
-                        inputBeforeLoss: (kind: String, ago: TimeInterval)?,
+                        inputBeforeLoss: ViewerInput?,
                         clockLive: Bool,
                         railArmedSinceLoss: Bool) -> Origin? {
         if let current { return current }
         guard let lost, let sinceLoss, sinceLoss >= 0, !railArmedSinceLoss else { return nil }
         if clockLive {
             // Up to the Edit band, Left to the rail, a tab: the loss followed a directional press.
-            guard let input = inputBeforeLoss, input.kind == "select",
+            guard let input = inputBeforeLoss, input.kind == .select,
                   input.ago >= 0, input.ago < selectToLossGrace else { return nil }
             return lost
         }

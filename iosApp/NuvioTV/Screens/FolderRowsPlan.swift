@@ -44,7 +44,8 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     /// Rows, the Stage folder page as it shipped.
     static let defaultValue: FolderLayoutDefault = .rows
 
-    /// nil, blank or unknown resolves to `defaultValue`.
+    /// nil, blank or unknown resolves to `defaultValue`. The views store the enum itself through
+    /// `@AppStorage` (a `String` raw value), so this is for raw readers such as tests and tooling.
     static func resolve(_ raw: String?) -> FolderLayoutDefault {
         guard let raw else { return defaultValue }
         return FolderLayoutDefault(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
@@ -56,8 +57,8 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     /// The Settings picker label ("Rows" and "Grid" already exist in the string catalog).
     var label: String {
         switch self {
-        case .rows: return String(localized: "Rows")
-        case .grid: return String(localized: "Grid")
+        case .rows: String(localized: "Rows")
+        case .grid: String(localized: "Grid")
         }
     }
 }

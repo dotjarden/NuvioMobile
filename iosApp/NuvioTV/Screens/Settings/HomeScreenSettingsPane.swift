@@ -34,8 +34,10 @@ struct HomeScreenSettingsPane: View {
     /// unknown value reads as the default (Stage).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
     /// FEAT-71 (Steven, rc4 verdict 2026-10-16): the Stage folder page's Rows / Grid choice, moved out
-    /// of the folder page's Edit band into Settings (`FolderLayoutDefault`, device-local).
-    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefaultRaw = FolderLayoutDefault.defaultValue.rawValue
+    /// of the folder page's Edit band into Settings (`FolderLayoutDefault`, device-local). Stored as
+    /// the enum itself (`String` raw value), so the picker binds to it directly; an unset or unknown
+    /// value reads as the default (Rows).
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
 
     /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
     /// Default ON. Local-only, not synced; the wash layer reads the same key
@@ -354,10 +356,7 @@ struct HomeScreenSettingsPane: View {
             if isStage {
                 SettingsPickerRow(
                     title: String(localized: "Collections Layout"),
-                    selection: Binding(
-                        get: { FolderLayoutDefault.resolve(folderLayoutDefaultRaw) },
-                        set: { folderLayoutDefaultRaw = $0.rawValue }
-                    ),
+                    selection: $folderLayoutDefault,
                     options: FolderLayoutDefault.allCases,
                     descriptionID: .homeCollectionsLayout,
                     label: { $0.label }

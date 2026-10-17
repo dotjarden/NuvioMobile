@@ -24,8 +24,10 @@ final class ViewerInputClock {
 
     /// `ProcessInfo.systemUptime` of the last input, nil before any.
     private(set) var lastAt: TimeInterval?
-    /// "up" / "down" / "left" / "right" / "select" / "menu" / "playPause" / "swipe".
-    private(set) var lastKind = "-"
+    /// The last input's kind (`ViewerInputKind`), nil before any.
+    private(set) var lastKind: ViewerInputKind?
+    /// `lastKind` for the probe lines: its raw token, "-" before any input.
+    var lastKindLabel: String { lastKind?.rawValue ?? "-" }
     /// The clock is installed on a window, so the absence of an input means something.
     var isLive: Bool { installedOn != nil }
 
@@ -45,7 +47,7 @@ final class ViewerInputClock {
         installedOn = window
     }
 
-    func record(_ kind: String) {
+    func record(_ kind: ViewerInputKind) {
         lastAt = ProcessInfo.processInfo.systemUptime
         lastKind = kind
         NotificationCenter.default.post(name: Self.didRecord, object: self)
@@ -53,9 +55,9 @@ final class ViewerInputClock {
 
     /// The last input before `time` and how long before it, nil when the last input came later or
     /// there is none (the folder page's push-origin rule reads it at the strip's focus loss).
-    func input(before time: TimeInterval) -> (kind: String, ago: TimeInterval)? {
-        guard let lastAt, lastAt <= time else { return nil }
-        return (lastKind, time - lastAt)
+    func input(before time: TimeInterval) -> ViewerInput? {
+        guard let lastAt, let lastKind, lastAt <= time else { return nil }
+        return ViewerInput(kind: lastKind, ago: time - lastAt)
     }
 }
 
@@ -68,7 +70,7 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
     /// the Back press) never travels this far and never counts.
     private static let swipeTravel: CGFloat = 40
 
-    private let onInput: (String) -> Void
+    private let onInput: (ViewerInputKind) -> Void
     private var touchStart: CGPoint?
     private var swipeReported = false
     /// Review r2 P2-1: presses still down. A press end used to fail the recognizer while a clickpad
@@ -78,7 +80,7 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
     /// once no press AND no touch is down.
     private var pressesDown = 0
 
-    init(onInput: @escaping (String) -> Void) {
+    init(onInput: @escaping (ViewerInputKind) -> Void) {
         self.onInput = onInput
         super.init(target: nil, action: nil)
         allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
@@ -121,7 +123,7 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
         guard !swipeReported, let start = touchStart, let point = touches.first?.location(in: view) else { return }
         if hypot(point.x - start.x, point.y - start.y) >= Self.swipeTravel {
             swipeReported = true
-            onInput("swipe")
+            onInput(.swipe)
         }
     }
 
@@ -156,16 +158,16 @@ final class ViewerInputRecognizer: UIGestureRecognizer, UIGestureRecognizerDeleg
         true
     }
 
-    private static func kind(of type: UIPress.PressType) -> String? {
+    private static func kind(of type: UIPress.PressType) -> ViewerInputKind? {
         switch type {
-        case .upArrow: return "up"
-        case .downArrow: return "down"
-        case .leftArrow: return "left"
-        case .rightArrow: return "right"
-        case .select: return "select"
-        case .menu: return "menu"
-        case .playPause: return "playPause"
-        default: return nil
+        case .upArrow: .up
+        case .downArrow: .down
+        case .leftArrow: .left
+        case .rightArrow: .right
+        case .select: .select
+        case .menu: .menu
+        case .playPause: .playPause
+        default: nil
         }
     }
 }

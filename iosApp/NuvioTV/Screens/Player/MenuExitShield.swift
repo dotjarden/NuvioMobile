@@ -32,7 +32,8 @@ final class MenuExitShield: NSObject, UIGestureRecognizerDelegate {
     private weak var installedOn: UIWindow?
     private var recognizer: UITapGestureRecognizer?
     private var armedAt: TimeInterval?
-    private var disarmWork: DispatchWorkItem?
+    /// The ceiling timer (`maxArmedSeconds`), cancelled by `disarm`.
+    private var disarmTask: Task<Void, Never>?
     /// Presses the shield claimed since launch (the `[MenuProbe]` lines carry the count).
     private(set) var swallowedCount = 0
 
@@ -70,10 +71,12 @@ final class MenuExitShield: NSObject, UIGestureRecognizerDelegate {
         let now = ProcessInfo.processInfo.systemUptime
         armedAt = now
         recognizer?.isEnabled = true
-        disarmWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.disarm(reason: "timeout") }
-        disarmWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxArmedSeconds, execute: work)
+        disarmTask?.cancel()
+        disarmTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.maxArmedSeconds))
+            guard !Task.isCancelled else { return }
+            self?.disarm(reason: "timeout")
+        }
         NSLog("[MenuProbe] shield armed reason=%@ installed=%d", reason, recognizer == nil ? 0 : 1)
     }
 
@@ -82,8 +85,8 @@ final class MenuExitShield: NSObject, UIGestureRecognizerDelegate {
         guard let armedAt else { return }
         let held = ProcessInfo.processInfo.systemUptime - armedAt
         self.armedAt = nil
-        disarmWork?.cancel()
-        disarmWork = nil
+        disarmTask?.cancel()
+        disarmTask = nil
         recognizer?.isEnabled = false
         NSLog("[MenuProbe] shield disarmed reason=%@ held=%dms swallowed=%d", reason, Int(held * 1000), swallowedCount)
     }

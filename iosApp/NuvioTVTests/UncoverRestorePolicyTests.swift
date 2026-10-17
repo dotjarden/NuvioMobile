@@ -107,7 +107,7 @@ final class UncoverRestorePolicyTests: XCTestCase {
     func testAStripStillHoldingFocusIsTheOrigin() {
         let current = Origin(rowKey: "tab2", itemId: "tt2")
         XCTAssertEqual(FolderPushOrigin.resolve(current: current, lost: Origin(rowKey: "tab1", itemId: "x"),
-                                                sinceLoss: 0.4, inputBeforeLoss: ("up", 3), clockLive: true,
+                                                sinceLoss: 0.4, inputBeforeLoss: ViewerInput(kind: .up, ago: 3), clockLive: true,
                                                 railArmedSinceLoss: true), current)
     }
 
@@ -116,11 +116,11 @@ final class UncoverRestorePolicyTests: XCTestCase {
     func testASelectThenALossIsThePush() {
         let lost = Origin(rowKey: "tab2", itemId: "tt2")
         XCTAssertEqual(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: 0.5,
-                                                inputBeforeLoss: ("select", 0.05), clockLive: true,
+                                                inputBeforeLoss: ViewerInput(kind: .select, ago: 0.05), clockLive: true,
                                                 railArmedSinceLoss: false), lost)
         // A hold menu's "Go to Details": the loss came with the menu, long before the disappear.
         XCTAssertEqual(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: 6,
-                                                inputBeforeLoss: ("select", 0.8), clockLive: true,
+                                                inputBeforeLoss: ViewerInput(kind: .select, ago: 0.8), clockLive: true,
                                                 railArmedSinceLoss: false), lost)
     }
 
@@ -128,12 +128,12 @@ final class UncoverRestorePolicyTests: XCTestCase {
     func testALossAfterADirectionalPressIsNotAPush() {
         let lost = Origin(rowKey: "tab1", itemId: "tt1")
         XCTAssertNil(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: 0.4,
-                                              inputBeforeLoss: ("up", 0.02), clockLive: true, railArmedSinceLoss: false))
+                                              inputBeforeLoss: ViewerInput(kind: .up, ago: 0.02), clockLive: true, railArmedSinceLoss: false))
         XCTAssertNil(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: 0.4,
-                                              inputBeforeLoss: ("select", 0.02), clockLive: true, railArmedSinceLoss: true),
+                                              inputBeforeLoss: ViewerInput(kind: .select, ago: 0.02), clockLive: true, railArmedSinceLoss: true),
                      "a tab picked in the rail is the rail route's to restore")
         XCTAssertNil(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: 0.4,
-                                              inputBeforeLoss: ("select", 5), clockLive: true, railArmedSinceLoss: false),
+                                              inputBeforeLoss: ViewerInput(kind: .select, ago: 5), clockLive: true, railArmedSinceLoss: false),
                      "a Select long before the loss did not cause it")
         XCTAssertNil(FolderPushOrigin.resolve(current: nil, lost: nil, sinceLoss: nil,
                                               inputBeforeLoss: nil, clockLive: true, railArmedSinceLoss: false))

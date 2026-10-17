@@ -1283,8 +1283,9 @@ struct FolderDetailView: View {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
-    /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live.
-    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefaultRaw = FolderLayoutDefault.defaultValue.rawValue
+    /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live as the
+    /// enum itself; an unset or unknown stored value reads as the default (Rows).
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
     /// (true while the strip's focused row is its top focusable row, or before any row had focus).
     @State private var rowsAtTop = true
@@ -1330,8 +1331,7 @@ struct FolderDetailView: View {
 
     /// P2 §2.1: Classic → the grid; Stage → Rows unless the Settings default (FEAT-71) says Grid.
     private var pageLayout: FolderPageLayout {
-        FolderPageLayout.resolve(homeLayout: homeLayout,
-                                 defaultGrid: FolderLayoutDefault.resolve(folderLayoutDefaultRaw).isGrid)
+        FolderPageLayout.resolve(homeLayout: homeLayout, defaultGrid: folderLayoutDefault.isGrid)
     }
 
     var body: some View {
