@@ -165,7 +165,30 @@ enum AddonBootstrapRoute: Equatable {
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
     @Published private(set) var sections: [HomeCatalogSection] = []
-    @Published private(set) var rows: [HomeRow] = []
+    @Published private(set) var rows: [HomeRow] = [] {
+        didSet { rowsByKey = Self.indexRows(rows) }
+    }
+    /// Perf review 2026-10-17 (#10): `rows` keyed the way the Stage strip names them —
+    /// `section.key` for a catalog, the bare `collection.id` for a collection (NOT `HomeRow.id`,
+    /// which prefixes collections). The first row with a key wins, as the strip's linear
+    /// `first(where:)` lookup did. Rebuilt with every `rows` write, never published on its own.
+    private(set) var rowsByKey: [String: HomeRow] = [:]
+
+    static func stripKey(_ row: HomeRow) -> String {
+        switch row {
+        case .catalog(let section): return section.key
+        case .collection(let collection): return collection.id
+        }
+    }
+
+    static func indexRows(_ rows: [HomeRow]) -> [String: HomeRow] {
+        var index: [String: HomeRow] = [:]
+        index.reserveCapacity(rows.count)
+        for row in rows where index[stripKey(row)] == nil {
+            index[stripKey(row)] = row
+        }
+        return index
+    }
     @Published private(set) var continueWatching: [WatchProgressEntry] = []
     /// Parent ids of Continue Watching series whose show has Episode Shuffle on (drives the card's
     /// shuffle badge). Recomputed with the row and whenever the shuffle profile changes.

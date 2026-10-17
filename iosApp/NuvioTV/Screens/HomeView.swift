@@ -143,7 +143,15 @@ struct HomeView: View {
     /// Observing this model is NOT the BUG-19/coordinator churn class the tick comment warns
     /// about: it publishes only the HERO's own phase — a handful of discrete changes per page
     /// cycle — never app-wide claim/release traffic.
-    @StateObject private var heroTrailerModel = InlineTrailerCardModel()
+    private var heroTrailerModel: InlineTrailerCardModel { heroModels.trailer }
+    /// Perf review 2026-10-17 (#1): the three hero models — `focusModel`, `heroResolver` and
+    /// `heroTrailerModel` — live in one holder that never publishes, so this view OWNS them (same
+    /// lifetime as the three `@StateObject`s they used to be) without OBSERVING them. A hero focus
+    /// commit used to re-run this whole body and every visible row; now it re-renders only the leaf
+    /// views that read the models (`HomeHeroDriver`, `HomeHeroBackdropLayer`, `HomeHeroTextSlot`,
+    /// `HomeHeroDotsSlot`, the DEBUG `HomeHeroDebugLabel`). Reads in closures and event handlers
+    /// below are at event time and need no observation.
+    @StateObject private var heroModels = HomeHeroModels()
     /// FEAT-25 (Codex beta.14 r5): the system Auto-Play Video Previews gate, mirrored into state
     /// because a bare `UIAccessibility.isVideoAutoplayEnabled` read in `heroTrailerAutoplayActive`
     /// re-evaluates only when something ELSE re-renders this view — flipping the setting while the
@@ -231,11 +239,11 @@ struct HomeView: View {
 
     /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
     /// take over the hero from the carousel.
-    @StateObject private var focusModel = HomeHeroFocusModel()
+    private var focusModel: HomeHeroFocusModel { heroModels.focus }
     /// Wave H: turns the hero TARGET (`displayHero`) into the hero that is actually PAINTED, once
     /// its backdrop and logo are both resolved. Every hero renderer below reads
     /// `heroResolver.presented`, never `displayHero` — see `HeroArtResolver`.
-    @StateObject private var heroResolver = HeroArtResolver()
+    private var heroResolver: HeroArtResolver { heroModels.resolver }
     /// Wave H: the hero artwork layer's own opacity, driven imperatively from `.onChange` so ONLY
     /// opacity animates. It used to be a `.animation(_:value:)` on the whole backdrop Group, which
     /// also animated GEOMETRY — a folder hero swapping a square cover for a 16:9 backdrop had its
@@ -384,10 +392,15 @@ struct HomeView: View {
     private var displayHero: MetaPreview? {
         // Home Stage & Strip (P1 E3): the stage owns its own focus/art pipeline
         // (`StageController`); Classic's resolver presents nil and fetches nothing.
-        if isStageLayout { return nil }
-        if heroCarouselActive { return focusModel.focusedItem ?? currentHero }
-        if focusHeroActive { return focusModel.focusedItem ?? heroRestingItem }
-        return nil
+        HomeHeroTarget.resolve(heroTargetInputs, focused: focusModel.focusedItem)
+    }
+
+    /// Everything `displayHero` depends on except the focus model, so `HomeHeroDriver` (which
+    /// observes the focus model) resolves the same target this view does.
+    private var heroTargetInputs: HomeHeroTarget.Inputs {
+        HomeHeroTarget.Inputs(isStage: isStageLayout, carouselActive: heroCarouselActive,
+                              panelActive: focusHeroActive, currentHero: currentHero,
+                              restingItem: heroRestingItem)
     }
 
     /// Wave H: hand the current target to the resolver. Called from `.onAppear`, from the target's
@@ -427,46 +440,13 @@ struct HomeView: View {
                               restoresFocus: restoresFocus)
     }
 
-    /// Wave H: changes to the target's own fields, at the same identity. Cheap to recompute (a
-    /// join over eight components) and only ever consumed by an `.onChange`.
-    ///
-    /// Codex r1 (P2): every field the hero actually RENDERS has to be in here, or a same-id update
-    /// leaves stale text on screen forever, because nothing else calls `presentHero()` at a stable
-    /// identity. The previous version carried only the description, the genre COUNT and the two
-    /// artwork URLs, so a folder renamed on mobile, or genres replaced by a same-length list, was
-    /// invisible. What `HomeHeroForeground` draws, and therefore what is listed below:
-    /// `name` (`HeroLogo`'s text stand-in and the CTA's accessibility label), `description_`
-    /// (the synopsis), `releaseInfo` + `genres` (the meta line), `logo` and `banner` (the resolved
-    /// artwork), `poster` (`heroBackdropURL`'s last fallback, so it can BE the backdrop), and
-    /// `type` (picks "Go to Movie" vs "Go to Show", and is not covered by the id-only `.onChange`).
-    /// `imdbRating` is deliberately absent: `metaLine` does not render it, so including it would
-    /// only buy needless `present` calls.
-    private var heroPayloadSignature: String {
-        guard let hero = displayHero else { return "-" }
-        let description: String? = hero.description_
-        let banner: String? = hero.banner
-        let logo: String? = hero.logo
-        let poster: String? = hero.poster
-        let releaseInfo: String? = hero.releaseInfo
-        return [
-            hero.name,
-            description ?? "",
-            hero.genres.joined(separator: ","),
-            releaseInfo ?? "",
-            banner ?? "",
-            logo ?? "",
-            poster ?? "",
-            hero.type,
-        ].joined(separator: "|")
-    }
-
     /// Whether the hero ARTWORK layer should be visible. `heroPosterFocusOnly` fades it while the
     /// carousel idles unengaged; every other configuration shows it always (UX-7/FEAT-15 precedence
     /// — see the toggle's own doc). Driven through `heroArtOpacity` rather than an `.animation`
     /// modifier so the fade cannot animate the artwork's geometry with it.
     private var heroArtVisible: Bool {
-        guard heroPosterFocusOnly && heroCarouselActive else { return true }
-        return heroFocused || focusModel.focusedItem != nil
+        HomeHeroTarget.artVisible(posterFocusOnly: heroPosterFocusOnly, carouselActive: heroCarouselActive,
+                                  heroFocused: heroFocused, rowFocused: focusModel.focusedItem != nil)
     }
 
     /// FEAT-25: whether the hero backdrop may run a trailer right now. Three gates on top of the
@@ -494,11 +474,16 @@ struct HomeView: View {
     /// than restarting it. In every state exactly one of the two is the claimant of the single
     /// player slot.
     private var heroTrailerAutoplayActive: Bool {
-        guard heroTrailerAutoplay, heroTrailerSharedGatesOpen else { return false }
-        let heroEngaged = heroFocused || focusModel.focusedItem != nil
-        if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
-        if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
-        return true
+        heroTrailerGate.autoplayActive(rowFocused: focusModel.focusedItem != nil)
+    }
+
+    /// Perf review 2026-10-17 (#1): every input of the two hero-trailer claims except the focus
+    /// model, so `HomeHeroBackdropLayer` (which observes it) decides exactly what this view would.
+    private var heroTrailerGate: HomeHeroTrailerGate {
+        HomeHeroTrailerGate(autoplayEnabled: heroTrailerAutoplay, sharedGatesOpen: heroTrailerSharedGatesOpen,
+                            heroFocused: heroFocused, posterFocusOnly: heroPosterFocusOnly,
+                            carouselActive: heroCarouselActive, inlineTrailersEnabled: inlineTrailersEnabled,
+                            focusTrailerMode: heroFocusTrailerMode)
     }
 
     /// Gates shared by BOTH hero-trailer claimants (`heroTrailerAutoplayActive` /
@@ -570,8 +555,7 @@ struct HomeView: View {
     /// is also the exact event that flips `displayHero` to this title, so the backdrop and the
     /// trailer claim always name the same thing.
     private var heroFocusTrailerActive: Bool {
-        guard heroFocusTrailerMode, heroTrailerSharedGatesOpen else { return false }
-        return focusModel.focusedItem != nil
+        heroTrailerGate.focusActive(rowFocused: focusModel.focusedItem != nil)
     }
 
     /// The single Bool handed to `HomeHeroBackdrop` as `autoplaysTrailer`. The backdrop never needs
@@ -588,8 +572,7 @@ struct HomeView: View {
         // for the length of one resolve, let a title's claim arm an attempt against the folder
         // still on screen (a synthetic id no extractor can resolve) — and conversely stop a
         // playing trailer a second before its own artwork leaves.
-        if let hero = heroResolver.presented?.item, isCollectionHero(hero) { return false }
-        return heroFocusTrailerActive || heroTrailerAutoplayActive
+        heroTrailerGate.active(rowFocused: focusModel.focusedItem != nil, presented: heroResolver.presented?.item)
     }
 
     /// FEAT-25: whether the hero currently owns a trailer ATTEMPT — dwell, resolution, or
@@ -613,6 +596,103 @@ struct HomeView: View {
     /// all.
     @State private var debugPinnedSettle = "-"
     #endif
+
+    // MARK: - Perf review 2026-10-17 (#1): the rows' callbacks
+
+    /// The one callback object every row holds (`HomeRowsList`). `@State` so the reference is stable
+    /// for the life of Home; `installRowActions` re-points its closures on every body evaluation.
+    @State private var rowActions = HomeRowActions()
+
+    /// Re-points `rowActions` at this body's `self`. Called from `body` (a plain reference write,
+    /// no published state), so the rows always reach the current values; the rows themselves only
+    /// call these at event time. The closures are the ones `rowsScroll` used to build per row.
+    private func installRowActions() {
+        let actions = rowActions
+        actions.resume = { resume = $0 }
+        actions.goToDetails = { homePath.append(TitleRoute(preview: previewFromEntry($0))) }
+        actions.continueWatchingFocus = { entry in
+            reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
+                           prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+        }
+        actions.upcomingFocus = { item in
+            reportRowFocus(item?.toMetaPreview(), source: "upcoming",
+                           prefetch: { model.upcoming.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0.toMetaPreview()) } })
+        }
+        actions.catalogFocus = { item, section in
+            reportRowFocus(item, source: section.key,
+                           logoCandidates: {
+                               section.items.prefix(CatalogRowView.homePreviewLimit)
+                                   .filter { TitleLogoStore.isLookupCandidate($0.logo) }
+                           },
+                           prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+        }
+        actions.folderFocus = { collection, folder in handleFolderFocus(collection: collection, folder: folder) }
+        actions.catalogRowAppeared = { model.rowAppeared(sectionKey: $0) }
+        actions.collectionRowAppeared = { prefetchCollectionHeroArt($0) }
+    }
+
+    /// A collection row's folder focus (formerly the row's inline `onFolderFocusChange` closure).
+    private func handleFolderFocus(collection: NuvioCollection, folder: CollectionFolder?) {
+        // FEAT-33 leg 1/3 (Codex r1+r2): EVERY focus event — including the
+        // `nil` that fires when focus leaves the row — supersedes any
+        // deferred commit still in flight, so a hero queued for a folder
+        // the user has already left never lands. Gated on the leg: with it
+        // off (the default) this `@State` is never written, so the folder
+        // focus path schedules no extra Home update.
+        if CollectionFocusAB.deferHeroCommit { folderFocusGeneration &+= 1 }
+        // BUG-112 review fix (F3): row ownership used to be claimed here
+        // (from the FOLDER event, since a folder with no configured
+        // backdrop/logo reports `preview == nil` and `reportRowFocus`
+        // never saw a claim to make). That claim now comes from the row's
+        // own `@FocusState` via `pinnedRowFocusOwnership` — see
+        // `handleRowFocusOwnership` — which cannot go stale the way a
+        // preview-gated report could (landing on "See All" or an
+        // unconfigured folder still owns the row).
+        // BUG-38 round three: a focused folder tile hands its configured
+        // backdrop + title logo to the hero, the Fusion behaviour the
+        // reporter asked for on the HOME page. Folders with neither asset
+        // report nil — the hero stays where it was, exactly as before.
+        let preview = folder.flatMap { folderHeroPreview(collection: collection, folder: $0) }
+        if let folder, let preview {
+            heroFolderRoutes[preview.id] = FolderRoute(collectionId: collection.id, folder: folder)
+        }
+        // The route registration above stays immediate on purpose — it is
+        // pure bookkeeping the CTA reads later, and deferring it would let
+        // a fast press land before the map knew the folder.
+        let commit = {
+            reportRowFocus(preview, source: collection.id, prefetch: {
+                // Backdrops AND logos (Codex r3): a folder with its own cover never
+                // warms its logo on the tile (FolderTile suppresses it there), so the
+                // hero's HeroLogo would otherwise start cold and flash the text name.
+                // Wave H: no `prefix(8)` any more — a folder hero has NO poster
+                // fallback (see `folderHeroPreview`), so an unwarmed folder past the
+                // eighth holds the previous hero for the full 1.5s folder deadline.
+                // Rows are small (a Fusion collection is a handful of folders) and
+                // `ArtworkStore.prefetch` skips anything already resident.
+                collectionHeroPrefetchURLs(collection)
+            })
+        }
+        // FEAT-33 leg 1/3 (`debug.collectionFocusAB` 1 or 3): hold the
+        // hero commit for `heroCommitDeferral` so the row's own focus-step
+        // animation runs on a main thread that is not simultaneously
+        // starting a hero resolve — the hypothesis behind the tester's
+        // "our folder row animates at 30fps, official Nuvio's at 60".
+        // Superseded commits are DROPPED, not queued: walking three tiles
+        // in 200ms must still commit one hero, not three in sequence.
+        // Nothing downstream changes — `HeroCommitGate`/`Coordinator`/
+        // `ArtResolver` see the identical call, just later. With the leg
+        // off (the default, `leg == 0`) this is the same immediate call
+        // the row has always made.
+        if CollectionFocusAB.deferHeroCommit {
+            let generation = folderFocusGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + CollectionFocusAB.heroCommitDeferral) {
+                guard folderFocusGeneration == generation else { return }
+                commit()
+            }
+        } else {
+            commit()
+        }
+    }
 
     // MARK: - BUG-112 (Item A): the Up fallback
 
@@ -718,21 +798,17 @@ struct HomeView: View {
         #endif
     }
 
-    #if DEBUG
-    /// Short code for the hero trailer model's live phase, for the `debug_hero` probe's `hph=`
-    /// field — the harness reads fixed-width-ish tokens, not Swift's synthesized descriptions
-    /// (`playing(_:)` would otherwise splat a resolved URL key into the string).
-    private var debugHeroTrailerPhase: String {
-        switch heroTrailerModel.phase {
-        case .idle: return "idle"
-        case .dwelling: return "dwell"
-        case .expandedStatic: return "exp"
-        case .playing: return "play"
-        }
-    }
-    #endif
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("HomeView")
+        #endif
+        // Perf review 2026-10-17 (#11): the pinned plan (four defaults reads and the geometry
+        // math) once per body; every consumer below takes it as a parameter.
+        let plan = pinnedPlan
+        // Perf review 2026-10-17 (#1): the row callbacks, re-pointed at this body's `self`. One
+        // stable reference object, so the rows never see a fresh closure (`HomeRowsList`).
+        let _ = installRowActions()
         NavigationStack(path: $homePath) {
             ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
@@ -744,7 +820,7 @@ struct HomeView: View {
                 // the hero's yield, `topR`/`botR` the reaches the rows actually render with,
                 // `fits` whether the focus engine's link frame is inside the rows viewport (the
                 // whole point of the fix), and `slack` the width of the legal-rest set.
-                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength) comp=\(Int(pinnedPlan.compression.rounded())) topR=\(Int(pinnedPlan.topReach.rounded())) botR=\(Int(pinnedPlan.bottomReach.rounded())) fits=\(pinnedPlan.fits ? 1 : 0) slack=\(Int(pinnedPlan.restRange.rounded())) railW=\(Int(CardDepthStyle.railWidth(edgeStrength: debugCardDepth.edgeStrength))) railA=\(Int((CardDepthStyle.railTopAlpha(edge: min(max(Double(debugCardDepth.edgeStrength), 0), 100) / 100) * 100).rounded()))")
+                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength) comp=\(Int(plan.compression.rounded())) topR=\(Int(plan.topReach.rounded())) botR=\(Int(plan.bottomReach.rounded())) fits=\(plan.fits ? 1 : 0) slack=\(Int(plan.restRange.rounded())) railW=\(Int(CardDepthStyle.railWidth(edgeStrength: debugCardDepth.edgeStrength))) railA=\(Int((CardDepthStyle.railTopAlpha(edge: min(max(Double(debugCardDepth.edgeStrength), 0), 100) / 100) * 100).rounded()))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_env")
@@ -778,10 +854,15 @@ struct HomeView: View {
                 // WHERE the presented logo bitmap came from — `heroResolver.presentedLogoSource`,
                 // set in the same commit transaction as `presented` (see that property's own doc
                 // comment), so it can never disagree with what `plg=` just reported.
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0) plgs=\(heroResolver.presentedLogoSource.rawValue) sd=\(isScrolledDown ? 1 : 0)")
-                    .font(.system(size: 8))
-                    .opacity(0.011)
-                    .accessibilityIdentifier("debug_hero")
+                // Perf review 2026-10-17 (#1): a leaf that observes the hero models itself, so a
+                // focus commit re-renders this label and not Home. Same text, token for token.
+                HomeHeroDebugLabel(focusModel: focusModel, resolver: heroResolver,
+                                   trailerModel: heroTrailerModel,
+                                   heroIndex: heroIndex, heroFocused: heroFocused,
+                                   count: heroItems.count, nuvioStyle: heroNuvioStyle,
+                                   mode: heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none"),
+                                   heroFocusTrailerMode: heroFocusTrailerMode,
+                                   scrolledDown: isScrolledDown)
                 // 2026-08-30 settle re-reveal (invisible, harness-readable): the last settled
                 // pinned rest, as the corrector itself measured it — `margin`/`net` are the exact
                 // quantities the `[HomeScrollProbe] title` line reports, so test47 asserts on the
@@ -804,6 +885,7 @@ struct HomeView: View {
                 // BUG-156 (invisible, harness-readable): Classic's remembered card and the last
                 // pop-restore event. A leaf with its own sink, so it never re-renders this body.
                 HomeReturnDebugLabel()
+                HomeBodyCountLabel()
                 // FEAT-30 / H9 (invisible, harness-readable): which navigation chrome this build is
                 // rendering under (`mode=tabs|rail`), the rail's visibility, the leading inset Always
                 // Visible adds to every tab root (36 or 0), and the top compensation applied. `comp`
@@ -838,33 +920,15 @@ struct HomeView: View {
                 // the text it belongs to (BUG-86 phenomenon C).
                 // Home Stage & Strip (P1 E4): Classic only — the stage draws its own masked art
                 // over the ambient wash (S5).
-                if !isStageLayout, let presentation = heroResolver.presented {
-                    Group {
-                        // Nuvio-style: right-anchored artwork whose left edge fades to the
-                        // flat background — the info panel never sits over the art.
-                        // FEAT-15: the focus panel always uses that treatment (see heroNuvioStyle).
-                        HomeHeroBackdrop(
-                            presentation: presentation,
-                            nuvioStyle: heroNuvioStyle || focusHeroActive,
-                            autoplaysTrailer: heroTrailerActive,
-                            trailerModel: heroTrailerModel
-                        )
-                        HomeHeroScrim()
-                    }
-                    // UX-7: a row-focused poster (focusModel.focusedItem != nil) always shows
-                    // its artwork — heroPosterFocusOnly only gates the carousel's own idle fade.
-                    // FEAT-15: and only the CAROUSEL's. In focus-panel mode the toggle is inert —
-                    // hiding the artwork "while browsing" there would hide it always, since
-                    // browsing is the only thing that mode ever shows (see heroPosterFocusOnly).
-                    // Wave H: the value is `heroArtOpacity`, animated from `.onChange` below —
-                    // see that state's doc for why an `.animation(_:value:)` modifier here was the
-                    // resizing-mosaic bug.
-                    .opacity(heroArtOpacity)
-                    // Purely decorative background art — the same title/synopsis is exposed by
-                    // the focusable HomeHeroForeground button in front of it, so VoiceOver
-                    // shouldn't stop on this layer too.
-                    .accessibilityHidden(true)
-                }
+                // Perf review 2026-10-17 (#1): the layer is a leaf observing the resolver and the
+                // focus model (`HomeHeroBackdropLayer`); its body is the former inline block.
+                HomeHeroBackdropLayer(resolver: heroResolver,
+                                      focusModel: focusModel,
+                                      trailerModel: heroTrailerModel,
+                                      isStage: isStageLayout,
+                                      nuvioStyle: heroNuvioStyle || focusHeroActive,
+                                      gate: heroTrailerGate,
+                                      opacity: heroArtOpacity)
 
                 // Pinned Nuvio hero (UX-7 extension): the hero foreground becomes the FIXED
                 // top of a VStack and the rows ScrollView takes whatever height is left, so the
@@ -916,9 +980,9 @@ struct HomeView: View {
                         if heroContainerPinned {
                             VStack(spacing: 0) {
                                 if heroHeaderVisible {
-                                    pinnedHeroHeader(proxy: scrollProxy)
+                                    pinnedHeroHeader(proxy: scrollProxy, plan: plan)
                                 }
-                                rowsScroll(pinned: heroHeaderVisible, settleReveal: true, proxy: scrollProxy)
+                                rowsScroll(pinned: heroHeaderVisible, settleReveal: true, proxy: scrollProxy, plan: plan)
                             }
                             // BUG-89 (beta.18): a Poster Size switch (Medium → Large) changes the
                             // hero's height, both card reaches and the rows' bottom inset AT ONCE.
@@ -935,7 +999,7 @@ struct HomeView: View {
                             // this device or from a sync push on another. Keying it on the whole
                             // `Plan` (Equatable) means a regime that resolves to identical geometry
                             // animates nothing at all.
-                            .animation(.easeInOut(duration: 0.28), value: pinnedPlan)
+                            .animation(.easeInOut(duration: 0.28), value: plan)
                             // The corrector has to be told, in the same breath, that every margin
                             // it has measured for this regime is stale and that the rows want one
                             // fresh reveal — otherwise its first post-switch sample reads the old
@@ -946,8 +1010,8 @@ struct HomeView: View {
                             // appearance. Without it the first Medium → Large switch was ALSO
                             // `noteRegimeChange`'s first call, whose no-previous-key guard only records
                             // and never resets the brakes — the exact first-switch regression this fixes.
-                            .onChange(of: pinnedPlan.regimeKey, initial: true) { _, key in
-                                PinnedRowSettle.noteRegimeChange(key: key, fits: pinnedPlan.fits)
+                            .onChange(of: plan.regimeKey, initial: true) { _, key in
+                                PinnedRowSettle.noteRegimeChange(key: key, fits: plan.fits)
                                 // BUG-89 (rc2): the ONE settle-probe line that has to be emitted
                                 // from here rather than from `noteRegimeChange` — the corrector is
                                 // told only `key` and `fits`, and the numbers a photographed pane
@@ -958,15 +1022,15 @@ struct HomeView: View {
                                 // Diagnostics only — reads computed properties, mutates nothing.
                                 if PinnedRowSettleProbe.enabled {
                                     PinnedRowSettleProbe.log(
-                                        "plan \(key) vh=\(Int(pinnedPlan.viewport.rounded()))"
-                                            + " link=\(Int(pinnedPlan.linkFrame.rounded()))"
-                                            + " rest=\(Int(pinnedPlan.restRange.rounded()))"
-                                            + " comp=\(Int(pinnedPlan.compression.rounded()))"
-                                            + " topR=\(Int(pinnedPlan.topReach.rounded()))"
-                                            + " botR=\(Int(pinnedPlan.bottomReach.rounded()))"
-                                            + " fits=\(pinnedPlan.fits ? 1 : 0)"
-                                            + " botInset=\(Int(pinnedRowsBottomInset.rounded()))"
-                                            + " lastRowH=\(Int((pinnedLastRowHeight ?? 0).rounded()))")
+                                        "plan \(key) vh=\(Int(plan.viewport.rounded()))"
+                                            + " link=\(Int(plan.linkFrame.rounded()))"
+                                            + " rest=\(Int(plan.restRange.rounded()))"
+                                            + " comp=\(Int(plan.compression.rounded()))"
+                                            + " topR=\(Int(plan.topReach.rounded()))"
+                                            + " botR=\(Int(plan.bottomReach.rounded()))"
+                                            + " fits=\(plan.fits ? 1 : 0)"
+                                            + " botInset=\(Int(pinnedRowsBottomInset(plan).rounded()))"
+                                            + " lastRowH=\(Int((pinnedLastRowHeight(plan) ?? 0).rounded()))")
                                 }
                             }
                             // Codex rc5 r1 (P2): the `plan` line above fires on a REGIME change, but the
@@ -975,17 +1039,17 @@ struct HomeView: View {
                             // lastRowH=0` forever. This companion line follows the last row's own
                             // height (nil → measured, and a replaced last row), deduplicated by
                             // `onChange`'s equality. Diagnostics only.
-                            .onChange(of: pinnedLastRowHeight) { _, height in
+                            .onChange(of: pinnedLastRowHeight(plan)) { _, height in
                                 if PinnedRowSettleProbe.enabled {
                                     PinnedRowSettleProbe.log(
                                         "lastRow \(pinnedLastRowId ?? "none")"
                                             + " lastRowH=\(Int((height ?? 0).rounded()))"
-                                            + " botInset=\(Int(pinnedRowsBottomInset.rounded()))"
-                                            + " rest=\(Int(pinnedPlan.restRange.rounded()))")
+                                            + " botInset=\(Int(pinnedRowsBottomInset(plan).rounded()))"
+                                            + " rest=\(Int(plan.restRange.rounded()))")
                                 }
                             }
                         } else {
-                            rowsScroll(pinned: false, settleReveal: false, proxy: scrollProxy)
+                            rowsScroll(pinned: false, settleReveal: false, proxy: scrollProxy, plan: plan)
                         }
                     }
                     // BUG-27: from down the page, Menu jumps back to the top and hands focus to
@@ -1179,40 +1243,35 @@ struct HomeView: View {
                     systemVideoAutoplayEnabled = UIAccessibility.isVideoAutoplayEnabled
                 }
             }
-            // Wave H: the hero TARGET changed identity — hand it to the resolver, which decides
-            // when (and as one transaction, with what artwork) it may actually be painted. Keyed on
-            // the id alone, exactly like the renderers used to be: a payload change at the same
-            // identity is a separate, non-repainting path (see `heroPayloadSignature` below).
-            .onChange(of: displayHero?.id) { _, _ in
-                presentHero()
-            }
-            // Wave H: the target's own fields changed without its identity changing — a TMDB
-            // gap-fill landing on a focused row poster (`HomeHeroFocusModel.enrichIfNeeded`), or a
-            // shared-publish payload edit. The resolver adopts the text and keeps the committed
-            // artwork; without this trigger a late synopsis would never reach the panel at all.
-            .onChange(of: heroPayloadSignature) { _, _ in
-                presentHero()
+            // Wave H: the hero TARGET changed identity or payload → `presentHero()`, and the
+            // artwork layer's fade (`heroArtOpacity`). Perf review 2026-10-17 (#1): these depend on
+            // the focus model, which this view no longer observes, so the triggers live in
+            // `HomeHeroDriver`, an invisible leaf that does. Same values, same handlers.
+            .background {
+                HomeHeroDriver(focusModel: focusModel,
+                               inputs: heroTargetInputs,
+                               posterFocusOnly: heroPosterFocusOnly,
+                               heroFocused: heroFocused,
+                               onTargetChange: { presentHero() },
+                               onArtVisibleChange: { visible in
+                                   withAnimation(.easeInOut(duration: 0.4)) { heroArtOpacity = visible ? 1 : 0 }
+                               },
+                               // Review r1 (P2-3): the hero-page and resting-item warm-ups ride the
+                               // driver too, after the target triggers, so they keep the order they
+                               // had when all of these sat on this view.
+                               heroItemIds: heroItems.map(\.id),
+                               restingItemId: heroRestingItem?.id,
+                               onPrefetch: { prefetchHeroArt() })
             }
             // beta.19-rc1 verdict (I1, BUG-134): Nuvio-style flipped (or the focus panel came or
             // went) under a hero that stays: the resolver re-checks its sharpen against the new form.
             .onChange(of: heroSharpenForm) { _, form in
                 heroResolver.setSharpenForm(form)
             }
-            // Wave H: the artwork layer's fade (see `heroArtOpacity`). Opacity only — never the
-            // implicit animation on the Group that used to interpolate the artwork's frame too.
-            .onChange(of: heroArtVisible) { _, visible in
-                withAnimation(.easeInOut(duration: 0.4)) { heroArtOpacity = visible ? 1 : 0 }
-            }
-            .onChange(of: heroItems.map(\.id)) { _, _ in
-                prefetchHeroArt()
-            }
             // FEAT-15: the focus panel has no hero pages to warm, but it DOES paint the resting
             // item the moment rows land — warm that one title's backdrop/logo so Home doesn't
             // open on a placeholder. Inert in carousel mode: `heroRestingItem` is nil there, so
             // this fires once (nil → nil) and never again.
-            .onChange(of: heroRestingItem?.id) { _, _ in
-                prefetchHeroArt()
-            }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
             }
@@ -1379,7 +1438,8 @@ struct HomeView: View {
     /// pass falsified). The focus lift stays inside the clip because the content insets below
     /// keep every card away from the viewport edges.
     @ViewBuilder
-    private func rowsScroll(pinned: Bool, settleReveal: Bool, proxy: ScrollViewProxy) -> some View {
+    private func rowsScroll(pinned: Bool, settleReveal: Bool, proxy: ScrollViewProxy,
+                            plan: PinnedRowGeometry.Plan) -> some View {
         ScrollView(.vertical) {
             // Lazy so row construction (and each row's poster loads) is deferred to
             // scroll position — an eager VStack builds every catalog row up front,
@@ -1412,183 +1472,21 @@ struct HomeView: View {
                     // reveal that satisfies the hero IS the true top. Layout is unchanged to the
                     // point: the inner fixed-height frame is bottom-aligned inside the extended
                     // one, so the info panel renders exactly where it always did.
-                    heroCarousel(compact: false, topReach: Self.classicHeroTopReach)
+                    heroCarousel(compact: false, topReach: Self.classicHeroTopReach, plan: plan)
                 }
 
-                if model.rows.isEmpty {
-                    placeholder
-                }
-
-                if !model.continueWatching.isEmpty {
-                    ContinueWatchingRow(
-                        entries: model.continueWatching,
-                        onSelect: { resume = ResumeTarget(entry: $0) },
-                        onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
-                        onGoToDetails: { homePath.append(TitleRoute(preview: previewFromEntry($0))) },
-                        onPlayManually: { resume = ResumeTarget(entry: $0, forceManual: true) },
-                        onStartOver: { resume = ResumeTarget(entry: $0, startFromBeginning: true) },
-                        onMarkWatched: { entry in
-                            // Same pair a finished playback leaves behind: the episode joins watched
-                            // history and its half-played progress row stops showing in the shelf.
-                            // The helper has no default on the Swift side; WatchedRepository
-                            // restamps the mark time on write anyway (review r2 #6).
-                            WatchedRepository.shared.markWatched(
-                                item: WatchingActionsKt.watchedItemFromProgress(
-                                    entry: entry,
-                                    markedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
-                                )
-                            )
-                            WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
-                        },
-                        shuffleParentIds: model.shuffleParentIds,
-                        posterPattern: model.continueWatchingPosterPattern,
-                        // UX-7 (see reportRowFocus for the gating rationale).
-                        onItemFocusChange: { entry in
-                            reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
-                                           prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
-                        }
-                    )
-                    // rc14 (BUG-122): the short-row floor — see `pinnedShortRowLinkFrameFloor`.
-                    .environment(\.rowCardLinkFrameFloor, pinnedShortRowLinkFrameFloor(pinned: pinned))
-                }
-
-                // Upcoming: next airing episode per followed show, directly under Continue
-                // Watching and above every settings-ordered row (like CW, not part of
-                // `model.rows`). Hidden while empty or toggled off.
-                if upcomingRowEnabled, !model.upcoming.isEmpty {
-                    UpcomingRow(
-                        items: model.upcoming,
-                        onItemFocusChange: { item in
-                            reportRowFocus(item?.toMetaPreview(), source: "upcoming",
-                                           prefetch: { model.upcoming.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0.toMetaPreview()) } })
-                        }
-                    )
-                    // rc14 (BUG-122): the short-row floor — see `pinnedShortRowLinkFrameFloor`.
-                    .environment(\.rowCardLinkFrameFloor, pinnedShortRowLinkFrameFloor(pinned: pinned))
-                }
-
-                // Catalog sections and collection folder-tile rows, interleaved per the
-                // user's Home Rows settings order.
-                ForEach(model.rows) { row in
-                    Group {
-                        switch row {
-                        case .catalog(let section):
-                            CatalogRowView(
-                                section: section,
-                                previewLimit: CatalogRowView.homePreviewLimit,
-                                // UX-7 (see reportRowFocus for the gating rationale).
-                                onItemFocusChange: { item in
-                                    reportRowFocus(item, source: section.key,
-                                                   logoCandidates: {
-                                                       section.items.prefix(CatalogRowView.homePreviewLimit)
-                                                           .filter { TitleLogoStore.isLookupCandidate($0.logo) }
-                                                   },
-                                                   prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
-                                }
-                            )
-                            // BUG-35 (beta.12): localize this row's leading items when it scrolls
-                            // into view. LazyVStack fires onAppear per row as it mounts; the shared
-                            // repo dedups per item+language for the session, so re-appearing rows
-                            // cost nothing (see HomeRepository.requestRowEnrichment).
-                            .onAppear { model.rowAppeared(sectionKey: section.key) }
-                        case .collection(let collection):
-                            CollectionRowView(collection: collection, onFolderFocusChange: { folder in
-                                // FEAT-33 leg 1/3 (Codex r1+r2): EVERY focus event — including the
-                                // `nil` that fires when focus leaves the row — supersedes any
-                                // deferred commit still in flight, so a hero queued for a folder
-                                // the user has already left never lands. Gated on the leg: with it
-                                // off (the default) this `@State` is never written, so the folder
-                                // focus path schedules no extra Home update.
-                                if CollectionFocusAB.deferHeroCommit { folderFocusGeneration &+= 1 }
-                                // BUG-112 review fix (F3): row ownership used to be claimed here
-                                // (from the FOLDER event, since a folder with no configured
-                                // backdrop/logo reports `preview == nil` and `reportRowFocus`
-                                // never saw a claim to make). That claim now comes from the row's
-                                // own `@FocusState` via `pinnedRowFocusOwnership` — see
-                                // `handleRowFocusOwnership` — which cannot go stale the way a
-                                // preview-gated report could (landing on "See All" or an
-                                // unconfigured folder still owns the row).
-                                // BUG-38 round three: a focused folder tile hands its configured
-                                // backdrop + title logo to the hero, the Fusion behaviour the
-                                // reporter asked for on the HOME page. Folders with neither asset
-                                // report nil — the hero stays where it was, exactly as before.
-                                let preview = folder.flatMap { folderHeroPreview(collection: collection, folder: $0) }
-                                if let folder, let preview {
-                                    heroFolderRoutes[preview.id] = FolderRoute(collectionId: collection.id, folder: folder)
-                                }
-                                // The route registration above stays immediate on purpose — it is
-                                // pure bookkeeping the CTA reads later, and deferring it would let
-                                // a fast press land before the map knew the folder.
-                                let commit = {
-                                    reportRowFocus(preview, source: collection.id, prefetch: {
-                                        // Backdrops AND logos (Codex r3): a folder with its own cover never
-                                        // warms its logo on the tile (FolderTile suppresses it there), so the
-                                        // hero's HeroLogo would otherwise start cold and flash the text name.
-                                        // Wave H: no `prefix(8)` any more — a folder hero has NO poster
-                                        // fallback (see `folderHeroPreview`), so an unwarmed folder past the
-                                        // eighth holds the previous hero for the full 1.5s folder deadline.
-                                        // Rows are small (a Fusion collection is a handful of folders) and
-                                        // `ArtworkStore.prefetch` skips anything already resident.
-                                        collectionHeroPrefetchURLs(collection)
-                                    })
-                                }
-                                // FEAT-33 leg 1/3 (`debug.collectionFocusAB` 1 or 3): hold the
-                                // hero commit for `heroCommitDeferral` so the row's own focus-step
-                                // animation runs on a main thread that is not simultaneously
-                                // starting a hero resolve — the hypothesis behind the tester's
-                                // "our folder row animates at 30fps, official Nuvio's at 60".
-                                // Superseded commits are DROPPED, not queued: walking three tiles
-                                // in 200ms must still commit one hero, not three in sequence.
-                                // Nothing downstream changes — `HeroCommitGate`/`Coordinator`/
-                                // `ArtResolver` see the identical call, just later. With the leg
-                                // off (the default, `leg == 0`) this is the same immediate call
-                                // the row has always made.
-                                if CollectionFocusAB.deferHeroCommit {
-                                    let generation = folderFocusGeneration
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + CollectionFocusAB.heroCommitDeferral) {
-                                        guard folderFocusGeneration == generation else { return }
-                                        commit()
-                                    }
-                                } else {
-                                    commit()
-                                }
-                            })
-                            // Wave H: warm every folder's hero artwork when the ROW appears, not
-                            // when a tile is first focused — the focus report and the artwork it
-                            // needs used to fire on the same event, so the first focused folder
-                            // always waited on a cold fetch (BUG-86 phenomenon D). Shares
-                            // `prefetchedBackdropRows` with `reportRowFocus`, so whichever runs
-                            // first pays for the row and the other is a no-op.
-                            .onAppear { prefetchCollectionHeroArt(collection) }
-                        }
-                    }
-                    // BUG-89: tells the settle tracker (BrowseComponents `PinnedRowSettleTracking`)
-                    // this row is the one `PinnedRowSettle` exempts from the canonical rest (no row
-                    // below to reveal into) — see `PinnedRowEnvironment.swift`. The bottom inset
-                    // below (`rowsInsets`) is the actual fix; this flag is what lets the tracker's
-                    // `debug_pinned` line say `last=1` instead of reading an unreachable rest as a
-                    // fresh failure.
-                    .environment(\.pinnedRowIsLast, row.id == model.rows.last?.id)
-                    // BUG-87/89 (rc11): the frame-shaping half of the last-row fix. Published on the
-                    // row `pinnedRowIsLast` marks, because that row has no content below it to force
-                    // the engine deeper — and only in pinned mode, where the reaches exist.
-                    //
-                    // rc14 (BUG-122): and on every COLLECTION row too — the mixed-shape row whose
-                    // square/landscape tiles make its label frame short. Catalog rows are uniform
-                    // (their label IS the plan's link frame) and stay unfloored. See
-                    // `pinnedShortRowLinkFrameFloor` for why a short label parks low.
-                    //
-                    // BUG-162 (Batch B): a catalog row the add-on tags as landscape (`posterShape`,
-                    // BUG-157) used to be floored here too, its 203 pt cards being a short label on
-                    // the poster regime's reaches. Its card SLOT is the poster height now (D16, rc5
-                    // verdict: the card rests at the folder-tile size, `PosterStyle.cardHeight`, and
-                    // grows to `expandedCardHeight` inside a poster-height slot), so it is a uniform
-                    // catalog row and takes no floor.
-                    .environment(\.rowCardLinkFrameFloor,
-                                 pinned && (row.id == model.rows.last?.id
-                                            || (pinnedShortRowFloor && Self.isCollectionRow(row)))
-                                     ? pinnedLastRowLinkFrameFloor : 0)
-                }
+                // Perf review 2026-10-17 (#1): the rows region — placeholder, Continue Watching,
+                // Upcoming and every catalog / collection row — is its own view that observes only
+                // `HomeViewModel` and takes stable inputs (one `HomeRowActions` reference, the
+                // pinned floors as values). A hero focus commit, a carousel page, a settle probe
+                // line or any other state this body owns no longer re-renders a single row.
+                HomeRowsList(model: model,
+                             actions: rowActions,
+                             pinned: pinned,
+                             upcomingRowEnabled: upcomingRowEnabled,
+                             shortRowFloorEnabled: pinnedShortRowFloor,
+                             lastRowFloor: pinnedLastRowLinkFrameFloor(plan),
+                             systemVideoAutoplayEnabled: systemVideoAutoplayEnabled)
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
             // UPWARD by the row band and DOWNWARD past its caption (transparent,
@@ -1605,8 +1503,8 @@ struct HomeView: View {
             // content below it to protect), then, only if still short, the top reach (88 → 64, and
             // never above 88, which is the dial that kills focus resolution). At every Poster Size
             // that fits today these are exactly `heroPinnedRowTopPad` / `heroPinnedRowBottomReach`.
-            .environment(\.rowCardTopReach, pinned ? pinnedPlan.topReach : 0)
-            .environment(\.rowCardBottomReach, pinned ? pinnedPlan.bottomReach : 0)
+            .environment(\.rowCardTopReach, pinned ? plan.topReach : 0)
+            .environment(\.rowCardBottomReach, pinned ? plan.bottomReach : 0)
             // "Trailer Location: Hero" — tell every row card to skip the inline morph, because
             // the focused title's trailer is playing in the pinned hero backdrop instead. Passed
             // unconditionally (the computed is already false in every other configuration, and
@@ -1619,7 +1517,7 @@ struct HomeView: View {
             .environment(\.rowRestSource, settleReveal ? .pinnedHome : .motionClock)
             // BUG-30: `heroInScroll` moves the classic top inset into the hero's own reach (see
             // the hero branch above). Every other configuration keeps its inset unchanged.
-            .padding(rowsInsets(pinned: pinned, heroInScroll: !heroItems.isEmpty && !pinned))
+            .padding(rowsInsets(pinned: pinned, heroInScroll: !heroItems.isEmpty && !pinned, plan: plan))
             // beta.18 verdict (BUG-66): tells UIKit this ScrollView is the one the top tab bar
             // follows (`TabBarContentScrollLink`) instead of leaving it to UIKit's heuristic, which
             // found these rows at a cold launch (before the pinned header mounted) and lost them
@@ -1768,7 +1666,7 @@ struct HomeView: View {
         // view moves; the pinned hero is a sibling above it in the VStack split. Full mechanism,
         // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
         .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal,
-                                               compression: pinnedPlan.compression,
+                                               compression: plan.compression,
                                                showsCTA: heroCarouselActive,
                                                onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
@@ -2615,6 +2513,7 @@ struct HomeView: View {
     /// system tab bar is reachable again — see that function.
     private func heroCarousel(compact: Bool,
                               topReach: CGFloat = 0,
+                              plan: PinnedRowGeometry.Plan,
                               onUnresolvedUp: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // BUG-23 round 2 (device finding): the paged TabView is GONE. The sim fix caught
@@ -2637,13 +2536,14 @@ struct HomeView: View {
                 // model (fade the old text out, swap while invisible, fade the new one in), so a hero
                 // change re-renders that layer and `HomeHeroForeground`, never this body (critique
                 // #11). The `if let` stays the region-existence test.
-                if let presentation = heroResolver.presented {
-                    HeroTextLayer(presentation: presentation, heroFocused: $heroFocused, compact: compact,
-                                  showsCTA: heroCarouselActive,
-                                  forceNuvioLayout: focusHeroActive,
-                                  compression: compact ? pinnedPlan.compression : 0,
-                                  folderRoutes: heroFolderRoutes)
-                }
+                //
+                // Perf review 2026-10-17 (#1): the `if let` lives in `HomeHeroTextSlot`, a leaf that
+                // observes the resolver, so a commit no longer re-renders this view.
+                HomeHeroTextSlot(resolver: heroResolver, heroFocused: $heroFocused, compact: compact,
+                                 showsCTA: heroCarouselActive,
+                                 forceNuvioLayout: focusHeroActive,
+                                 compression: compact ? plan.compression : 0,
+                                 folderRoutes: heroFolderRoutes)
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
             // extended focus frame plus the engine's reveal margin — see the Theme comment
@@ -2659,7 +2559,7 @@ struct HomeView: View {
             // same amount (see `HomeHeroForeground.compression`), so this is a graceful compression
             // rather than a frame clipped around fixed content. 0 at Small/Medium — those layouts
             // are bit-identical to Wave 9.
-            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned - pinnedPlan.compression
+            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned - plan.compression
                                    : Theme.Size.heroCarouselHeight)
             // BUG-30 (classic only, `topReach > 0`): grow the frame upward to the content top,
             // bottom-aligning the fixed-height slot above so the panel does not move a pixel.
@@ -2744,13 +2644,9 @@ struct HomeView: View {
             // The two forms therefore have different viewport budgets (455 carousel, 493 panel —
             // `Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`, 2026-09-30); the carousel's own
             // load boundary is the one this fixes. Deliberately still OUTSIDE the fixed 352pt frame.
+            // Perf review 2026-10-17 (#1): `HomeHeroDotsSlot` observes the focus model for the fade.
             if heroCarouselActive {
-                let dotsVisible = heroItems.count > 1 && focusModel.focusedItem == nil
-                HeroPageDots(count: max(heroItems.count, 1),
-                             index: min(heroIndex, max(heroItems.count - 1, 0)))
-                    .padding(.leading, Theme.Spacing.lg)
-                    .opacity(dotsVisible ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.25), value: dotsVisible)
+                HomeHeroDotsSlot(focusModel: focusModel, count: heroItems.count, index: heroIndex)
             }
         }
     }
@@ -2784,8 +2680,8 @@ struct HomeView: View {
     /// rc13 (BUG-114): takes the shared `ScrollViewReader` proxy now, purely to hand `handleHeroUp`
     /// to the carousel's unresolved-Up hook. The classic in-scroll call site passes no hook and is
     /// unchanged.
-    private func pinnedHeroHeader(proxy: ScrollViewProxy) -> some View {
-        heroCarousel(compact: true, onUnresolvedUp: { handleHeroUp(proxy: proxy) })
+    private func pinnedHeroHeader(proxy: ScrollViewProxy, plan: PinnedRowGeometry.Plan) -> some View {
+        heroCarousel(compact: true, plan: plan, onUnresolvedUp: { handleHeroUp(proxy: proxy) })
             .padding(.top, Theme.Size.heroPinnedTopPad)
             .padding(.horizontal, Theme.Spacing.screen)
             .padding(.bottom, Theme.Size.heroPinnedRowsGap)
@@ -2804,10 +2700,10 @@ struct HomeView: View {
     /// carried inside a frame the focus engine can reveal instead of a padding gap it can't. Every
     /// other configuration is byte-identical to beta.10, including classic BEFORE the hero fan-out
     /// lands (no hero to carry the inset ⇒ the rows keep their own 60).
-    private func rowsInsets(pinned: Bool, heroInScroll: Bool) -> EdgeInsets {
+    private func rowsInsets(pinned: Bool, heroInScroll: Bool, plan: PinnedRowGeometry.Plan) -> EdgeInsets {
         if pinned {
             return EdgeInsets(top: Theme.Size.heroPinnedRowsHeadroom, leading: Theme.Spacing.screen,
-                              bottom: pinnedRowsBottomInset, trailing: Theme.Spacing.screen)
+                              bottom: pinnedRowsBottomInset(plan), trailing: Theme.Spacing.screen)
         }
         return EdgeInsets(top: heroInScroll ? 0 : Theme.Spacing.screen,
                           leading: Theme.Spacing.screen,
@@ -2863,13 +2759,13 @@ struct HomeView: View {
     /// its 146-from-the-formula only if that still exceeds the floor, otherwise the floor wins; a
     /// captioned one (471.9pt) takes the floor. The `max` keeps whichever term is larger, so the
     /// short-last-row case the original fix was written for is untouched wherever it still binds.
-    private var pinnedRowsBottomInset: CGFloat {
-        guard let lastRowHeight = pinnedLastRowHeight else { return Theme.Spacing.screen }
-        let vh = pinnedPlan.viewport
+    private func pinnedRowsBottomInset(_ plan: PinnedRowGeometry.Plan) -> CGFloat {
+        guard let lastRowHeight = pinnedLastRowHeight(plan) else { return Theme.Spacing.screen }
+        let vh = plan.viewport
         // See the floor block above: uniform inset + this regime's rest range + the measured
         // device park depth. Never smaller than the old bare `Theme.Spacing.screen`.
         let floor = Theme.Spacing.screen
-            + pinnedPlan.restRange
+            + plan.restRange
             + Theme.Size.heroPinnedRowsDeviceParkSlack
         let inset = max(floor,
                          vh - lastRowHeight + Theme.Size.heroPinnedRowTitleInset
@@ -2892,12 +2788,12 @@ struct HomeView: View {
     /// ABOVE the `ForEach` (see `rowsScroll`) and so are never actually last while any row exists.
     /// `nil` when Home has nothing to lay out yet (placeholder only) — the caller floors to the
     /// uniform inset in that case.
-    private var pinnedLastRowHeight: CGFloat? {
+    private func pinnedLastRowHeight(_ plan: PinnedRowGeometry.Plan) -> CGFloat? {
         // BUG-87/89 (rc11): the last row's cards carry `rowCardLinkFrameFloor`, so its shelf is the
         // LARGER of its own tallest label and that floor. For a uniform catalog row the two are equal
         // by construction (the floor IS `plan.linkFrame`); for a short-tile collection row the floor
         // wins and the row is `floor − naturalLabel` taller than the pre-rc11 arithmetic said.
-        let floor = pinnedLastRowLinkFrameFloor
+        let floor = pinnedLastRowLinkFrameFloor(plan)
         if let last = model.rows.last {
             switch last {
             case .catalog:
@@ -2907,7 +2803,7 @@ struct HomeView: View {
                 // `pinnedUniformShelfChrome` bundles the two `Spacing.lg` shelf paddings with the
                 // reaches; pull the label (topReach + artwork + caption + bottomReach) back out so
                 // the floor is compared against the label alone, not the whole shelf.
-                let label = pinnedPlan.topReach + artworkHeight + caption + pinnedPlan.bottomReach
+                let label = plan.topReach + artworkHeight + caption + plan.bottomReach
                 return Theme.Spacing.lg + max(label, floor) + Theme.Spacing.lg
             case .collection(let collection):
                 // BUG-87 (beta.18): `pinnedRowHeight` states the FIXED pinned reaches
@@ -2917,7 +2813,7 @@ struct HomeView: View {
                 // `CollectionsUI` — this is the helper's only caller, and it is the same
                 // "`HomeView` supplies the reaches" contract its own doc comment names.
                 let natural = CollectionRowView.pinnedRowHeight(collection: collection, style: posterStyle)
-                    + pinnedPlanReachDelta
+                    + pinnedPlanReachDelta(plan)
                 // `natural` already includes this row's own `lg` top and `sm` bottom padding, so the
                 // floor is compared against its shelf, not against the whole row.
                 let shelf = natural - Theme.Spacing.lg - Theme.Spacing.sm
@@ -2932,10 +2828,10 @@ struct HomeView: View {
         // amount, which is the one thing that inset exists to get right.
         let fallbackCaption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
         if upcomingRowEnabled, !model.upcoming.isEmpty {
-            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
+            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome(plan)
         }
         if !model.continueWatching.isEmpty {
-            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
+            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome(plan)
         }
         return nil
     }
@@ -2943,44 +2839,20 @@ struct HomeView: View {
     /// BUG-87/89 (rc11): the label-height floor Home's LAST pinned row publishes — see
     /// `PinnedRowGeometry.lastRowLinkFrameFloor` and `EnvironmentValues.rowCardLinkFrameFloor`.
     /// `0` outside pinned mode (the reaches are 0 there and the floor would be a visible gap).
-    private var pinnedLastRowLinkFrameFloor: CGFloat {
-        PinnedRowGeometry.lastRowLinkFrameFloor(plan: pinnedPlan)
-    }
-
-    /// rc14 (BUG-122, every 2026-09-30 device walk): the SAME floor, published on the short rows
-    /// above the catalogs — Continue Watching, Upcoming — and on collection rows. Their label
-    /// frames are 120–200pt shorter than the plan's link frame (a 203pt landscape card or a square
-    /// tile against a 403pt poster), so the engine's tolerated rest interval is wide and it parks
-    /// them at the BOTTOM of it: Continue Watching +55, Upcoming +130/+160, the first folder row
-    /// +128, then the corrector pulled each one up 11–117pt — the one visible jump left after the
-    /// rest-law fix. With the label floored to the plan's frame the engine reveals the same frame
-    /// for every row and parks them where it parks the poster rows (rest ≈ −8, in band). The
-    /// layout growth the floor would cause between rows is cancelled inside each row component by a
-    /// matching negative bottom padding (`PinnedRowGeometry.shortRowLayoutCompensation`), so only
-    /// the focusable frame grows, never the visible spacing.
-    ///
-    /// Only while catalog rows exist below them: with `model.rows` empty one of these rows IS the
-    /// last row, and that case keeps rc11's bottom-inset accounting (`pinnedLastRowHeight`).
-    private func pinnedShortRowLinkFrameFloor(pinned: Bool) -> CGFloat {
-        guard pinned, pinnedShortRowFloor, !model.rows.isEmpty else { return 0 }
-        return pinnedLastRowLinkFrameFloor
+    private func pinnedLastRowLinkFrameFloor(_ plan: PinnedRowGeometry.Plan) -> CGFloat {
+        PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan)
     }
 
     /// rc14 (BUG-122): About → "Short Row Floor (A/B)", default ON. Reactive, so flipping it
     /// re-publishes the floor env without a relaunch.
     @AppStorage("debug.pinnedShortRowFloor") private var pinnedShortRowFloor = true
 
-    private static func isCollectionRow(_ row: HomeRow) -> Bool {
-        if case .collection = row { return true }
-        return false
-    }
-
     /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because
     /// `pinnedPlan` spent one or both reaches. 0 at every Poster Size that fits without spending
     /// them, which is every configuration that shipped before BUG-87.
-    private var pinnedPlanReachDelta: CGFloat {
-        (pinnedPlan.topReach - Theme.Size.heroPinnedRowTopPad)
-            + (pinnedPlan.bottomReach - Theme.Size.heroPinnedRowBottomReach)
+    private func pinnedPlanReachDelta(_ plan: PinnedRowGeometry.Plan) -> CGFloat {
+        (plan.topReach - Theme.Size.heroPinnedRowTopPad)
+            + (plan.bottomReach - Theme.Size.heroPinnedRowBottomReach)
     }
 
     /// Identifies `pinnedLastRowHeight`'s row for the probe line — `HomeRow.id` in the common
@@ -3004,8 +2876,8 @@ struct HomeView: View {
     /// BUG-87 (beta.18): the two reach terms come from `pinnedPlan`, which is what the rows are
     /// actually rendering with (`\.rowCardTopReach` / `\.rowCardBottomReach` above). They equal the
     /// Theme constants at every Poster Size that fits without spending them.
-    private var pinnedUniformShelfChrome: CGFloat {
-        Theme.Spacing.lg + pinnedPlan.topReach + pinnedPlan.bottomReach + Theme.Spacing.lg
+    private func pinnedUniformShelfChrome(_ plan: PinnedRowGeometry.Plan) -> CGFloat {
+        Theme.Spacing.lg + plan.topReach + plan.bottomReach + Theme.Spacing.lg
     }
 
     /// BUG-87 (beta.18): structural fit. The ONE resolved geometry every pinned-mode consumer on
@@ -3271,51 +3143,6 @@ struct HomeView: View {
         HomeRowPreviews.entry(entry)
     }
 
-    @ViewBuilder
-    private var placeholder: some View {
-        if model.isLoading {
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Loading catalogs\u{2026}")
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-            }
-            .padding(.vertical, Theme.Spacing.xl)
-        } else if let message = model.errorMessage {
-            Text(message)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.xl)
-        } else if let message = model.addonManifestError {
-            // Upstream 085e8dc6: all add-on manifests failed. Retry is the focusable anchor for
-            // this branch (BUG-47 rule) and the honest recovery — the add-ons are installed, their
-            // manifests just didn't load.
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Couldn't load your add-ons.")
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.accent)
-                Text(message)
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .lineLimit(2)
-                Button {
-                    AddonRepository.shared.refreshAll()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
-                }
-                .buttonStyle(.chip)
-            }
-            .padding(.vertical, Theme.Spacing.xl)
-        } else {
-            Text("Setting up your catalogs\u{2026}")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .padding(.vertical, Theme.Spacing.xl)
-        }
-    }
 }
 
 /// BUG-30 instrumentation: reports Home's vertical ScrollView contentOffset/contentInsets so an
@@ -5390,6 +5217,9 @@ struct ContinueWatchingRow: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("ContinueWatchingRow")
+        #endif
         // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see

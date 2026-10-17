@@ -2266,6 +2266,9 @@ struct InlineTrailerCard: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("InlineTrailerCard")
+        #endif
         if enabled {
             expandingCard
         } else if posterStyle.landscapeFromShape {

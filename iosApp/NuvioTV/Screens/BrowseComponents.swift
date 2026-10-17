@@ -5104,8 +5104,23 @@ struct CatalogRowView: View {
     /// `PosterCard` and the See All card follow from any host: Classic, the Stage strip, Discover,
     /// the folder Rows page, Search. The image stays `item.poster`, as upstream draws it.
     private var posterStyle: PosterStyle {
-        inheritedPosterStyle.resolved(forSectionItems: section.items)
+        // Perf review 2026-10-17 (#4): memoised per (inherited style, section object). Every read
+        // used to bridge `section.items` (a Kotlin list) to a Swift array, and the body plus its
+        // helpers read this a dozen times per render. A section is an immutable snapshot, so the
+        // object identity is a sound key; the box holds the section strongly so the identity
+        // cannot be reused by a later allocation.
+        if let cached = resolvedStyle.value, resolvedStyle.section === section,
+           resolvedStyle.inherited == inheritedPosterStyle {
+            return cached
+        }
+        let value = inheritedPosterStyle.resolved(forSectionItems: section.items)
+        resolvedStyle.section = section
+        resolvedStyle.inherited = inheritedPosterStyle
+        resolvedStyle.value = value
+        return value
     }
+    /// See `posterStyle`. A reference box, so writing it from `body` changes no view state.
+    @State private var resolvedStyle = CatalogRowResolvedStyleBox()
     private var rowArtworkHeight: CGFloat {
         // BUG-162 / D16: the row's artwork SLOT, `expandedCardHeight`: a shape-landscape card rests
         // smaller (folder-tile size) at the slot's top and grows into it with its trailer, so the
@@ -5177,6 +5192,12 @@ struct CatalogRowView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("CatalogRowView")
+        #endif
+        // Perf review 2026-10-17 (#4): the trailer gate (a UIAccessibility read plus the BUG-55
+        // probe) once per body, not once per card.
+        let trailersActive = inlineTrailersActive
         // BUG-146 second trim (Steven, rc4: Stage headings "still slightly too high"): heading →
         // shelf spacing is `StripGeometry.headingGap` (12) inside the strip, `md` (16) elsewhere.
         VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
@@ -5224,7 +5245,7 @@ struct CatalogRowView: View {
                             Group {
                                 if let onSelect {
                                     Button { onSelect(item) } label: {
-                                        card(for: item, proxy: proxy)
+                                        card(for: item, proxy: proxy, trailersActive: trailersActive)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
                                             // BUG-87/89 (rc11): transparent floor on the REVEALED
@@ -5237,7 +5258,7 @@ struct CatalogRowView: View {
                                         .posterButtonShape()
                                 } else {
                                     NavigationLink(value: TitleRoute(preview: item)) {
-                                        card(for: item, proxy: proxy)
+                                        card(for: item, proxy: proxy, trailersActive: trailersActive)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
                                             // BUG-87/89 (rc11): transparent floor on the REVEALED
@@ -5451,7 +5472,7 @@ struct CatalogRowView: View {
     /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
     /// two cards, so the row is unchanged.
     @ViewBuilder
-    private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
+    private func card(for item: MetaPreview, proxy: ScrollViewProxy, trailersActive: Bool) -> some View {
         if let cardFootnote {
             VStack(alignment: .leading, spacing: 0) {
                 // The footnote is drawn by the card itself, hanging under its caption so it
@@ -5462,7 +5483,7 @@ struct CatalogRowView: View {
                 // re-renders every visible card leaf once (acceptable at mark frequency).
                 WatchedBadgeReader(item: item) { badge in
                     InlineTrailerCard(item: item,
-                                      enabled: inlineTrailersActive,
+                                      enabled: trailersActive,
                                       onExpansionChange: { expanded in
                                           expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
                                       },
@@ -5480,7 +5501,7 @@ struct CatalogRowView: View {
         } else {
             // FEAT-64: see the footnote branch above.
             WatchedBadgeReader(item: item) { badge in
-                InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
+                InlineTrailerCard(item: item, enabled: trailersActive, onExpansionChange: { expanded in
                     expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
                 }, watchBadge: badge)
             }
@@ -5797,4 +5818,11 @@ struct PosterCardView: View {
         PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl,
                    watchBadge: watchBadge, footnote: footnote)
     }
+}
+
+/// `CatalogRowView.posterStyle`'s memo (perf review 2026-10-17, #4).
+final class CatalogRowResolvedStyleBox {
+    var section: HomeCatalogSection?
+    var inherited: PosterStyle?
+    var value: PosterStyle?
 }
