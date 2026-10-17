@@ -432,9 +432,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
     }
 }
 
-/// Folder-return Up-skip (device pass 2026-10-17, review r3): the rows `ScrollView` carries
-/// `.onMoveCommand`, which makes it a focusable container on tvOS. An Up that finds no row above
-/// (Continue Watching or Upcoming culled under the pinned hero) can land focus on that container:
+/// Folder-return Up-skip (device pass 2026-10-17, review r3): an Up past a culled row can land
+/// focus on the rows `LazyVStack`'s placeholder for it (a `UIKitFocusableFillerItem`, root-cause
+/// pass 2026-10-17), whose nearest view is the rows container:
 /// `[Focus] next=PlatformGroupContainer frame={{0, -408.5}, {1840, 5127}}`. Nothing a viewer can
 /// see is focused then. Recognised by size: a focused view taller than one and a half windows is
 /// that container (a card is ~600 pt, a whole row ~430 pt tall). Updated on every focus update by

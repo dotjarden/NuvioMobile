@@ -137,6 +137,11 @@ enum HomeGeometryProbe {
             NSLog("[Focus] next=%@ frame=%@ label=%@ heading=%d",
                   view.map { String(describing: type(of: $0)) } ?? "nil",
                   NSCoder.string(for: frame), label, Int(context?.focusHeading.rawValue ?? 0))
+            // The focused ITEM: a SwiftUI focus item is not a view, so `next` above is only its
+            // nearest hosting view (a `LazyVStack` placeholder shows as the rows container).
+            if let item = context?.nextFocusedItem {
+                NSLog("[Focus] item=%@ local=%@", String(describing: type(of: item)), NSCoder.string(for: item.frame))
+            }
             }
         }
     }

@@ -419,7 +419,7 @@ final class BatchAHomeReturnUITests: XCTestCase {
     /// `_Pinned` (Nuvio-style hero) is the folder-return Up-skip leg (2026-10-17). It failed 3/3 on
     /// the base before the fix: Continue Watching could not take focus after the pop, the BUG-112
     /// ladder's writes to it were dropped and its last rung handed focus to the hero CTA. Fixed by
-    /// `HomeView.remountTopRowsAfterPop`.
+    /// building Continue Watching and Upcoming outside the rows `LazyVStack` (`HomeView.rowsScroll`).
     private func runClassicFolderPopThenUp(nuvioStyle: Bool) throws {
         let seed = Data(Self.folderSeedJson.utf8).base64EncodedString()
         defer { clearSeed() }
