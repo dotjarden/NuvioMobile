@@ -439,8 +439,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
 /// focus on the rows `LazyVStack`'s placeholder for it (a `UIKitFocusableFillerItem`, root-cause
 /// pass 2026-10-17), whose nearest view is the rows container:
 /// `[Focus] next=PlatformGroupContainer frame={{0, -408.5}, {1840, 5127}}`. Nothing a viewer can
-/// see is focused then. Recognised by size: a focused view taller than one and a half windows is
-/// that container (a card is ~600 pt, a whole row ~430 pt tall). Updated on every focus update by
+/// see is focused then. Recognised by the filler's type (`isLazyFiller`), or by size: a focused
+/// view taller than one and a half windows is that container (a card is ~600 pt, a whole row
+/// ~430 pt tall). Updated on every focus update by
 /// `HomeUpSwipeCatcher.CatcherView`; read by `HomeView.redirectIfUpStrandedFocus`, the redirect's
 /// rungs and its give-up, so none of them act while focus is on the tab bar, the rail, a hold menu
 /// or anything else no row reports.
@@ -449,9 +450,9 @@ enum RowsContainerFocus {
     static var isFocused = false
 
     /// Root-cause pass 2026-10-17 (review P2-2): the focused item IS the `LazyVStack`'s placeholder.
-    /// Matched by SwiftUI's private class name, so the size test below stays as the fallback: since
-    /// Continue Watching and Upcoming left the lazy stack, the container is only as tall as the
-    /// catalog rows, and two or three of them fall under one and a half windows.
+    /// Matched by SwiftUI's private class name, with the size test below as the fallback. The size
+    /// test alone misses a short rows container (a profile with few rows), and on the Apple TV a
+    /// filler can be shaped like a single card (`{{140, 321.5}, {360, 575.5}}`).
     static func isLazyFiller(_ item: UIFocusItem?) -> Bool {
         guard let item else { return false }
         return String(describing: type(of: item)).contains("FocusableFillerItem")
