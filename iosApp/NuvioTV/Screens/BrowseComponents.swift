@@ -121,6 +121,24 @@ extension EnvironmentValues {
 /// back (same precedent as `ProfilesViewModel.select(_:)`).
 enum HomeGeometryProbe {
     nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
+
+    /// Folder-return Up-skip (device pass 2026-10-17): one `[Focus]` line per focus update (the
+    /// newly focused view's type, window frame and label), so a device log says where focus went
+    /// when no row or the hero reported it. Installed once, only with the probe on.
+    @MainActor static func installFocusLogger() {
+        guard enabled, focusObserver == nil else { return }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { note in
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            let view = context?.nextFocusedView
+            let frame = view.flatMap { v in v.window.map { v.convert(v.bounds, to: $0) } } ?? .zero
+            let label = view?.accessibilityLabel ?? "-"
+            NSLog("[Focus] next=%@ frame=%@ label=%@ heading=%d",
+                  view.map { String(describing: type(of: $0)) } ?? "nil",
+                  NSCoder.string(for: frame), label, Int(context?.focusHeading.rawValue ?? 0))
+        }
+    }
+    @MainActor private static var focusObserver: NSObjectProtocol?
 }
 
 // MARK: - Pinned row title tracking (BUG-37)

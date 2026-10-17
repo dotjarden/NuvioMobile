@@ -172,6 +172,15 @@ private struct PinnedRowUpFallbackTarget: ViewModifier {
     }
 
     private func applyIfMatching(_ request: PinnedRowFocusRequest) {
+        // Folder-return Up-skip (device pass 2026-10-17): every write a row receives and whether it
+        // landed, behind the Home scroll probe.
+        if request.rowKey == rowKey, HomeGeometryProbe.enabled {
+            let binding = focus, key = rowKey, before = focus.wrappedValue ?? "nil"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                NSLog("[HomeReturn] apply row=%@ gen=%d before=%@ after=%@", key, request.generation,
+                      before, binding.wrappedValue ?? "nil")
+            }
+        }
         // The anti-theft guard: a request that arrives while this row ALREADY holds focus (a late
         // retry rung whose earlier rung landed) must not yank the user off whichever card they are on.
         // BUG-156: `forceCard` (the pop restore's early rungs only) may retarget the card inside a row

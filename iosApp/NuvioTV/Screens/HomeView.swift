@@ -1617,10 +1617,13 @@ struct HomeView: View {
                                    // beta.18 verdict (BUG-112): symmetric trigger — whichever of
                                    // (hero focus gain, input stamp) arrives second runs the gate.
                                    _ = revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "swipe-any")
+                                   redirectIfUpStrandedFocus(pinned: pinned, proxy: proxy, source: "swipe-any")
                                },
                                onAnyUpPress: {
                                    upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime
+                                   logHomeReturn("up press own=\(focusedRowKey ?? (heroFocused ? "hero" : "-"))")
                                    _ = revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "press-any")
+                                   redirectIfUpStrandedFocus(pinned: pinned, proxy: proxy, source: "press-any")
                                })
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
@@ -1647,6 +1650,7 @@ struct HomeView: View {
         .onChange(of: heroFocused) { _, focused in
             guard focused else { return }
             upInput.noteHeroGain()
+            logHomeReturn("own hero from=\(focusedRowKey ?? upInput.lastOwnedRowKey ?? "-")")
             if revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "focus") { return }
             // Review r1 P2: the swipe catcher can stamp AFTER the engine's focus update (its own
             // `consumedBeforeCallback` case), so one deferred re-check accepts an input stamped
@@ -1963,6 +1967,8 @@ struct HomeView: View {
             #endif
             if focusedRowKey != rowKey {
                 let origin = focusedRowKey
+                // Folder-return Up-skip (device pass 2026-10-17): which row took focus, for the probe.
+                logHomeReturn("own row=\(rowKey) from=\(origin ?? (heroFocused ? "hero" : "-"))")
                 // beta.18 verdict (BUG-126): one frame-timing window per row hop (no-op unless
                 // `debug.collectionFrameProbe` is on).
                 CollectionFocusFrameSampler.shared.arm(rowKey: rowKey, gif: false)
@@ -2112,15 +2118,15 @@ struct HomeView: View {
         return true
     }
 
-    /// 2026-10-17 (folder-return Up-skip): an Up input moved focus from `origin` straight into the
-    /// hero CTA while `target`, the row above `origin`, exists. Gated by `revealTopAfterUpIntoHero`
-    /// (an Up input and a row release inside `upIntoHeroWindow`, and `HomeUpIntoHeroGate.isEngineSkip`;
-    /// the rows need not be past the top). Runs as an Up
-    /// fallback attempt (`activeUpFallbackTarget`), so the row's landing logs `action=landed` and
-    /// retires the request through `handleRowFocusOwnership`, and any newer row claim (a Down from
-    /// the hero, say) supersedes it. Two rungs: scroll the target in and ask at once, then the top
-    /// and ask again; an attempt still on the hero at 1.0 s gives up and drops its request, so a
-    /// row that mounts later cannot take focus behind the viewer's back (F5).
+    /// 2026-10-17 (folder-return Up-skip): an Up input moved focus from `origin` onto the hero CTA
+    /// (`revealTopAfterUpIntoHero`, gated by `HomeUpIntoHeroGate.isEngineSkip`) or onto the rows
+    /// container itself (`redirectIfUpStrandedFocus`), while `target`, the row above `origin`,
+    /// exists. Runs as an Up fallback attempt (`activeUpFallbackTarget`), so the row's landing logs
+    /// `action=landed` and retires the request through `handleRowFocusOwnership`, and any newer row
+    /// claim (a Down from the hero, say) supersedes it. Order, from the device pass: re-identify a
+    /// Continue Watching / Upcoming target (its asks were dropped otherwise), scroll the target in
+    /// alone, ask at 0.4 s and 0.8 s (asks issued mid-scroll were dropped), re-identify once more at
+    /// 0.6 s if still unlanded, give up at 1.3 s; a give-up with focus on nothing hands it to the CTA.
     private func redirectUpIntoHero(from origin: String,
                                     to target: (key: String, anchor: String),
                                     proxy: ScrollViewProxy,
@@ -2141,29 +2147,87 @@ struct HomeView: View {
         upInput.revealGeneration &+= 1
         heroUpGeneration &+= 1
         logUpFallback("row=\(origin) prev=\(target.key) action=redirect reason=upIntoHero anchor=\(target.anchor) sinceUp=\(sinceUpMs) src=\(source)")
+        // The hero, or nothing Home tracks (the rows container itself, see `redirectIfUpStrandedFocus`).
         func stillRedirecting() -> Bool {
-            generation == upFallbackGeneration && heroFocused
+            generation == upFallbackGeneration && (heroFocused || focusedRowKey == nil)
                 && !PinnedRowSettle.hostCovered && !tabBarVisibility.homeSurfaceCovered && resume == nil
+        }
+        // Device pass 2026-10-17: on the Apple TV a write issued while the target row is still
+        // off screen or mid-scroll is dropped (`[HomeReturn] apply … after=nil` on every rung that
+        // scrolled and asked at once), while Down from the CTA reaches the same row. So the scroll
+        // goes first, alone, and the asks follow once it has settled.
+        // Device pass 2026-10-17: Continue Watching dropped every ask from the CTA even on screen
+        // and settled (`apply … after=nil`), where Down from the CTA focused it at once; a fresh
+        // identity takes the ask. Given now, before the scroll brings the row in, so the first ask
+        // can land; once more at 0.6 s below if it has not.
+        if target.key == "continue-watching" || target.key == "upcoming" {
+            if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+            logHomeReturn("remount rows=\(target.key) reason=redirect")
         }
         PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-redirect")
         withAnimation(.easeInOut(duration: 0.3)) {
             proxy.scrollTo(target.anchor, anchor: .top)
         }
-        requestRowFocus(target.key)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            guard stillRedirecting() else { return }
-            logUpFallback("row=\(origin) prev=\(target.key) action=redirect-top src=\(source)")
-            PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-redirect-top")
-            withAnimation(.easeInOut(duration: 0.3)) {
-                proxy.scrollTo("home_top", anchor: .top)
+        for (rung, delay) in [(1, 0.4), (2, 0.8)] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard stillRedirecting() else { return }
+                logUpFallback("row=\(origin) prev=\(target.key) action=redirect-ask n=\(rung) src=\(source)")
+                requestRowFocus(target.key)
             }
-            requestRowFocus(target.key)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        if target.key == "continue-watching" || target.key == "upcoming" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                guard stillRedirecting() else { return }
+                if target.key == "continue-watching" { continueWatchingRowToken &+= 1 } else { upcomingRowToken &+= 1 }
+                logHomeReturn("remount rows=\(target.key) reason=redirectMissed")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
             guard generation == upFallbackGeneration else { return }
             logUpFallback("row=\(origin) prev=\(target.key) action=giveup src=redirect-\(source)")
             endUpFallback(reason: "giveup", log: false)
+            // Focus stranded on the rows container (no row, no hero): never leave it invisible.
+            // The CTA is always mounted, and the rows already sit at the top.
+            if focusedRowKey == nil, !heroFocused, homePath.isEmpty, resume == nil,
+               !tabBarVisibility.homeSurfaceCovered, !navigationChrome.isFocusedChrome {
+                logUpFallback("row=\(origin) prev=hero action=hero reason=stranded src=redirect-\(source)")
+                upInput.noteProgrammaticHeroFocus()
+                heroFocused = true
+            }
         }
+    }
+
+    /// Folder-return Up-skip (device pass 2026-10-17, Living Room ATV): the second shape of the skip.
+    /// The rows `ScrollView` carries `.onMoveCommand`, which makes it a focusable container on tvOS
+    /// (`[Focus] next=PlatformGroupContainer frame={{0, -408.5}, {1840, 5127}} heading=1`). When an
+    /// Up from a row finds no row above it (Continue Watching or Upcoming culled under the pinned
+    /// hero), the engine can put focus on that container instead of the CTA: nothing is drawn as
+    /// focused, no row and not the hero owns focus, and the next Up does nothing. Runs on every Up
+    /// press and swipe (the window-level catcher), right after the input stamp, and once more 0.25 s
+    /// later (the release can be reported after the press). Redirects only when: Home is uncovered
+    /// and Classic pinned, the rail does not hold focus, neither a row nor the hero owns focus, a row
+    /// released focus inside `upIntoHeroWindow`, and that row has a row above it.
+    private func redirectIfUpStrandedFocus(pinned: Bool, proxy: ScrollViewProxy, source: String, deferred: Bool = false) {
+        guard pinned, heroHeaderVisible, !isStageLayout, homePath.isEmpty, resume == nil,
+              !PinnedRowSettle.hostCovered, !tabBarVisibility.homeSurfaceCovered,
+              !navigationChrome.isFocusedChrome else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let stranded = !heroFocused && focusedRowKey == nil
+        let releasedNow = upInput.lastRowReleasedAt.map { now - $0 < Self.upIntoHeroWindow } ?? false
+        guard stranded, releasedNow,
+              let origin = upInput.lastOwnedRowKey,
+              let target = previousRowTarget(for: origin) else {
+            if !deferred, !heroFocused, focusedRowKey == nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    redirectIfUpStrandedFocus(pinned: pinned, proxy: proxy, source: source, deferred: true)
+                }
+            }
+            return
+        }
+        if activeUpFallbackTarget == target.key, activeUpFallbackSource.hasPrefix("redirect") { return }
+        let sinceUp = Int(((now - upInput.lastUpInputAt) * 1000).rounded())
+        logUpFallback("row=\(origin) prev=\(target.key) action=stranded src=\(source)\(deferred ? "-deferred" : "")")
+        redirectUpIntoHero(from: origin, to: target, proxy: proxy, source: "stranded-\(source)", sinceUpMs: sinceUp)
     }
 
     /// How recent an Up input (and a row's focus release) must be for `revealTopAfterUpIntoHero`
@@ -2606,6 +2670,7 @@ struct HomeView: View {
     /// BUG-156's `[HomeReturn]` line (behind the Home scroll probe, like `[HomeScrollProbe]`) and the
     /// DEBUG `debug_homeReturn ret=` readout.
     private func logHomeReturn(_ event: String) {
+        HomeGeometryProbe.installFocusLogger()
         if HomeGeometryProbe.enabled { NSLog("[HomeReturn] %@", event) }
         #if DEBUG
         HomeReturnDebug.shared.setRet(event)
