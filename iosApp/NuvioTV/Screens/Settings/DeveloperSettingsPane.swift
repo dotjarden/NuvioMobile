@@ -49,6 +49,8 @@ struct DeveloperSettingsPane: View {
     /// beta.19-rc1 verdict (T1, BUG-66): which fix leg runs for a half-shown tab bar
     /// (`TabBarRestFix`: 0 off, 1 relink, 2 top-rest snap). Launch-latched there, hence "Relaunch".
     @AppStorage(TabBarRestFix.defaultsKey) private var tabBarRestFix = 0
+    /// B16: seeded from the stored preset; the binding writes the knobs through `HomeSpeedPreset.apply`.
+    @State private var homeSpeedPreset = HomeSpeedPreset.current()
 
     // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 "Row Edge Fade" A/B (`debug.rowEdgeFade`) left
     // this pane. It is the Appearance setting `row_edge_fade` now (Off by default), and
@@ -779,6 +781,18 @@ struct DeveloperSettingsPane: View {
                             default: return String(localized: "Off")
                             }
                         }
+                    )
+
+                    // B16 (Steven, rc6: the new Home is less smooth than Classic): faster page
+                    // glides and stage swaps, for an A/B on the tester's own TV.
+                    SettingsPickerRow(
+                        title: String(localized: "Home Speed (A/B)"),
+                        subtitle: String(localized: "How fast the new Home moves between rows and swaps the title. Relaunch after changing"),
+                        selection: Binding(get: { homeSpeedPreset },
+                                           set: { preset in preset.apply(); homeSpeedPreset = preset }),
+                        options: HomeSpeedPreset.allCases,
+                        descriptionID: .devHomeSpeed,
+                        label: { $0.label }
                     )
                 }
             }

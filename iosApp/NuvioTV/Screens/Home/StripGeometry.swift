@@ -340,6 +340,49 @@ extension EnvironmentValues {
 ///     -debug.stageFadeIn 0.05…0.4        (default 0.20)
 ///     -debug.stripFocusMemory off        (Down/Up land geometrically; memory serves Menu and rail
 ///                                         restores only — the §3.3 / Q5 fallback)
+/// B16 (UX-16 (1); Steven, rc6: the new Home "still doesn't feel as smooth as the old home
+/// screen"): Settings › Developer › Home Speed (A/B) writes the launch-latched knobs below in one
+/// go, so a tester can try the faster timings without launch arguments. Standard removes them.
+nonisolated enum HomeSpeedPreset: Int, CaseIterable, Sendable {
+    case standard = 0
+    case faster = 1
+    case fastest = 2
+
+    static let defaultsKey = "debug.homeSpeedPreset"
+
+    /// (page glide, swap pause, fade out, fade in); nil = the shipped defaults.
+    var timings: (page: Double, pause: Double, fadeOut: Double, fadeIn: Double)? {
+        switch self {
+        case .standard: nil
+        case .faster: (0.4, 0.3, 0.12, 0.16)
+        case .fastest: (0.3, 0.2, 0.1, 0.12)
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .standard: String(localized: "Standard")
+        case .faster: String(localized: "Faster")
+        case .fastest: String(localized: "Fastest")
+        }
+    }
+
+    static func current(defaults: UserDefaults = .standard) -> HomeSpeedPreset {
+        HomeSpeedPreset(rawValue: defaults.integer(forKey: defaultsKey)) ?? .standard
+    }
+
+    func apply(defaults: UserDefaults = .standard) {
+        let keys = ["debug.stripPageSeconds", "debug.stageSwapPause", "debug.stageFadeOut", "debug.stageFadeIn"]
+        if let t = timings {
+            for (key, value) in zip(keys, [t.page, t.pause, t.fadeOut, t.fadeIn]) { defaults.set(value, forKey: key) }
+            defaults.set(rawValue, forKey: Self.defaultsKey)
+        } else {
+            for key in keys { defaults.removeObject(forKey: key) }
+            defaults.removeObject(forKey: Self.defaultsKey)
+        }
+    }
+}
+
 nonisolated enum StageStripTuning {
     static let defaultPageSeconds: TimeInterval = 0.5
 
