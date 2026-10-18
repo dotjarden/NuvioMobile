@@ -193,6 +193,54 @@ final class StripPageMount: ObservableObject {
 /// One strip page's content: the row while the page is mounted, an empty page of the same height
 /// otherwise. Nothing in an empty page can take focus, and Down/Up only ever move to an adjacent
 /// row, which is mounted.
+/// Batch F: reports a strip row's natural height (fit mode only; off, it adds nothing).
+private struct StripRowHeightReader: ViewModifier {
+    let key: String
+    let enabled: Bool
+    let report: (String, CGFloat) -> Void
+
+    private func send(_ height: CGFloat) {
+        #if DEBUG
+        StageStripProbe.shared.log("fit row=\(key) h=\(Int(height))")
+        #endif
+        report(key, height)
+    }
+
+    func body(content: Content) -> some View {
+        if enabled {
+            // Its natural height: the page proposes its full height, and a row with any flexible
+            // child would otherwise fill it and report the fixed page back.
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { proxy in
+                        let height = proxy.size.height.rounded(.up)
+                        Color.clear
+                            .onAppear { send(height) }
+                            .onChange(of: height) { _, new in send(new) }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// Batch F: true inside a strip page while Short Rows Fit is on. A wide-poster card then drops its
+/// reserved grown-trailer slot (`InlineTrailerCard.shapeSlotSizer`), so its row is only as tall as
+/// it really is and grows while the trailer plays. Classic's planners size rows with the slot, so
+/// it stays false everywhere else.
+private struct StripRowFitsHeightKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var stripRowFitsHeight: Bool {
+        get { self[StripRowFitsHeightKey.self] }
+        set { self[StripRowFitsHeightKey.self] = newValue }
+    }
+}
+
 private struct StripPageSlot<Content: View>: View {
     @ObservedObject var mount: StripPageMount
     let content: () -> Content
@@ -246,6 +294,8 @@ struct StripPager<Row: View>: View {
     /// (the device focus engine's late restoration otherwise lands on a neighbour and the scroll
     /// view reveals it: 294 pt of visible detour on the Living Room ATV, 10-18).
     @State private var uncoverGateKey: String?
+    /// Batch F: each mounted row's measured height, read only with `StageStripTuning.fitRows`.
+    @State private var fitHeights: [String: CGFloat] = [:]
     /// Per-hop bookkeeping, including the mounted window (see `StripPagerBox`).
     @State private var box = StripPagerBox()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -378,24 +428,36 @@ struct StripPager<Row: View>: View {
         let pagerBox = box
         ForEach(Array(rowKeys.enumerated()), id: \.element) { index, key in
             // Outside the window an empty page of the same height (`StripPageSlot`).
+            let pageForRow = fitPageHeight(key, page: page)
             StripPageSlot(mount: pagerBox.mount(for: key, at: index, count: count)) {
                 row(key)
                     .padding(.leading, leading)
                     .padding(.trailing, trailing)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.stripRowFitsHeight, StageStripTuning.fitRows)
+                    .modifier(StripRowHeightReader(key: key, enabled: StageStripTuning.fitRows) { key, height in
+                        if fitHeights[key] != height { fitHeights[key] = height }
+                    })
             }
-            .frame(height: page, alignment: .top)
+            .frame(height: pageForRow, alignment: .top)
             .disabled(uncoverGateKey.map { $0 != key } ?? false)
             // §3.4: render-time only, no state writes. The page at rest is exactly 1, so the
             // focused card's lift renders untouched; the peeking page reads 0.6.
             .visualEffect { content, proxy in
                 content.opacity(StripGeometry.pageOpacity(
                     minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
-                    pageHeight: page))
+                    pageHeight: pageForRow))
             }
             .id(key)
         }
         Color.clear.frame(height: geometry.peek)
+    }
+
+    /// Batch F: the fixed page, or (fit mode) the row's measured height plus the focus lift above
+    /// and below it, never taller than the fixed page. An unmeasured row keeps the fixed page.
+    private func fitPageHeight(_ key: String, page: CGFloat) -> CGFloat {
+        guard StageStripTuning.fitRows, let measured = fitHeights[key], measured > 0 else { return page }
+        return min(page, (measured + 2 * geometry.focusLift).rounded(.up))
     }
 
     private var probeConfiguration: String {

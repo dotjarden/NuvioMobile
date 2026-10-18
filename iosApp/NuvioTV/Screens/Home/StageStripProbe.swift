@@ -142,7 +142,7 @@ final class StageStripProbe: NSObject, ObservableObject {
             baselineY = nil
         }
         if geometryChanged || rowsChanged {
-            log("config P=\(Self.f1(pageHeight)) H=\(Self.f1(stripHeight)) rows=\(rowCount) pageSeconds=\(StageStripTuning.pageSeconds)")
+            log("config P=\(Self.f1(pageHeight)) H=\(Self.f1(stripHeight)) rows=\(rowCount) pageSeconds=\(StageStripTuning.pageSeconds) fitRows=\(StageStripTuning.fitRows ? 1 : 0)")
         }
     }
 

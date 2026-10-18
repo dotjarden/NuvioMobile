@@ -51,6 +51,8 @@ struct DeveloperSettingsPane: View {
     @AppStorage(TabBarRestFix.defaultsKey) private var tabBarRestFix = 0
     /// B16: seeded from the stored preset; the binding writes the knobs through `HomeSpeedPreset.apply`.
     @State private var homeSpeedPreset = HomeSpeedPreset.current()
+    /// Batch F: Short Rows Fit (A/B), launch-latched (`StageStripTuning.fitRows`).
+    @AppStorage(StageStripTuning.fitRowsKey) private var stripFitRows = StageStripTuning.fitRowsDefault
 
     // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 "Row Edge Fade" A/B (`debug.rowEdgeFade`) left
     // this pane. It is the Appearance setting `row_edge_fade` now (Off by default), and
@@ -793,6 +795,14 @@ struct DeveloperSettingsPane: View {
                         options: HomeSpeedPreset.allCases,
                         descriptionID: .devHomeSpeed,
                         label: { $0.label }
+                    )
+
+                    // Batch F (Steven rc6: the next heading sits too low under short rows).
+                    SettingsToggleRow(
+                        title: String(localized: "Short Rows Fit (A/B)"),
+                        subtitle: String(localized: "On the new Home and in collections, the next heading sits right under shorter rows. Relaunch after changing"),
+                        isOn: $stripFitRows,
+                        descriptionID: .devStripFitRows
                     )
                 }
             }

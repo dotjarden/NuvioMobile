@@ -386,6 +386,18 @@ nonisolated enum HomeSpeedPreset: Int, CaseIterable, Sendable {
 nonisolated enum StageStripTuning {
     static let defaultPageSeconds: TimeInterval = 0.5
 
+    /// Batch F (Steven rc6, photos 1–5: "the titles in the bottom row sit too low"): each page takes
+    /// its own row's measured height (plus the focus lift) instead of the tallest row type's, so the
+    /// next heading sits right under a short row (wide posters, Continue Watching, collection tiles)
+    /// and moves down only while a wide card's trailer grows it. The strip itself keeps its height,
+    /// so the stage above never moves. Settings › Developer › Short Rows Fit (A/B); launch-latched.
+    static let fitRowsKey = "debug.stripFitRows"
+    /// Default ON (device-checked 2026-10-18 in Test 2: Upcoming's next heading sits right under
+    /// the row; the stage text does not move); the switch turns it off.
+    static let fitRowsDefault = true
+    static let fitRows: Bool = UserDefaults.standard.object(forKey: fitRowsKey) == nil
+        ? fitRowsDefault : UserDefaults.standard.bool(forKey: fitRowsKey)
+
     /// The strip's page animation length.
     static let pageSeconds: TimeInterval =
         knob("debug.stripPageSeconds", in: 0.3...1.0) ?? defaultPageSeconds

@@ -221,6 +221,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devTabBarScrollLink = "dev.tabBarScrollLink"
     case devTabBarRestFix = "dev.tabBarRestFix"
     case devHomeSpeed = "dev.homeSpeed"
+    case devStripFitRows = "dev.stripFitRows"
 }
 
 enum SettingsDescriptions {
@@ -421,6 +422,7 @@ enum SettingsDescriptions {
         case .devNoZoomReach: return LocalizedStringResource("An A/B switch that reserves extra room for row titles when No Zoom on Focus is on, to test titles that fade or bounce.")
         case .devShortRowFloor: return LocalizedStringResource("An A/B switch that makes short rows such as Continue Watching rest at the same height as poster rows.")
         case .devTabBarScrollLink: return LocalizedStringResource("An A/B switch that tells the tab bar which scroll view on Home to follow. Relaunch after changing it.")
+        case .devStripFitRows: return LocalizedStringResource("An A/B switch for rows with shorter cards (wide posters, Continue Watching, collections) on the new Home and inside collections. On, each row is only as tall as its cards, so the next heading sits right under it, and a wide poster's row grows only while its trailer plays. Off, every row keeps the height of a poster row. Default: On. Relaunch after changing it.")
         case .devHomeSpeed: return LocalizedStringResource("An A/B switch for the new Home's speed. Faster and Fastest shorten the glide between rows and the pause before the title, synopsis and art change. Standard is the shipped timing. Relaunch after changing it.")
         case .devTabBarRestFix: return LocalizedStringResource("An A/B switch for a tab bar that stays half shown on Home. Relink reconnects the tab bar to Home's rows once they first come to rest. Snap to Top moves the first row fully back to the top when it rests a few points low. Relaunch after changing it.")
         }
@@ -446,6 +448,7 @@ enum SettingsDescriptions {
         case .devTabBarScrollLink: return LocalizedStringResource("Takes effect on next launch.")
         case .devTabBarRestFix: return LocalizedStringResource("Takes effect on next launch.")
         case .devHomeSpeed: return LocalizedStringResource("Takes effect on next launch.")
+        case .devStripFitRows: return LocalizedStringResource("Takes effect on next launch.")
         default: return nil
         }
     }

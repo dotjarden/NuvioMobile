@@ -2126,6 +2126,8 @@ struct InlineTrailerCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var posterStyle
+    /// Batch F: Short Rows Fit in a strip page (see `stripRowFitsHeight`).
+    @Environment(\.stripRowFitsHeight) private var stripRowFitsHeight
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// beta.19-rc1 verdict (M3): the host's rest signal, handed to the model before every dwell.
     @Environment(\.rowRestSource) private var rowRestSource
@@ -2295,7 +2297,7 @@ struct InlineTrailerCard: View {
     /// height never changes.
     @ViewBuilder
     private var shapeSlotSizer: some View {
-        if posterStyle.landscapeFromShape {
+        if posterStyle.landscapeFromShape && !stripRowFitsHeight {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 Color.clear.frame(width: 0, height: posterStyle.expandedCardHeight)
                 if posterStyle.showTitle {
