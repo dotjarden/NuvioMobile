@@ -5626,7 +5626,8 @@ struct CatalogRowView: View {
                                        // landscape 416 → 624 at Medium+, the global toggle's card
                                        // 360 → 360 (it never grows, so nothing to scroll for).
                                        restingWidth: posterStyle.cardWidth,
-                                       expandedWidth: posterStyle.expandedCardWidth,
+                                       // Steven rc6 19:47Z: a shape-landscape card no longer grows.
+                                       expandedWidth: posterStyle.trailerCardWidth,
                                        gap: Theme.Spacing.rowGap,
                                        visibleMinX: sample.paddedVisibleMinX,
                                        viewportWidth: sample.viewportWidth,

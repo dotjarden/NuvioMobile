@@ -120,6 +120,8 @@ final class PosterStyleLandscapeRowTests: XCTestCase {
         XCTAssertFalse(style.landscapeRowGeometry, "planned as a portrait-height row")
     }
 
+    /// The SLOT (Classic's planners): the tile at the poster height. Since Steven's rc6 19:47Z note the
+    /// card itself no longer grows into it (`testShapeLandscapeTrailerPlaysAtTheRestingSize`).
     func testShapeLandscapeGrowsToTheTileAtThePosterHeight() {
         let base = mediumPlus()
         let style = base.resolved(forSectionItems: (0..<4).map { item("s\($0)", .landscape) })
@@ -161,8 +163,8 @@ final class PosterStyleLandscapeRowTests: XCTestCase {
 
         let shape = portrait.resolved(forSectionItems: (0..<3).map { item("a\($0)", .landscape) })
         XCTAssertEqual(shape.artworkSize(expanded: false), CGSize(width: shape.cardWidth, height: shape.cardHeight))
-        XCTAssertEqual(shape.artworkSize(expanded: true),
-                       CGSize(width: shape.expandedCardWidth, height: shape.expandedCardHeight))
+        // Steven rc6 19:47Z: the shape card plays its trailer at the resting size.
+        XCTAssertEqual(shape.artworkSize(expanded: true), CGSize(width: shape.cardWidth, height: shape.cardHeight))
 
         var global = portrait
         global.landscapeCatalogRows = true
@@ -220,5 +222,22 @@ final class PosterStyleLandscapeRowTests: XCTestCase {
         var global = base
         global.landscapeCatalogRows = true
         XCTAssertTrue(StripGeometry.Inputs.live(style: global, noZoom: true, leadingInset: 0).landscapeCatalogRows)
+    }
+
+    // MARK: - Steven rc6 19:47Z: wide trailers at the resting size
+
+    func testShapeLandscapeTrailerPlaysAtTheRestingSize() {
+        let base = mediumPlus()
+        let style = base.resolved(forSectionItems: (0..<4).map { item("s\($0)", .landscape) })
+        XCTAssertEqual(style.artworkSize(expanded: true), style.artworkSize(expanded: false),
+                       "a shape-landscape card plays its trailer at 416 × 234, it never grows")
+        XCTAssertEqual(style.trailerCardWidth, style.cardWidth, accuracy: 0.001)
+        XCTAssertEqual(style.trailerCardHeight, style.cardHeight, accuracy: 0.001)
+    }
+
+    func testPortraitStillMorphsToTheTile() {
+        let style = mediumPlus()
+        XCTAssertEqual(style.artworkSize(expanded: true).width, style.height * 16 / 9, accuracy: 0.001)
+        XCTAssertEqual(style.artworkSize(expanded: true).height, style.height, accuracy: 0.001)
     }
 }

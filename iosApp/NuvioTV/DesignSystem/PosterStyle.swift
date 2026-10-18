@@ -62,9 +62,19 @@ struct PosterStyle: Equatable {
     /// translucent), so only `.wide` reads `true`.
     func artworkSize(expanded: Bool) -> CGSize {
         expanded
-            ? CGSize(width: expandedCardWidth, height: expandedCardHeight)
+            ? CGSize(width: trailerCardWidth, height: trailerCardHeight)
             : CGSize(width: cardWidth, height: cardHeight)
     }
+
+    /// Steven (rc6 follow-up 2026-10-18 19:47Z, reversing D16's grow): a shape-landscape card plays
+    /// its trailer AT ITS RESTING SIZE: the focus lift already enlarges the focused card, and a card
+    /// that grows shifts its row and the heading under it. Portrait rows still morph to the 16:9 tile
+    /// (UX-4a); the global Landscape Posters card never changed. `expandedCardWidth/Height` stay the
+    /// row's artwork SLOT for Classic's planners; this is only what the card grows TO.
+    var trailerCardWidth: CGFloat { landscapeFromShape ? cardWidth : expandedCardWidth }
+
+    /// See `trailerCardWidth`.
+    var trailerCardHeight: CGFloat { landscapeFromShape ? cardHeight : expandedCardHeight }
 
     /// BUG-162: the row is a fixed-size landscape row (the global toggle), shorter than a portrait
     /// row. False for portrait rows and for shape-landscape rows, which keep the portrait height:
