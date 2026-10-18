@@ -342,7 +342,8 @@ final class StageStripProbe: NSObject, ObservableObject {
             if activeSegment != nil || restY == nil {
                 residual = "moving"
             } else if let rest = restY {
-                residual = Self.f1(rest - (baseline - CGFloat(win.to) * pageHeight))
+                // Batch F: rows × P is the rest only with fixed pages; fit pages have no single P.
+                residual = StageStripTuning.fitRows ? "fit" : Self.f1(rest - (baseline - CGFloat(win.to) * pageHeight))
             } else {
                 residual = "moving"
             }
