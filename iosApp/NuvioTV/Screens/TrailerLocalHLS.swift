@@ -414,7 +414,9 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     private func sourceInputs(of source: TrailerPlaybackSource) -> SourceInputs {
         let progressive: String? = (source.progressiveUrl?.isEmpty == false) ? source.progressiveUrl : nil
         var work: RepackWork?
-        if let video = source.adaptiveVideo, let audio = source.adaptiveAudio {
+        // BUG-128 test knob: `-debug.trailerRepackOff YES` plays the progressive stream only.
+        let repackOff = UserDefaults.standard.bool(forKey: "debug.trailerRepackOff")
+        if !repackOff, let video = source.adaptiveVideo, let audio = source.adaptiveAudio {
             let videoTrack = Track(video)
             let audioTrack = Track(audio)
             work = { [self] finish in repack(video: videoTrack, audio: audioTrack, completion: finish) }

@@ -431,7 +431,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             // BUG-130: the Detail background loop is torn down the moment the full-screen trailer is
             // requested; leave its position for the cover's player, which starts ~0.6 s later.
-            if surfaceTag == "detail-bg", started, let player, let url = attachedURLString {
+            // Not gated on `started`: with a looper the TEMPLATE item never turns ready (its copies
+            // play), so the player's own position is the signal (`isUsable` drops < 1 s).
+            if surfaceTag == "detail-bg", let player, let url = attachedURLString {
                 TrailerPositionHandoff.shared.record(url: url, time: player.currentTime(),
                                                      duration: player.currentItem?.duration)
             }
@@ -496,6 +498,41 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 /// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above (always unmuted —
 /// FEAT-11's default only governs the background loop) — the two never run concurrently, so
 /// there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
+/// BUG-128: the switch away from a trailer stream YouTube cuts off. When the preferred clients refuse
+/// a video, the extractor falls back to one (`android`) whose 1080p streams YouTube refuses with HTTP
+/// 403 past roughly the first minute of the MEDIA (fresh URLs hit the same point), unless a proof
+/// token the extractor does not send is attached. The progressive stream is not cut off.
+@MainActor
+enum TrailerStreamRefresh {
+    /// One switch: fresh URLs for the same 1080p pair hit the same position cut-off (device 10-18),
+    /// so the switch goes to the progressive stream, which YouTube does not cut off.
+    static let maxRefreshes = 1
+    /// A stall past this point switches at once (no backstop wait).
+    static let immediateSwitchAfterSeconds: Double = 20
+    /// A stall that has not moved for this long refreshes too (the backstop to the 403 trigger).
+    static let stallBackstopSeconds: TimeInterval = 5
+
+    /// The item's newest error-log entry is a 403.
+    static func lastErrorIsForbidden(_ item: AVPlayerItem) -> Bool {
+        item.errorLog()?.events.last?.errorStatusCode == 403
+    }
+
+    /// Re-extracts `videoId` and returns its progressive stream (YouTube's single-file format,
+    /// 360p here), which is not cut off. Device 10-18 (*Pinocchio* 2022, `android` client): the
+    /// 1080p repack pair 403s past ~48 s even with fresh URLs, while the progressive stream played
+    /// to the end. Falls back to a fresh repack URL when the source has no progressive stream.
+    static func fallbackURL(videoId: String) async -> String? {
+        let source: TrailerPlaybackSource? = await withCheckedContinuation { continuation in
+            HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: "https://www.youtube.com/watch?v=\(videoId)") { source, _ in
+                continuation.resume(returning: source)
+            }
+        }
+        guard let source else { return nil }
+        if let progressive = source.progressiveUrl, !progressive.isEmpty { return progressive }
+        return await TrailerLocalHLS.shared.playbackURL(for: source)
+    }
+}
+
 /// BUG-130: the Detail background trailer's position, handed to the full-screen player of the same
 /// stream. Written at the background loop's teardown (the full-screen request removes it), read once
 /// by the cover ~0.6 s later. Stale after `freshness`; skipped near the end of the clip (the cover
@@ -511,7 +548,9 @@ final class TrailerPositionHandoff {
     private var entry: (url: String, time: CMTime, at: TimeInterval)?
 
     func record(url: String, time: CMTime, duration: CMTime?) {
-        guard Self.isUsable(time: time, duration: duration) else { entry = nil; return }
+        // An unusable reading leaves a stored one alone: teardown runs twice (dismantle, then
+        // deinit), and the second pass must not wipe the first's position.
+        guard Self.isUsable(time: time, duration: duration) else { return }
         entry = (url, time, ProcessInfo.processInfo.systemUptime)
     }
 
@@ -614,6 +653,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             control.surface = view
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
             context.coordinator.startHealth(player: player, urlString: urlString)
+            context.coordinator.watchForExpiredURLs(player: player, videoId: videoId)
             context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the
             // inline/hero surfaces (`TrailerHeroPlayer.Coordinator`) so a full-screen "Watch
@@ -660,11 +700,82 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         func observeEnd(of player: AVPlayer, onEnded: @escaping () -> Void) {
+            self.onEnded = onEnded
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: player.currentItem,
                 queue: .main
             ) { _ in onEnded() }
+        }
+
+        private var onEnded: (() -> Void)?
+        private var stallObserver: NSObjectProtocol?
+        private var refreshes = 0
+        private var refreshing = false
+
+        /// BUG-128 (u/an_angry_Moose, 10-02; reproduced 2026-10-18 on *Pinocchio* 2022): when the
+        /// preferred clients refuse a video, the extractor falls back to one whose signed URLs YouTube
+        /// cuts off with HTTP 403 about a minute in. The player then replayed a few seconds and froze.
+        /// On a stall whose latest error-log entry is a 403, re-resolve the trailer (fresh URLs) and
+        /// continue from the same position. A recoverable early 403 without a stall never triggers.
+        func watchForExpiredURLs(player: AVPlayer, videoId: String?) {
+            guard let videoId, !videoId.isEmpty else { return }
+            // Device repro 10-18: the 403 entry lands in the error log AFTER the stall notice, so
+            // the refusal itself is the trigger, with a stalled-for-5-s backstop.
+            errorLogObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemNewErrorLogEntry, object: nil, queue: .main
+            ) { [weak self, weak player] note in
+                guard let self, let player, let item = note.object as? AVPlayerItem,
+                      item === player.currentItem, TrailerStreamRefresh.lastErrorIsForbidden(item) else { return }
+                self.refresh(player: player, videoId: videoId, reason: "403")
+            }
+            stallObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemPlaybackStalled, object: nil, queue: .main
+            ) { [weak self, weak player] note in
+                guard let self, let player, let item = note.object as? AVPlayerItem,
+                      item === player.currentItem else { return }
+                let stalledAt = player.currentTime()
+                // Past the opening, a stall on the repack is the cut-off (device 10-18: always at the
+                // ~48 s segment); switch at once, before AVPlayer's recovery replays the segment.
+                if stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds {
+                    self.refresh(player: player, videoId: videoId, reason: "stall")
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.stallBackstopSeconds) {
+                    [weak self, weak player] in
+                    guard let self, let player, item === player.currentItem,
+                          player.timeControlStatus != .playing,
+                          abs(player.currentTime().seconds - stalledAt.seconds) < 0.5 else { return }
+                    self.refresh(player: player, videoId: videoId, reason: "stall")
+                }
+            }
+        }
+
+        private var errorLogObserver: NSObjectProtocol?
+
+        private func refresh(player: AVPlayer, videoId: String, reason: String) {
+            guard !refreshing, refreshes < TrailerStreamRefresh.maxRefreshes else { return }
+            refreshing = true
+            refreshes += 1
+            let resumeAt = player.currentTime()
+            TrailerZoomProbe.log("refresh full n=\(refreshes) at=\(String(format: "%.1f", resumeAt.seconds))s reason=\(reason)")
+            Task { @MainActor [weak self, weak player] in
+                let url = await TrailerStreamRefresh.fallbackURL(videoId: videoId)
+                guard let self, let player else { return }
+                self.refreshing = false
+                guard let url, let parsed = URL(string: url) else {
+                    TrailerZoomProbe.log("refresh full n=\(self.refreshes) failed")
+                    return
+                }
+                let item = AVPlayerItem(url: parsed)
+                if let s = TrailerTuning.forwardBufferSeconds { item.preferredForwardBufferDuration = s }
+                player.replaceCurrentItem(with: item)
+                if let onEnded = self.onEnded { self.observeEnd(of: player, onEnded: onEnded) }
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) { _ in
+                    player.play()
+                }
+            }
         }
 
         /// UX-9: same probe the inline/hero surfaces use, so all three get their zoom from one
@@ -682,6 +793,14 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
                 self.endObserver = nil
+            }
+            if let stallObserver {
+                NotificationCenter.default.removeObserver(stallObserver)
+                self.stallObserver = nil
+            }
+            if let errorLogObserver {
+                NotificationCenter.default.removeObserver(errorLogObserver)
+                self.errorLogObserver = nil
             }
             letterboxProbe?.stop()
             letterboxProbe = nil
