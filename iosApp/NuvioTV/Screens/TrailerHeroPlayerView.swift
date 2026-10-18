@@ -270,6 +270,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         private var attachCounted = false
         /// BUG-128: KVO-only playback-health monitor; stopped in `teardown()` before the pause.
         private var health: TrailerPlaybackHealthMonitor?
+        /// BUG-130: which surface this is; the Detail background (`detail-bg`) hands its position to
+        /// the full-screen player at teardown (`TrailerPositionHandoff`).
+        private var surfaceTag: String?
 
         init(onFailure: @escaping (TrailerFailureReport) -> Void, onPlaybackEnded: (() -> Void)? = nil) {
             self.onFailure = onFailure
@@ -280,6 +283,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                     videoId: String? = nil, surfaceTag: String? = nil) {
             attachedURLString = urlString
             attachedView = view
+            self.surfaceTag = surfaceTag
             guard let url = URL(string: urlString) else { fail(.badURL); return }
 
             if TrailerProbe.enabled {
@@ -425,6 +429,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 let snap = TrailerPipelineCounters.shared.teardown()
                 NSLog("[TrailerPipeline] teardown live=%d views=%d url=%@", snap.livePlayers, snap.liveViews, attachedURLString.map(TrailerProbe.redactedHost) ?? "-")
             }
+            // BUG-130: the Detail background loop is torn down the moment the full-screen trailer is
+            // requested; leave its position for the cover's player, which starts ~0.6 s later.
+            if surfaceTag == "detail-bg", started, let player, let url = attachedURLString {
+                TrailerPositionHandoff.shared.record(url: url, time: player.currentTime(),
+                                                     duration: player.currentItem?.duration)
+            }
             // BUG-128: stop (and emit) BEFORE `player?.pause()` / queue teardown so the access log is
             // read from a live item.
             health?.stop()
@@ -486,6 +496,40 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 /// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above (always unmuted —
 /// FEAT-11's default only governs the background loop) — the two never run concurrently, so
 /// there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
+/// BUG-130: the Detail background trailer's position, handed to the full-screen player of the same
+/// stream. Written at the background loop's teardown (the full-screen request removes it), read once
+/// by the cover ~0.6 s later. Stale after `freshness`; skipped near the end of the clip (the cover
+/// would end at once) and near the start (nothing to carry). Main thread only.
+@MainActor
+final class TrailerPositionHandoff {
+    static let shared = TrailerPositionHandoff()
+
+    static let freshness: TimeInterval = 10
+    nonisolated static let minimumSeconds: Double = 1
+    nonisolated static let endMarginSeconds: Double = 3
+
+    private var entry: (url: String, time: CMTime, at: TimeInterval)?
+
+    func record(url: String, time: CMTime, duration: CMTime?) {
+        guard Self.isUsable(time: time, duration: duration) else { entry = nil; return }
+        entry = (url, time, ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The position for `url`, consumed; nil when none, another stream's, or stale.
+    func take(url: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> CMTime? {
+        defer { entry = nil }
+        guard let entry, entry.url == url, now - entry.at <= Self.freshness else { return nil }
+        return entry.time
+    }
+
+    nonisolated static func isUsable(time: CMTime, duration: CMTime?) -> Bool {
+        guard time.isNumeric, time.seconds >= minimumSeconds else { return false }
+        if let duration, duration.isNumeric, duration.seconds > 0,
+           time.seconds > duration.seconds - endMarginSeconds { return false }
+        return true
+    }
+}
+
 struct FullScreenTrailerPlayer: View {
     let urlString: String
     var onPlaybackEnded: () -> Void = {}
@@ -562,6 +606,9 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             if let s = TrailerTuning.forwardBufferSeconds { fullItem.preferredForwardBufferDuration = s }
             let player = AVPlayer(playerItem: fullItem)
             player.isMuted = false
+            // BUG-130 (u/an_angry_Moose, 10-02: "replays the few seconds already watched"): continue
+            // from where the Detail background copy of the SAME stream had got to.
+            let resumeAt = TrailerPositionHandoff.shared.take(url: urlString)
             view.playerLayer.player = player
             control.player = player
             control.surface = view
@@ -575,7 +622,14 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
                 let snap = TrailerPipelineCounters.shared.attach()
                 NSLog("[TrailerPipeline] attach(full) live=%d views=%d url=%@", snap.livePlayers, snap.liveViews, TrailerProbe.redactedHost(urlString))
             }
-            player.play()
+            if let resumeAt {
+                TrailerZoomProbe.log("handoff full resume=\(String(format: "%.2f", resumeAt.seconds))")
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) { _ in
+                    player.play()
+                }
+            } else {
+                player.play()
+            }
         }
         return view
     }
