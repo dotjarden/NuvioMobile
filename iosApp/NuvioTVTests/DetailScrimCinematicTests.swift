@@ -17,8 +17,8 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertEqual(DetailScrim.cinematicHorizontalMid, 0.06, accuracy: 1e-9)
         XCTAssertEqual(DetailScrim.cinematicHorizontalTrailing, 0.00, accuracy: 1e-9)
         XCTAssertEqual(DetailScrim.cinematicHorizontalTrailingOverPoster, 0.06, accuracy: 1e-9)
-        XCTAssertEqual(DetailScrim.cinematicVerticalClearUntil, 0.60, accuracy: 1e-9)
-        XCTAssertEqual(DetailScrim.cinematicVerticalBottom, 0.55, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicVerticalClearUntil, 0.40, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicVerticalBottom, 0.85, accuracy: 1e-9)
         XCTAssertEqual(DetailScrim.cinematicRadialOpacity, 0.50, accuracy: 1e-9)
         XCTAssertEqual(DetailScrim.cinematicRadialEndRadiusFraction, 0.62, accuracy: 1e-9)
     }
@@ -26,10 +26,12 @@ final class DetailScrimCinematicTests: XCTestCase {
     /// The ceiling: the Cinematic composite is never darker than Classic's anywhere on an 11 × 11
     /// grid, with and without the poster layer. If this fails, lower `cinematicRadialOpacity` in
     /// 0.05 steps; never raise any value.
+    /// Batch C (Steven rc2 reference photo): the ceiling holds for the art (y ≤ 0.4, above the bottom
+    /// band); the band below is darker than Classic on purpose (`testBottomBandIsDark`).
     func testCinematicNeverDarkerThanClassic() {
         for overPoster in [false, true] {
             for i in 0...10 {
-                for j in 0...10 {
+                for j in 0...4 {
                     let x = Double(i) / 10
                     let y = Double(j) / 10
                     let classic = DetailScrim.classicCompositeAlpha(x: x, y: y, overPoster: overPoster)
@@ -48,8 +50,8 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertEqual(DetailScrim.classicCompositeAlpha(x: 0, y: 0, overPoster: false), 0.80, accuracy: 1e-9)
         // Bottom-left: 1 − (1 − 0.80)(1 − 0.70).
         XCTAssertEqual(DetailScrim.classicCompositeAlpha(x: 0, y: 1, overPoster: false), 0.94, accuracy: 1e-9)
-        // Cinematic bottom-left adds the full radial: 1 − (1 − 0.30)(1 − 0.55)(1 − 0.50) = 0.8425.
-        XCTAssertEqual(DetailScrim.cinematicCompositeAlpha(x: 0, y: 1, overPoster: false), 0.8425, accuracy: 1e-9)
+        // Cinematic bottom-left adds the full radial: 1 − (1 − 0.30)(1 − 0.85)(1 − 0.50) = 0.9475.
+        XCTAssertEqual(DetailScrim.cinematicCompositeAlpha(x: 0, y: 1, overPoster: false), 0.9475, accuracy: 1e-9)
         // Top-right of the cinematic scrim, no poster: the radial is out of reach and both gradients
         // are clear there. With the poster layer the over-poster trailing stop alone shows.
         XCTAssertEqual(DetailScrim.cinematicCompositeAlpha(x: 1, y: 0, overPoster: false), 0, accuracy: 1e-9)
@@ -83,7 +85,7 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertEqual(oldComposite(x: 0, y: 1, overPoster: false), 0.919, accuracy: 1e-9)
         for overPoster in [false, true] {
             for i in 0...20 {
-                for j in 0...20 {
+                for j in 0...8 {   // Batch C: the art (y ≤ 0.4); the bottom band is darker on purpose.
                     let x = Double(i) / 20
                     let y = Double(j) / 20
                     let now = DetailScrim.cinematicCompositeAlpha(x: x, y: y, overPoster: overPoster)
@@ -122,7 +124,15 @@ final class DetailScrimCinematicTests: XCTestCase {
     /// The art region (x 0.5–1, y 0–0.6, no poster layer) stays mostly clear: mean 0.031 (0.081
     /// before).
     func testArtRegionMostlyClear() {
-        let art = stats(x: 0.5...1.0, y: 0.0...0.6, overPoster: false)
+        // Batch C: the art above the bottom band (y 0–0.4) keeps rc1's D3 look.
+        let art = stats(x: 0.5...1.0, y: 0.0...0.4, overPoster: false)
         XCTAssertLessThanOrEqual(art.mean, 0.04, "the art region is darker than the D3 target")
+    }
+
+    /// Batch C (Steven, rc2 reference photo): the bottom quarter, full width, is dark enough for the
+    /// meta line, synopsis, buttons and the first row to read on bright art.
+    func testBottomBandIsDark() {
+        let band = stats(x: 0.0...1.0, y: 0.75...1.0, overPoster: false)
+        XCTAssertGreaterThanOrEqual(band.mean, 0.6, "the bottom band is lighter than the reference look")
     }
 }

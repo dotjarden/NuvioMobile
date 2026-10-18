@@ -186,6 +186,31 @@ private struct DetailTopScrim: View {
     }
 }
 
+/// FEAT-60: the compact title logo pinned at the top of a scrolled Cinematic Detail page. Text
+/// title while the logo loads or when there is none (`TitleLogoHeader`). Sits over `DetailTopScrim`,
+/// never takes focus or hits.
+private struct DetailCompactLogo: View {
+    static let slotHeight: CGFloat = 72
+    let title: String
+    let logoUrl: String?
+    let visible: Bool
+    let reduceMotion: Bool
+
+    var body: some View {
+        TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
+                        textFont: Theme.Font.screenTitle, slotHeight: Self.slotHeight,
+                        decodeSize: .legacy)
+            .frame(maxWidth: 420, maxHeight: Self.slotHeight)
+            .lineLimit(1)
+            .shadow(color: .black.opacity(0.5), radius: 8)
+            .opacity(visible ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: visible)
+            .allowsHitTesting(false)
+            .accessibilityHidden(!visible)
+            .accessibilityIdentifier("detail_compact_logo")
+    }
+}
+
 private struct ScrollDimOverlay: View {
     @ObservedObject var model: ScrollDimModel
     /// BUG-41: whether the live `AVPlayerLayer` hero trailer is currently mounted underneath this
@@ -692,6 +717,15 @@ struct DetailView: View {
             .scrollPosition($detailScrollPosition)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
+            // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
+            // hero, a small title logo fades in at the top so the page still names what it is.
+            .overlay(alignment: .top) {
+                if detailLayout == .cinematic {
+                    DetailCompactLogo(title: title, logoUrl: logoUrl,
+                                      visible: focusedRow != nil && bridgePhase == .idle,
+                                      reduceMotion: reduceMotion)
+                }
+            }
             // BUG-96/BUG-99: a focus change is decided by DIRECTION first — see
             // `DetailRowAnchor.Direction`/`decision` and that type's doc comment for the tester
             // reports behind the split. UP always anchors the focused row's top at
@@ -3146,8 +3180,12 @@ nonisolated enum DetailScrim {
     static let cinematicHorizontalMid: Double = 0.06
     static let cinematicHorizontalTrailing: Double = 0.00
     static let cinematicHorizontalTrailingOverPoster: Double = 0.06
-    static let cinematicVerticalClearUntil: Double = 0.60
-    static let cinematicVerticalBottom: Double = 0.55
+    /// Batch C (Steven, rc2 2026-10-04, with a reference photo: "a darker area behind the synopsis
+    /// and at the bottom of the page"): the full-width bottom band starts higher and ends much
+    /// darker, so the meta line, synopsis, buttons and the row under them read on any art. Above
+    /// `cinematicVerticalClearUntil` nothing changed: the art keeps rc1's lighter look (D3).
+    static let cinematicVerticalClearUntil: Double = 0.40
+    static let cinematicVerticalBottom: Double = 0.85
     /// Black at this opacity at the bottom-leading corner, fading linearly to clear.
     static let cinematicRadialOpacity: Double = 0.50
     /// The radial's end radius as a fraction of the screen WIDTH.

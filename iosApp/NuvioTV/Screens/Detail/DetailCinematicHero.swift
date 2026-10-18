@@ -298,7 +298,16 @@ struct DetailCinematicHero<Actions: View>: View {
                     onOpenSynopsis()
                     showSynopsisSheet = true
                 } label: {
-                    teaserText
+                    // Batch C (Steven, rc2 reference photo): a ⌄ after the cut-off text says there
+                    // is more. Truncated text is always truncated at the slightly narrower width.
+                    HStack(alignment: .lastTextBaseline, spacing: 12) {
+                        teaserText
+                        Image(systemName: "chevron.down")
+                            .font(Theme.Font.synopsis.weight(.semibold))
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .accessibilityHidden(true)
+                            .accessibilityIdentifier("detail_synopsis_more")
+                    }
                 }
                 .buttonStyle(.borderless)
                 .focused(heroFocus, equals: .teaser)
