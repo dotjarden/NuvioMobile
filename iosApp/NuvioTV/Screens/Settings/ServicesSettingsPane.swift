@@ -108,6 +108,7 @@ struct ServicesSettingsPane: View {
                 verificationUrl: trakt.deviceVerificationUrl ?? "https://trakt.tv/activate",
                 focusHandOff: handOff("trakt")
             ) {
+                activationFocusHandOff = "trakt:connect"
                 trakt.cancelActivation()
             }
         } else {
@@ -124,6 +125,7 @@ struct ServicesSettingsPane: View {
                 activationFocusHandOff = "trakt"
                 trakt.connect()
             }
+            .claimsFocusAfterSwap(handOff("trakt:connect"))
             if let error = trakt.errorMessage {
                 Text(error)
                     .font(Theme.Font.caption)
@@ -194,6 +196,7 @@ struct ServicesSettingsPane: View {
                 verificationUrl: simkl.deviceVerificationUrl ?? "https://simkl.com/pin/",
                 focusHandOff: handOff("simkl")
             ) {
+                activationFocusHandOff = "simkl:connect"
                 simkl.cancelActivation()
             }
         } else {
@@ -210,6 +213,7 @@ struct ServicesSettingsPane: View {
                 activationFocusHandOff = "simkl"
                 simkl.connect()
             }
+            .claimsFocusAfterSwap(handOff("simkl:connect"))
             if let error = simkl.errorMessage {
                 Text(error)
                     .font(Theme.Font.caption)
@@ -271,6 +275,7 @@ struct ServicesSettingsPane: View {
                 verificationUrl: mdblist.verificationUrl ?? "https://mdblist.com/device",
                 focusHandOff: handOff("mdblist")
             ) {
+                activationFocusHandOff = "mdblist:connect"
                 mdblist.cancel()
             }
         } else {
@@ -285,6 +290,7 @@ struct ServicesSettingsPane: View {
                 activationFocusHandOff = "mdblist"
                 mdblist.connect()
             }
+            .claimsFocusAfterSwap(handOff("mdblist:connect"))
             if let error = mdblist.errorMessage {
                 Text(error)
                     .font(Theme.Font.caption)
@@ -409,6 +415,7 @@ struct ServicesSettingsPane: View {
                         verificationUrl: session.friendlyVerificationUrl,
                         focusHandOff: handOff("debrid:\(provider.id)")
                     ) {
+                        activationFocusHandOff = "debrid:\(provider.id):connect"
                         debrid.cancelActivation()
                     }
                 }
@@ -438,6 +445,7 @@ struct ServicesSettingsPane: View {
                 activationFocusHandOff = "debrid:\(provider.id)"
                 debrid.connect(provider)
             }
+            .claimsFocusAfterSwap(handOff("debrid:\(provider.id):connect"))
             DebridKeyEntryRow(providerName: provider.displayName, descriptionID: .servicesDebridKey) { key in
                 debrid.saveManualKey(provider.id, key: key)
             }
@@ -565,27 +573,33 @@ private struct TraktActivationCard: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Text("On your phone or computer, go to")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(verificationUrl)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-            Text("and enter this code:")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(code)
-                .font(Theme.Font.hero.monospaced())
-                .kerning(12)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.md)
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Waiting for approval\u{2026} this screen updates automatically.")
-                    .font(Theme.Font.caption)
+        // Two List rows, not one: as a single row, focusing Cancel lit the whole card with the
+        // focus platter and the instructions went white-on-white (device pass 2026-10-17). The
+        // text row has nothing focusable, so it never takes the platter.
+        Group {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                Text("On your phone or computer, go to")
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
+                Text(verificationUrl)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Text("and enter this code:")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                Text(code)
+                    .font(Theme.Font.hero.monospaced())
+                    .kerning(12)
+                    .foregroundStyle(Theme.Palette.accent)
+                    .padding(.vertical, Theme.Spacing.md)
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Waiting for approval\u{2026} this screen updates automatically.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
             }
+            .frame(maxWidth: 1100, alignment: .leading)
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
@@ -596,7 +610,6 @@ private struct TraktActivationCard: View {
             }
             .claimsFocusAfterSwap(focusHandOff)
         }
-        .frame(maxWidth: 1100, alignment: .leading)
     }
 }
 
@@ -611,27 +624,33 @@ private struct SimklActivationCard: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Text("On your phone or computer, go to")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(verificationUrl)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-            Text("and enter this code:")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(code)
-                .font(Theme.Font.hero.monospaced())
-                .kerning(12)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.md)
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Waiting for approval\u{2026} this screen updates automatically.")
-                    .font(Theme.Font.caption)
+        // Two List rows, not one: as a single row, focusing Cancel lit the whole card with the
+        // focus platter and the instructions went white-on-white (device pass 2026-10-17). The
+        // text row has nothing focusable, so it never takes the platter.
+        Group {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                Text("On your phone or computer, go to")
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
+                Text(verificationUrl)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Text("and enter this code:")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                Text(code)
+                    .font(Theme.Font.hero.monospaced())
+                    .kerning(12)
+                    .foregroundStyle(Theme.Palette.accent)
+                    .padding(.vertical, Theme.Spacing.md)
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Waiting for approval\u{2026} this screen updates automatically.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
             }
+            .frame(maxWidth: 1100, alignment: .leading)
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
@@ -642,7 +661,6 @@ private struct SimklActivationCard: View {
             }
             .claimsFocusAfterSwap(focusHandOff)
         }
-        .frame(maxWidth: 1100, alignment: .leading)
     }
 }
 
@@ -655,27 +673,33 @@ private struct DebridActivationCard: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Text("On your phone or computer, go to")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(verificationUrl)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-            Text("and enter this code:")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(code)
-                .font(Theme.Font.hero.monospaced())
-                .kerning(12)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.md)
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Waiting for \(providerName) approval\u{2026} this screen updates automatically.")
-                    .font(Theme.Font.caption)
+        // Two List rows, not one: as a single row, focusing Cancel lit the whole card with the
+        // focus platter and the instructions went white-on-white (device pass 2026-10-17). The
+        // text row has nothing focusable, so it never takes the platter.
+        Group {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                Text("On your phone or computer, go to")
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
+                Text(verificationUrl)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Text("and enter this code:")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                Text(code)
+                    .font(Theme.Font.hero.monospaced())
+                    .kerning(12)
+                    .foregroundStyle(Theme.Palette.accent)
+                    .padding(.vertical, Theme.Spacing.md)
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Waiting for \(providerName) approval\u{2026} this screen updates automatically.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
             }
+            .frame(maxWidth: 1100, alignment: .leading)
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
@@ -686,6 +710,5 @@ private struct DebridActivationCard: View {
             }
             .claimsFocusAfterSwap(focusHandOff)
         }
-        .frame(maxWidth: 1100, alignment: .leading)
     }
 }

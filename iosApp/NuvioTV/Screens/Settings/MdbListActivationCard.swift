@@ -11,27 +11,33 @@ struct MdbListActivationCard: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Text("On your phone or computer, go to")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(verificationUrl)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-            Text("and enter this code:")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text(code)
-                .font(Theme.Font.hero.monospaced())
-                .kerning(12)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.md)
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Waiting for approval\u{2026} this screen updates automatically.")
-                    .font(Theme.Font.caption)
+        // Two List rows, not one: as a single row, focusing Cancel lit the whole card with the
+        // focus platter and the instructions went white-on-white (device pass 2026-10-17). The
+        // text row has nothing focusable, so it never takes the platter.
+        Group {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                Text("On your phone or computer, go to")
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
+                Text(verificationUrl)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Text("and enter this code:")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                Text(code)
+                    .font(Theme.Font.hero.monospaced())
+                    .kerning(12)
+                    .foregroundStyle(Theme.Palette.accent)
+                    .padding(.vertical, Theme.Spacing.md)
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Waiting for approval\u{2026} this screen updates automatically.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
             }
+            .frame(maxWidth: 1100, alignment: .leading)
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
@@ -42,6 +48,5 @@ struct MdbListActivationCard: View {
             }
             .claimsFocusAfterSwap(focusHandOff)
         }
-        .frame(maxWidth: 1100, alignment: .leading)
     }
 }

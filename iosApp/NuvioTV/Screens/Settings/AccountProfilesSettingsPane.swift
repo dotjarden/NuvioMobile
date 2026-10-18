@@ -115,6 +115,19 @@ struct AccountProfilesSettingsPane: View {
             .frame(maxWidth: 1100, alignment: .leading)
 
         if let url = remote.serverURL {
+            // Stop sits where Start was, ABOVE the QR block: it replaces Start in place, so focus
+            // can hand over. Below the QR it was off screen, and the lazy List never built the row
+            // to take focus (device pass 2026-10-17: focus fell to the Server row above).
+            SettingsActionRow(
+                title: String(localized: "Stop Remote Setup"),
+                subtitle: String(localized: "Closes the local config page."),
+                systemImage: "stop.circle",
+                descriptionID: .accountRemoteSetup
+            ) {
+                remoteFocusHandOff = true
+                remote.stop()
+            }
+            .claimsFocusAfterSwap($remoteFocusHandOff)
             HStack(alignment: .top, spacing: 40) {
                 if let qr = remote.qrImage {
                     Image(uiImage: qr)
@@ -136,16 +149,6 @@ struct AccountProfilesSettingsPane: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             }
-            SettingsActionRow(
-                title: String(localized: "Stop Remote Setup"),
-                subtitle: String(localized: "Closes the local config page."),
-                systemImage: "stop.circle",
-                descriptionID: .accountRemoteSetup
-            ) {
-                remoteFocusHandOff = true
-                remote.stop()
-            }
-            .claimsFocusAfterSwap($remoteFocusHandOff)
         } else {
             SettingsActionRow(
                 title: String(localized: "Start Remote Setup"),
