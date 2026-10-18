@@ -5292,7 +5292,10 @@ struct CatalogRowView: View {
                             // A lift SwiftUI draws itself needs an explicit zIndex to sit above the
                             // row neighbours (the FEAT-14/BUG-36 rule in PosterCard); the system
                             // lift gets its own compositor layer and needs none.
-                            .zIndex(tileShowingItemId == item.id ? 1 : 0)
+                            // Steven rc6 (photos 1 + 3): the FOCUSED card too, tile or not. The card's
+                            // own zIndex (PosterCard) only orders it inside `InlineTrailerCard`, so a
+                            // ring-mode lift on a wide card still drew under the next card's link.
+                            .zIndex(tileShowingItemId == item.id || focusedItemId == item.id ? 1 : 0)
                             .onPreferenceChange(InlineTrailerTileShowingKey.self) { showing in
                                 if let showing {
                                     tileShowingItemId = showing

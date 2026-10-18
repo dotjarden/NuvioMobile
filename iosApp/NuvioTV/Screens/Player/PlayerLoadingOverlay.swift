@@ -47,6 +47,22 @@ struct PlayerLoadingOverlay: View {
     let context: PlaybackContext
     let stage: PlayerLoadingStage
 
+    /// FEAT-77 (D18; Steven, rc5 + rc6 verdicts: the official apps' loading look): the title logo
+    /// centred, pulsing slowly (1.0 ↔ 1.08), with the episode line and the stage text under it. The
+    /// title in text while the logo loads, or when the title has none. No setting.
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static let pulseScale: CGFloat = 1.08
+    static let pulseSeconds: Double = 1.6
+
+    /// metahub's logo for an IMDb-backed title (the same guess Home's hero makes); nil otherwise.
+    static func logoURL(parentMetaId: String) -> URL? {
+        let imdbId = parentMetaId.split(separator: ":").first.map(String.init) ?? parentMetaId
+        guard imdbId.hasPrefix("tt") else { return nil }
+        return URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img")
+    }
+
     var body: some View {
         ZStack {
             Color.black
@@ -56,38 +72,29 @@ struct PlayerLoadingOverlay: View {
                     .blur(radius: 30)
                     .clipped()
             }
-            HStack(alignment: .center, spacing: 48) {
-                if let poster = context.poster, !poster.isEmpty {
-                    CachedAsyncImage(string: poster)
-                        .frame(width: 260, height: 390)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
-                }
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(context.title)
-                        .font(Theme.Font.screenTitle)
-                        .foregroundStyle(.white)
+            VStack(spacing: 28) {
+                titleMark
+                    .scaleEffect(pulse ? Self.pulseScale : 1)
+                    .animation(reduceMotion ? nil
+                               : .easeInOut(duration: Self.pulseSeconds).repeatForever(autoreverses: true),
+                               value: pulse)
+                if let subtitle = NativeInfoHeader(context: context).subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(.white.opacity(0.8))
                         .lineLimit(2)
-                    if let subtitle = NativeInfoHeader(context: context).subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(Theme.Font.body)
-                            .foregroundStyle(.white.opacity(0.8))
-                            .lineLimit(2)
-                    }
-                    HStack(spacing: 16) {
-                        ProgressView()
-                        Text(stage.statusText)
-                            .font(Theme.Font.body).monospacedDigit()
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                    }
-                    .padding(.top, 10)
+                        .multilineTextAlignment(.center)
                 }
+                Text(stage.statusText.isEmpty ? " " : stage.statusText)
+                    .font(Theme.Font.body).monospacedDigit()
+                    .foregroundStyle(Theme.Palette.textSecondary)
             }
             .frame(maxWidth: 1200)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .focusable(false)
+        .onAppear { if !reduceMotion { pulse = true } }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("player.loadingOverlay")
         .accessibilityValue(stage.debugName)
@@ -96,6 +103,24 @@ struct PlayerLoadingOverlay: View {
         // the stage the overlay was first drawn at.
         .onAppear { PlayerLoadingHistory.shared.noteOverlayDrawn(stage, contextID: context.id) }
         #endif
+    }
+
+    @ViewBuilder
+    private var titleMark: some View {
+        if let logo = Self.logoURL(parentMetaId: context.parentMetaId) {
+            CachedAsyncImage(url: logo, contentMode: .fit, loading: { titleText }, failure: { titleText })
+                .frame(maxWidth: 640, maxHeight: 200)
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        Text(context.title)
+            .font(Theme.Font.screenTitle)
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
     }
 }
 
