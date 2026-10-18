@@ -190,8 +190,10 @@ nonisolated final class MPVLogRing: @unchecked Sendable {
     static let capacity = 16
     private let lock = NSLock()
     private var lines: [String] = []
-    /// Set while the player drains the log lines an in-core `sub-add` produced (the command runs
-    /// synchronously on the event queue, so its lines are the ones buffered when it returns).
+    /// Set while an in-core `sub-add` is in flight: from just before the player issues it until it
+    /// has drained the lines buffered by the time the command replied. The command now runs
+    /// asynchronously, one at a time (`MPVSubtitleSideLoadQueue`), so ordinary wakeup drains inside
+    /// the window are attributed the same way; the old synchronous command swallowed the same lines.
     private var attributingSubtitleLoad = false
 
     /// mpv module prefixes that only ever speak about subtitles / OSD.
@@ -247,7 +249,7 @@ nonisolated final class MPVLogRing: @unchecked Sendable {
     /// Event queue: an in-core `sub-add` is about to run (the player drains the queue first, so
     /// earlier lines are already in). Until `subtitleLoadDrained()`, FFmpeg protocol lines (its
     /// URL-less `tcp:` / `tls:` / `https:` lines) are the subtitle load's, not the stream's. A
-    /// main-stream protocol line logged while the command blocks is lost too (the same outage).
+    /// main-stream protocol line logged while the command is in flight is dropped too.
     func subtitleLoadBegan() { lock.lock(); attributingSubtitleLoad = true; lock.unlock() }
     /// Event queue: the lines buffered during the `sub-add` have been drained.
     func subtitleLoadDrained() { lock.lock(); attributingSubtitleLoad = false; lock.unlock() }

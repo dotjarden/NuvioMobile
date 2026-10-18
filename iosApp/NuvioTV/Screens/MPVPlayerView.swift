@@ -284,7 +284,23 @@ final class MPVTVPlayerViewController: UIViewController {
     /// the player per episode via `.id(ctx.id)`), so a user pick can only ever follow the automatic
     /// selection, never race it. The flag keeps that true if the controller is ever reused.
     private var didUserSelectAudio = false
+    /// The subtitle half of the auto selection is decided (it can wait for side-loads, see
+    /// `MPVSubtitleAutoSelectGate`); main only.
+    private var didAutoSelectSubtitles = false
+    /// A forced-only plan already turned subtitles off while side-loads run; main only.
+    private var didApplyAutoSubtitleOff = false
+    /// Set by an explicit pick in selectSubtitle(_:); the waiting auto selection stops. Main only.
+    private var didUserSelectSubtitle = false
+    /// Side-load batches handed to `eventQueue` (or downloading on the credential path) that have
+    /// not reached its queue yet. A walk captured before they arrive must not read "nothing left to
+    /// load" (review r1 P3-2). Main only.
+    private var subtitleHandoffsInFlight = 0
     private var addedSubtitleUrls = Set<String>()
+    /// `eventQueue` only: subtitle side-loads, one async `sub-add` at a time (the queue stall,
+    /// Batch E device pass 2026-10-18; see `MPVSubtitleSideLoadQueue`).
+    private var subtitleSideLoads = MPVSubtitleSideLoadQueue()
+    /// `eventQueue` only: the log ring's subtitle attribution window is open for the load in flight.
+    private var subtitleLoadWindowOpen = false
     private var fileLoaded = false
     /// Trakt scrobbling (no-ops while Trakt is disconnected — the shared repo checks auth).
     private var traktScrobbleItem: TraktScrobbleItem?
@@ -707,7 +723,13 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             subtitleLoadingWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.isLoading) { [weak self] emitted in
                 guard let self, let loading = (emitted as? NSNumber)?.boolValue else { return }
-                DispatchQueue.main.async { self.state.subtitleSearchInFlight = loading }
+                DispatchQueue.main.async {
+                    let ended = self.state.subtitleSearchInFlight && !loading
+                    self.state.subtitleSearchInFlight = loading
+                    // A selection that waited on the search is decided on the next walk (an empty
+                    // search adds no files, so no load would trigger one).
+                    if ended, self.fileLoaded { self.refreshTracksAsync() }
+                }
             }
 
             // Subtitle appearance from Settings (color/size/bold/outline/background). The watcher
@@ -1092,6 +1114,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// infos the auto-selection logic needs, then publishes on main.
     private func walkAndPublishTracks() {
         guard mpv != nil else { return }
+        let sideLoadActive = subtitleSideLoads.isActive
+        let preferredLoadsPending = subtitleSideLoads.hasPreferredPending
         let count = getInt("track-list/count")
         var audio: [PlayerTrack] = []
         var subs: [PlayerTrack] = [PlayerTrack(id: -1, label: String(localized: "Off"), isSelected: getString("sid") == "no")]
@@ -1129,7 +1153,12 @@ final class MPVTVPlayerViewController: UIViewController {
             // The panel diffs its rows by stable ids, so refreshing while it is open is safe.
             if self.state.audioTracks != audio { self.state.audioTracks = audio }
             if self.state.subtitleTracks != newSubs { self.state.subtitleTracks = newSubs }
-            self.autoSelectPreferredTracks(audioInfos: audioInfos, subInfos: subInfos)
+            // Hand-offs still on their way, and an add-on subtitle search still running, count as
+            // loading (review r1 P3-2): their files have not reached the queue yet.
+            let arriving = self.subtitleHandoffsInFlight > 0 || self.state.subtitleSearchInFlight
+            self.autoSelectPreferredTracks(audioInfos: audioInfos, subInfos: subInfos,
+                                           sideLoadActive: sideLoadActive || arriving,
+                                           preferredLoadsPending: preferredLoadsPending || arriving)
         }
     }
 
@@ -1145,13 +1174,20 @@ final class MPVTVPlayerViewController: UIViewController {
     /// preferred language, only a FORCED track in that language is selected (none -> subtitles
     /// off); otherwise non-forced tracks in the preferred languages are considered. No plan (e.g.
     /// forced-subs on but audio language undeterminable) -> leave mpv's own defaults untouched.
-    private func autoSelectPreferredTracks(audioInfos: [TrackInfo], subInfos: [TrackInfo]) {
+    ///
+    /// Audio is decided on the first walk. The subtitle half stays open while subtitle side-loads
+    /// run and nothing matched yet (`MPVSubtitleAutoSelectGate`), and is decided on a later walk:
+    /// side-loads no longer finish before the first walk (the queue stall, 2026-10-18).
+    private func autoSelectPreferredTracks(audioInfos: [TrackInfo], subInfos: [TrackInfo],
+                                           sideLoadActive: Bool, preferredLoadsPending: Bool) {
         // `playerSettings` is now seeded synchronously in `setupMpv()`, so this guard can no longer
         // return without latching on the first walk (which used to defer the whole selection to a
         // later track-list change, or to the panel being opened).
-        guard !didAutoSelectTracks, let settings = playerSettings, mpv != nil else { return }
+        guard let settings = playerSettings, mpv != nil else { return }
         guard !audioInfos.isEmpty || !subInfos.isEmpty else { return }
+        let firstWalk = !didAutoSelectTracks
         didAutoSelectTracks = true
+        guard firstWalk || (!didAutoSelectSubtitles && !didUserSelectSubtitle) else { return }
 
         let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
         let audioTargets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
@@ -1167,7 +1203,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // the proactive `alang` exists to eliminate. `trackToForce` returns nil when a matching
         // track is already selected.
         var pickedAudioId: Int?
-        if !didUserSelectAudio, audioInfos.count > 1,
+        if firstWalk, !didUserSelectAudio, audioInfos.count > 1,
            let id = PlayerAudioLanguagePlan.trackToForce(
                targets: audioTargets,
                tracks: audioInfos.map { (id: $0.id, lang: $0.lang, selected: $0.selected) }
@@ -1191,19 +1227,23 @@ final class MPVTVPlayerViewController: UIViewController {
         }
 
         // Subtitles: shared plan decides targets + forced/normal mode.
+        guard !didAutoSelectSubtitles, !didUserSelectSubtitle else { return }
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
             secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
             deviceLanguages: deviceLanguages
         )
-        guard !subInfos.isEmpty,
-              let plan = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
+        guard !subInfos.isEmpty else {
+            if !sideLoadActive { didAutoSelectSubtitles = true }
+            return
+        }
+        guard let plan = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
                   selectedAudioTrack: effectiveAudioTrack,
                   preferredAudioTargets: audioTargets,
                   preferredSubtitleTargets: subTargets,
                   useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
               )
-        else { return }
+        else { didAutoSelectSubtitles = true; return }
 
         let sharedSubs = subInfos.enumerated().map { index, info in
             SubtitleTrack(
@@ -1218,12 +1258,37 @@ final class MPVTVPlayerViewController: UIViewController {
         let match = PlayerTrackSelectionKt.findPreferredSubtitleTrackIndex(
             tracks: sharedSubs, targets: plan.targets, mode: plan.mode, selectedAudioTrack: effectiveAudioTrack
         )
-        if match >= 0 {
-            let sid = Int64(subInfos[Int(match)].id)
+        let matchId = match >= 0 ? Int64(subInfos[Int(match)].id) : nil
+        // Final = later loads cannot change the pick (`MPVSubtitleAutoSelectGate`): the match is in
+        // the top language, that language has no pt/es variant tie-break, and it is not a forced
+        // track a full one arriving later would replace.
+        var matchIsFinal = false
+        if match >= 0, let top = plan.targets.first {
+            let normalizedTop = SubtitleLanguageMatching.shared.normalizeLanguageCode(lang: top)
+            let topOnly = PlayerTrackSelectionKt.findPreferredSubtitleTrackIndex(
+                tracks: sharedSubs, targets: [top], mode: plan.mode, selectedAudioTrack: effectiveAudioTrack
+            )
+            matchIsFinal = topOnly == match
+                && !["pt", "pt-br", "es", "es-419"].contains(normalizedTop)
+                && (plan.mode == .forcedOnly || !subInfos[Int(match)].forced)
+        }
+        switch MPVSubtitleAutoSelectGate.decide(matchId: matchId, matchIsFinal: matchIsFinal,
+                                                forcedOnly: plan.mode == .forcedOnly,
+                                                preferredLoadsPending: preferredLoadsPending,
+                                                sideLoadActive: sideLoadActive) {
+        case .select(let sid):
+            didAutoSelectSubtitles = true
             eventQueue.async { [weak self] in self?.setMpvInt("sid", sid) }
-        } else if plan.mode == .forcedOnly {
+        case .off(let final):
             // Forced-only plan with no forced track in that language: keep subtitles off.
+            if final { didAutoSelectSubtitles = true }
+            guard !didApplyAutoSubtitleOff else { break }
+            didApplyAutoSubtitleOff = true
             eventQueue.async { [weak self] in self?.setMpvString("sid", "no") }
+        case .wait:
+            break
+        case .done:
+            didAutoSelectSubtitles = true
         }
     }
 
@@ -1262,7 +1327,7 @@ final class MPVTVPlayerViewController: UIViewController {
             setAudioDelay(Double(storedMs.intValue) / 1000.0)
         }
         for sub in context.externalSubtitles {
-            subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
+            subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         // A stream-picker prefetch may already have completed (the fetch call above then no-ops,
@@ -1304,23 +1369,15 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Settings > Video and Audio > Match Content to allow frame-rate matching.
     private func applyDisplayCriteriaIfEnabled() {
         guard UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey) else { return }
-        // Property reads off-main (this runs at file-load, when the core is busiest), then back
-        // to main for the UIWindow / AVDisplayManager application.
-        eventQueue.async { [weak self] in
-            guard let self, self.mpv != nil else { return }
-            let fps = self.getDouble("container-fps")
-            let width = self.getInt("video-params/w")
-            let height = self.getInt("video-params/h")
-            let codecName = (self.getString("video-codec") ?? "").lowercased()
-            let primaries = (self.getString("video-params/primaries") ?? "").lowercased()
-            let gamma = (self.getString("video-params/gamma") ?? "").lowercased()
-            DispatchQueue.main.async {
-                self.applyDisplayCriteria(
-                    fps: fps, width: width, height: height,
-                    codecName: codecName, primaries: primaries, gamma: gamma
-                )
-            }
-        }
+        // Poll (off-main, the hold's poll without the hold) until the decoder reports its colour
+        // params, then set the criteria once. A one-shot read at FILE_LOADED comes back with no
+        // primaries or gamma, so an HDR title asked for an SDR mode: the queue-stall fix
+        // (2026-10-18) made that read prompt on gpu-next, where nothing holds the start, and the
+        // TV stayed SDR (`criteria … primaries=- gamma=-`). Before, the stalled queue had delayed
+        // the read until the params happened to be there. Its 20 s are the whole window: the
+        // latch stops the hold's late retry from adding 20 s more (review r2 P3).
+        lateParamsPollStarted = true
+        awaitVideoParamsThenSwitchDisplayMode(deadline: ProcessInfo.processInfo.systemUptime + 20)
     }
 
     @discardableResult
@@ -1419,15 +1476,15 @@ final class MPVTVPlayerViewController: UIViewController {
         let epoch = epoch ?? displayCriteriaEpoch
         eventQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, self.mpv != nil else { return }
-            #if DEBUG
-            NSLog("[MPVQueue] params poll tick")
-            #endif
             let width = self.getInt("video-params/w")
             let gamma = (self.getString("video-params/gamma") ?? "").lowercased()
-            #if DEBUG
-            NSLog("[MPVQueue] params poll read w=%d gamma=%@", width, gamma)
-            #endif
             let ready = width > 0 && !gamma.isEmpty
+            #if DEBUG
+            // Only the outcome: a tick line every 100 ms drowned the log (review r2 P3).
+            if ready || ProcessInfo.processInfo.systemUptime >= deadline {
+                NSLog("[MPVQueue] params poll read w=%d gamma=%@ ready=%d", width, gamma, ready ? 1 : 0)
+            }
+            #endif
             if !ready && ProcessInfo.processInfo.systemUptime < deadline {
                 self.awaitVideoParamsThenSwitchDisplayMode(deadline: deadline, epoch: epoch)
                 return
@@ -1683,61 +1740,142 @@ final class MPVTVPlayerViewController: UIViewController {
         let kept = playerSettings.map {
             PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
         } ?? subs
-        var added = false
-        for sub in kept where !addedSubtitleUrls.contains(sub.url) {
-            subAdd(url: sub.url, title: sub.display, lang: sub.language)
-            added = true
-        }
-        if added { refreshTracksAsync() }
+        // Preferred-language files load first: they are what the auto selection looks for, and
+        // it waits for them while they load (`MPVSubtitleAutoSelectGate`).
+        let targets = playerSettings.map { PlayerTrackSelectionKt.preferredSubtitleTargetsForSettings(settings: $0) } ?? []
+        subAdd(kept.map { sub in
+            MPVSubtitleSideLoadQueue.Job(
+                source: sub.url, title: sub.display, lang: sub.language,
+                rank: targets.firstIndex { SubtitleLanguageMatching.shared.matchesLanguageCode(language: sub.language, target: $0) }
+            )
+        })
     }
 
-    private func subAdd(url: String, title: String, lang: String) {
-        guard mpv != nil, !addedSubtitleUrls.contains(url) else { return }
-        addedSubtitleUrls.insert(url)
-        // Credential leak guard (Codex round 4, P1): with credential-class stream headers set
-        // globally on this handle, an in-core `sub-add <http url>` would send them to the
-        // subtitle host. Download the file ourselves WITHOUT those headers and hand mpv a local
-        // path instead. Only this rare credential case takes the new path — header-free and
-        // benign-header (Referer/UA) streams keep the exact in-core behavior below.
-        if streamHeadersCarryCredentials,
-           let remote = URL(string: url), remote.scheme == "http" || remote.scheme == "https" {
-            URLSession.shared.dataTask(with: remote) { [weak self] data, _, error in
-                guard let self, let data, error == nil, !data.isEmpty else {
-                    NSLog("[MPVPlayer] credential-scoped subtitle fetch failed for %@ — skipping side-load", url)
-                    return
-                }
-                let ext = remote.pathExtension.isEmpty ? "srt" : remote.pathExtension
-                let local = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("mpv-sub-\(UUID().uuidString).\(ext)")
-                do {
-                    try data.write(to: local)
-                } catch {
-                    NSLog("[MPVPlayer] credential-scoped subtitle write failed — skipping side-load")
-                    return
-                }
-                self.eventQueue.async { [weak self] in
-                    self?.command("sub-add", args: [local.path, "auto", title, lang])
-                }
-            }.resume()
-            return
+    private func subAdd(url: String, title: String, lang: String, rank: Int?) {
+        subAdd([MPVSubtitleSideLoadQueue.Job(source: url, title: title, lang: lang, rank: rank)])
+    }
+
+    /// Main. Hands the new files to the side-load queue on `eventQueue`, which runs `sub-add`
+    /// asynchronously, one file at a time (`MPVSubtitleSideLoadQueue`): a synchronous `sub-add`
+    /// downloads the file before it returns and held the queue for minutes on a long add-on list.
+    private func subAdd(_ jobs: [MPVSubtitleSideLoadQueue.Job]) {
+        guard mpv != nil else { return }
+        var direct: [MPVSubtitleSideLoadQueue.Job] = []
+        for job in jobs where !addedSubtitleUrls.contains(job.source) {
+            addedSubtitleUrls.insert(job.source)
+            let url = job.source
+            // Credential leak guard (Codex round 4, P1): with credential-class stream headers set
+            // globally on this handle, an in-core `sub-add <http url>` would send them to the
+            // subtitle host. Download the file ourselves WITHOUT those headers and hand mpv a local
+            // path instead. Only this rare credential case takes the new path — header-free and
+            // benign-header (Referer/UA) streams keep the exact in-core behavior below.
+            if streamHeadersCarryCredentials,
+               let remote = URL(string: url), remote.scheme == "http" || remote.scheme == "https" {
+                subtitleHandoffsInFlight += 1
+                URLSession.shared.dataTask(with: remote) { [weak self] data, _, error in
+                    guard let self else { return }
+                    guard let data, error == nil, !data.isEmpty else {
+                        NSLog("[MPVPlayer] credential-scoped subtitle fetch failed for %@ — skipping side-load", url)
+                        DispatchQueue.main.async { self.subtitleHandoffArrived() }
+                        return
+                    }
+                    let ext = remote.pathExtension.isEmpty ? "srt" : remote.pathExtension
+                    let local = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("mpv-sub-\(UUID().uuidString).\(ext)")
+                    do {
+                        try data.write(to: local)
+                    } catch {
+                        NSLog("[MPVPlayer] credential-scoped subtitle write failed — skipping side-load")
+                        DispatchQueue.main.async { self.subtitleHandoffArrived() }
+                        return
+                    }
+                    let localJob = MPVSubtitleSideLoadQueue.Job(source: local.path, title: job.title,
+                                                                 lang: job.lang, rank: job.rank)
+                    self.handOffSubtitleSideLoads([localJob], counted: true)
+                }.resume()
+                continue
+            }
+            direct.append(job)
         }
-        // sub-add downloads/probes the file synchronously inside the core — never on main.
+        guard !direct.isEmpty else { return }
+        subtitleHandoffsInFlight += 1
+        handOffSubtitleSideLoads(direct, counted: true)
+    }
+
+    /// Any thread. Queues the jobs on `eventQueue`, then (when `counted`) settles the hand-off
+    /// counter on main once they are in the queue, where the next walk sees them.
+    private func handOffSubtitleSideLoads(_ jobs: [MPVSubtitleSideLoadQueue.Job], counted: Bool) {
         eventQueue.async { [weak self] in
             guard let self else { return }
-            // r2 P3: the fetch's FFmpeg lines (URL-less `tcp:` / `tls:` lines) are buffered while
-            // the command runs; drain them now, inside the attribution window, so a timed-out
-            // subtitle fetch never reads as main-stream network evidence.
-            // r3 P3: drain once BEFORE opening the window, so lines queued before the command are
-            // judged as the main stream's; the window then holds only what `sub-add` produced.
-            self.drainEvents()
-            self.logRing.subtitleLoadBegan()
-            self.command("sub-add", args: [url, "auto", title, lang])
-            self.drainEvents()
-            self.logRing.subtitleLoadDrained()
+            if self.mpv != nil {
+                for job in jobs { self.subtitleSideLoads.enqueue(job) }
+                self.pumpSubtitleSideLoads()
+            }
+            // Strong hop to main (critique C13): `deinit` can never run on `eventQueue`.
+            if counted { DispatchQueue.main.async { self.subtitleHandoffArrived() } }
         }
+    }
+
+    /// Main. A hand-off reached the queue (or was dropped): when it was the last one, walk once so
+    /// a selection that waited on it can be decided.
+    private func subtitleHandoffArrived() {
+        subtitleHandoffsInFlight = max(0, subtitleHandoffsInFlight - 1)
+        if subtitleHandoffsInFlight == 0, fileLoaded { refreshTracksAsync() }
+    }
+
+    /// `eventQueue` only, never from inside `drainEvents` (it drains). Closes the finished load's
+    /// attribution window and issues the next `sub-add`, unless one is still in flight.
+    private func pumpSubtitleSideLoads() {
+        guard mpv != nil else { return }
+        // r2 P3: the fetch's FFmpeg lines (URL-less `tcp:` / `tls:` lines) are buffered while
+        // the command runs; drain them before closing its window, so a timed-out subtitle fetch
+        // never reads as main-stream network evidence. r3 P3: the same drain also runs BEFORE the
+        // next window opens, so lines queued before the command are judged as the main stream's;
+        // the window then holds only what that `sub-add` produced. (Same windows as the old
+        // synchronous chain: drain, open, command, drain, close.)
+        drainEvents()
+        guard subtitleSideLoads.inFlight == nil else { return }
+        if subtitleLoadWindowOpen {
+            subtitleLoadWindowOpen = false
+            logRing.subtitleLoadDrained()
+        }
+        guard let next = subtitleSideLoads.start(now: ProcessInfo.processInfo.systemUptime) else { return }
+        subtitleLoadWindowOpen = true
+        logRing.subtitleLoadBegan()
+        let status = commandAsync(replyId: next.id, "sub-add", args: [next.job.source, "auto", next.job.title, next.job.lang])
+        #if DEBUG
+        let n = subtitleSideLoads.finished + 1
+        if n <= 3 || next.job.preferred || n % MPVSubtitleSideLoadQueue.walkEvery == 0 {
+            NSLog("[SubLoad] start n=%ld pref=%d pending=%ld status=%d", n, next.job.preferred ? 1 : 0,
+                  subtitleSideLoads.pending.count, status)
+        }
+        #endif
+        if status < 0 {
+            // Refused outright (already logged): no reply will come, so move on. The last job
+            // still gets its final walk (review r1 P3-1).
+            subtitleSideLoads.abandonInFlight()
+            if !subtitleSideLoads.isActive { refreshTracksAsync() }
+            eventQueue.async { [weak self] in self?.pumpSubtitleSideLoads() }
+        }
+    }
+
+    /// `eventQueue` only, from `drainEvents`: the side-load in flight finished (or failed).
+    private func finishSubtitleSideLoad(replyId: UInt64, error: CInt) {
+        guard let finish = subtitleSideLoads.finish(replyId: replyId, now: ProcessInfo.processInfo.systemUptime) else { return }
+        checkError(error)
+        #if DEBUG
+        let n = subtitleSideLoads.finished
+        if n <= 3 || finish.job.preferred || n % MPVSubtitleSideLoadQueue.walkEvery == 0 || !subtitleSideLoads.isActive {
+            NSLog("[SubLoad] done n=%ld pref=%d took=%ldms err=%d pending=%ld", n, finish.job.preferred ? 1 : 0,
+                  Int(finish.tookSec * 1000), error, subtitleSideLoads.pending.count)
+        }
+        #endif
+        if finish.walkTracks { refreshTracksAsync() }
+        eventQueue.async { [weak self] in self?.pumpSubtitleSideLoads() }
     }
 
     private func selectSubtitle(_ id: Int) {
+        didUserSelectSubtitle = true
         guard mpv != nil else { return }
         eventQueue.async { [weak self] in
             guard let self, let mpv = self.mpv else { return }
@@ -3942,6 +4080,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 let prop = UnsafePointer<mpv_event_property>(OpaquePointer(data)).pointee
                 self.handlePropertyChange(userdata: ev.pointee.reply_userdata, prop: prop)
             }
+            if id == MPV_EVENT_COMMAND_REPLY, MPVSubtitleSideLoadQueue.isReply(ev.pointee.reply_userdata) {
+                self.finishSubtitleSideLoad(replyId: ev.pointee.reply_userdata, error: ev.pointee.error)
+            }
             if id == MPV_EVENT_START_FILE {
                 // r1 P3: the ring is evidence about the file being loaded now (event order).
                 self.logRing.clear()
@@ -4011,7 +4152,9 @@ final class MPVTVPlayerViewController: UIViewController {
         case .eofReached:
             if let v = asFlag() { updateProps { $0.eof = v } }
         case .trackCount:
-            refreshTracksAsync()
+            // While side-loads run, each one adds a track: `finishSubtitleSideLoad` decides which
+            // of those walks are worth it (a 100-track walk per load is not).
+            if !subtitleSideLoads.isActive { refreshTracksAsync() }
         case .videoW:
             if let v = asInt() { updateProps { $0.videoW = v } }
         case .videoH:
@@ -4070,6 +4213,21 @@ final class MPVTVPlayerViewController: UIViewController {
         var cargs = strArgs.map { $0.flatMap { UnsafePointer<CChar>(strdup($0)) } }
         defer { for ptr in cargs where ptr != nil { free(UnsafeMutablePointer(mutating: ptr!)) } }
         let status = mpv_command(mpv, &cargs)
+        checkError(status)
+        return status
+    }
+
+    /// `mpv_command_async`: returns at once (< 0 = refused, already logged); the result arrives as
+    /// MPV_EVENT_COMMAND_REPLY carrying `replyId`.
+    @discardableResult
+    private func commandAsync(replyId: UInt64, _ command: String, args: [String?] = []) -> CInt {
+        guard mpv != nil else { return -1 }
+        var strArgs = args
+        strArgs.insert(command, at: 0)
+        strArgs.append(nil)
+        var cargs = strArgs.map { $0.flatMap { UnsafePointer<CChar>(strdup($0)) } }
+        defer { for ptr in cargs where ptr != nil { free(UnsafeMutablePointer(mutating: ptr!)) } }
+        let status = mpv_command_async(mpv, replyId, &cargs)
         checkError(status)
         return status
     }
