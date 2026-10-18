@@ -440,13 +440,16 @@ struct StripPager<Row: View>: View {
         // the pop restore re-grabs it. Paging to that row first was the visible detour. While the
         // restore would re-grab this move, the strip stays on the restored row; if the restore
         // retires instead (a late viewer press), `syncPageToFocusedRow` catches the strip up.
-        if controller.uncoverHoldsPage(forRowKey: key) {
+        let held = controller.uncoverHoldsPage(forRowKey: key)
+        if held {
             StageStripProbe.shared.log("page held key=\(key) reason=uncover")
         } else {
             page(to: key, index: index, from: previous)
         }
+        // A held page keeps `atTop` on the row the strip shows, so a Menu press inside the
+        // re-grab window still pages to the top instead of leaving (review r1 P3-2).
         let top = index == 0
-        if atTop != top { atTop = top }
+        if !held, atTop != top { atTop = top }
         if ownsProbe, previous != index {
             StageStripProbe.shared.noteRowChange(from: previous, to: index, key: key)
         }
@@ -466,6 +469,8 @@ struct StripPager<Row: View>: View {
         let previous = positionId.flatMap { box.rowKeys.firstIndex(of: $0) } ?? index
         StageStripProbe.shared.log("page sync key=\(key) reason=\(reason)")
         page(to: key, index: index, from: previous)
+        let top = index == 0
+        if atTop != top { atTop = top }
     }
 
     /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
@@ -670,6 +675,9 @@ struct StripPager<Row: View>: View {
         if let owner = box.owners.first(where: { $0 != key }), owner != box.focusedRowKey {
             handleOwnership(owner, owns: true)
         }
+        // BUG-156 (review r1 P3-1): a re-grab whose rungs never landed leaves focus on the row
+        // whose page was held; catch the strip up to it.
+        syncPageToFocusedRow(reason: "expired")
     }
 
     /// BUG-156 (a): the viewer moved while a pop restore's request was in flight. Its later rungs
