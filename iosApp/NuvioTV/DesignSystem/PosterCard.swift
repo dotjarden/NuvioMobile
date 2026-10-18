@@ -214,11 +214,12 @@ enum CardButtonStyleKind: Equatable {
 }
 
 struct CardFocusButtonStyle: ViewModifier {
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @Environment(\.focusAppearance) private var focusAppearance
+    private var noZoomOnFocus: Bool { focusAppearance.noZoomOnFocus }
     /// BUG-93: read here as well as in the cards themselves, and with the same independent
-    /// `@AppStorage` read for the same reason - the modifier has to resolve the same three-way
+    /// setting read (now `FocusAppearance` from the environment) for the same reason - the modifier has to resolve the same three-way
     /// branch `CardFocusMode.resolve` does, without a prop-drilling pass through 20 call sites.
-    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    private var accentFocusRing: Bool { focusAppearance.accentFocusRing }
     /// Whether this button's label supplies its own ring-mode lift - see `CardButtonLift`.
     let lift: CardButtonLift
     /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): `.lift` while the inline trailer
@@ -682,7 +683,8 @@ nonisolated enum FocusRingTintSampling {
 /// Utility tiles never wear the accent ring (see `SeeAllCard`'s header note), so the border
 /// here is always the neutral one.
 struct TileFocusLift: ViewModifier {
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @Environment(\.focusAppearance) private var focusAppearance
+    private var noZoomOnFocus: Bool { focusAppearance.noZoomOnFocus }
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let cornerRadius: CGFloat
@@ -973,17 +975,18 @@ struct PosterCard: View {
     /// picks up the setting without a prop-drilling pass through every call site. When OFF the
     /// `if` below emits no overlay at all — no extra view/layer exists in the tree, keeping the
     /// OFF render byte-identical to pre-FEAT-14.
-    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @Environment(\.focusAppearance) private var focusAppearance
+    private var accentFocusRing: Bool { focusAppearance.accentFocusRing }
     /// BUG-36: opt-in "No Zoom on Focus", default OFF. Same independent-read pattern (and the same
     /// UserDefaults key) as `AppearanceSettingsPane`'s toggle, so every card site inherits it
     /// without a prop-drilling pass. OFF resolves to the same two treatments as before.
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    private var noZoomOnFocus: Bool { focusAppearance.noZoomOnFocus }
     /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30: "make the poster border dynamic, so that it
     /// adapts to the dominant color of each poster"): opt-in, default OFF, same independent read
     /// as the two keys above (Appearance owns the toggle). With it on, the focused card's ring —
     /// accent or No Zoom's still ring — wears the poster's own colour from `ArtworkColorStore`.
     /// OFF: `posterTint` is nil, so every ring keeps exactly the colour it drew before.
-    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    private var ringTakesPosterColor: Bool { focusAppearance.ringTakesPosterColor }
     /// rc14 FEAT-46: the last colour `ArtworkColorStore` answered for this card. Written at most
     /// once per focus GAIN (the `.onChange` just above the `zIndex` in `body`), never per frame or
     /// per image load; it is the re-render trigger for a colour sampled after focus landed, and
@@ -994,7 +997,7 @@ struct PosterCard: View {
     /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
     /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
     /// rail is the white it always was and nothing is sampled.
-    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    private var depthTakesPosterColor: Bool { focusAppearance.depthTakesPosterColor }
     /// The last rail colour the store answered for this card; the re-render trigger for a colour
     /// sampled after the image landed (a store hit is read straight from `body`, never written here).
     @State private var depthRailTint: Color?
@@ -1276,20 +1279,21 @@ struct LandscapeCard: View {
     @Environment(\.posterStyle) private var style
     /// FEAT-14: opt-in accent focus ring, default OFF — see `PosterCard`'s copy of this property
     /// for the full rationale (same UserDefaults key, same byte-identical-when-OFF guarantee).
-    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @Environment(\.focusAppearance) private var focusAppearance
+    private var accentFocusRing: Bool { focusAppearance.accentFocusRing }
     /// BUG-36: opt-in "No Zoom on Focus", default OFF — see `PosterCard`'s copy of this property
     /// for the full rationale (same UserDefaults key, same independent read).
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    private var noZoomOnFocus: Bool { focusAppearance.noZoomOnFocus }
     /// rc14 FEAT-46: poster-coloured focus ring, default OFF — see `PosterCard`'s copy of these
     /// properties for the full rationale (same key, same once-per-focus-gain resolution).
-    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    private var ringTakesPosterColor: Bool { focusAppearance.ringTakesPosterColor }
     @State private var posterRingTint: Color?
     /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
     /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
     /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
     /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
     /// rail is the white it always was and nothing is sampled.
-    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    private var depthTakesPosterColor: Bool { focusAppearance.depthTakesPosterColor }
     /// The last rail colour the store answered for this card; the re-render trigger for a colour
     /// sampled after the image landed (a store hit is read straight from `body`, never written here).
     @State private var depthRailTint: Color?

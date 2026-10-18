@@ -153,7 +153,10 @@ final class TopShelfUpdater: ObservableObject {
                 episode: entry.episodeNumber?.value,
                 poster: entry.poster,
                 background: entry.background ?? entry.episodeThumbnail,
-                progressPercent: entry.progressPercent.map { Double(truncating: $0) }
+                // `progressFraction` covers both kinds of entry: a stored percentage (Trakt/Simkl)
+                // or position / duration (local playback saves no percentage, so they used to
+                // carry none and the Top Shelf showed no bar for them).
+                progressPercent: entry.progressFraction > 0 ? Double(entry.progressFraction) * 100 : nil
             )
         }
         // Skip the write when the items are unchanged at Top Shelf's resolution: the progress bar

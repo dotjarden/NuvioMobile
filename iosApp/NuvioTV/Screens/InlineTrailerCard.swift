@@ -2134,17 +2134,18 @@ struct InlineTrailerCard: View {
     /// dwell-morph replaces that card's rendered surface with this landscape trailer tile — so
     /// with the ring on, it visibly disappeared the instant a trailer started playing. Read
     /// independently, same key/pattern as `PosterCard`'s copy of this property.
-    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @Environment(\.focusAppearance) private var focusAppearance
+    private var accentFocusRing: Bool { focusAppearance.accentFocusRing }
     /// Read for the neutral still ring below (Codex 2026-08-29 round 6) — same key/pattern as
     /// `PosterCard`'s copy.
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    private var noZoomOnFocus: Bool { focusAppearance.noZoomOnFocus }
     /// beta.19-rc1 verdict (R1, BUG-132): the morph replaced the poster card with this tile, and the
     /// tile read neither FEAT-46 key, so a pink or gold ring turned white (and the depth rail
     /// disappeared) the moment the trailer started — Steven's 72 Heures / Elize frames. Same keys,
     /// same independent-read pattern, same `ArtworkColorStore` as `PosterCard` (Appearance owns the
     /// toggles).
-    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
-    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    private var ringTakesPosterColor: Bool { focusAppearance.ringTakesPosterColor }
+    private var depthTakesPosterColor: Bool { focusAppearance.depthTakesPosterColor }
     @Environment(\.cardDepthStyle) private var depthStyle
     /// R1: the last colour `ArtworkColorStore` answered for this card's art. Written at most once per
     /// tile reveal (`sampleTileColors`, on the `tileVisible` true edge), never per frame; it is the

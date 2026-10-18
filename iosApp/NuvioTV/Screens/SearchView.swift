@@ -267,14 +267,18 @@ private struct SearchContent: View {
             }
 
             let footnote = cardFootnote
-            ForEach(model.rows, id: \.key) { section in
-                CatalogRowView(
-                    section: section,
-                    onItemFocusChange: { owner.wash.report($0) },
-                    cardFootnote: footnote
-                )
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier(Self.groupID(section.key))
+            // Lazy: a search can return a row per add-on (and per type), and the plain stack built
+            // every row and every card at once. Only the rows near the screen are built now.
+            LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                ForEach(model.rows, id: \.key) { section in
+                    CatalogRowView(
+                        section: section,
+                        onItemFocusChange: { owner.wash.report($0) },
+                        cardFootnote: footnote
+                    )
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier(Self.groupID(section.key))
+                }
             }
 
             if !model.people.isEmpty {

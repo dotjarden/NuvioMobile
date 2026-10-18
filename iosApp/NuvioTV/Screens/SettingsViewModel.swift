@@ -9,6 +9,13 @@ import SharedCore
 ///   reads these preferences, so changes take effect on Home after a refresh (which we trigger).
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    /// Writes a published value only when it changed. The ~15 watchers in `start()` replay on every
+    /// open of Settings and each wrote several values unconditionally; `@Published` fires on equal
+    /// writes too, so every one re-rendered Settings and the open pane.
+    private func assign<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<SettingsViewModel, T>, _ value: T) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
     @Published private(set) var skipIntroEnabled = true
     @Published private(set) var episodeShuffleAvailable = false
     /// Upstream 199c5882: segment types the player skips automatically, as `AutoSkipSegmentType`
@@ -163,29 +170,29 @@ final class SettingsViewModel: ObservableObject {
         ThemeSettingsRepository.shared.ensureLoaded()
         themeWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.selectedTheme) { [weak self] emitted in
             guard let self, let theme = emitted as? AppTheme else { return }
-            self.themeName = theme.name
+            self.assign(\.themeName, theme.name)
         }
         // FEAT-38: `amoledEnabled` is a bare `StateFlow<Boolean>` with no synchronous
         // `currentThemeName()`-style accessor — the watch callback receives a boxed
         // `KotlinBoolean`, same idiom as `AppThemeModel`'s `oledWatcher`.
         amoledWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.amoledEnabled) { [weak self] emitted in
             guard let self, let boxed = emitted as? KotlinBoolean else { return }
-            self.amoledEnabled = boxed.boolValue
+            self.assign(\.amoledEnabled, boxed.boolValue)
         }
 
         PlayerSettingsRepository.shared.ensureLoaded()
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
-            self.skipIntroEnabled = state.skipIntroEnabled
-            self.autoSkipSegmentTypes = Set(state.autoSkipSegmentTypes.map { $0.storedValue })
-            self.subtitleStyle = state.subtitleStyle
-            self.preferredAudioLanguage = state.preferredAudioLanguage
-            self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
-            self.pauseOverlayEnabled = state.pauseOverlayEnabled
-            self.showLoadingOverlay = state.showLoadingOverlay
-            self.autoPlayBestSource = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
-            self.autoPlayCachedOnly = state.streamAutoPlayCachedOnly
-            self.preloadNextEpisodeSources = state.preloadNextEpisodeSources
+            self.assign(\.skipIntroEnabled, state.skipIntroEnabled)
+            self.assign(\.autoSkipSegmentTypes, Set(state.autoSkipSegmentTypes.map { $0.storedValue }))
+            self.assign(\.subtitleStyle, state.subtitleStyle)
+            self.assign(\.preferredAudioLanguage, state.preferredAudioLanguage)
+            self.assign(\.preferredSubtitleLanguage, state.preferredSubtitleLanguage)
+            self.assign(\.pauseOverlayEnabled, state.pauseOverlayEnabled)
+            self.assign(\.showLoadingOverlay, state.showLoadingOverlay)
+            self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
+            self.assign(\.autoPlayCachedOnly, state.streamAutoPlayCachedOnly)
+            self.assign(\.preloadNextEpisodeSources, state.preloadNextEpisodeSources)
         }
 
         // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
@@ -193,18 +200,18 @@ final class SettingsViewModel: ObservableObject {
         DebridSettingsRepository.shared.ensureLoaded()
         debridSourcesWatcher = FlowWatcherKt.watch(DebridSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? DebridSettings else { return }
-            self.streamSortMode = Self.streamSortKey(state.streamSortMode)
-            self.streamMinimumQuality = Self.streamMinimumQualityKey(state.streamMinimumQuality)
-            self.streamDolbyVisionFilter = Self.streamFeatureFilterKey(state.streamDolbyVisionFilter)
-            self.streamHdrFilter = Self.streamFeatureFilterKey(state.streamHdrFilter)
-            self.streamCachedOnly = state.streamCachedOnly
-            self.debridCanResolvePlayableLinks = state.canResolvePlayableLinks
+            self.assign(\.streamSortMode, Self.streamSortKey(state.streamSortMode))
+            self.assign(\.streamMinimumQuality, Self.streamMinimumQualityKey(state.streamMinimumQuality))
+            self.assign(\.streamDolbyVisionFilter, Self.streamFeatureFilterKey(state.streamDolbyVisionFilter))
+            self.assign(\.streamHdrFilter, Self.streamFeatureFilterKey(state.streamHdrFilter))
+            self.assign(\.streamCachedOnly, state.streamCachedOnly)
+            self.assign(\.debridCanResolvePlayableLinks, state.canResolvePlayableLinks)
         }
 
         EpisodeShuffleRepository.shared.ensureLoaded()
         episodeShuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let profile = emitted as? EpisodeShuffleProfile else { return }
-            self.episodeShuffleAvailable = profile.available
+            self.assign(\.episodeShuffleAvailable, profile.available)
         }
 
         // Upstream 7c1c6578: mirror `SearchHistoryRepository.enabled` (a bare `StateFlow<Boolean>`,
@@ -212,53 +219,53 @@ final class SettingsViewModel: ObservableObject {
         // while the Search tab's own `SearchViewModel` instance is not mounted.
         recentSearchesWatcher = FlowWatcherKt.watch(SearchHistoryRepository.shared.enabled) { [weak self] emitted in
             guard let self, let boxed = emitted as? KotlinBoolean else { return }
-            self.recentSearchesEnabled = boxed.boolValue
+            self.assign(\.recentSearchesEnabled, boxed.boolValue)
         }
         SearchHistoryRepository.shared.ensureLoaded()
 
         TmdbSettingsRepository.shared.ensureLoaded()
         tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TmdbSettings else { return }
-            self.tmdbEnabled = state.enabled
-            self.tmdbUseReleaseDates = state.useReleaseDates
-            self.tmdbHasPersonalKey = !state.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            self.assign(\.tmdbEnabled, state.enabled)
+            self.assign(\.tmdbUseReleaseDates, state.useReleaseDates)
+            self.assign(\.tmdbHasPersonalKey, !state.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             // Stored languages may carry a region ("de-DE" from the phone's field); the chip row
             // keys on the primary subtag.
-            self.tmdbLanguageSelection = TmdbSettingsRepository.shared.hasExplicitLanguage()
+            self.assign(\.tmdbLanguageSelection, TmdbSettingsRepository.shared.hasExplicitLanguage()
                 ? String(state.language.split(separator: "-").first ?? Substring(state.language))
-                : "device"
+                : "device")
         }
 
         MdbListSettingsRepository.shared.ensureLoaded()
         mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MdbListSettings else { return }
-            self.mdbListEnabled = state.enabled
-            self.mdbListHasKey = state.hasApiKey
-            self.mdbListHasPersonalKey = state.hasPersonalKey
-            self.mdbListAccountConnected = state.isAccountConnected
-            self.mdbListUsingAccount = state.usingAccount
+            self.assign(\.mdbListEnabled, state.enabled)
+            self.assign(\.mdbListHasKey, state.hasApiKey)
+            self.assign(\.mdbListHasPersonalKey, state.hasPersonalKey)
+            self.assign(\.mdbListAccountConnected, state.isAccountConnected)
+            self.assign(\.mdbListUsingAccount, state.usingAccount)
         }
 
         PosterCardStyleRepository.shared.ensureLoaded()
         posterStyleWatcher = FlowWatcherKt.watch(PosterCardStyleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PosterCardStyleUiState else { return }
-            self.posterWidthDp = state.widthDp
-            self.posterCornerRadiusDp = state.cornerRadiusDp
-            self.posterHideLabels = state.hideLabelsEnabled
-            self.posterLandscapeRows = state.catalogLandscapeModeEnabled
+            self.assign(\.posterWidthDp, state.widthDp)
+            self.assign(\.posterCornerRadiusDp, state.cornerRadiusDp)
+            self.assign(\.posterHideLabels, state.hideLabelsEnabled)
+            self.assign(\.posterLandscapeRows, state.catalogLandscapeModeEnabled)
         }
 
         CardDepthStyleRepository.shared.ensureLoaded()
         cardDepthWatcher = FlowWatcherKt.watch(CardDepthStyleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? CardDepthStyleUiState else { return }
-            self.cardDepth = CardDepthStyle(from: state)
+            self.assign(\.cardDepth, CardDepthStyle(from: state))
         }
 
         // rc14 (Steven rc13 verdict, 2026-09-30): episode-ratings visibility (Poster Style pane).
         MetaScreenSettingsRepository.shared.ensureLoaded()
         metaScreenWatcher = FlowWatcherKt.watch(MetaScreenSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MetaScreenSettingsUiState else { return }
-            self.episodeRatingsVisibility = state.episodeRatingsVisibility
+            self.assign(\.episodeRatingsVisibility, state.episodeRatingsVisibility)
         }
 
         // Library Source / Watch Progress Source (Content Sources pane). `TrackingSettingsRepository`
@@ -268,8 +275,8 @@ final class SettingsViewModel: ObservableObject {
         TrackingSettingsRepository.shared.ensureLoaded()
         trackingSettingsWatcher = FlowWatcherKt.watch(TrackingSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TraktSettingsUiState else { return }
-            self.librarySourceMode = Self.librarySourceModeKey(state.librarySourceMode)
-            self.watchProgressSource = Self.watchProgressSourceKey(state.watchProgressSource)
+            self.assign(\.librarySourceMode, Self.librarySourceModeKey(state.librarySourceMode))
+            self.assign(\.watchProgressSource, Self.watchProgressSourceKey(state.watchProgressSource))
         }
 
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
@@ -277,9 +284,9 @@ final class SettingsViewModel: ObservableObject {
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? AddonsUiState else { return }
             let enabled = AddonModelsKt.enabledAddons(state.addons)
-            self.enabledAddons = enabled
+            self.assign(\.enabledAddons, enabled)
             // FEAT-10: keep the Search Sources rows in step with the installed addons.
-            self.searchSourceOptions = SearchRepository.shared.searchCatalogOptions(addons: enabled)
+            self.assign(\.searchSourceOptions, SearchRepository.shared.searchCatalogOptions(addons: enabled))
             // "Home Rows blank" bug (docs/steven-batch-plan-2026-08-29.md, "data clobber"):
             // HomeCatalogSettingsRepository derives its published items ONLY from the in-memory
             // `definitions` set here. Feeding it an empty/pending-manifest emission — app start
@@ -294,16 +301,16 @@ final class SettingsViewModel: ObservableObject {
         }
         catalogWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
-            self.catalogs = state.items
-            self.showCatalogType = state.showCatalogType
-            self.heroEnabled = state.heroEnabled
+            self.assign(\.catalogs, state.items)
+            self.assign(\.showCatalogType, state.showCatalogType)
+            self.assign(\.heroEnabled, state.heroEnabled)
         }
 
         // BUG-33 defect 1 instrumentation: the Search Sources pane's fan-out caption. Watches
         // the same shared `SearchRepository.uiState` the Search tab's `SearchViewModel` watches.
         searchStateWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? SearchUiState else { return }
-            self.lastSearchFanOut = state.lastFanOut
+            self.assign(\.lastSearchFanOut, state.lastFanOut)
         }
 
         // "Home Rows blank" bug: Settings must not depend on Home/Search having mounted first to

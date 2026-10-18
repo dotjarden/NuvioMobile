@@ -179,6 +179,12 @@ struct CachedAsyncImage<Failure: View>: View {
                 } else {
                     Color.clear
                 }
+            } else if ArtworkStore.cached(candidateURLs.first, decode: chain.request) != nil
+                        || ArtworkStore.cachedPlaceholder(for: candidateURLs, decode: chain.request) != nil {
+                // Same one-frame gap as above: the loader seeds the cached image in `.onAppear`,
+                // one body later. A shimmer here started a repeatForever animation on every card
+                // mounted while scrolling, only to be replaced the next frame.
+                Color.clear
             } else {
                 ShimmerView()
             }

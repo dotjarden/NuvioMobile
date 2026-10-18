@@ -156,6 +156,7 @@ struct NuvioTVApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .providesFocusAppearance()
                 // The app is a dark-canvas streaming UI (HIG: TV apps default dark). Pinning the
                 // scheme makes every semantic color (.primary, .secondary, materials) resolve to
                 // its dark variant regardless of the system appearance, so the semantic token
