@@ -108,8 +108,8 @@ nonisolated enum MPVSubtitleAutoSelectGate {
     enum Decision: Equatable {
         /// Select this track and stop.
         case select(Int64)
-        /// Turn subtitles off (forced-only plan, no forced track yet) and keep watching while
-        /// loads run, else stop.
+        /// Turn subtitles off and keep watching while loads run, else stop: a forced-only plan
+        /// with no forced track yet, or (always final) a plan with no target language at all.
         case off(final: Bool)
         /// Not decidable yet: decide again on the next walk.
         case wait
@@ -118,8 +118,16 @@ nonisolated enum MPVSubtitleAutoSelectGate {
     }
 
     /// `matchId` is the track the shared matcher picked among the tracks loaded so far (nil = none).
+    ///
+    /// `noTargets` (BUG-171): the plan has no target language ("No subtitles" with no secondary
+    /// language). mpv runs with `subs-fallback=yes`, so at load it turns on some embedded
+    /// subtitle by itself; this must turn it off, at once and for good, since no file arriving
+    /// later can match an empty target list. Upstream's runtime and the native engine both treat
+    /// an empty plan as "subtitles off".
     static func decide(matchId: Int64?, matchIsFinal: Bool, forcedOnly: Bool,
-                       preferredLoadsPending: Bool, sideLoadActive: Bool) -> Decision {
+                       preferredLoadsPending: Bool, sideLoadActive: Bool,
+                       noTargets: Bool = false) -> Decision {
+        if noTargets { return .off(final: true) }
         if let matchId { return matchIsFinal || !preferredLoadsPending ? .select(matchId) : .wait }
         if forcedOnly { return .off(final: !sideLoadActive) }
         return sideLoadActive ? .wait : .done

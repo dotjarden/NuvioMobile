@@ -1243,7 +1243,16 @@ final class MPVTVPlayerViewController: UIViewController {
                   preferredSubtitleTargets: subTargets,
                   useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
               )
-        else { didAutoSelectSubtitles = true; return }
+        else {
+            // "Use forced subtitles" on, audio language unknown (BUG-171): subtitles off, as
+            // upstream's runtime does. Leaving mpv's own pick meant ANY track (`subs-fallback=yes`).
+            didAutoSelectSubtitles = true
+            if !didApplyAutoSubtitleOff {
+                didApplyAutoSubtitleOff = true
+                eventQueue.async { [weak self] in self?.setMpvString("sid", "no") }
+            }
+            return
+        }
 
         let sharedSubs = subInfos.enumerated().map { index, info in
             SubtitleTrack(
@@ -1275,12 +1284,14 @@ final class MPVTVPlayerViewController: UIViewController {
         switch MPVSubtitleAutoSelectGate.decide(matchId: matchId, matchIsFinal: matchIsFinal,
                                                 forcedOnly: plan.mode == .forcedOnly,
                                                 preferredLoadsPending: preferredLoadsPending,
-                                                sideLoadActive: sideLoadActive) {
+                                                sideLoadActive: sideLoadActive,
+                                                noTargets: plan.targets.isEmpty) {
         case .select(let sid):
             didAutoSelectSubtitles = true
             eventQueue.async { [weak self] in self?.setMpvInt("sid", sid) }
         case .off(let final):
-            // Forced-only plan with no forced track in that language: keep subtitles off.
+            // Forced-only plan with no forced track in that language, or no target language at
+            // all ("No subtitles", BUG-171): keep subtitles off.
             if final { didAutoSelectSubtitles = true }
             guard !didApplyAutoSubtitleOff else { break }
             didApplyAutoSubtitleOff = true

@@ -127,9 +127,11 @@ final class MPVSubtitleSideLoadQueueTests: XCTestCase {
     // MARK: - Auto-select gate
 
     private func decide(_ match: Int64?, final: Bool = false, forcedOnly: Bool = false,
-                        preferredPending: Bool = false, active: Bool = false) -> MPVSubtitleAutoSelectGate.Decision {
+                        preferredPending: Bool = false, active: Bool = false,
+                        noTargets: Bool = false) -> MPVSubtitleAutoSelectGate.Decision {
         MPVSubtitleAutoSelectGate.decide(matchId: match, matchIsFinal: final, forcedOnly: forcedOnly,
-                                         preferredLoadsPending: preferredPending, sideLoadActive: active)
+                                         preferredLoadsPending: preferredPending, sideLoadActive: active,
+                                         noTargets: noTargets)
     }
 
     func testGateSelectsAFinalMatchAtOnce() {
@@ -154,5 +156,15 @@ final class MPVSubtitleSideLoadQueueTests: XCTestCase {
         XCTAssertEqual(decide(nil, forcedOnly: true, active: false), .off(final: true))
         XCTAssertEqual(decide(7, final: true, forcedOnly: true, active: true), .select(7),
                        "a forced track arriving later is still picked")
+    }
+
+    /// BUG-171: "No subtitles" (empty plan) turns mpv's own fallback pick off on the first walk,
+    /// whatever is still loading.
+    func testGateNoTargetsTurnsSubtitlesOffAtOnce() {
+        XCTAssertEqual(decide(nil, noTargets: true), .off(final: true))
+        XCTAssertEqual(decide(nil, preferredPending: true, active: true, noTargets: true), .off(final: true),
+                       "no file arriving later can match an empty target list")
+        XCTAssertEqual(decide(3, final: true, active: true, noTargets: true), .off(final: true),
+                       "a stray match never turns subtitles on with no target language")
     }
 }
