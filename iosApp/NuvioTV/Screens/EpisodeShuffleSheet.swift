@@ -21,6 +21,9 @@ struct EpisodeShuffleSheet: View {
     let onPlay: (SeriesPrimaryAction) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    /// Set by "Include Watched Episodes": that row leaves with the caught-up phase, so Play Episode
+    /// takes focus when the ready phase appears (see `claimsFocusAfterSwap`).
+    @State private var pickFocusHandOff = false
 
     /// What the lower half of the sheet shows. Pure so it can be unit-tested.
     enum Phase: Equatable {
@@ -96,6 +99,7 @@ struct EpisodeShuffleSheet: View {
                         title: String(localized: "Include Watched Episodes"),
                         systemImage: "arrow.counterclockwise"
                     ) {
+                        pickFocusHandOff = true
                         model.setShuffleIncludeWatched(true)
                     }
                     stopRow
@@ -113,6 +117,7 @@ struct EpisodeShuffleSheet: View {
                             if let action = model.shufflePickAction() { onPlay(action) }
                         }
                         .disabled(!model.shufflePickPlayable)
+                        .claimsFocusAfterSwap($pickFocusHandOff)
                         SettingsActionRow(title: String(localized: "Shuffle Again"), systemImage: "shuffle") {
                             model.reshuffle()
                         }

@@ -18,3 +18,32 @@ extension View {
             .focusSection()
     }
 }
+
+/// Takes focus once when it appears, but only right after the pressed control swapped itself out
+/// for this one (Connect → an activation card's Cancel, Start ↔ Stop). The pressed control sets
+/// `pending` just before the swap; without the hand-off the focused control leaves the hierarchy
+/// and the engine drops focus wherever it likes. Gated on the flag, not on appearance alone,
+/// because a lazy List re-fires `onAppear` as rows scroll into view. The flag is cleared once used;
+/// the claim waits one runloop, since a claim in the same update as the swap can lose to the
+/// engine's own fallback.
+struct ClaimsFocusAfterSwap: ViewModifier {
+    @Binding var pending: Bool
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($focused)
+            .onAppear {
+                guard pending else { return }
+                pending = false
+                DispatchQueue.main.async { focused = true }
+            }
+    }
+}
+
+extension View {
+    /// See `ClaimsFocusAfterSwap`.
+    func claimsFocusAfterSwap(_ pending: Binding<Bool>) -> some View {
+        modifier(ClaimsFocusAfterSwap(pending: pending))
+    }
+}

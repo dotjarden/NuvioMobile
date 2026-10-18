@@ -292,8 +292,8 @@ struct StreamPickerView: View {
                             // the old always-expanded list built every row of every addon.
                             if expandedGroups.contains(group.id) {
                                 LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                    ForEach(Array(group.streams.enumerated()), id: \.offset) { index, stream in
-                                        streamRow(stream, key: StreamsViewModel.rowKey(groupId: group.id, index: index))
+                                    ForEach(Array(zip(group.rowKeys, group.streams)), id: \.0) { key, stream in
+                                        streamRow(stream, key: key)
                                     }
                                 }
                                 .padding(.top, Theme.Spacing.xs)

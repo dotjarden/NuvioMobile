@@ -7,6 +7,7 @@ import SwiftUI
 struct MdbListActivationCard: View {
     let code: String
     let verificationUrl: String
+    var focusHandOff: Binding<Bool> = .constant(false)
     let onCancel: () -> Void
 
     var body: some View {
@@ -39,6 +40,7 @@ struct MdbListActivationCard: View {
             ) {
                 onCancel()
             }
+            .claimsFocusAfterSwap(focusHandOff)
         }
         .frame(maxWidth: 1100, alignment: .leading)
     }

@@ -7,6 +7,9 @@ import SharedCore
 /// Rows only: `SettingsPaneScaffold` supplies the `List`. Logic and wiring preserved verbatim.
 struct AccountProfilesSettingsPane: View {
     @ObservedObject var remote: RemoteSetupViewModel
+    /// Set by Start / Stop Remote Setup right before the row swaps for the other one, so the
+    /// replacement takes focus (see `claimsFocusAfterSwap`).
+    @State private var remoteFocusHandOff = false
     @EnvironmentObject private var auth: AuthViewModel
     /// Active backend (official vs self-hosted) for the Server section.
     @StateObject private var server = ActiveServerObserver()
@@ -139,8 +142,10 @@ struct AccountProfilesSettingsPane: View {
                 systemImage: "stop.circle",
                 descriptionID: .accountRemoteSetup
             ) {
+                remoteFocusHandOff = true
                 remote.stop()
             }
+            .claimsFocusAfterSwap($remoteFocusHandOff)
         } else {
             SettingsActionRow(
                 title: String(localized: "Start Remote Setup"),
@@ -150,7 +155,13 @@ struct AccountProfilesSettingsPane: View {
                 systemImage: "network",
                 descriptionID: .accountRemoteSetup
             ) {
+                remoteFocusHandOff = true
                 remote.start()
+            }
+            .claimsFocusAfterSwap($remoteFocusHandOff)
+            // A failed start never swaps the row; don't leave the hand-off armed (review r1 P3).
+            .onChange(of: remote.startFailed) { _, failed in
+                if failed { remoteFocusHandOff = false }
             }
         }
     }

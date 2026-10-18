@@ -62,6 +62,10 @@ struct EpisodesSection: View {
         let seasons = grouping.seasons
         let current = selectedSeason ?? seasons.first
         let episodes = current.flatMap { grouped[$0] } ?? []
+        // Where focus lands when it enters the shelf, and where the shelf scrolls to: the first
+        // unwatched episode of the season (Apple TV app behaviour), else the first episode. Before,
+        // Down from the season row landed on whichever card sat nearest, usually E1.
+        let nextUpId = episodes.first(where: { !isWatched($0) })?.id ?? episodes.first?.id
 
         return VStack(alignment: .leading, spacing: 20) {
             if seasons.count > 1 {
@@ -171,14 +175,37 @@ struct EpisodesSection: View {
                 // unaffected.
                 .rowEdgeEffectStyle()
                 .onChange(of: current) { _, _ in
-                    // A new season can be shorter than the old scroll offset; snap back to the
-                    // first episode without animating through the intermediate layout.
-                    guard let first = episodes.first?.id else { return }
+                    // A new season can be shorter than the old scroll offset; snap to its next-up
+                    // episode (the first one when all are watched) without animating through the
+                    // intermediate layout.
+                    guard let target = nextUpId else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
-                    withTransaction(tx) { proxy.scrollTo(first, anchor: .leading) }
+                    withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
+                }
+                .onAppear {
+                    guard let target = nextUpId, target != episodes.first?.id else { return }
+                    // One runloop later: a scrollTo during the first appear can no-op before the
+                    // row has a content size.
+                    DispatchQueue.main.async {
+                        var tx = Transaction()
+                        tx.disablesAnimations = true
+                        withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
+                    }
+                }
+                .onChange(of: nextUpId) { _, target in
+                    // Watched state often lands after the first render (review r1 P2). Only move
+                    // a shelf the user isn't on.
+                    guard focusedEpisodeId == nil, let target else { return }
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
                 }
             }
+            // `.userInitiated`: the default priority only applies to programmatic focus and first
+            // load, never to the user's Down from the season row (review r1 P1). Up from Cast now
+            // also lands on next-up rather than the last-visited card, as in the Apple TV app.
+            .defaultFocus($focusedEpisodeId, nextUpId, priority: .userInitiated)
             .focusSection()
 
             focusedOverviewPanel(episodes: episodes)

@@ -25,6 +25,8 @@ final class StreamsViewModel: ObservableObject {
         let id: String           // addonId
         let addonName: String
         let streams: [StreamItem]
+        /// One stable row key per stream, parallel to `streams` (see `rowKeys(groupId:streams:)`).
+        let rowKeys: [String]
         /// Mirrors the shared `AddonStreamGroup.isLoading` — this addon hasn't finished
         /// responding yet (more streams may still arrive). Drives the per-group header spinner.
         let isLoading: Bool
@@ -85,7 +87,35 @@ final class StreamsViewModel: ObservableObject {
     var showAddonLogo: Bool { badgeSettings?.showAddonLogo ?? false }
     var badgesOnTop: Bool { badgeSettings?.badgePlacement == .top }
 
-    static func rowKey(groupId: String, index: Int) -> String { "\(groupId)#\(index)" }
+    /// Row keys keyed by the stream's identity, not its position: add-ons stream in and the
+    /// shared sort reorders, and a positional key moved focus and the resolve spinner onto a
+    /// different stream. The identity is the add-on's own text plus the torrent hash, NOT the URL:
+    /// debrid preparation swaps in a resolved URL while the picker is open (`replacePreparedStream`),
+    /// and a URL-based key (`playbackStreamKey`) rebuilt the row and dropped its focus (review r1
+    /// P2). Duplicates get a `~n` suffix; a stream with no identity falls back to its index. Keys
+    /// keep the `"<groupId>#"` prefix the picker's collapse logic matches on. One SHA-256 per
+    /// stream per `apply()`.
+    static func rowKeys(groupId: String, streams: [StreamItem]) -> [String] {
+        var seen: [String: Int] = [:]
+        return streams.enumerated().map { index, stream in
+            let identity = rowIdentity(stream)
+            let base = identity.isEmpty ? "i\(index)" : identity
+            let n = seen[base, default: 0]
+            seen[base] = n + 1
+            return n == 0 ? "\(groupId)#\(base)" : "\(groupId)#\(base)~\(n)"
+        }
+    }
+
+    private static func rowIdentity(_ stream: StreamItem) -> String {
+        let name: String = stream.name ?? ""
+        let title: String = stream.title ?? ""
+        let description: String = stream.description_ ?? ""
+        let hash: String = stream.infoHash ?? stream.clientResolve?.infoHash ?? ""
+        let fileIdx = stream.fileIdx.map { "\($0.intValue)" } ?? ""
+        let text = [name, title, description, hash, fileIdx].joined(separator: "\u{1F}")
+        guard !text.allSatisfy({ $0 == "\u{1F}" }) else { return "" }
+        return PlaybackStreamKey.digestHex(text, bytes: 12)
+    }
 
     /// `forceManual` false lets the shared repository run its direct auto-play flow for this load
     /// (`manualSelection: false`); the picker passes false only while first-play auto mode is armed.
@@ -193,9 +223,11 @@ final class StreamsViewModel: ObservableObject {
         groups = state.groups.compactMap { group in
             let playable = group.streams.filter { Self.isListable(stream: $0, debridEnabled: debridEnabled) }
             guard !playable.isEmpty else { return nil }
-            return Group(id: group.addonId, addonName: group.addonName, streams: playable, isLoading: group.isLoading)
+            return Group(id: group.addonId, addonName: group.addonName, streams: playable,
+                         rowKeys: Self.rowKeys(groupId: group.addonId, streams: playable),
+                         isLoading: group.isLoading)
         }
-        firstRowKey = groups.first.map { Self.rowKey(groupId: $0.id, index: 0) }
+        firstRowKey = groups.first?.rowKeys.first
 
         if groups.isEmpty && !isLoading {
             // The shared repository's `emptyStateReason` only covers "we truly found nothing"

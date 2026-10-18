@@ -12,6 +12,19 @@ struct ServicesSettingsPane: View {
     /// Owned here (not injected from SettingsView) so the MDBList card needs no SettingsView change.
     @StateObject private var mdblist = MdbListViewModel()
     @State private var confirmingMdbListDisconnect = false
+    /// Set by every Connect press (the provider's key): the activation card that replaces the
+    /// Connect row then takes focus on its Cancel. Not on plain appearance: the pane is a lazy List, so a pending card
+    /// scrolling into view would otherwise yank focus (review r1 P2).
+    @State private var activationFocusHandOff: String?
+
+    /// The hand-off flag for one provider's card: armed only by that provider's Connect press, so
+    /// a failed Connect elsewhere can't make a pending card steal focus (review r2 P3).
+    private func handOff(_ provider: String) -> Binding<Bool> {
+        Binding(
+            get: { activationFocusHandOff == provider },
+            set: { if !$0, activationFocusHandOff == provider { activationFocusHandOff = nil } }
+        )
+    }
 
     /// Drives the shared Trakt-disconnect confirmation alert owned by SettingsView.
     @Binding var confirmingTraktDisconnect: Bool
@@ -92,7 +105,8 @@ struct ServicesSettingsPane: View {
         } else if let code = trakt.deviceUserCode {
             TraktActivationCard(
                 code: code,
-                verificationUrl: trakt.deviceVerificationUrl ?? "https://trakt.tv/activate"
+                verificationUrl: trakt.deviceVerificationUrl ?? "https://trakt.tv/activate",
+                focusHandOff: handOff("trakt")
             ) {
                 trakt.cancelActivation()
             }
@@ -107,6 +121,7 @@ struct ServicesSettingsPane: View {
                 systemImage: "antenna.radiowaves.left.and.right",
                 descriptionID: .servicesTrakt
             ) {
+                activationFocusHandOff = "trakt"
                 trakt.connect()
             }
             if let error = trakt.errorMessage {
@@ -176,7 +191,8 @@ struct ServicesSettingsPane: View {
         } else if let code = simkl.deviceUserCode {
             SimklActivationCard(
                 code: code,
-                verificationUrl: simkl.deviceVerificationUrl ?? "https://simkl.com/pin/"
+                verificationUrl: simkl.deviceVerificationUrl ?? "https://simkl.com/pin/",
+                focusHandOff: handOff("simkl")
             ) {
                 simkl.cancelActivation()
             }
@@ -191,6 +207,7 @@ struct ServicesSettingsPane: View {
                 systemImage: "antenna.radiowaves.left.and.right",
                 descriptionID: .servicesSimkl
             ) {
+                activationFocusHandOff = "simkl"
                 simkl.connect()
             }
             if let error = simkl.errorMessage {
@@ -251,7 +268,8 @@ struct ServicesSettingsPane: View {
         } else if mdblist.isAwaitingApproval, let code = mdblist.userCode {
             MdbListActivationCard(
                 code: code,
-                verificationUrl: mdblist.verificationUrl ?? "https://mdblist.com/device"
+                verificationUrl: mdblist.verificationUrl ?? "https://mdblist.com/device",
+                focusHandOff: handOff("mdblist")
             ) {
                 mdblist.cancel()
             }
@@ -264,6 +282,7 @@ struct ServicesSettingsPane: View {
             ) {
                 // Not `.disabled(isBusy)`: the pressed row lost focus while the code was requested.
                 guard !mdblist.isBusy else { return }
+                activationFocusHandOff = "mdblist"
                 mdblist.connect()
             }
             if let error = mdblist.errorMessage {
@@ -387,7 +406,8 @@ struct ServicesSettingsPane: View {
                     DebridActivationCard(
                         providerName: provider.displayName,
                         code: session.userCode,
-                        verificationUrl: session.friendlyVerificationUrl
+                        verificationUrl: session.friendlyVerificationUrl,
+                        focusHandOff: handOff("debrid:\(provider.id)")
                     ) {
                         debrid.cancelActivation()
                     }
@@ -415,6 +435,7 @@ struct ServicesSettingsPane: View {
                 systemImage: "antenna.radiowaves.left.and.right",
                 descriptionID: .servicesDebridProvider
             ) {
+                activationFocusHandOff = "debrid:\(provider.id)"
                 debrid.connect(provider)
             }
             DebridKeyEntryRow(providerName: provider.displayName, descriptionID: .servicesDebridKey) { key in
@@ -540,6 +561,7 @@ private enum SimklAnimeIdOptions {
 private struct TraktActivationCard: View {
     let code: String
     let verificationUrl: String
+    var focusHandOff: Binding<Bool> = .constant(false)
     let onCancel: () -> Void
 
     var body: some View {
@@ -572,6 +594,7 @@ private struct TraktActivationCard: View {
             ) {
                 onCancel()
             }
+            .claimsFocusAfterSwap(focusHandOff)
         }
         .frame(maxWidth: 1100, alignment: .leading)
     }
@@ -584,6 +607,7 @@ private struct TraktActivationCard: View {
 private struct SimklActivationCard: View {
     let code: String
     let verificationUrl: String
+    var focusHandOff: Binding<Bool> = .constant(false)
     let onCancel: () -> Void
 
     var body: some View {
@@ -616,6 +640,7 @@ private struct SimklActivationCard: View {
             ) {
                 onCancel()
             }
+            .claimsFocusAfterSwap(focusHandOff)
         }
         .frame(maxWidth: 1100, alignment: .leading)
     }
@@ -626,6 +651,7 @@ private struct DebridActivationCard: View {
     let providerName: String
     let code: String
     let verificationUrl: String
+    var focusHandOff: Binding<Bool> = .constant(false)
     let onCancel: () -> Void
 
     var body: some View {
@@ -658,6 +684,7 @@ private struct DebridActivationCard: View {
             ) {
                 onCancel()
             }
+            .claimsFocusAfterSwap(focusHandOff)
         }
         .frame(maxWidth: 1100, alignment: .leading)
     }

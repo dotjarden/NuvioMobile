@@ -228,6 +228,8 @@ struct ContentView: View {
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main {
                 entered = false
+                // Empty the Top Shelf now; don't rely on the wipe's emission racing `stop()`.
+                topShelf.clearForSignOut()
                 // H-1B-ii: hard teardown of Home's (profile-scoped) watchers. `home` now outlives
                 // `HomeView`, so leaving the signed-in state no longer implicitly stops them the
                 // way the old view-lifetime `onDisappear → model.stop()` did. Redundant with the
