@@ -54,6 +54,9 @@ enum ScrollingLatch {
 /// see `DetailView.dimModel` and `ScrollDimOverlay` below, its sole observer.
 private final class ScrollDimModel: ObservableObject {
     @Published var value: Double = 0
+    /// FEAT-60: the Cinematic hero, action row included, has scrolled off the top (drives
+    /// `DetailCompactLogo`). Bool, so it publishes only on the crossing.
+    @Published var heroGone: Bool = false
 
     /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
     /// instant a scroll-geometry change is observed, false again ~150ms after the last one
@@ -188,13 +191,22 @@ private struct DetailTopScrim: View {
 
 /// FEAT-60: the compact title logo pinned at the top of a scrolled Cinematic Detail page. Text
 /// title while the logo loads or when there is none (`TitleLogoHeader`). Sits over `DetailTopScrim`,
-/// never takes focus or hits.
+/// never takes focus or hits. Device pass: the first Down only reveals the next row (BUG-99), so
+/// "focus is in the rows" alone showed the logo beside the dimmed action row; it now also waits
+/// for the whole hero to have scrolled off (`ScrollDimModel.heroGone`).
 private struct DetailCompactLogo: View {
     static let slotHeight: CGFloat = 72
+    /// How far past the hero-exit rest the page must scroll (that rest sits at about
+    /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, and leaves the dimmed
+    /// action row on screen), so the logo waits for the next row down.
+    static let heroClearance: CGFloat = 120
     let title: String
     let logoUrl: String?
-    let visible: Bool
+    @ObservedObject var model: ScrollDimModel
+    let inRows: Bool
     let reduceMotion: Bool
+
+    private var visible: Bool { inRows && model.heroGone }
 
     var body: some View {
         TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
@@ -208,6 +220,8 @@ private struct DetailCompactLogo: View {
             .allowsHitTesting(false)
             .accessibilityHidden(!visible)
             .accessibilityIdentifier("detail_compact_logo")
+            .padding(.top, 36)
+            .ignoresSafeArea(edges: .top)
     }
 }
 
@@ -721,8 +735,8 @@ struct DetailView: View {
             // hero, a small title logo fades in at the top so the page still names what it is.
             .overlay(alignment: .top) {
                 if detailLayout == .cinematic {
-                    DetailCompactLogo(title: title, logoUrl: logoUrl,
-                                      visible: focusedRow != nil && bridgePhase == .idle,
+                    DetailCompactLogo(title: title, logoUrl: logoUrl, model: dimModel,
+                                      inRows: focusedRow != nil && bridgePhase == .idle,
                                       reduceMotion: reduceMotion)
                 }
             }
@@ -891,6 +905,18 @@ struct DetailView: View {
             // Off the accessibility tree while invisible, so test51's "chrome is back" check reads
             // visibility, not mere existence (the tvOS 27 runtime never reports focus).
             .accessibilityHidden(bridgePhase != .idle)
+            // FEAT-60: the compact logo waits for the whole hero, action row included, to leave.
+            // The first Down only reveals the next row (BUG-99), which leaves the dimmed action row
+            // at the top, so the dim ceiling alone was too early (device pass 2026-10-18).
+            .onScrollGeometryChange(for: Bool.self, of: { [isCinematic = detailLayout == .cinematic,
+                                                           heroHeight = cinematicHeroHeight] geo in
+                guard isCinematic, heroHeight > 0 else { return false }
+                return DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
+                                                  contentInsetTop: geo.contentInsets.top)
+                    >= heroHeight + geo.contentInsets.top + DetailCompactLogo.heroClearance
+            }, action: { _, gone in
+                dimModel.heroGone = gone
+            })
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
@@ -3160,9 +3186,9 @@ nonisolated enum DetailScrim {
 
     /// FEAT-35 (Detail revamp, Cinematic only): a lighter horizontal + vertical pair plus a radial
     /// darkening centred bottom-leading under the text block, so the rest of the art stays brighter.
-    /// The classic stops above are the CEILING: `cinematicCompositeAlpha` must never exceed
-    /// `classicCompositeAlpha` at any point (`DetailScrimCinematicTests`, 11 × 11 grid). If that
-    /// test ever fails, lower `cinematicRadialOpacity` in 0.05 steps; never raise any value.
+    /// The classic stops above are the CEILING for the art: `cinematicCompositeAlpha` must never
+    /// exceed `classicCompositeAlpha` above y = 0.4 (`DetailScrimCinematicTests`). Batch C made the
+    /// bottom band darker than Classic on purpose; see the Batch C note below.
     ///
     /// beta.19-rc1 verdict (D3, BUG-127; Steven's Oak Street and Monstre photos): the Cinematic art
     /// still read darkened, so every stop is at or below its beta.18 value (the trailing stop and
@@ -3176,6 +3202,11 @@ nonisolated enum DetailScrim {
     ///     from a mean of 0.646 to 0.485 (minimum 0.477 → 0.311), which is the floor the text still
     ///     needs (`DetailScrimCinematicTests.testTextBlockFloor`); the art region (x 0.5–1, y 0–0.6)
     ///     goes from a mean of 0.081 to 0.031.
+    ///
+    /// Batch C (Steven's rc2 reference photo, 2026-10-18): the vertical band starts at 0.40 and ends
+    /// at 0.85, so the text block's mean is 0.638 (minimum 0.457), the bottom quarter's mean 0.746
+    /// and the bottom-left corner 0.9475. Above y = 0.4 nothing changed (art mean 0.031 there); the
+    /// right edge at y = 0.6 now reads 0.28.
     static let cinematicHorizontalLeading: Double = 0.30
     static let cinematicHorizontalMid: Double = 0.06
     static let cinematicHorizontalTrailing: Double = 0.00

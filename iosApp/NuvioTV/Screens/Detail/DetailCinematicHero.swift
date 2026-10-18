@@ -302,7 +302,9 @@ struct DetailCinematicHero<Actions: View>: View {
                     // is more. Truncated text is always truncated at the slightly narrower width.
                     HStack(alignment: .lastTextBaseline, spacing: 12) {
                         teaserText
-                        Image(systemName: "chevron.down")
+                        // Text, not a bare Image: `.borderless` lifts the images in its label on
+                        // focus, which floated the chevron alone with a shadow (device pass).
+                        Text(Image(systemName: "chevron.down"))
                             .font(Theme.Font.synopsis.weight(.semibold))
                             .foregroundStyle(Theme.Palette.textSecondary)
                             .accessibilityHidden(true)

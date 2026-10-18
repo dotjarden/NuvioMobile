@@ -23,9 +23,8 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertEqual(DetailScrim.cinematicRadialEndRadiusFraction, 0.62, accuracy: 1e-9)
     }
 
-    /// The ceiling: the Cinematic composite is never darker than Classic's anywhere on an 11 × 11
-    /// grid, with and without the poster layer. If this fails, lower `cinematicRadialOpacity` in
-    /// 0.05 steps; never raise any value.
+    /// The ceiling: above the bottom band the Cinematic composite is never darker than Classic's,
+    /// with and without the poster layer. If this fails, lower `cinematicRadialOpacity` in 0.05 steps.
     /// Batch C (Steven rc2 reference photo): the ceiling holds for the art (y ≤ 0.4, above the bottom
     /// band); the band below is darker than Classic on purpose (`testBottomBandIsDark`).
     func testCinematicNeverDarkerThanClassic() {
@@ -113,7 +112,7 @@ final class DetailScrimCinematicTests: XCTestCase {
     }
 
     /// The synopsis/meta block (x 0.03–0.30, y 0.55–0.75) keeps enough darkness under it to stay
-    /// legible: mean 0.485 and minimum 0.311 with the D3 stops (0.646 / 0.477 before). If a future
+    /// legible: mean 0.638 and minimum 0.457 with the Batch C band (0.485 / 0.311 with D3). If a future
     /// lightening trips this, the text needs its own panel first.
     func testTextBlockFloor() {
         let block = stats(x: 0.03...0.30, y: 0.55...0.75, overPoster: false)
@@ -121,8 +120,8 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(block.min, 0.30, "a point under the text block fell below the legibility floor")
     }
 
-    /// The art region (x 0.5–1, y 0–0.6, no poster layer) stays mostly clear: mean 0.031 (0.081
-    /// before).
+    /// The art region above the bottom band (x 0.5–1, y 0–0.4, no poster layer) stays mostly clear:
+    /// mean 0.031.
     func testArtRegionMostlyClear() {
         // Batch C: the art above the bottom band (y 0–0.4) keeps rc1's D3 look.
         let art = stats(x: 0.5...1.0, y: 0.0...0.4, overPoster: false)
