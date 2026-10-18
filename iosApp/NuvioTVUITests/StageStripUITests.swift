@@ -82,9 +82,12 @@ final class StageStripUITests: XCTestCase {
     /// leg asks for it: an In Row morph widens cards and adds row motion the paging legs do not want.
     /// The navigation chrome is pinned too (`tabs` unless a leg asks for `rail`), so a stored choice
     /// can never change what Up from row 0 or Menu at the top reaches; each key appears once.
-    private static func stageArguments(trailers: Bool = false, navigation: String = "tabs") -> [String] {
+    /// Batch F: `fitRows` pins Short Rows Fit; the paging legs keep the fixed-page contract (OFF),
+    /// testS17 checks the fit pages.
+    private static func stageArguments(trailers: Bool = false, navigation: String = "tabs",
+                                       fitRows: Bool = false) -> [String] {
         var arguments = ["-home_layout", "stage", "-debug.homeScrollProbe", "YES", "-home_upcoming_row_enabled", "NO",
-                         "-sidebar_style", navigation]
+                         "-sidebar_style", navigation, "-debug.stripFitRows", fitRows ? "YES" : "NO"]
         if !trailers { arguments += ["-inline_trailers_enabled", "NO"] }
         return arguments
     }
@@ -829,11 +832,20 @@ final class StageStripUITests: XCTestCase {
             app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@", text)).firstMatch
         }
         var opened = false
-        for attempt in 0..<2 where !opened {
+        for attempt in 0..<3 where !opened {
             remote.press(.select, forDuration: 2.0)
             pause(1.5)
             shot("S11_hold_\(attempt)")
             opened = menuRow("Mark as ").waitForExistence(timeout: 3)
+            if !opened, menuRow("Play Manually").exists {
+                // The fixture's first row can be Continue Watching (an earlier mpv smoke run leaves
+                // one): that hold menu has no "Mark as …". Close it and try the next row's poster.
+                remote.press(.menu)
+                pause(1.2)
+                remote.press(.down)
+                pause(2.0)
+                continue
+            }
             if !opened, ["Add to Library", "In Library", "Mark Watched", "Watched"].contains(where: { app.buttons[$0].exists }) {
                 // The press fired the card's link on release (Detail pushed): pop it and try again.
                 remote.press(.menu)
@@ -1001,5 +1013,32 @@ final class StageStripUITests: XCTestCase {
                       "with the setting ON no Stage row heading carries its add-on ('… \(suffix)')")
         note("S16_headings", headings.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
         shot("S16_headings")
+    }
+
+    // MARK: - testS17 (Batch F: Short Rows Fit)
+
+    /// Batch F (Steven rc6): with Short Rows Fit on, a row shorter than the fixed page (the guest
+    /// fixture's first row) gets a shorter page, so the Down from it moves the strip by LESS than P,
+    /// in one motion segment, and Up returns to row 0.
+    func testS17_FitRowsShortFirstRowPagesLess() throws {
+        let app = launch(Self.stageArguments(fitRows: true))
+        let geo = try requireGeometry(app)
+        try requireStrip(app, geo)
+        pause(2.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), 0, "the strip must start on row 0: \(strip(app))")
+        let segsBefore = Self.int(strip(app), "segs") ?? 0
+        remote.press(.down)
+        pause(2.0)
+        let after = strip(app)
+        note("S17_after_down", after)
+        shot("S17_fit_row1")
+        XCTAssertEqual(Self.int(after, "row"), 1, "Down must reach row 1: \(after)")
+        XCTAssertEqual((Self.int(after, "segs") ?? 0) - segsBefore, 1, "one motion segment: \(after)")
+        let travel = Self.token(after, "seg").flatMap { $0.split(separator: "/").first }.flatMap { Double($0) } ?? 0
+        XCTAssertLessThan(abs(travel), geo.page - 1, "a short first row pages by less than P (\(geo.page)): \(after)")
+        XCTAssertGreaterThan(abs(travel), 100, "the page still moved a row's height: \(after)")
+        remote.press(.up)
+        pause(2.0)
+        XCTAssertEqual(Self.int(strip(app), "row"), 0, "Up must return to row 0: \(strip(app))")
     }
 }
