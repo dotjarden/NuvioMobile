@@ -130,8 +130,10 @@ private struct SearchFieldLayer: View {
             .onChange(of: queryBox.text) { _, newValue in
                 owner.historyOnOpen.queryChanged(to: newValue)
                 owner.model.queryChanged(newValue)
-                // B3 a: the view model stays UI-free, so the view clears the wash on an empty field.
-                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // B3 a: the view model stays UI-free, so the view clears the wash on an empty field
+                // (B18, Batch F review r2: and on one Latin letter, which shows the idle page too).
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty || SearchViewModel.isTooShortToSearch(trimmed) {
                     owner.wash.clear()
                 } else {
                     owner.wash.queryTyped()

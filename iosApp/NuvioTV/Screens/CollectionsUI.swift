@@ -1065,9 +1065,9 @@ final class FolderDetailViewModel: ObservableObject {
     /// The repository folder `collection` was last refreshed for.
     private var lastFolder: CollectionFolder?
     /// Review r1 (B P3-9): the strip state (rows, sources, settled, collection) is built only while
-    /// Home is in Stage, the only layout that shows it (the Rows page and the Edit band), so
+    /// something shows it: Stage (the Edit band) or a Rows page on either Home layout (Batch F), so
     /// Classic's grid does exactly the per-emission work it did before. `FolderDetailView` sets it
-    /// from the live Home layout; turning it on builds from the last emission at once.
+    /// from the live layouts; turning it on builds from the last emission at once.
     var buildsStripState = false {
         didSet {
             guard buildsStripState, !oldValue, let state = lastState else { return }
@@ -1442,8 +1442,8 @@ struct FolderDetailView: View {
         }
     }
 
-    /// Today's folder page, moved verbatim from `body`: Classic always, Stage when this folder's
-    /// layout is Grid. Its tab-change reset and its reveal task live here, so the Rows page never
+    /// Today's folder page, moved verbatim from `body`: whenever this folder resolves to Grid (Classic
+    /// by default, Stage when chosen). Its tab-change reset and its reveal task live here, so the Rows page never
     /// prefetches a grid. Classic keeps the Edit Filters button; Stage has the Edit band instead.
     private var gridPage: some View {
         ZStack(alignment: .top) {

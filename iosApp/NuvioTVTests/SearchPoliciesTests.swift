@@ -452,17 +452,25 @@ final class SearchQueryEdgeTests: XCTestCase {
     func testFirstLetterFlipsTheEdgeSynchronously() {
         let model = SearchViewModel()
         XCTAssertTrue(model.queryIsEmpty)
+        // B18 (Batch F): one Latin letter keeps the idle page; the edge flips on the second.
         model.queryChanged("d")
-        XCTAssertFalse(model.queryIsEmpty, "the results page must appear on the first letter, not after the debounce")
+        XCTAssertTrue(model.queryIsEmpty, "a single Latin letter is too short to search (B18)")
+        model.queryChanged("du")
+        XCTAssertFalse(model.queryIsEmpty, "the results page must appear on the first searchable query, not after the debounce")
         XCTAssertEqual(model.displayQuery, "", "the shown query is the debounced one")
+    }
+
+    func testSingleNonASCIICharacterFlipsTheEdge() {
+        let model = SearchViewModel()
+        model.queryChanged("鬼")
+        XCTAssertFalse(model.queryIsEmpty, "one CJK character can be a whole title (B18)")
     }
 
     func testFurtherLettersPublishNothing() {
         let model = SearchViewModel()
-        model.queryChanged("d")
+        model.queryChanged("du")
         var publishes = 0
         let sink = model.objectWillChange.sink { _ in publishes += 1 }
-        model.queryChanged("du")
         model.queryChanged("dun")
         model.queryChanged("dune")
         model.queryChanged("dune ")

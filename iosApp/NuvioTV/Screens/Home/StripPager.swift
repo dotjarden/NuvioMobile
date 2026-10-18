@@ -459,9 +459,18 @@ struct StripPager<Row: View>: View {
     /// Batch F: a row's measured height. The first measurement lands at once (a page sized before
     /// it shows), later ones animate (review r1 P3-1: a wide card's trailer growing or shrinking
     /// moves the next heading with it instead of stepping ahead of the tile).
+    /// Only the anchored row and rows below it animate (review r2 P3-A): a row ABOVE the anchor that
+    /// resizes (a morphed card collapsing as the Down that leaves it starts the glide) would move
+    /// the anchored row under the glide's own animation; it applies at once instead.
     private func noteFitHeight(_ height: CGFloat, for key: String) {
         guard fitHeights[key] != height else { return }
-        if fitHeights[key] == nil || box.reduceMotion {
+        let keys = box.rowKeys
+        let aboveAnchor: Bool = {
+            guard let anchor = positionId, let anchorIndex = keys.firstIndex(of: anchor),
+                  let index = keys.firstIndex(of: key) else { return false }
+            return index < anchorIndex
+        }()
+        if fitHeights[key] == nil || box.reduceMotion || aboveAnchor {
             fitHeights[key] = height
         } else {
             withAnimation(.easeOut(duration: Self.fitResizeSeconds)) { fitHeights[key] = height }
