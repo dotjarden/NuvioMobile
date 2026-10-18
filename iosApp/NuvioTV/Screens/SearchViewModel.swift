@@ -14,7 +14,7 @@ import SharedCore
 /// no longer lives here: it is a stage page of its own (`DiscoverPlacement`), so the Discover
 /// watcher and its selection calls are gone.
 ///
-/// Queries are debounced (350 ms) so we don't fire a request on every keystroke. BUG-155: the
+/// Queries are debounced (450 ms since B18; a single Latin letter never searches) so we don't fire a request on every keystroke. BUG-155: the
 /// typed text itself is never published (`queryIsEmpty` / `displayQuery`), so a keystroke re-renders
 /// nothing under the field, and a superseded query's fetches are cancelled in shared
 /// (`CatalogInflightRequests`); `SearchPerfProbe` measures both in DEBUG.
@@ -432,6 +432,15 @@ final class SearchViewModel: ObservableObject {
         scheduledHoldDeadline = nil
     }
 
+    /// B18: was 350 ms (BUG-155 (d)).
+    static let debounceNanoseconds: UInt64 = 450_000_000
+
+    /// B18: a single ASCII character is too short to search; anything longer, or any single
+    /// non-ASCII character, searches.
+    static func isTooShortToSearch(_ trimmed: String) -> Bool {
+        trimmed.count == 1 && trimmed.unicodeScalars.allSatisfy(\.isASCII)
+    }
+
     /// Called as the search text changes; debounces, then queries (or resets on empty).
     func queryChanged(_ text: String) {
         debounce?.cancel()
@@ -459,8 +468,13 @@ final class SearchViewModel: ObservableObject {
             return
         }
 
+        // B18 (BUG-155 (d)): one Latin letter matches half of every catalog and costs a full
+        // fan-out; wait for a second character. A single CJK (or other non-ASCII) character can be
+        // a whole title, so it still searches. The rows on screen stay until a real query runs.
+        if Self.isTooShortToSearch(trimmed) { return }
+
         debounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)
             guard !Task.isCancelled, let self else { return }
             #if DEBUG
             SearchPerfProbe.fired(query: trimmed)

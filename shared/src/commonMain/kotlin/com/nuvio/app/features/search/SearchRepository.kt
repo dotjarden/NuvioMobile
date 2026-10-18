@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -196,7 +197,12 @@ object SearchRepository {
                 launch {
                     // C2: an empty page is an Empty outcome, not a thrown error; only real
                     // failures become Failed.
-                    val outcome = runCatching { request.fetchOutcome(forceRefresh = forceRefresh) }
+                    // B18 (BUG-155 (b)): one slow add-on no longer holds the search open for the
+                    // transport's 60 s timeout; past SEARCH_CATALOG_TIMEOUT_MS it is a failed source.
+                    val outcome = runCatching {
+                        withTimeoutOrNull(SEARCH_CATALOG_TIMEOUT_MS) { request.fetchOutcome(forceRefresh = forceRefresh) }
+                            ?: SearchCatalogOutcome.Failed(request = request, error = SearchCatalogTimeoutException(request.catalogId))
+                    }
                         .getOrElse { error ->
                             if (error is CancellationException) throw error
                             SearchCatalogOutcome.Failed(request = request, error = error)
@@ -1123,3 +1129,10 @@ private fun List<MetaPreview>.previewNames(limit: Int = 5): String {
 
 private fun String.displayLabel(): String =
     localizedMediaTypeLabel(this)
+
+/** B18 (BUG-155 (b)): a search catalog request's own time limit, well under the transport's 60 s. */
+internal const val SEARCH_CATALOG_TIMEOUT_MS: Long = 10_000
+
+/** A search catalog that did not answer within [SEARCH_CATALOG_TIMEOUT_MS]. */
+internal class SearchCatalogTimeoutException(catalogId: String) :
+    Exception("search catalog $catalogId timed out after ${SEARCH_CATALOG_TIMEOUT_MS / 1000} s")
