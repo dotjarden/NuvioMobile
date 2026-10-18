@@ -517,18 +517,30 @@ enum TrailerStreamRefresh {
         item.errorLog()?.events.last?.errorStatusCode == 403
     }
 
+    /// Any 403 in the item's error log (the cut-off's evidence; startup prefetch 403s count too, but
+    /// only a stall past `immediateSwitchAfterSeconds` ever asks).
+    static func sawForbidden(_ item: AVPlayerItem) -> Bool {
+        item.errorLog()?.events.contains { $0.errorStatusCode == 403 || ($0.errorComment ?? "").contains("403") } ?? false
+    }
+
+    /// The 403 entry lands after the stall notice; the stall is re-checked this much later.
+    static let forbiddenGraceSeconds: TimeInterval = 1.2
+    /// The re-extraction's own deadline (the extractor's default is ~30 s of frozen picture).
+    static let extractionTimeoutMillis: Int64 = 10_000
+
     /// Re-extracts `videoId` and returns its progressive stream (YouTube's single-file format,
     /// 360p here), which is not cut off. Device 10-18 (*Pinocchio* 2022, `android` client): the
     /// 1080p repack pair 403s past ~48 s even with fresh URLs, while the progressive stream played
     /// to the end. Falls back to a fresh repack URL when the source has no progressive stream.
-    static func fallbackURL(videoId: String) async -> String? {
+    static func fallbackURL(videoId: String, preferProgressive: Bool) async -> String? {
         let source: TrailerPlaybackSource? = await withCheckedContinuation { continuation in
-            HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: "https://www.youtube.com/watch?v=\(videoId)") { source, _ in
+            HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: "https://www.youtube.com/watch?v=\(videoId)",
+                                                       timeoutMillis: extractionTimeoutMillis) { source, _ in
                 continuation.resume(returning: source)
             }
         }
         guard let source else { return nil }
-        if let progressive = source.progressiveUrl, !progressive.isEmpty { return progressive }
+        if preferProgressive, let progressive = source.progressiveUrl, !progressive.isEmpty { return progressive }
         return await TrailerLocalHLS.shared.playbackURL(for: source)
     }
 }
@@ -548,9 +560,10 @@ final class TrailerPositionHandoff {
     private var entry: (url: String, time: CMTime, at: TimeInterval)?
 
     func record(url: String, time: CMTime, duration: CMTime?) {
-        // An unusable reading leaves a stored one alone: teardown runs twice (dismantle, then
-        // deinit), and the second pass must not wipe the first's position.
-        guard Self.isUsable(time: time, duration: duration) else { return }
+        // Review r1 P3-3: an unusable reading clears an older entry (a re-entered Detail page within
+        // 10 s must not inherit the previous visit's position). Teardown's second pass never gets
+        // here: the first one nils the player.
+        guard Self.isUsable(time: time, duration: duration) else { entry = nil; return }
         entry = (url, time, ProcessInfo.processInfo.systemUptime)
     }
 
@@ -664,8 +677,13 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             }
             if let resumeAt {
                 TrailerZoomProbe.log("handoff full resume=\(String(format: "%.2f", resumeAt.seconds))")
-                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) { _ in
-                    player.play()
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) {
+                    [weak player] _ in
+                    // A Back during the cold seek pauses and unhooks the player first.
+                    MainActor.assumeIsolated {
+                        guard let player, player.currentItem != nil, control.player === player else { return }
+                        player.play()
+                    }
                 }
             } else {
                 player.play()
@@ -713,67 +731,85 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         private var stallObserver: NSObjectProtocol?
         private var refreshes = 0
         private var refreshing = false
+        /// Set by `teardown()`; a refresh or seek completing after it does nothing.
+        private var tornDown = false
 
         /// BUG-128 (u/an_angry_Moose, 10-02; reproduced 2026-10-18 on *Pinocchio* 2022): when the
-        /// preferred clients refuse a video, the extractor falls back to one whose signed URLs YouTube
-        /// cuts off with HTTP 403 about a minute in. The player then replayed a few seconds and froze.
-        /// On a stall whose latest error-log entry is a 403, re-resolve the trailer (fresh URLs) and
-        /// continue from the same position. A recoverable early 403 without a stall never triggers.
+        /// preferred clients refuse a video, the extractor falls back to one whose 1080p streams
+        /// YouTube refuses (HTTP 403) past ~48 s of media; the player replayed a few seconds and froze.
+        /// A stall past `immediateSwitchAfterSeconds` with a 403 in the item's error log (checked again
+        /// after a short grace: the entry lands after the stall notice) switches to the progressive
+        /// stream, which is not cut off. Any other stall that makes no progress for
+        /// `stallBackstopSeconds` re-extracts the same 1080p pair (a plain network stall keeps 1080p).
         func watchForExpiredURLs(player: AVPlayer, videoId: String?) {
             guard let videoId, !videoId.isEmpty else { return }
-            // Device repro 10-18: the 403 entry lands in the error log AFTER the stall notice, so
-            // the refusal itself is the trigger, with a stalled-for-5-s backstop.
-            errorLogObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemNewErrorLogEntry, object: nil, queue: .main
-            ) { [weak self, weak player] note in
-                guard let self, let player, let item = note.object as? AVPlayerItem,
-                      item === player.currentItem, TrailerStreamRefresh.lastErrorIsForbidden(item) else { return }
-                self.refresh(player: player, videoId: videoId, reason: "403")
-            }
             stallObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemPlaybackStalled, object: nil, queue: .main
             ) { [weak self, weak player] note in
-                guard let self, let player, let item = note.object as? AVPlayerItem,
-                      item === player.currentItem else { return }
-                let stalledAt = player.currentTime()
-                // Past the opening, a stall on the repack is the cut-off (device 10-18: always at the
-                // ~48 s segment); switch at once, before AVPlayer's recovery replays the segment.
-                if stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds {
-                    self.refresh(player: player, videoId: videoId, reason: "stall")
-                    return
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.stallBackstopSeconds) {
-                    [weak self, weak player] in
-                    guard let self, let player, item === player.currentItem,
-                          player.timeControlStatus != .playing,
-                          abs(player.currentTime().seconds - stalledAt.seconds) < 0.5 else { return }
-                    self.refresh(player: player, videoId: videoId, reason: "stall")
+                MainActor.assumeIsolated {
+                    guard let self, let player, let item = note.object as? AVPlayerItem,
+                          item === player.currentItem else { return }
+                    self.handleStall(player: player, item: item, videoId: videoId)
                 }
             }
         }
 
-        private var errorLogObserver: NSObjectProtocol?
+        private func handleStall(player: AVPlayer, item: AVPlayerItem, videoId: String) {
+            let stalledAt = player.currentTime()
+            if stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds,
+               TrailerStreamRefresh.sawForbidden(item) {
+                refresh(player: player, videoId: videoId, progressive: true, reason: "403")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.forbiddenGraceSeconds) {
+                [weak self, weak player] in
+                MainActor.assumeIsolated {
+                    guard let self, let player, item === player.currentItem, player.timeControlStatus != .playing,
+                          stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds,
+                          TrailerStreamRefresh.sawForbidden(item) else { return }
+                    self.refresh(player: player, videoId: videoId, progressive: true, reason: "403")
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.stallBackstopSeconds) {
+                [weak self, weak player] in
+                MainActor.assumeIsolated {
+                    guard let self, let player, item === player.currentItem,
+                          player.timeControlStatus != .playing,
+                          abs(player.currentTime().seconds - stalledAt.seconds) < 0.5 else { return }
+                    let forbidden = TrailerStreamRefresh.sawForbidden(item)
+                    self.refresh(player: player, videoId: videoId, progressive: forbidden,
+                                 reason: forbidden ? "403" : "stall")
+                }
+            }
+        }
 
-        private func refresh(player: AVPlayer, videoId: String, reason: String) {
-            guard !refreshing, refreshes < TrailerStreamRefresh.maxRefreshes else { return }
+        private func refresh(player: AVPlayer, videoId: String, progressive: Bool, reason: String) {
+            guard !tornDown, !refreshing, refreshes < TrailerStreamRefresh.maxRefreshes else { return }
             refreshing = true
             refreshes += 1
             let resumeAt = player.currentTime()
-            TrailerZoomProbe.log("refresh full n=\(refreshes) at=\(String(format: "%.1f", resumeAt.seconds))s reason=\(reason)")
+            TrailerZoomProbe.log("refresh full n=\(refreshes) at=\(String(format: "%.1f", resumeAt.seconds))s reason=\(reason) progressive=\(progressive ? 1 : 0)")
             Task { @MainActor [weak self, weak player] in
-                let url = await TrailerStreamRefresh.fallbackURL(videoId: videoId)
-                guard let self, let player else { return }
+                let url = await TrailerStreamRefresh.fallbackURL(videoId: videoId, preferProgressive: progressive)
+                guard let self, !self.tornDown, let player else { return }
                 self.refreshing = false
                 guard let url, let parsed = URL(string: url) else {
-                    TrailerZoomProbe.log("refresh full n=\(self.refreshes) failed")
+                    // Review r1 P3-2: nothing to switch to; end like a finished trailer rather than
+                    // leave a frozen frame up.
+                    TrailerZoomProbe.log("refresh full n=\(self.refreshes) failed -> end")
+                    self.onEnded?()
                     return
                 }
                 let item = AVPlayerItem(url: parsed)
                 if let s = TrailerTuning.forwardBufferSeconds { item.preferredForwardBufferDuration = s }
                 player.replaceCurrentItem(with: item)
                 if let onEnded = self.onEnded { self.observeEnd(of: player, onEnded: onEnded) }
-                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) { _ in
-                    player.play()
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) {
+                    [weak self, weak player] finished in
+                    MainActor.assumeIsolated {
+                        guard finished, let self, !self.tornDown, let player else { return }
+                        player.play()
+                    }
                 }
             }
         }
@@ -788,6 +824,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         func teardown() {
+            tornDown = true
             health?.stop()
             health = nil
             if let endObserver {
@@ -798,10 +835,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
                 NotificationCenter.default.removeObserver(stallObserver)
                 self.stallObserver = nil
             }
-            if let errorLogObserver {
-                NotificationCenter.default.removeObserver(errorLogObserver)
-                self.errorLogObserver = nil
-            }
+
             letterboxProbe?.stop()
             letterboxProbe = nil
         }
