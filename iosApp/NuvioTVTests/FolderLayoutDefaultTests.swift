@@ -8,17 +8,6 @@ final class FolderLayoutDefaultTests: XCTestCase {
 
     // MARK: - FolderPageLayout
 
-    func testClassicIsAlwaysTheGrid() {
-        for defaultGrid in [false, true] {
-            XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .classic, defaultGrid: defaultGrid), .grid)
-        }
-    }
-
-    func testStageFollowsTheSettingsDefault() {
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, defaultGrid: false), .rows)
-        XCTAssertEqual(FolderPageLayout.resolve(homeLayout: .stage, defaultGrid: true), .grid)
-    }
-
     func testFolderLayoutDefaultKeyAndResolve() {
         XCTAssertEqual(FolderLayoutDefault.defaultsKey, "folder_layout_default")
         XCTAssertEqual(FolderLayoutDefault.defaultValue, .rows)

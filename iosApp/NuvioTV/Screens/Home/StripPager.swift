@@ -436,7 +436,7 @@ struct StripPager<Row: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .environment(\.stripRowFitsHeight, StageStripTuning.fitRows)
                     .modifier(StripRowHeightReader(key: key, enabled: StageStripTuning.fitRows) { key, height in
-                        if fitHeights[key] != height { fitHeights[key] = height }
+                        noteFitHeight(height, for: key)
                     })
             }
             .frame(height: pageForRow, alignment: .top)
@@ -450,8 +450,26 @@ struct StripPager<Row: View>: View {
             }
             .id(key)
         }
-        Color.clear.frame(height: geometry.peek)
+        // Batch F review r1 P2: with fit pages the last row must still be able to rest at the strip's
+        // top (viewport = P + peek), so the spacer after it makes up what it is shorter than P.
+        // Every earlier row then has at least as much content after it.
+        Color.clear.frame(height: geometry.peek + max(0, page - (rowKeys.last.map { fitPageHeight($0, page: page) } ?? page)))
     }
+
+    /// Batch F: a row's measured height. The first measurement lands at once (a page sized before
+    /// it shows), later ones animate (review r1 P3-1: a wide card's trailer growing or shrinking
+    /// moves the next heading with it instead of stepping ahead of the tile).
+    private func noteFitHeight(_ height: CGFloat, for key: String) {
+        guard fitHeights[key] != height else { return }
+        if fitHeights[key] == nil || box.reduceMotion {
+            fitHeights[key] = height
+        } else {
+            withAnimation(.easeOut(duration: Self.fitResizeSeconds)) { fitHeights[key] = height }
+        }
+    }
+
+    /// Batch F: the page resize after a row's first measurement.
+    static var fitResizeSeconds: TimeInterval { 0.3 }
 
     /// Batch F: the fixed page, or (fit mode) the row's measured height plus the focus lift above
     /// and below it, never taller than the fixed page. An unmeasured row keeps the fixed page.
@@ -612,6 +630,10 @@ struct StripPager<Row: View>: View {
         box.rowKeys = keys
         let live = Set(keys)
         box.pruneMounts(keeping: live)
+        // Batch F review r1 P3-5: forget measured heights of rows that left.
+        if fitHeights.keys.contains(where: { !live.contains($0) }) {
+            fitHeights = fitHeights.filter { live.contains($0.key) }
+        }
         // Review r1 (A P3-7): a row removed from the data while it holds focus (its last Continue
         // Watching entry removed from the hold menu, Upcoming emptying) never reports `false`. Left
         // in `owners`, it kept `onStripFocusLost` from ever firing again.

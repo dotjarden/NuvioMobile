@@ -444,7 +444,12 @@ final class SearchViewModel: ObservableObject {
     /// Called as the search text changes; debounces, then queries (or resets on empty).
     func queryChanged(_ text: String) {
         debounce?.cancel()
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // B18 (BUG-155 (d)): one Latin letter matches half of every catalog and costs a full
+        // fan-out, so until a second character arrives the screen behaves exactly as if the field
+        // were empty (idle page, no stale results; review r1 P3-2). A single CJK (or other
+        // non-ASCII) character can be a whole title, so it still searches.
+        let trimmed = Self.isTooShortToSearch(typed) ? "" : typed
         // BUG-155: publish the edge only, never the text (see `queryIsEmpty`).
         if queryIsEmpty != trimmed.isEmpty {
             queryIsEmpty = trimmed.isEmpty
@@ -467,11 +472,6 @@ final class SearchViewModel: ObservableObject {
             emptyState = nil
             return
         }
-
-        // B18 (BUG-155 (d)): one Latin letter matches half of every catalog and costs a full
-        // fan-out; wait for a second character. A single CJK (or other non-ASCII) character can be
-        // a whole title, so it still searches. The rows on screen stay until a real query runs.
-        if Self.isTooShortToSearch(trimmed) { return }
 
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)

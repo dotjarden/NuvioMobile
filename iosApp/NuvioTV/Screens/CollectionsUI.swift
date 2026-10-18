@@ -1389,7 +1389,9 @@ struct FolderDetailView: View {
             case .grid:
                 gridPage
             }
-            if homeLayout == .stage {
+            // Batch F review r1 P1: Classic + Rows needs the band too (the Classic grid keeps its own
+            // Edit Filters button inside `gridPage`).
+            if homeLayout == .stage || layout == .rows {
                 // §2.6: visible and enabled at the top of the page (the strip's top focusable row,
                 // or the grid not scrolled), the existing Edit Filters rule.
                 FolderEditMenuBand(model: model,
@@ -1420,8 +1422,10 @@ struct FolderDetailView: View {
             model.stop()
         }
         // Review r1 (B P3-9): see `FolderDetailViewModel.buildsStripState`.
-        .onChange(of: homeLayout == .stage, initial: true) { _, stage in
-            model.buildsStripState = stage
+        // Batch F review r1 P1: and on Classic whenever the page is Rows (Collections Layout or the
+        // folder's own choice); gated on Stage alone, a Classic Rows page never got its rows.
+        .onChange(of: homeLayout == .stage || layout == .rows, initial: true) { _, builds in
+            model.buildsStripState = builds
         }
         // A layout switch mounts a fresh page: its scroll starts at the top and no strip row has
         // focus yet.

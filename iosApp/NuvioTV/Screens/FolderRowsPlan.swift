@@ -10,7 +10,7 @@ import SharedCore
 // few page facts, so `FolderRowsPlanTests`, `FolderLayoutDefaultTests` and `FolderStageLogoTests` pin
 // it without a view host.
 //
-// Classic Home keeps today's folder grid exactly (`FolderPageLayout.resolve`).
+// Classic Home opens the grid unless Collections Layout (Classic) or the folder's own choice says Rows (`FolderPageLayout.resolve`).
 
 // MARK: - Rows or Grid (§2.1)
 
@@ -19,15 +19,8 @@ nonisolated enum FolderPageLayout: Hashable, Sendable {
     case rows
     case grid
 
-    /// Classic Home keeps today's grid for every folder. Stage opens the Rows page unless the
-    /// Settings default says Grid (`defaultGrid`, Settings › Home Screen › Collections Layout,
-    /// FEAT-71). Review r1 P2-1: the pre-FEAT-71 per-folder Grid choices (`folder_layout_grid`) are
-    /// no longer read: with the band's picker gone nothing could undo one, so a folder set to Grid
-    /// in rc4 would have ignored "Collections Layout: Rows" for good.
-    static func resolve(homeLayout: HomeLayout, defaultGrid: Bool) -> FolderPageLayout {
-        homeLayout == .classic || defaultGrid ? .grid : .rows
-    }
-
+    /// FEAT-71 review r1 P2-1: the pre-FEAT-71 per-folder Grid choices (`folder_layout_grid`) are
+    /// no longer read (nothing could undo one).
     /// Batch F (Steven rc6 17:30Z + FEAT-76 / D17): a folder's own choice wins
     /// (`FolderLayoutOverride`); otherwise the Settings default for the CURRENT Home layout
     /// (`FolderLayoutDefault`: Stage defaults to Rows, Classic to Grid, so Classic opens exactly as
