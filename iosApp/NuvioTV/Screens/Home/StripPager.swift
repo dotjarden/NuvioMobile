@@ -29,20 +29,26 @@ import UIKit
 final class StripPagerHandle {
     typealias Request = @MainActor (_ rowKey: String, _ itemId: String?, _ reason: String) -> Void
     typealias Cancel = @MainActor (_ reason: String) -> Void
+    typealias SyncPage = @MainActor (_ reason: String) -> Void
 
     private var request: Request?
     /// BUG-156 (a): drops the pager's in-flight request (the viewer moved during a pop restore).
     private var cancel: Cancel?
+    /// BUG-156 (B13): pages the strip to the row that holds focus, after a held page (see
+    /// `StageController.uncoverHoldsPage`) turned out not to be the engine's move.
+    private var syncPage: SyncPage?
     /// The installed pager's box (one per pager instance).
     private weak var owner: AnyObject?
 
     /// Whether a pager is mounted and listening.
     var isInstalled: Bool { request != nil }
 
-    func install(owner: AnyObject, cancel: Cancel? = nil, _ request: @escaping Request) {
+    func install(owner: AnyObject, cancel: Cancel? = nil, syncPage: SyncPage? = nil,
+                 _ request: @escaping Request) {
         self.owner = owner
         self.request = request
         self.cancel = cancel
+        self.syncPage = syncPage
     }
 
     /// Clears the closure only if `owner` is still the installed pager.
@@ -51,6 +57,12 @@ final class StripPagerHandle {
         self.owner = nil
         request = nil
         cancel = nil
+        syncPage = nil
+    }
+
+    /// BUG-156 (B13): see `syncPage`. No-op when the strip already shows the focused row.
+    func syncPageToFocus(reason: String) {
+        syncPage?(reason)
     }
 
     /// BUG-156 (a): stands the installed pager's in-flight focus request down (no-op when none).
@@ -314,6 +326,8 @@ struct StripPager<Row: View>: View {
         .onAppear {
             controller.pagerHandle.install(owner: box, cancel: { reason in
                 cancelRowFocusRequest(reason: reason)
+            }, syncPage: { reason in
+                syncPageToFocusedRow(reason: reason)
             }) { key, itemId, reason in
                 requestRowFocus(key, itemId: itemId, reason: reason)
             }
@@ -421,7 +435,16 @@ struct StripPager<Row: View>: View {
         controller.currentRowKey = key
         // A frame-time window per hop (no-op unless `debug.collectionFrameProbe` is on).
         CollectionFocusFrameSampler.shared.arm(rowKey: key, gif: false)
-        page(to: key, index: index, from: previous)
+        // BUG-156 (B13, Steven: "scrolls back towards the top and then immediately jumps back"):
+        // after a pop, the focus engine's own late restoration lands on another row 0.5-1 s in, and
+        // the pop restore re-grabs it. Paging to that row first was the visible detour. While the
+        // restore would re-grab this move, the strip stays on the restored row; if the restore
+        // retires instead (a late viewer press), `syncPageToFocusedRow` catches the strip up.
+        if controller.uncoverHoldsPage(forRowKey: key) {
+            StageStripProbe.shared.log("page held key=\(key) reason=uncover")
+        } else {
+            page(to: key, index: index, from: previous)
+        }
         let top = index == 0
         if atTop != top { atTop = top }
         if ownsProbe, previous != index {
@@ -435,6 +458,15 @@ struct StripPager<Row: View>: View {
     }
 
     // MARK: Paging
+
+    /// BUG-156 (B13): page to the row that holds focus when a held page left the strip elsewhere.
+    private func syncPageToFocusedRow(reason: String) {
+        guard let key = box.focusedRowKey, positionId != key,
+              let index = box.rowKeys.firstIndex(of: key) else { return }
+        let previous = positionId.flatMap { box.rowKeys.firstIndex(of: $0) } ?? index
+        StageStripProbe.shared.log("page sync key=\(key) reason=\(reason)")
+        page(to: key, index: index, from: previous)
+    }
 
     /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
     /// the focus write and the position animation are one transaction. With no page to run (already
@@ -451,6 +483,9 @@ struct StripPager<Row: View>: View {
         let pagerBox = box
         if longGlide { pagerBox.setGlideSpan(span) }
         let signal = controller.signal
+        #if DEBUG
+        controller.swap.debug.setPage(key)
+        #endif
         let generation = signal.pageStarted(duration: seconds)
         onPageStart(index, seconds)
         StageStripProbe.shared.log("page to=\(index) key=\(key) seconds=\(seconds) gen=\(generation)")
@@ -583,6 +618,21 @@ struct StripPager<Row: View>: View {
         box.programmaticTarget = key
         box.programmaticDeadline = ProcessInfo.processInfo.systemUptime + StripPagerTuning.programmaticWindow
         let from = box.rowIndex
+        #if DEBUG
+        // `-debug.uncoverStealMs` stands in for the device focus engine's late restoration, which
+        // moves focus without a page; the page (or the B13 hold) must come from the focus handler.
+        if reason == "debug-steal" {
+            DispatchQueue.main.async {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+            for entry in StripPagerTuning.rungDelays {
+                DispatchQueue.main.asyncAfter(deadline: .now() + entry.delay) {
+                    runRung(entry.rung, key: key, itemId: itemId, reason: reason, generation: generation)
+                }
+            }
+            return
+        }
+        #endif
         if firstRungInPage {
             page(to: key, index: index, from: from) {
                 runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)

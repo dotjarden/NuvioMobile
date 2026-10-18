@@ -224,6 +224,22 @@ final class BatchAHomeReturnUITests: XCTestCase {
         return label(app, "debug_strip")
     }
 
+    /// `label`'s whole line every 0.1 s for `seconds` (one read per tick, so tokens stay paired).
+    private func sampleLines(_ app: XCUIApplication, _ identifier: String, seconds: TimeInterval) -> [String] {
+        var lines: [String] = []
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            lines.append(label(app, identifier))
+            pause(0.1)
+        }
+        return lines
+    }
+
+    /// `values` with consecutive repeats collapsed.
+    private static func changes(_ values: [String]) -> [String] {
+        values.reduce(into: []) { result, value in if result.last != value { result.append(value) } }
+    }
+
     /// `label`'s `key` token every 0.1 s for `seconds` (the restore's moves, which a single read misses).
     private func sample(_ app: XCUIApplication, _ identifier: String, _ key: String, seconds: TimeInterval) -> [String] {
         var values: [String] = []
@@ -250,10 +266,15 @@ final class BatchAHomeReturnUITests: XCTestCase {
         remote.press(.select)
         pause(5.0)
         remote.press(.menu)
-        let rows = sample(app, "debug_strip", "row", seconds: 4.0)
+        let lines = sampleLines(app, "debug_strip", seconds: 4.0)
+        let rows = Self.changes(lines.map { Self.token($0, "row") ?? "?" })
+        // B13: the strip may not page to the stolen row on the way (the visible detour Steven saw).
+        let pages = Self.changes(lines.map { Self.token($0, "page") ?? "?" })
         pause(1.0)
         let after = label(app, "debug_strip")
-        note("steal_after", "\(after) rows=\(rows)")
+        note("steal_after", "\(after) rows=\(rows) pages=\(pages)")
+        XCTAssertEqual(pages, [Self.token(before, "page") ?? "?"],
+                       "the strip paged away during the re-grab (BUG-156 double move): pages=\(pages)")
         shot("steal_after_pop")
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertTrue(rows.contains { $0 != row && $0 != "?" },

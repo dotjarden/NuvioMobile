@@ -239,6 +239,21 @@ final class StageController: ObservableObject {
                               generation: uncoverRestoreGeneration, attempt: 0)
     }
 
+    /// BUG-156 (B13): whether the strip should NOT page for a row change to `key`, because the live
+    /// pop restore will re-grab it (the engine's late restoration, not the viewer's move). Same
+    /// decision the restore makes in `handleUncoverMove`, asked before the page instead of after.
+    func uncoverHoldsPage(forRowKey key: String) -> Bool {
+        guard let target = uncoverRestoreTarget else { return false }
+        let clock = ViewerInputClock.shared
+        if case .regrab = UncoverRestorePolicy.decide(target, key: key,
+                                                      now: ProcessInfo.processInfo.systemUptime,
+                                                      viewerInputAt: clock.lastAt,
+                                                      clockLive: clock.isLive) {
+            return true
+        }
+        return false
+    }
+
     /// A new push: a pop restore still waiting for the pager must not fire under it.
     func cancelUncoverRestore() {
         uncoverRestoreGeneration &+= 1
@@ -332,6 +347,8 @@ final class StageController: ObservableObject {
         let input = ViewerInputClock.shared.lastKindLabel
         cancelUncoverRestore()
         if cancelsPager { pagerHandle.cancelRequest(reason: "uncover-\(why)") }
+        // A page held for this restore must not leave the strip off the focused row.
+        pagerHandle.syncPageToFocus(reason: "uncover-\(why)")
         StageStripProbe.shared.log("restore retired row=\(rowKey) why=\(why) from=\(key ?? "-") input=\(why == "viewer" ? input : "-") source=\(uncoverSource)")
     }
 
@@ -585,6 +602,12 @@ final class StageDebugState: ObservableObject {
     @Published private(set) var fitem = "-"
     @Published private(set) var foc = "-"
     @Published private(set) var atTop = true
+    /// The row key the strip last paged to (BUG-156 B13: a held page leaves it on the restored row).
+    @Published private(set) var page = "-"
+
+    func setPage(_ key: String) {
+        if page != key { page = key }
+    }
 
     func setSwap(line: String, rest: String, disp: String) {
         if swapLine != line { swapLine = line }
