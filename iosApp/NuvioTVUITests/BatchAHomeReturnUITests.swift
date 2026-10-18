@@ -277,8 +277,8 @@ final class BatchAHomeReturnUITests: XCTestCase {
                        "the strip paged away during the re-grab (BUG-156 double move): pages=\(pages)")
         shot("steal_after_pop")
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertTrue(rows.contains { $0 != row && $0 != "?" },
-                      "the debug steal never moved the strip off row \(row ?? "-") (did the restore land?): \(rows)")
+        // B13: the landed restore gates every other row, so the steal may never land at all; either
+        // way the strip ends on its row and card, and never pages away (below).
         XCTAssertEqual(Self.token(after, "row"), row, "the re-grab must bring the strip back to its row: \(after) rows=\(rows)")
         XCTAssertEqual(Self.token(after, "foc"), foc, "and to the card the push left from: \(after)")
     }
@@ -393,10 +393,9 @@ final class BatchAHomeReturnUITests: XCTestCase {
         note("folder_after", "\(after) rows=\(rows)")
         shot("folder_after_pop")
         XCTAssertEqual(app.state, .runningForeground, "one Menu from Detail must pop to the folder, never leave the app")
-        if steal {
-            XCTAssertTrue(rows.contains { $0 != row && $0 != "?" },
-                          "the debug steal never moved the folder strip off row \(row ?? "-") (did the restore land?): \(rows)")
-        }
+        // B13: the landed restore gates every other row, so a steal may never land; either way the
+        // strip must end on its row and card.
+        _ = steal
         XCTAssertEqual(Self.token(after, "row"), row, "back from Detail the folder strip must be on the row it left: \(after) rows=\(rows)")
         XCTAssertEqual(Self.token(after, "foc"), foc, "and on the card it left: \(after)")
     }

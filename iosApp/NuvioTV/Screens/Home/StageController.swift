@@ -259,6 +259,22 @@ final class StageController: ObservableObject {
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
         uncoverRequestedAt = nil
+        pagerHandle.setUncoverGate(nil)
+    }
+
+    /// BUG-156 (B13): from the landing until the re-grab window closes, only the target row can
+    /// take focus, so the engine's late restoration has nowhere else to go and the strip never
+    /// moves. A viewer input retires the restore (`cancelUncoverRestore` opens the gate).
+    private func closeUncoverGate(rowKey: String) {
+        pagerHandle.setUncoverGate(rowKey)
+        StageStripProbe.shared.log("restore gate row=\(rowKey) source=\(uncoverSource)")
+        let generation = uncoverRestoreGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(UncoverRestorePolicy.landedWindow))
+            guard let self, generation == self.uncoverRestoreGeneration else { return }
+            self.pagerHandle.setUncoverGate(nil)
+            StageStripProbe.shared.log("restore gate open row=\(rowKey) why=window source=\(self.uncoverSource)")
+        }
     }
 
     private func attemptUncoverRestore(rowKey: String, itemId: String?, requestedAt: TimeInterval,
@@ -293,6 +309,7 @@ final class StageController: ObservableObject {
                                                                     landedAt: alreadyOn ? now : nil)
             if alreadyOn {
                 StageStripProbe.shared.log("restore landed row=\(rowKey) item=\(card ?? "-") after=\(Int((now - requestedAt) * 1000)) via=engine source=\(self.uncoverSource)")
+                self.closeUncoverGate(rowKey: rowKey)
             }
             self.requestFocus(rowKey: rowKey, itemId: card, reason: self.uncoverReason)
             #if DEBUG
@@ -312,6 +329,7 @@ final class StageController: ObservableObject {
             target.landedAt = now
             uncoverRestoreTarget = target
             StageStripProbe.shared.log("restore landed row=\(target.rowKey) item=\(target.itemId ?? "-") after=\(Int((now - target.requestedAt) * 1000)) via=request source=\(uncoverSource)")
+            closeUncoverGate(rowKey: target.rowKey)
             #if DEBUG
             scheduleDebugSteal(rowKey: target.rowKey, generation: uncoverRestoreGeneration)
             #endif

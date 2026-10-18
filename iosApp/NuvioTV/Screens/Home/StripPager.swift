@@ -30,6 +30,7 @@ final class StripPagerHandle {
     typealias Request = @MainActor (_ rowKey: String, _ itemId: String?, _ reason: String) -> Void
     typealias Cancel = @MainActor (_ reason: String) -> Void
     typealias SyncPage = @MainActor (_ reason: String) -> Void
+    typealias Gate = @MainActor (_ rowKey: String?) -> Void
 
     private var request: Request?
     /// BUG-156 (a): drops the pager's in-flight request (the viewer moved during a pop restore).
@@ -37,6 +38,8 @@ final class StripPagerHandle {
     /// BUG-156 (B13): pages the strip to the row that holds focus, after a held page (see
     /// `StageController.uncoverHoldsPage`) turned out not to be the engine's move.
     private var syncPage: SyncPage?
+    /// BUG-156 (B13): while a landed pop restore's window is open, only this row can take focus.
+    private var gate: Gate?
     /// The installed pager's box (one per pager instance).
     private weak var owner: AnyObject?
 
@@ -44,11 +47,12 @@ final class StripPagerHandle {
     var isInstalled: Bool { request != nil }
 
     func install(owner: AnyObject, cancel: Cancel? = nil, syncPage: SyncPage? = nil,
-                 _ request: @escaping Request) {
+                 gate: Gate? = nil, _ request: @escaping Request) {
         self.owner = owner
         self.request = request
         self.cancel = cancel
         self.syncPage = syncPage
+        self.gate = gate
     }
 
     /// Clears the closure only if `owner` is still the installed pager.
@@ -58,6 +62,13 @@ final class StripPagerHandle {
         request = nil
         cancel = nil
         syncPage = nil
+        gate?(nil)
+        gate = nil
+    }
+
+    /// BUG-156 (B13): see `gate`. nil opens every row again.
+    func setUncoverGate(_ rowKey: String?) {
+        gate?(rowKey)
     }
 
     /// BUG-156 (B13): see `syncPage`. No-op when the strip already shows the focused row.
@@ -231,6 +242,10 @@ struct StripPager<Row: View>: View {
     @State private var focusRequest = PinnedRowFocusRequest.none
     /// Flips only between row 0 and row 1, so the host is not re-rendered per hop.
     @State private var atTop = true
+    /// BUG-156 (B13): the only row that may take focus while a landed pop restore's window is open
+    /// (the device focus engine's late restoration otherwise lands on a neighbour and the scroll
+    /// view reveals it: 294 pt of visible detour on the Living Room ATV, 10-18).
+    @State private var uncoverGateKey: String?
     /// Per-hop bookkeeping, including the mounted window (see `StripPagerBox`).
     @State private var box = StripPagerBox()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -328,6 +343,8 @@ struct StripPager<Row: View>: View {
                 cancelRowFocusRequest(reason: reason)
             }, syncPage: { reason in
                 syncPageToFocusedRow(reason: reason)
+            }, gate: { key in
+                if uncoverGateKey != key { uncoverGateKey = key }
             }) { key, itemId, reason in
                 requestRowFocus(key, itemId: itemId, reason: reason)
             }
@@ -368,6 +385,7 @@ struct StripPager<Row: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: page, alignment: .top)
+            .disabled(uncoverGateKey.map { $0 != key } ?? false)
             // §3.4: render-time only, no state writes. The page at rest is exactly 1, so the
             // focused card's lift renders untouched; the peeking page reads 0.6.
             .visualEffect { content, proxy in
@@ -626,14 +644,10 @@ struct StripPager<Row: View>: View {
         #if DEBUG
         // `-debug.uncoverStealMs` stands in for the device focus engine's late restoration, which
         // moves focus without a page; the page (or the B13 hold) must come from the focus handler.
+        // One attempt, as the engine makes one (later rungs would outlive the B13 gate's window).
         if reason == "debug-steal" {
             DispatchQueue.main.async {
                 runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
-            }
-            for entry in StripPagerTuning.rungDelays {
-                DispatchQueue.main.asyncAfter(deadline: .now() + entry.delay) {
-                    runRung(entry.rung, key: key, itemId: itemId, reason: reason, generation: generation)
-                }
             }
             return
         }
