@@ -287,6 +287,19 @@ class InfusePlaybackTest {
     }
 
     @Test
+    fun nativePlayerSuccessWithEchoPositionAndProgressIsRecorded() {
+        // FEAT-78: Native Player's documented x-success appends `lastPlayedUrl`, `position`
+        // (integer seconds) and `progress` (0-1). The extra `progress` must not upset the claim.
+        val callbacks = handler()
+        val session = callbacks.launch(playerId = "nativeplayer")
+        assertTrue(callbacks.handleUrl(successUrl(session, "2700") + "&progress=0.7500", "nuvio"))
+        val (recordedSession, positionSec) = recorded.single()
+        assertEquals("nativeplayer", recordedSession.playerId)
+        assertEquals(2700.0, positionSec)
+        assertNull(stored)
+    }
+
+    @Test
     fun infuseSuccessWithPositionAndNoLastPlayedUrlIsStillIgnored() {
         val callbacks = handler()
         val session = callbacks.launch()

@@ -11,6 +11,9 @@ private data class IosExternalPlayerSpec(
     val name: String,
     val scheme: String,
     val buildUrl: (ExternalPlayerPlaybackRequest) -> String,
+    /** False when the player can't take this source; `open` then reports `Failed` (and the
+     *  default-player route falls back to the built-in player). */
+    val supportsSource: (ExternalPlayerPlaybackRequest) -> Boolean = { true },
 )
 
 private val iosExternalPlayerSpecs = listOf(
@@ -145,7 +148,71 @@ private val iosExternalPlayerSpecs = listOf(
             }
         },
     ),
+    IosExternalPlayerSpec(
+        id = "nativeplayer",
+        name = "Native Player",
+        scheme = "nativeplayer",
+        buildUrl = ::buildNativePlayerUrl,
+        supportsSource = { request -> nativePlayerSupportsSource(request.sourceUrl) },
+    ),
 )
+
+/**
+ * FEAT-78 (Steven, 2026-10-17): Native Player by Native IT (tvOS 26+). Its deep link (v1.1.3+)
+ * is documented by the developer as Infuse-compatible:
+ * `nativeplayer://x-callback-url/play?url=&filename=&position=&sub=…&x-success=&x-error=`.
+ * Limits from that reference, enforced here: `url` must be http(s) and not DASH (`.mpd`); `sub`
+ * is SRT only, http(s) only, up to 8 (a VTT/ASS/SSA/TTML link is dropped, an extension-less
+ * add-on link is kept: OpenSubtitles v3 serves SRT that way); `position` 0 means "from the
+ * start", so it is only sent when positive. Known gaps, not detectable without fetching: a VTT
+ * link whose format sits only in the query or has no extension, and a DASH manifest with no
+ * `.mpd` in its path, still go through. Request headers are not passed (no parameter for them,
+ * same as Infuse).
+ * `x-success` returns `lastPlayedUrl`, `position` (seconds) and `progress`, parsed by
+ * `ExternalPlaybackReturn` exactly like Infuse's.
+ */
+internal fun buildNativePlayerUrl(request: ExternalPlayerPlaybackRequest): String =
+    buildString {
+        append("nativeplayer://x-callback-url/play?url=")
+        append(request.sourceUrl.urlQueryEncode())
+        append("&filename=")
+        append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
+        if (request.resumePositionMs > 0) {
+            append("&position=")
+            append(request.resumePositionMs / 1000)
+        }
+        request.subtitles.orEmpty()
+            .filter { it.url.isHttpUrl() && !it.url.hasNonSrtSubtitleExtension() }
+            .take(8)
+            .forEach { subtitle ->
+                append("&sub=")
+                append(subtitle.url.urlQueryEncode())
+            }
+        request.callbackSuccessUrl?.let { callbackUrl ->
+            append("&x-success=")
+            append(callbackUrl.urlQueryEncode())
+        }
+        request.callbackErrorUrl?.let { callbackUrl ->
+            append("&x-error=")
+            append(callbackUrl.urlQueryEncode())
+        }
+    }
+
+internal fun nativePlayerSupportsSource(sourceUrl: String): Boolean =
+    sourceUrl.isHttpUrl() && !sourceUrl.urlPath().lowercase().endsWith(".mpd")
+
+private fun String.isHttpUrl(): Boolean {
+    val lower = trim().lowercase()
+    return lower.startsWith("http://") || lower.startsWith("https://")
+}
+
+/** The URL without its query or fragment. */
+private fun String.urlPath(): String = substringBefore('#').substringBefore('?')
+
+private fun String.hasNonSrtSubtitleExtension(): Boolean {
+    val path = urlPath().lowercase()
+    return listOf(".vtt", ".webvtt", ".ass", ".ssa", ".ttml", ".dfxp", ".xml", ".sub").any { path.endsWith(it) }
+}
 
 private fun buildSenPlayerUrl(request: ExternalPlayerPlaybackRequest, includeName: Boolean): String =
     buildString {
@@ -199,6 +266,7 @@ actual object ExternalPlayerPlatform {
         if (!UIApplication.sharedApplication.canOpenURL(spec.schemeProbeUrl())) {
             return ExternalPlayerOpenResult.NoPlayerAvailable
         }
+        if (!spec.supportsSource(request)) return ExternalPlayerOpenResult.Failed
         val urlString = spec.buildUrl(request)
         // Knob-gated, console-only: the string embeds tokenized debrid URLs, so it must never
         // log unconditionally (the Sentry breadcrumb scrub in d5b29180 exists for this reason).
@@ -238,6 +306,7 @@ actual object ExternalPlayerPlatform {
         if (!UIApplication.sharedApplication.canOpenURL(spec.schemeProbeUrl())) {
             return ExternalPlayerIntentResult.Failed
         }
+        if (!spec.supportsSource(request)) return ExternalPlayerIntentResult.Failed
         val url = NSURL.URLWithString(spec.buildUrl(request))
             ?: return ExternalPlayerIntentResult.Failed
         return ExternalPlayerIntentResult.Success(url)

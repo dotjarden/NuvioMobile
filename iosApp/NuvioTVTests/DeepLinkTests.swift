@@ -97,10 +97,10 @@ final class DeepLinkTests: XCTestCase {
 
     // MARK: - FEAT-56 (SenPlayer): return session + probe redaction
 
-    func testInfuseAndSenPlayerReportTheirStopPositionBack() {
-        // Both get `ExternalPlaybackReturn` sessions and x-success / x-error callback URLs from the
-        // picker; every other player gets none (`openExternally`).
-        XCTAssertEqual(StreamPickerView.returnReportingPlayerIds, ["infuse", "senplayer"])
+    func testInfuseSenPlayerAndNativePlayerReportTheirStopPositionBack() {
+        // All three get `ExternalPlaybackReturn` sessions and x-success / x-error callback URLs from
+        // the picker (Native Player since FEAT-78); every other player gets none (`openExternally`).
+        XCTAssertEqual(StreamPickerView.returnReportingPlayerIds, ["infuse", "senplayer", "nativeplayer"])
     }
 
     private func redactedValue(_ name: String, in printed: String) -> Bool {

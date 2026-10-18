@@ -139,7 +139,7 @@ struct StreamPickerView: View {
     /// and, FEAT-56 (GitHub #5), SenPlayer (6.1.1+ returns the current playback time on exit; the
     /// query parameter name is unverified on hardware — the `debug.extPlayerProbe` print in
     /// `ContentView.handleDeepLink` shows what it sends). Every other player gets no callback URLs.
-    static let returnReportingPlayerIds: Set<String> = ["infuse", "senplayer"]
+    static let returnReportingPlayerIds: Set<String> = ["infuse", "senplayer", "nativeplayer"]
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
     init(
@@ -1020,7 +1020,7 @@ struct StreamPickerView: View {
     /// subtitle like the built-in player instead of starting cold.
     ///
     /// Orivio batch item 5: a handoff to a player that reports back (`returnReportingPlayerIds`:
-    /// Infuse, and SenPlayer since FEAT-56) first prepares a shared external-playback session and
+    /// Infuse, SenPlayer since FEAT-56, Native Player since FEAT-78) first prepares a shared external-playback session and
     /// passes the player its x-success / x-error callback URLs on this install's own URL scheme, so
     /// the position it reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
     /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).

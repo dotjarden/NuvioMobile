@@ -31,6 +31,7 @@
 		<string>open-vidhub</string>
 		<string>vidhub</string>
 		<string>senplayer</string>
+		<string>nativeplayer</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

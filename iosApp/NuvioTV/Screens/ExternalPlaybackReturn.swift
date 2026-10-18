@@ -27,14 +27,15 @@ enum AppCallbackScheme {
     }
 }
 
-/// Routes the x-callback return an external player (Infuse, SenPlayer) opens on this install's own scheme to
+/// Routes the x-callback return an external player (Infuse, SenPlayer, Native Player) opens on this install's own scheme to
 /// the shared `ExternalPlaybackReturn`, which matches it to the session `StreamPickerView`
 /// prepared, records the reported position, and clears the session.
 ///
 ///   `<scheme>://external-player/<playerId>/<sessionId>/success?lastPlayedUrl=…&position=<seconds>`
 ///   `<scheme>://external-player/<playerId>/<sessionId>/error?…`
 ///
-/// `playerId` is `infuse` or, since FEAT-56, `senplayer` (`StreamPickerView.returnReportingPlayerIds`).
+/// `playerId` is `infuse`, `senplayer` (FEAT-56) or `nativeplayer` (FEAT-78)
+/// (`StreamPickerView.returnReportingPlayerIds`).
 ///
 /// `ContentView.handleDeepLink` asks `isCallback` before it ever calls `DeepLink.parse`, so a
 /// callback is consumed here and never assigns `deepLink` (an unrecognised URL used to nil it and
