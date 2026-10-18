@@ -874,6 +874,7 @@ final class MPVTVPlayerViewController: UIViewController {
             print("[MPV] vo=gpu-next reason=dv-p5")
         }
         #endif
+        usesGpuNext = videoOutput == "gpu-next"
 
         let options: [(String, String)] = [
             ("vo", videoOutput),
@@ -1278,6 +1279,7 @@ final class MPVTVPlayerViewController: UIViewController {
         aspectWriteback = AspectWriteback(start: startAspect)
         applyAspect(startAspect)
         if displayModeHoldStartedAt != nil {
+            print("[DisplayMode] params poll start")
             awaitVideoParamsThenSwitchDisplayMode()
         } else {
             applyDisplayCriteriaIfEnabled()
@@ -1375,17 +1377,34 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `systemUptime` the hold began; nil when not holding (never started, released, or the user
     /// took over with Play/Pause).
     private var displayModeHoldStartedAt: TimeInterval?
+    /// Set in `setupMpv`. On `gpu-next` a file held paused before its first frame wedged this
+    /// player's mpv queue (Batch E device pass 10-18, DV P5 MP4: no stats, criteria or harvest
+    /// after the release), so there is no hold there: the criteria follow the colour params mid-play
+    /// as before BUG-170.
+    private var usesGpuNext = false
 
     private func beginDisplayModeHoldIfNeeded() {
         guard UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey),
               !UserDefaults.standard.bool(forKey: "debug.displayModeHoldOff"),
+              !usesGpuNext,
               let window = view.window,
               window.avDisplayManager.isDisplayCriteriaMatchingEnabled else { return }
         displayModeHoldStartedAt = ProcessInfo.processInfo.systemUptime
         state.displayModeHolding = true
         setFlag("pause", true)
         print("[DisplayMode] hold begin")
+        // A hard cap on the whole hold, independent of FILE_LOADED and the params poll: a DV P5 MP4
+        // on gpu-next sat paused on the loading screen indefinitely (Batch E device pass 10-18,
+        // Dune WEB-DL "Dolby Vision TV"; no release line, no file-loaded work). Params (3 s) +
+        // switch (6 s) fit inside it.
+        let started = displayModeHoldStartedAt
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.displayModeHoldCapSeconds) { [weak self] in
+            guard let self, let started, self.displayModeHoldStartedAt == started else { return }
+            self.releaseDisplayModeHold(reason: "hold-cap fileLoaded=\(self.fileLoaded ? 1 : 0)")
+        }
     }
+
+    static let displayModeHoldCapSeconds: TimeInterval = 10
 
     /// Bumped by `clearDisplayCriteria` (teardown, a cover): a params poll started before it must
     /// not set the window's criteria again afterwards (review r1 P3).
@@ -1400,8 +1419,14 @@ final class MPVTVPlayerViewController: UIViewController {
         let epoch = epoch ?? displayCriteriaEpoch
         eventQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self, self.mpv != nil else { return }
+            #if DEBUG
+            NSLog("[MPVQueue] params poll tick")
+            #endif
             let width = self.getInt("video-params/w")
             let gamma = (self.getString("video-params/gamma") ?? "").lowercased()
+            #if DEBUG
+            NSLog("[MPVQueue] params poll read w=%d gamma=%@", width, gamma)
+            #endif
             let ready = width > 0 && !gamma.isEmpty
             if !ready && ProcessInfo.processInfo.systemUptime < deadline {
                 self.awaitVideoParamsThenSwitchDisplayMode(deadline: deadline, epoch: epoch)
@@ -1412,7 +1437,10 @@ final class MPVTVPlayerViewController: UIViewController {
             let codecName = (self.getString("video-codec") ?? "").lowercased()
             let primaries = (self.getString("video-params/primaries") ?? "").lowercased()
             DispatchQueue.main.async {
-                guard epoch == self.displayCriteriaEpoch, self.fileLoaded, self.mpv != nil else { return }
+                guard epoch == self.displayCriteriaEpoch, self.fileLoaded, self.mpv != nil else {
+                    print("[DisplayMode] params poll dropped epoch=\(epoch == self.displayCriteriaEpoch ? 1 : 0) fileLoaded=\(self.fileLoaded ? 1 : 0)")
+                    return
+                }
                 guard ready else {
                     // Params missed the hold's window: play now, keep polling for the mode.
                     self.releaseDisplayModeHold(reason: "no-params")
@@ -1998,8 +2026,15 @@ final class MPVTVPlayerViewController: UIViewController {
         #endif
         guard elapsed < 90 else { return }
         let underruns = cacheWaitCount
+        #if DEBUG
+        let queuedAt = ProcessInfo.processInfo.systemUptime
+        NSLog("[MPVQueue] stats queued +%.0fs", elapsed)
+        #endif
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
+            #if DEBUG
+            NSLog("[MPVQueue] stats ran lag=%dms", Int((ProcessInfo.processInfo.systemUptime - queuedAt) * 1000))
+            #endif
             if !self.statsVOLogged {
                 // P3-F9 step 0: which VO this file runs on (`gpu` or `gpu-next`); the two take the
                 // screenshot readback through different code.
@@ -2008,8 +2043,14 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             let cacheSec = self.getDouble("demuxer-cache-duration")
             let cacheSpeed = self.getDouble("cache-speed")
+            #if DEBUG
+            NSLog("[MPVQueue] stats read cache done")
+            #endif
             let voDropped = self.getInt("frame-drop-count")
             let decDropped = self.getInt("decoder-frame-drop-count")
+            #if DEBUG
+            NSLog("[MPVQueue] stats read drops done")
+            #endif
             print(String(
                 format: "[MPVStats] +%.0fs cache=%.1fs net=%.1f MB/s dropped=vo:%d dec:%d underruns=%d",
                 elapsed, cacheSec, cacheSpeed / 1_000_000, voDropped, decDropped, underruns
