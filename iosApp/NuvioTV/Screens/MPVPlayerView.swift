@@ -75,6 +75,9 @@ final class MPVPlaybackState: ObservableObject {
     /// playback has started. Mid-play rebuffers after the start keep the small spinner.
     @Published var startupStage: PlayerLoadingStage = .connecting
     @Published var playbackStarted = false
+    /// BUG-170: the start is held paused for the TV's display-mode switch. The paused first frame
+    /// already counts as "started", so the loading screen also stays up while this is true.
+    @Published var displayModeHolding = false
     /// Info tab "Seek Previews" row: frames · store MB (· process RSS in debug builds); empty until
     /// a harvest lands, or the reason the harvest is off on this device.
     @Published var previewStoreSummary: String = ""
@@ -690,6 +693,7 @@ final class MPVTVPlayerViewController: UIViewController {
             // Re-assert the audio-language preference on the live handle right before the load —
             // the fallback for a `setupMpv()` that ran before the settings store had hydrated.
             applyAudioLanguagePreferences()
+            beginDisplayModeHoldIfNeeded()
             command("loadfile", args: [context.url.absoluteString, "replace"])
             print("[Loading] engine=mpv stage=\(startupStages.stage.logToken) t=+\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - loadingStartUptime))s")
             armStartWatchdog()
@@ -803,6 +807,8 @@ final class MPVTVPlayerViewController: UIViewController {
         apply(transport.cancel())
         saveProgress(flush: true)
         stopTraktScrobble()
+        displayModeHoldStartedAt = nil
+        state.displayModeHolding = false
         clearDisplayCriteria()
     }
 
@@ -1271,7 +1277,11 @@ final class MPVTVPlayerViewController: UIViewController {
         let startAspect = PlayerAspectMode.initial(syncedName: playerSettings?.resizeMode.name)
         aspectWriteback = AspectWriteback(start: startAspect)
         applyAspect(startAspect)
-        applyDisplayCriteriaIfEnabled()
+        if displayModeHoldStartedAt != nil {
+            awaitVideoParamsThenSwitchDisplayMode()
+        } else {
+            applyDisplayCriteriaIfEnabled()
+        }
         fetchSkipSegments()
         #if DEBUG
         applySmokeSkipInterval()
@@ -1311,11 +1321,12 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    @discardableResult
     private func applyDisplayCriteria(
         fps: Double, width: Int, height: Int, codecName: String, primaries: String, gamma: String
-    ) {
-        guard fps > 10, let window = view.window else { return }
-        guard width > 0, height > 0 else { return }
+    ) -> Bool {
+        guard fps > 10, let window = view.window else { return false }
+        guard width > 0, height > 0 else { return false }
 
         let codecType: CMVideoCodecType =
             (codecName.contains("hevc") || codecName.contains("265")) ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
@@ -1340,16 +1351,119 @@ final class MPVTVPlayerViewController: UIViewController {
             extensions: extensions.isEmpty ? nil : extensions as CFDictionary,
             formatDescriptionOut: &formatDescription
         )
-        guard status == noErr, let formatDescription else { return }
+        guard status == noErr, let formatDescription else { return false }
 
         displayCriteriaWindow = window
         window.avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(
             refreshRate: Float(fps),
             formatDescription: formatDescription
         )
+        print("[DisplayMode] criteria fps=\(String(format: "%.3f", fps)) \(width)x\(height) codec=\(codecName) primaries=\(primaries.isEmpty ? "-" : primaries) gamma=\(gamma.isEmpty ? "-" : gamma)")
+        return true
+    }
+
+    // MARK: - BUG-170: hold the start for the display-mode switch
+    //
+    // Steven (rc5, mpv): films started SDR and switched to HDR ~10 s in. The criteria used to be
+    // set once at FILE_LOADED, before the first frame decoded, so `video-params/primaries`/`gamma`
+    // were still empty: tvOS switched to SDR at the frame rate, and HDR only arrived later through
+    // mpv's own colour hint, as a second mode switch mid-playback. Now, with Match Content on, the
+    // file loads PAUSED, the criteria wait for the first decoded frame's real colour params, and
+    // playback starts once tvOS reports the switch finished (or a cap passes). The loading overlay
+    // stays up throughout (the hold counts as buffering). `debug.displayModeHoldOff` = old behaviour.
+
+    /// `systemUptime` the hold began; nil when not holding (never started, released, or the user
+    /// took over with Play/Pause).
+    private var displayModeHoldStartedAt: TimeInterval?
+
+    private func beginDisplayModeHoldIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey),
+              !UserDefaults.standard.bool(forKey: "debug.displayModeHoldOff"),
+              let window = view.window,
+              window.avDisplayManager.isDisplayCriteriaMatchingEnabled else { return }
+        displayModeHoldStartedAt = ProcessInfo.processInfo.systemUptime
+        state.displayModeHolding = true
+        setFlag("pause", true)
+        print("[DisplayMode] hold begin")
+    }
+
+    /// Bumped by `clearDisplayCriteria` (teardown, a cover): a params poll started before it must
+    /// not set the window's criteria again afterwards (review r1 P3).
+    private var displayCriteriaEpoch = 0
+
+    /// After FILE_LOADED: wait (off-main) for the decoder's colour params, then set the criteria
+    /// once with everything known. Holding: up to 3 s, then the start is released and the poll
+    /// keeps going WITHOUT the hold (up to 20 s more), so a slow first frame (a remote 4K remux with
+    /// a resume seek) still gets its mode, just mid-play like before (review r1 P2).
+    private func awaitVideoParamsThenSwitchDisplayMode(deadline: TimeInterval? = nil, epoch: Int? = nil) {
+        let deadline = deadline ?? ProcessInfo.processInfo.systemUptime + 3
+        let epoch = epoch ?? displayCriteriaEpoch
+        eventQueue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.mpv != nil else { return }
+            let width = self.getInt("video-params/w")
+            let gamma = (self.getString("video-params/gamma") ?? "").lowercased()
+            let ready = width > 0 && !gamma.isEmpty
+            if !ready && ProcessInfo.processInfo.systemUptime < deadline {
+                self.awaitVideoParamsThenSwitchDisplayMode(deadline: deadline, epoch: epoch)
+                return
+            }
+            let fps = self.getDouble("container-fps")
+            let height = self.getInt("video-params/h")
+            let codecName = (self.getString("video-codec") ?? "").lowercased()
+            let primaries = (self.getString("video-params/primaries") ?? "").lowercased()
+            DispatchQueue.main.async {
+                guard epoch == self.displayCriteriaEpoch, self.fileLoaded, self.mpv != nil else { return }
+                guard ready else {
+                    // Params missed the hold's window: play now, keep polling for the mode.
+                    self.releaseDisplayModeHold(reason: "no-params")
+                    if !self.lateParamsPollStarted {
+                        self.lateParamsPollStarted = true
+                        self.awaitVideoParamsThenSwitchDisplayMode(
+                            deadline: ProcessInfo.processInfo.systemUptime + 20, epoch: epoch)
+                    }
+                    return
+                }
+                let applied = self.applyDisplayCriteria(fps: fps, width: width, height: height,
+                                                        codecName: codecName, primaries: primaries, gamma: gamma)
+                guard self.displayModeHoldStartedAt != nil else { return }   // user took over, or late poll
+                guard applied else { self.releaseDisplayModeHold(reason: "no-criteria"); return }
+                self.waitForDisplayModeSwitch(appliedAt: ProcessInfo.processInfo.systemUptime, sawSwitch: false)
+            }
+        }
+    }
+
+    /// One late (non-holding) params poll per controller.
+    private var lateParamsPollStarted = false
+
+    /// Main thread. A switch may take a moment to start; give it 0.6 s to show up, then hold until
+    /// it ends. Capped at 6 s so a TV that never reports can't stall playback.
+    private func waitForDisplayModeSwitch(appliedAt: TimeInterval, sawSwitch: Bool) {
+        guard displayModeHoldStartedAt != nil else { return }
+        let elapsed = ProcessInfo.processInfo.systemUptime - appliedAt
+        let switching = displayCriteriaWindow?.avDisplayManager.isDisplayModeSwitchInProgress ?? false
+        if elapsed >= 6 { releaseDisplayModeHold(reason: "cap"); return }
+        if !switching && (sawSwitch || elapsed >= 0.6) {
+            releaseDisplayModeHold(reason: sawSwitch ? "switched" : "no-switch")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.waitForDisplayModeSwitch(appliedAt: appliedAt, sawSwitch: sawSwitch || switching)
+        }
+    }
+
+    private func releaseDisplayModeHold(reason: String) {
+        guard let started = displayModeHoldStartedAt else { return }
+        displayModeHoldStartedAt = nil
+        state.displayModeHolding = false
+        print("[DisplayMode] release reason=\(reason) held=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1000))ms")
+        guard mpv != nil else { return }
+        updateProps { $0.paused = false }
+        eventQueue.async { [weak self] in self?.setFlag("pause", false) }
+        refreshState()
     }
 
     private func clearDisplayCriteria() {
+        displayCriteriaEpoch &+= 1
         displayCriteriaWindow?.avDisplayManager.preferredDisplayCriteria = nil
         displayCriteriaWindow = nil
     }
@@ -1778,7 +1892,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // re-arm the hide so the bar does not stay up until the next press.
         if state.isPaused && !snap.paused && state.controlsVisible { scheduleHide() }
         if state.isPaused != snap.paused { state.isPaused = snap.paused }
-        let buffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        // BUG-170: the display-mode hold reads as buffering, so the loading overlay stays up and
+        // the paused start never shows the pause card.
+        let buffering = snap.cacheWait || (snap.coreIdle && !snap.paused) || displayModeHoldStartedAt != nil
         if state.isBuffering != buffering { state.isBuffering = buffering }
         samplePlayClock(snap)
         if !startupStages.started {
@@ -3262,6 +3378,12 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func togglePause() {
         guard mpv != nil else { return }
+        // BUG-170: Play/Pause during the display-mode hold takes over from it.
+        if displayModeHoldStartedAt != nil {
+            displayModeHoldStartedAt = nil
+            state.displayModeHolding = false
+            print("[DisplayMode] release reason=user")
+        }
         let target = !cachedProps().paused
         // Optimistic UI: reflect the new state immediately; the pause property event confirms it.
         updateProps { $0.paused = target }
@@ -4156,7 +4278,8 @@ struct MPVPlayerScreen: View {
 
             // B24: before the start the loading screen says what is happening; this spinner is
             // the mid-play rebuffer only (and the whole startup again with the screen off).
-            if state.isBuffering && (state.playbackStarted || !loadingOverlayOn) {
+            if state.isBuffering && (state.playbackStarted || !loadingOverlayOn)
+                && !(loadingOverlayOn && state.displayModeHolding) {
                 ProgressView()
                     .scaleEffect(1.6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4173,7 +4296,7 @@ struct MPVPlayerScreen: View {
             // B24: the loading screen until the first PLAYBACK_RESTART after the resume seek. Above
             // the transport bar, which `viewDidAppear` raises at load: the startup frame is the
             // overlay, not the bar over a black picture. Never on a mid-play rebuffer.
-            if loadingOverlayOn && !state.playbackStarted {
+            if loadingOverlayOn && (!state.playbackStarted || state.displayModeHolding) {
                 PlayerLoadingOverlay(context: context, stage: state.startupStage)
                     .transition(.opacity)
             }
