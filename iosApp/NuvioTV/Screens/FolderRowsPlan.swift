@@ -27,6 +27,18 @@ nonisolated enum FolderPageLayout: Hashable, Sendable {
     static func resolve(homeLayout: HomeLayout, defaultGrid: Bool) -> FolderPageLayout {
         homeLayout == .classic || defaultGrid ? .grid : .rows
     }
+
+    /// Batch F (Steven rc6 17:30Z + FEAT-76 / D17): a folder's own choice wins
+    /// (`FolderLayoutOverride`); otherwise the Settings default for the CURRENT Home layout
+    /// (`FolderLayoutDefault`: Stage defaults to Rows, Classic to Grid, so Classic opens exactly as
+    /// before until the viewer picks Rows).
+    static func resolve(override: FolderLayoutOverride, defaultForLayout: FolderLayoutDefault) -> FolderPageLayout {
+        switch override {
+        case .rows: .rows
+        case .grid: .grid
+        case .followDefault: defaultForLayout.isGrid ? .grid : .rows
+        }
+    }
 }
 
 /// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "shouldn't remain visible
@@ -43,6 +55,25 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     static let defaultsKey = "folder_layout_default"
     /// Rows, the Stage folder page as it shipped.
     static let defaultValue: FolderLayoutDefault = .rows
+    /// Batch F (Steven rc6 17:30Z: Rows or Grid on Classic too): Classic's own default, stored
+    /// apart so Classic keeps today's grid until the viewer chooses Rows there.
+    static let classicDefaultsKey = "folder_layout_default_classic"
+    static let classicDefaultValue: FolderLayoutDefault = .grid
+
+    static func defaultsKey(for layout: HomeLayout) -> String {
+        layout == .classic ? classicDefaultsKey : defaultsKey
+    }
+
+    static func defaultValue(for layout: HomeLayout) -> FolderLayoutDefault {
+        layout == .classic ? classicDefaultValue : defaultValue
+    }
+
+    /// The stored default for `layout`; unset or unknown reads as that layout's default.
+    static func current(for layout: HomeLayout, defaults: UserDefaults = .standard) -> FolderLayoutDefault {
+        guard let raw = defaults.string(forKey: defaultsKey(for: layout)) else { return defaultValue(for: layout) }
+        return FolderLayoutDefault(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            ?? defaultValue(for: layout)
+    }
 
     /// nil, blank or unknown resolves to `defaultValue`. The views store the enum itself through
     /// `@AppStorage` (a `String` raw value), so this is for raw readers such as tests and tooling.
@@ -63,6 +94,45 @@ nonisolated enum FolderLayoutDefault: String, CaseIterable, Sendable {
     }
 }
 
+
+/// FEAT-76 (D17; Steven rc5: "Genres as a grid, the rest as rows"): one folder's own layout,
+/// chosen from its tile's hold menu. Device-local (`UserDefaults`, one key per folder), NOT synced
+/// with the collection: upstream's `CollectionFolder` has no such field, so the official phone app
+/// would drop a synced key the next time it saves collections. "Default" removes the key, so a
+/// choice can always be undone (the reason D17 gave against the pre-FEAT-71 store).
+nonisolated enum FolderLayoutOverride: String, CaseIterable, Sendable {
+    case followDefault = "default"
+    case rows
+    case grid
+
+    static let keyPrefix = "folder_layout_override."
+
+    static func key(collectionId: String, folderId: String) -> String {
+        "\(keyPrefix)\(collectionId)|\(folderId)"
+    }
+
+    static func resolve(_ raw: String?) -> FolderLayoutOverride {
+        raw.flatMap { FolderLayoutOverride(rawValue: $0) } ?? .followDefault
+    }
+
+    static func current(collectionId: String, folderId: String, defaults: UserDefaults = .standard) -> FolderLayoutOverride {
+        resolve(defaults.string(forKey: key(collectionId: collectionId, folderId: folderId)))
+    }
+
+    static func set(_ value: FolderLayoutOverride, collectionId: String, folderId: String,
+                    defaults: UserDefaults = .standard) {
+        let key = key(collectionId: collectionId, folderId: folderId)
+        if value == .followDefault { defaults.removeObject(forKey: key) } else { defaults.set(value.rawValue, forKey: key) }
+    }
+
+    var label: String {
+        switch self {
+        case .followDefault: String(localized: "Default")
+        case .rows: String(localized: "Rows")
+        case .grid: String(localized: "Grid")
+        }
+    }
+}
 
 // MARK: - Per-tab snapshot (§2.3)
 

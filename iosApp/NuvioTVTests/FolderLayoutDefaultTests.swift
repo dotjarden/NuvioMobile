@@ -31,4 +31,35 @@ final class FolderLayoutDefaultTests: XCTestCase {
         XCTAssertTrue(FolderLayoutDefault.grid.isGrid)
         XCTAssertFalse(FolderLayoutDefault.rows.isGrid)
     }
+
+    // MARK: - Batch F: per-layout defaults + FEAT-76 per-folder override
+
+    func testOverrideWinsOverTheDefault() {
+        XCTAssertEqual(FolderPageLayout.resolve(override: .rows, defaultForLayout: .grid), .rows)
+        XCTAssertEqual(FolderPageLayout.resolve(override: .grid, defaultForLayout: .rows), .grid)
+        XCTAssertEqual(FolderPageLayout.resolve(override: .followDefault, defaultForLayout: .grid), .grid)
+        XCTAssertEqual(FolderPageLayout.resolve(override: .followDefault, defaultForLayout: .rows), .rows)
+    }
+
+    func testEachLayoutKeepsItsOwnDefault() {
+        let defaults = UserDefaults(suiteName: "FolderLayoutDefaultTests.\(UUID().uuidString)")!
+        XCTAssertEqual(FolderLayoutDefault.current(for: .classic, defaults: defaults), .grid, "Classic opens as before")
+        XCTAssertEqual(FolderLayoutDefault.current(for: .stage, defaults: defaults), .rows)
+        defaults.set("rows", forKey: FolderLayoutDefault.defaultsKey(for: .classic))
+        XCTAssertEqual(FolderLayoutDefault.current(for: .classic, defaults: defaults), .rows)
+        XCTAssertEqual(FolderLayoutDefault.current(for: .stage, defaults: defaults), .rows)
+        defaults.set("bogus", forKey: FolderLayoutDefault.defaultsKey(for: .classic))
+        XCTAssertEqual(FolderLayoutDefault.current(for: .classic, defaults: defaults), .grid)
+    }
+
+    func testOverrideStoreRoundTripsAndDefaultRemovesTheKey() {
+        let defaults = UserDefaults(suiteName: "FolderLayoutDefaultTests.\(UUID().uuidString)")!
+        XCTAssertEqual(FolderLayoutOverride.current(collectionId: "c", folderId: "f", defaults: defaults), .followDefault)
+        FolderLayoutOverride.set(.grid, collectionId: "c", folderId: "f", defaults: defaults)
+        XCTAssertEqual(FolderLayoutOverride.current(collectionId: "c", folderId: "f", defaults: defaults), .grid)
+        XCTAssertEqual(FolderLayoutOverride.current(collectionId: "c", folderId: "g", defaults: defaults), .followDefault,
+                       "keyed per folder")
+        FolderLayoutOverride.set(.followDefault, collectionId: "c", folderId: "f", defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: FolderLayoutOverride.key(collectionId: "c", folderId: "f")))
+    }
 }

@@ -334,6 +334,8 @@ struct CollectionRowView: View {
                         // pops — parity with CatalogRowView's `.id(item.id)` on its cards.
                         .id(folder.id)
                         .zIndex(liftedTileZIndex(folder))
+                        // FEAT-76: Default / Rows / Grid for this folder, held on the tile.
+                        .modifier(FolderLayoutHoldMenu(collectionId: collection.id, folderId: folder.id))
                     }
                 }
                 // Wave 4 item 2: floor the stack's height independent of scroll position — see
@@ -463,6 +465,38 @@ enum CollectionCoverProbe {
         guard !logged.contains(line) else { return }
         logged.insert(line)
         NSLog("%@", line)
+    }
+}
+
+/// FEAT-76 (D17): the folder tile's hold menu. The choice is read live through `@AppStorage` on
+/// the folder's own key, so the checkmark is current every time the menu opens.
+private struct FolderLayoutHoldMenu: ViewModifier {
+    let collectionId: String
+    let folderId: String
+    @AppStorage private var raw: String
+
+    init(collectionId: String, folderId: String) {
+        self.collectionId = collectionId
+        self.folderId = folderId
+        _raw = AppStorage(wrappedValue: "", FolderLayoutOverride.key(collectionId: collectionId, folderId: folderId))
+    }
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            Section(String(localized: "Layout")) {
+                ForEach(FolderLayoutOverride.allCases, id: \.self) { option in
+                    Button {
+                        FolderLayoutOverride.set(option, collectionId: collectionId, folderId: folderId)
+                    } label: {
+                        if FolderLayoutOverride.resolve(raw) == option {
+                            Label(option.label, systemImage: "checkmark")
+                        } else {
+                            Text(option.label)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1289,6 +1323,10 @@ struct FolderDetailView: View {
     /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live as the
     /// enum itself; an unset or unknown stored value reads as the default (Rows).
     @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
+    /// Batch F: Classic's own Collections Layout default (Grid unless changed).
+    @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
+    /// FEAT-76: this folder's own choice from its tile's hold menu ("" = follow the default).
+    @AppStorage private var layoutOverrideRaw: String
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
     /// (true while the strip's focused row is its top focusable row, or before any row had focus).
     @State private var rowsAtTop = true
@@ -1322,6 +1360,9 @@ struct FolderDetailView: View {
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
+        _layoutOverrideRaw = AppStorage(wrappedValue: "",
+                                        FolderLayoutOverride.key(collectionId: route.collectionId,
+                                                                 folderId: route.folderId))
     }
 
     private var columns: [GridItem] {
@@ -1332,9 +1373,11 @@ struct FolderDetailView: View {
 
     private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
 
-    /// P2 §2.1: Classic → the grid; Stage → Rows unless the Settings default (FEAT-71) says Grid.
+    /// The folder's own choice (FEAT-76) wins; otherwise the Collections Layout default for the
+    /// current Home layout (Stage: Rows, Classic: Grid, each changeable in Settings).
     private var pageLayout: FolderPageLayout {
-        FolderPageLayout.resolve(homeLayout: homeLayout, defaultGrid: folderLayoutDefault.isGrid)
+        FolderPageLayout.resolve(override: FolderLayoutOverride.resolve(layoutOverrideRaw),
+                                 defaultForLayout: homeLayout == .classic ? classicFolderLayoutDefault : folderLayoutDefault)
     }
 
     var body: some View {

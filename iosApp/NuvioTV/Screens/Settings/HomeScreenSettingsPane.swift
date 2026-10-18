@@ -38,6 +38,8 @@ struct HomeScreenSettingsPane: View {
     /// the enum itself (`String` raw value), so the picker binds to it directly; an unset or unknown
     /// value reads as the default (Rows).
     @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
+    /// Batch F: Classic's own Collections Layout default (Grid unless changed).
+    @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
 
     /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
     /// Default ON. Local-only, not synced; the wash layer reads the same key
@@ -351,17 +353,15 @@ struct HomeScreenSettingsPane: View {
                 label: { $0.label }
             )
 
-            // FEAT-71: how a collection folder opens on the Stage. Classic folders are always the
-            // grid, so the row shows only in Stage (its stored value is kept either way).
-            if isStage {
-                SettingsPickerRow(
-                    title: String(localized: "Collections Layout"),
-                    selection: $folderLayoutDefault,
-                    options: FolderLayoutDefault.allCases,
-                    descriptionID: .homeCollectionsLayout,
-                    label: { $0.label }
-                )
-            }
+            // FEAT-71 + Batch F (Steven rc6): how a collection folder opens, kept per Home layout
+            // (Stage defaults to Rows, Classic to Grid). A folder's own hold-menu choice wins.
+            SettingsPickerRow(
+                title: String(localized: "Collections Layout"),
+                selection: isStage ? $folderLayoutDefault : $classicFolderLayoutDefault,
+                options: FolderLayoutDefault.allCases,
+                descriptionID: .homeCollectionsLayout,
+                label: { $0.label }
+            )
 
             // The wash is part of the stage (it fills the background behind the focused title), so
             // there is nothing for the switch to control in Classic. Its stored value is kept.
