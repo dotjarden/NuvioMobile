@@ -182,6 +182,34 @@ struct HomeHeroDriver: View {
     }
 }
 
+/// BUG-190 (Steven rc9: the Classic rows page inside a collection showed no title poster and no
+/// synopsis, only the collection art): the Classic folder rows page's `HomeHeroDriver`. Hands the
+/// focus model's committed card to the resolver, keyed on its identity and its payload as Home is
+/// (`HomeHeroTarget.payloadSignature`). A nil commit (focus up on the Edit band) is not handed on,
+/// so the panel keeps the last title instead of emptying. Invisible; a leaf, so a commit never
+/// re-renders the page or its rows.
+struct FolderHeroDriver: View {
+    @ObservedObject var focusModel: HomeHeroFocusModel
+    let resolver: HeroArtResolver
+
+    var body: some View {
+        let focused = focusModel.focusedItem
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: focused.map { "\($0.type):\($0.id)" }) { _, _ in present() }
+            .onChange(of: HomeHeroTarget.payloadSignature(focused)) { _, _ in present() }
+    }
+
+    private func present() {
+        guard let item = focusModel.focusedItem else { return }
+        // The panel's backdrop is the Nuvio form (`HomeView.heroSharpenForm`'s panel case).
+        resolver.setSharpenForm(.nuvio)
+        resolver.present(item, isFolder: false)
+    }
+}
+
 /// The full-bleed hero backdrop + scrim (Classic only), formerly inline in `HomeView.body`.
 /// Observes the resolver (what is painted) and the focus model (whether a row poster's committed
 /// focus claims the trailer).

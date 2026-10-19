@@ -6740,6 +6740,25 @@ struct HeroTextLayer: View {
     @StateObject private var textSwap = HeroTextSwapModel(timing: .classic, identity: { $0.identity })
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// BUG-190: an explicit internal init, the one entry point Home (`HomeHeroTextSlot`) and the
+    /// Classic folder rows page (`FolderDetailView.classicRowsPage`, through the same slot) share. `folderRoutes` defaults to none: a
+    /// folder page's cards are titles, never folders.
+    init(presentation: HeroPresentation,
+         heroFocused: FocusState<Bool>.Binding,
+         compact: Bool,
+         showsCTA: Bool,
+         forceNuvioLayout: Bool,
+         compression: CGFloat,
+         folderRoutes: [String: FolderRoute] = [:]) {
+        self.presentation = presentation
+        self.heroFocused = heroFocused
+        self.compact = compact
+        self.showsCTA = showsCTA
+        self.forceNuvioLayout = forceNuvioLayout
+        self.compression = compression
+        self.folderRoutes = folderRoutes
+    }
+
     var body: some View {
         let text = textSwap.shown ?? presentation
         HomeHeroForeground(textPresentation: text,

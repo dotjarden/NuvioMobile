@@ -1353,6 +1353,16 @@ struct FolderDetailView: View {
     @State private var gridRevealed = false
     /// C (probe only): which tab chip holds focus.
     @FocusState private var focusedChip: Int?
+    /// BUG-190 (Steven rc9: no title poster and no synopsis on the Classic rows page): the focused
+    /// card drives a Classic Home "Show Hero OFF" panel under the folder's logo (D5). Home's own
+    /// owner (`HomeHeroModels`: the focus model, the art resolver, an idle trailer model) never
+    /// publishes, so a focus commit re-renders only the leaves (`FolderHeroDriver`,
+    /// `HomeHeroBackdropLayer`, `HomeHeroTextSlot`), never this page or its rows (perf review
+    /// 2026-10-17, #1).
+    @StateObject private var hero = HomeHeroModels()
+    /// BUG-190: `HeroTextLayer` takes a CTA focus binding; the panel has no CTA (`showsCTA: false`),
+    /// so nothing is ever bound to it.
+    @FocusState private var ctaUnused: Bool
     #if DEBUG
     /// C (probe only): `FolderHeaderGeometry.phase`, from an Int transform (5 buckets).
     @State private var headerPhase = 0
@@ -1398,9 +1408,9 @@ struct FolderDetailView: View {
         ZStack(alignment: .top) {
             switch layout {
             case .rows where homeLayout == .classic:
-                // FEAT-79 (Steven rc7): Classic + Rows keeps Classic's look, the grid page's chrome
-                // (logo header, plain scroll) with one Classic row per source in place of the grid.
-                gridPage
+                // FEAT-79 (Steven rc7): Classic + Rows keeps Classic's look, one Classic row per
+                // source. BUG-190: under a compact logo and the focused title's hero panel.
+                classicRowsPage
             case .rows:
                 FolderRowsPage(model: model, rowsAtTop: $rowsAtTop, requestsInitialFocus: !layoutSwitched)
             case .grid:
@@ -1433,12 +1443,18 @@ struct FolderDetailView: View {
         .onAppear {
             tabBarVisibility.pushImmersive()
             model.start()
+            // BUG-190: back from a push, the hero panel's focus model thaws; the restored card's
+            // report is the answer (BUG-138's rule, as on Home).
+            hero.focus.setCovered(false, restoresFocus: true)
             restoreClassicRowsFocus()
         }
         .onDisappear {
             // FEAT-79 review r1 (P2-2): arm the restore only for a push from a card (focus was on,
             // or had just left, a row card), not a tab switch or the Edit cover.
             if classicRows, editing == nil { classicFocusMemory.armIfLeavingFromCard() }
+            // BUG-190: a push froze the panel on the title it left from (a nil report under the
+            // cover is focus leaving for the pushed page, not the viewer leaving the row).
+            hero.focus.setCovered(true, restoresFocus: true)
             tabBarVisibility.popImmersive()
             model.stop()
         }
@@ -1554,6 +1570,85 @@ struct FolderDetailView: View {
         }
     }
 
+    // MARK: - Classic rows page (BUG-190)
+
+    /// BUG-190 (D5; Steven rc9: "no poster and no synopsis" on FEAT-79's Classic rows page): Classic
+    /// Home's Show Hero OFF panel for the focused card, under the folder's compact logo, over the
+    /// rows. The focused TITLE's backdrop paints behind it, Nuvio form, as on Home; the folder's
+    /// own backdrop stays unpainted (BUG-38 round three was about that one). The panel is the
+    /// pinned 352 pt frame at compression 0, so it draws what Home's panel draws at Medium (up to
+    /// 4 synopsis lines, FEAT-61). No rising header and no compact ghost: the logo and the panel
+    /// are fixed, and only the rows scroll. The Edit band (`FolderEditMenuBand`) still overlays
+    /// the top of the page from `body`.
+    private var classicRowsPage: some View {
+        ZStack(alignment: .top) {
+            Theme.Palette.background.ignoresSafeArea()
+
+            HomeHeroBackdropLayer(resolver: hero.resolver,
+                                  focusModel: hero.focus,
+                                  trailerModel: hero.trailer,
+                                  isStage: false,
+                                  nuvioStyle: true,
+                                  gate: Self.noTrailerGate,
+                                  opacity: 1)
+
+            VStack(spacing: 0) {
+                compactLogoSlot
+                    .padding(.top, FolderHeaderGeometry.compactTop)
+
+                HomeHeroTextSlot(resolver: hero.resolver, heroFocused: $ctaUnused, compact: true,
+                                 showsCTA: false, forceNuvioLayout: true, compression: 0,
+                                 folderRoutes: [:])
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: Theme.Size.heroCarouselHeightPinned)
+
+                ScrollView(.vertical) {
+                    classicRowsContent
+                        // Room for a focused first-row card's lift, as the grid page leaves it.
+                        .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            // C: the bottom edge fades into the background, as on the grid page.
+            LinearGradient(stops: EdgeFadeCurve.stops(rising: true, color: Theme.Palette.background),
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: FolderHeaderGeometry.bottomFade)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+
+            #if DEBUG
+            FolderClassicHeroDebugLabel(focusModel: hero.focus, resolver: hero.resolver)
+            #endif
+        }
+        .background { FolderHeroDriver(focusModel: hero.focus, resolver: hero.resolver) }
+    }
+
+    /// BUG-190: the panel never plays a trailer (no autoplay, no Trailer Location: Hero claim).
+    private static let noTrailerGate = HomeHeroTrailerGate(autoplayEnabled: false, sharedGatesOpen: false,
+                                                           heroFocused: false, posterFocusOnly: false,
+                                                           carouselActive: false, inlineTrailersEnabled: false,
+                                                           focusTrailerMode: false)
+
+    /// BUG-190: the folder's logo (or name) at the compact header size (`compactLogoSlot`, 64 pt),
+    /// centred, where the grid page's header comes to rest once it has risen.
+    private var compactLogoSlot: some View {
+        TitleLogoHeader(
+            title: model.folderTitle,
+            logoUrl: model.titleLogoUrl,
+            alignment: .top,
+            textFont: Theme.Font.sectionTitle,
+            slotHeight: FolderHeaderGeometry.compactLogoSlot,
+            decodeSize: .points(width: 600, height: FolderHeaderGeometry.compactLogoSlot)
+        )
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .frame(maxWidth: .infinity)
+        .frame(height: FolderHeaderGeometry.compactLogoSlot, alignment: .top)
+        .accessibilityIdentifier("folder_classic_logo")
+    }
+
     // MARK: - Grid
 
     @ViewBuilder
@@ -1598,8 +1693,10 @@ struct FolderDetailView: View {
                     case .loaded:
                         if let section = row.section {
                             CatalogRowView(section: section, previewLimit: FolderRowsPlan.previewLimit,
-                                           onItemFocusChange: { [memory = classicFocusMemory] item in
+                                           onItemFocusChange: { [memory = classicFocusMemory, focus = hero.focus] item in
                                                memory.note(rowKey: section.key, itemId: item?.id)
+                                               // BUG-190: the focused card drives the hero panel.
+                                               focus.reportFocus(item, from: section.key)
                                            })
                         }
                     case .loading:
@@ -1935,6 +2032,23 @@ struct FolderDetailView: View {
         }
     }
 }
+
+#if DEBUG
+/// BUG-190: `folder_classic_hero fitem=<focused card id|-> pitem=<presented identity|-> pbd=<0|1>`,
+/// the Classic rows page's hero panel state (invisible, harness-readable). A leaf.
+struct FolderClassicHeroDebugLabel: View {
+    @ObservedObject var focusModel: HomeHeroFocusModel
+    @ObservedObject var resolver: HeroArtResolver
+
+    var body: some View {
+        Text(verbatim: "folder_classic_hero fitem=\(focusModel.focusedItem?.id ?? "-") pitem=\(resolver.presented?.identity ?? "-") pbd=\(resolver.presented?.backdrop != nil ? 1 : 0)")
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("folder_classic_hero")
+    }
+}
+#endif
 
 /// Home Stage & Strip (P2 §2.6): the folder page's Edit menu in Stage, in place of the Edit Filters
 /// button: Edit Filters, one entry per filter-editable source on the Rows page, the selected tab's on
