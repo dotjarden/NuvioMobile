@@ -411,6 +411,13 @@ struct StripPager<Row: View>: View {
         .onChange(of: rowKeys, initial: true) { _, keys in
             rowKeysChanged(keys)
         }
+        #if DEBUG
+        // BUG-176 diagnostic: the scroll view's own position writes (an engine scroll shows here
+        // with no `page to=` before it).
+        .onChange(of: positionId) { old, new in
+            StageStripProbe.shared.log("position \(old ?? "-") -> \(new ?? "-")")
+        }
+        #endif
         .onChange(of: reduceMotion, initial: true) { _, motion in
             box.reduceMotion = motion
         }

@@ -147,21 +147,4 @@ final class UncoverRestorePolicyTests: XCTestCase {
         XCTAssertNil(FolderPushOrigin.resolve(current: nil, lost: lost, sinceLoss: FolderPushOrigin.lossGrace + 0.1,
                                               inputBeforeLoss: nil, clockLive: false, railArmedSinceLoss: false))
     }
-
-    // BUG-176 (Steven rc7): before the request reaches the pager, the engine's move to another row
-    // is held; the pending row itself, a viewer press, and an old pop are not.
-    func testHoldsWhilePending() {
-        XCTAssertTrue(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: "a", key: "b", requestedAt: 10,
-                                                             now: 10.4, viewerInputAt: nil))
-        XCTAssertFalse(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: "a", key: "a", requestedAt: 10,
-                                                              now: 10.4, viewerInputAt: nil))
-        XCTAssertFalse(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: "a", key: "b", requestedAt: 10,
-                                                              now: 10.4, viewerInputAt: 10.2))
-        XCTAssertTrue(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: "a", key: "b", requestedAt: 10,
-                                                             now: 10.4, viewerInputAt: 9.9))
-        XCTAssertFalse(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: "a", key: "b", requestedAt: 10,
-                                                              now: 11.3, viewerInputAt: nil))
-        XCTAssertFalse(UncoverRestorePolicy.holdsWhilePending(pendingRowKey: nil, key: "b", requestedAt: 10,
-                                                              now: 10.4, viewerInputAt: nil))
-    }
 }
