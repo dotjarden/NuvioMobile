@@ -291,6 +291,15 @@ enum DetailScrollProbe {
     nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: "debug.detailScrollProbe") }
 }
 
+/// FEAT-82 (Steven rc9, D4): the Detail action buttons (Play/Resume, Start Over, Trailer and the
+/// compact glass buttons) go square when Poster › Corners is Square (radius 0); Rounded and Round
+/// keep capsules. Chips stay as they are.
+enum DetailActionShape {
+    nonisolated static func isSquare(cornerRadius: CGFloat) -> Bool {
+        cornerRadius == 0
+    }
+}
+
 /// Batch M Wave 0 (BUG-153 regressed in rc9): launch-latched A/B knobs, one per rc7 → rc9 suspect,
 /// set per run with launch arguments (`-debug.detailImmediateTrailerMount YES`, …) and compared
 /// under `debug.detailScrollProbe`.
@@ -405,6 +414,9 @@ struct DetailView: View {
     /// instance in that case — `pushImmersive`/`popImmersive` still balance correctly, they just
     /// don't affect anything since there's no tab bar to hide.
     @Environment(\.tabBarVisibility) private var tabBarVisibility
+    /// FEAT-82 (Steven rc9): Poster › Corners = Square squares the action buttons too
+    /// (`DetailActionShape`); Rounded and Round keep the capsules.
+    @Environment(\.posterStyle) private var posterStyle
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
@@ -2046,13 +2058,22 @@ struct DetailView: View {
     /// swap, `.glassProminent` → `.borderedProminent`. `prominentAccentLabel()` inside the label
     /// (already proven for `.borderedProminent` sites, BUG-4) covers both states either way, so the
     /// swap is purely the button chrome.
+    /// FEAT-82: applied in both branches of both action styles below, so Start Over (a compact
+    /// button) and the BUG-41 leg-4 flat styles follow Corners too.
     @ViewBuilder
     private func prominentActionButtonStyle<Content: View>(_ content: Content) -> some View {
         if DetailScrollAB.buttonGlassDisabled {
             content.buttonStyle(.borderedProminent)
+                .buttonBorderShape(actionButtonBorderShape)
         } else {
             content.buttonStyle(.glassProminent)
+                .buttonBorderShape(actionButtonBorderShape)
         }
+    }
+
+    /// FEAT-82: square with Corners = Square, the capsule otherwise.
+    private var actionButtonBorderShape: ButtonBorderShape {
+        DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius) ? .roundedRectangle(radius: 0) : .capsule
     }
 
     /// BUG-41 leg 4 companion to `prominentActionButtonStyle` — `.glass` → `.bordered` for the
@@ -2061,8 +2082,10 @@ struct DetailView: View {
     private func compactActionButtonStyle<Content: View>(_ content: Content) -> some View {
         if DetailScrollAB.buttonGlassDisabled {
             content.buttonStyle(.bordered)
+                .buttonBorderShape(actionButtonBorderShape)
         } else {
             content.buttonStyle(.glass)
+                .buttonBorderShape(actionButtonBorderShape)
         }
     }
 
