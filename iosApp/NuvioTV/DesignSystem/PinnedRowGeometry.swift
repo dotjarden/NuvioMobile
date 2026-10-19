@@ -457,36 +457,13 @@ enum PinnedRowGeometry {
         }
     }
 
-    // MARK: - FEAT-61 (Steven rc3): Synopsis Length
+    // MARK: - FEAT-61 (Steven rc3): Long synopsis
 
-    /// FEAT-61 (Steven rc3, 2026-10-06): Settings › Home Screen › "Synopsis Length". Steven prefers
-    /// Classic Home but wants the Stage's longer description there. Standard is today's hero, byte
-    /// for byte; Long lets the Classic hero's description take more lines out of room the hero
-    /// ALREADY owns. Device-local `@AppStorage` (not synced), like `home_layout`.
-    nonisolated enum SynopsisLength: String, CaseIterable, Sendable {
-        case standard
-        case long
-
-        static let defaultsKey = "home_synopsis_length"
-        static let defaultValue: SynopsisLength = .standard
-
-        /// nil, blank or unknown resolves to `defaultValue`.
-        static func resolve(_ raw: String?) -> SynopsisLength {
-            guard let raw else { return defaultValue }
-            return SynopsisLength(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-                ?? defaultValue
-        }
-
-        var label: String {
-            switch self {
-            case .standard: return String(localized: "Standard")
-            case .long: return String(localized: "Long")
-            }
-        }
-    }
-
-    /// FEAT-61 (Steven rc3): how many synopsis lines the Classic hero shows with Synopsis Length =
-    /// Long, and where the extra height comes from.
+    /// FEAT-61 (Steven rc3): how many synopsis lines the Classic hero shows, and where the extra
+    /// height comes from. Batch M D8 (Christian, 2026-10-19: "4 where it fits"): the Settings ›
+    /// Home Screen › Synopsis Length picker is gone and this is how Classic always draws; it asks
+    /// for `maxLines` (4) and falls back to fewer when the poster size and font leave no room
+    /// (Large may show fewer than 4).
     ///
     /// ## The rule: the rows never pay
     ///

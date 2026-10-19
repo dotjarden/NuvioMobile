@@ -6283,21 +6283,19 @@ struct HomeHeroForeground: View {
     /// that needs it (Large today; Small/Medium compute 0 and are bit-identical to Wave 9).
     var compression: CGFloat = 0
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
-    /// FEAT-61 (Steven rc3): Settings › Home Screen › Synopsis Length. Standard draws exactly what
-    /// shipped; Long is `longSynopsis` below.
-    @AppStorage(PinnedRowGeometry.SynopsisLength.defaultsKey)
-    private var synopsisLengthRaw = PinnedRowGeometry.SynopsisLength.defaultValue.rawValue
 
-    /// FEAT-61 (Steven rc3): with Synopsis Length = Long, the extra synopsis height and the logo
-    /// height it takes (`PinnedRowGeometry.LongSynopsis`). nil with Standard, for collection folder
-    /// heroes (nothing to lengthen) and for the non-pinned Nuvio-style hero (already 3–5 lines), so
-    /// every one of those draws exactly what shipped. The hero's FRAME, and the rows' plan, never
-    /// change: Long only moves height between the logo, the frame's unused slack and the synopsis.
+    /// FEAT-61 (Steven rc3; Batch M D8, 2026-10-19: the Synopsis Length setting is gone and Long is
+    /// how Classic always draws, "4 where it fits"): the extra synopsis height and the logo height
+    /// it takes (`PinnedRowGeometry.LongSynopsis`, which asks for 4 lines and falls back to fewer
+    /// when the poster size and font leave no room, e.g. Large). nil for collection folder heroes
+    /// in the carousel (nothing to lengthen), for the non-pinned Nuvio-style hero (already 3–5
+    /// lines) and whenever no extra line fits, so those draw exactly what shipped. The hero's
+    /// FRAME, and the rows' plan, never change (BUG-87/89: the rows never pay): this only moves
+    /// height between the logo, the frame's unused slack and the synopsis.
     private var longSynopsis: PinnedRowGeometry.LongSynopsis.Grant? {
         // Review r1 (P3): folders are excluded only in the carousel (its merged folder box); the
         // Show Hero OFF panel draws a folder's description in the same column, so it follows Long.
-        guard PinnedRowGeometry.SynopsisLength.resolve(synopsisLengthRaw) == .long,
-              !(isCollectionHero(item) && showsCTA) else { return nil }
+        guard !(isCollectionHero(item) && showsCTA) else { return nil }
         let grant: PinnedRowGeometry.LongSynopsis.Grant
         if compact && usesNuvioLayout {
             grant = PinnedRowGeometry.LongSynopsis.pinned(compression: compression,
@@ -6368,7 +6366,7 @@ struct HomeHeroForeground: View {
     /// three-slot layout would have used, so the panel's total height never changes — see that
     /// layout's comment).
     private var logoSlotHeight: CGFloat {
-        // FEAT-61 (Steven rc3): Long's logo give, on top of the compression's (nil = Standard).
+        // FEAT-61 (Steven rc3): Long's logo give, on top of the compression's (nil = no extra line fits).
         if compact, let long = longSynopsis {
             return Theme.Size.heroLogoSlotHeightPinned - logoSlotGive - long.logoGive
         }
@@ -6501,7 +6499,7 @@ struct HomeHeroForeground: View {
         }
         let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
                             : Theme.Size.heroSynopsisSlotHeightPinnedPanel
-        // FEAT-61 (Steven rc3): Long's growth (nil = Standard, the shipped expression).
+        // FEAT-61 (Steven rc3): Long's growth (nil = no extra line fits, the shipped expression).
         if let long = longSynopsis {
             return slot - synopsisSlotGive + long.synopsisGrowth
         }
@@ -6644,8 +6642,8 @@ struct HomeHeroForeground: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// FEAT-61 (Steven rc3): the in-scroll Classic hero's three synopsis/logo numbers. Standard
-    /// (`longSynopsis == nil`) returns the shipped constants untouched; Long grows the synopsis
+    /// FEAT-61 (Steven rc3): the in-scroll Classic hero's three synopsis/logo numbers. With no
+    /// extra line (`longSynopsis == nil`) it returns the shipped constants untouched; Long grows the synopsis
     /// into the 452 pt frame's 46 pt of unused slack first, then the logo down to 110.
     private var classicLogoSlotHeight: CGFloat {
         guard let long = longSynopsis else { return Theme.Size.heroLogoSlotHeight }
