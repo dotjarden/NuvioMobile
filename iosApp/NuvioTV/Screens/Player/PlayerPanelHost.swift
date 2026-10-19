@@ -252,7 +252,12 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
             // BUG-186 review r1: with a child presented over the panel (a Menu/picker), `dismiss`
             // closes only that child and the panel stays up; reporting the close here would leave
             // the owner with a stale `panelHost`. Report only once the panel itself is gone.
-            guard self.presentingViewController == nil else { return }
+            guard self.presentingViewController == nil else {
+                // Review r2: a close aimed at the panel stopped at the child it dismissed; finish
+                // the panel itself once, so a programmatic close (a source or episode pick) lands.
+                if self.presentedViewController == nil { self.performDismiss(animated: false) }
+                return
+            }
             // A watchdog retry can race a late original completion: report the close once.
             guard !self.reportedClose else { return }
             self.reportedClose = true

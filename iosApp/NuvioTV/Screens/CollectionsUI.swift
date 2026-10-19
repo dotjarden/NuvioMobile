@@ -2026,7 +2026,6 @@ struct FolderDetailView: View {
     }
 }
 
-#if DEBUG
 /// BUG-190 review r1: owns the Classic rows page's hero models (`HomeHeroModels`: the focus
 /// model, the art resolver, an idle trailer model), so only that page builds them; the Grid and
 /// Stage Rows folder pages never do. The covered/uncovered calls moved here with them: back from a
@@ -2049,6 +2048,7 @@ private struct FolderClassicHeroHost<Content: View>: View {
     }
 }
 
+#if DEBUG
 /// BUG-190: `folder_classic_hero fitem=<focused card id|-> pitem=<presented identity|-> pbd=<0|1>`,
 /// the Classic rows page's hero panel state (invisible, harness-readable). A leaf.
 struct FolderClassicHeroDebugLabel: View {
