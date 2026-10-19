@@ -92,6 +92,16 @@ final class StreamPickerExitPolicyTests: XCTestCase {
         XCTAssertEqual(PlayerLoadingPulseClock.start(for: "tt2", now: t1), t1)
     }
 
+    /// Review r1 (P3): two overlays with different keys drawing at once keep their own clocks.
+    func testTwoKeysOnScreenDoNotResetEachOther() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        _ = PlayerLoadingPulseClock.start(for: "tt1", now: t0)
+        _ = PlayerLoadingPulseClock.start(for: "tt2", now: t0.addingTimeInterval(0.1))
+        XCTAssertEqual(PlayerLoadingPulseClock.start(for: "tt1", now: t0.addingTimeInterval(0.2)), t0)
+        XCTAssertEqual(PlayerLoadingPulseClock.start(for: "tt2", now: t0.addingTimeInterval(0.3)),
+                       t0.addingTimeInterval(0.1))
+    }
+
     func testALongPauseRestartsTheClock() {
         let t0 = Date(timeIntervalSince1970: 1_000)
         _ = PlayerLoadingPulseClock.start(for: "tt1", now: t0)

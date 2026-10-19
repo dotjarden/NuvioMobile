@@ -82,6 +82,8 @@ struct StreamPickerView: View {
     /// BUG-174: the player closed onto something the viewer needs to see on the list (an auto walk
     /// that ended with nothing during a failover). Read once, by `handlePlayerDismissed`.
     @State private var keepListAfterPlayer = false
+    /// Review r1 (P2): an external hand-off is waiting for the add-on subtitles (D5).
+    @State private var externalHandOffInFlight = false
     /// Up Next failover: the picker for the episode whose source failed, presented once the player
     /// has closed (`pendingFailoverTarget` waits for that).
     @State private var failoverTarget: FailoverTarget?
@@ -1077,12 +1079,17 @@ struct StreamPickerView: View {
     /// started from.
     private func openExternally(urlString: String, stream: StreamItem, listed: StreamItem, playerId: String,
                                 rowKey: String? = nil, fallbackToInternal: Bool = false, autoAttempt: Int? = nil) {
+        // Review r1 (P2): one hand-off at a time. The subtitle wait makes this asynchronous, so a
+        // second Select during it would otherwise open the external player twice.
+        guard !externalHandOffInFlight else { return }
+        externalHandOffInFlight = true
         let spinnerKey = rowKey ?? Self.handOffRowKey
         resolvingKey = spinnerKey
         let type = type
         let videoId = videoId
         Task { @MainActor in
             let addonSubtitles = await ExternalSubtitleHandOff.liveAddonSubtitles(type: type, videoId: videoId)
+            externalHandOffInFlight = false
             if resolvingKey == spinnerKey { resolvingKey = nil }
             // The viewer left the picker, or something else started playing, while it waited.
             guard pickerOnScreen, selected == nil else {
@@ -1235,10 +1242,10 @@ struct StreamPickerView: View {
                                streamKey: candidate.streamKey, launchSource: .autoPlay, attempt: attempt - 1)
         case let .gaveUp(reason, duringFailover):
             autoPlayArmed = false
-            coverHold = false
             rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
             if duringFailover {
-                // The viewer already left the player: nothing to explain.
+                // The viewer already left the player: nothing to explain. Review r1 (P3): the cover
+                // stays, the picker is closing behind the player.
                 guard selected != nil else {
                     autoPlayLog("[AutoPlay] walk ended (\(reason)) after the player had closed — nothing shown, rejected=\(rejectedKeys.count)")
                     return
@@ -1247,6 +1254,7 @@ struct StreamPickerView: View {
                 keepListAfterPlayer = true
                 selected = nil
             }
+            coverHold = false
             let listedStreams = model.groups.reduce(0) { $0 + $1.streams.count }
             autoPlayLog("[AutoPlay] walk ended (\(reason)) — showing the list: groups=\(model.groups.count) streams=\(listedStreams) rejected=\(rejectedKeys.count) failover=\(duringFailover)")
             if duringFailover || !model.groups.isEmpty {
@@ -1404,7 +1412,10 @@ struct StreamPickerView: View {
     private func handlePlayerDismissed() {
         guard selected == nil else { return }
         rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
-        switch afterPlayerOutcome {
+        let outcome = afterPlayerOutcome
+        // Review r1 (P3): read once per close, so it never carries to the next one.
+        keepListAfterPlayer = false
+        switch outcome {
         case .raiseAlert:
             guard let pending = pendingManualFailureAlert else { return }
             pendingManualFailureAlert = nil

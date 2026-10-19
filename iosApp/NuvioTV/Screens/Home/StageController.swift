@@ -408,6 +408,9 @@ final class StageController: ObservableObject {
                   let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
             // Not issued yet (the pager is not back): just stand the attempt down.
             cancelUncoverRestore()
+            // Review r1 (P3): a page held while the restore was pending (BUG-176) must catch up
+            // with focus now that the restore is gone.
+            pagerHandle.syncPageToFocus(reason: "uncover-viewer-pending")
             StageStripProbe.shared.log("restore retired row=- why=viewer from=- input=\(ViewerInputClock.shared.lastKindLabel) pending=1 source=\(uncoverSource)")
         }
     }

@@ -213,27 +213,27 @@ struct PlayerLoadingOverlay: View {
 enum PlayerLoadingPulseClock {
     static let continuityGrace: TimeInterval = 2
 
-    private static var key: String?
-    private static var began = Date.distantPast
-    private static var lastSeen = Date.distantPast
+    /// Review r1 (P3): one clock PER key, so two overlays with different keys on screen at once
+    /// (a held picker cover under a nested picker's) never reset each other every frame.
+    private struct Entry { var began: Date; var lastSeen: Date }
+    private static var entries: [String: Entry] = [:]
 
     /// The clock's start for `key`, touching it as seen at `now`.
     static func start(for key: String, now: Date = Date()) -> Date {
-        if key == self.key, now.timeIntervalSince(lastSeen) <= continuityGrace, now >= lastSeen {
-            lastSeen = now
-            return began
+        if var entry = entries[key], now.timeIntervalSince(entry.lastSeen) <= continuityGrace, now >= entry.lastSeen {
+            entry.lastSeen = now
+            entries[key] = entry
+            return entry.began
         }
-        self.key = key
-        began = now
-        lastSeen = now
-        return began
+        // Drop clocks nobody has drawn for a while (bounded: a handful of keys at most).
+        entries = entries.filter { now.timeIntervalSince($0.value.lastSeen) <= continuityGrace }
+        entries[key] = Entry(began: now, lastSeen: now)
+        return now
     }
 
     /// Tests only.
     static func reset() {
-        key = nil
-        began = .distantPast
-        lastSeen = .distantPast
+        entries = [:]
     }
 
     /// 1.0 at the start, `pulseScale` after `pulseSeconds`, back to 1.0 after twice that: an
