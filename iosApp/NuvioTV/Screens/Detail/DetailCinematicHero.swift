@@ -354,15 +354,31 @@ struct DetailCinematicHero<Actions: View>: View {
 
     /// Same platter as `DetailAboutSection`'s focus: drawn outside the text through negative
     /// padding, so focusing the teaser never shifts the layout.
+    @ViewBuilder
     private func teaserPlatter(focused: Bool) -> some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.hero)
-            .fill(Theme.Palette.surface.opacity(focused ? 0.9 : 0))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.hero)
-                    .strokeBorder(Color.white.opacity(focused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings
-            )
-            .padding(-Theme.Spacing.md)
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.hero)
+        if DetailTeaserPlatterAB.glass {
+            // A/B (Christian, 2026-10-18): Liquid Glass behind the focused teaser. Mounted only
+            // while focused (a glass layer cannot fade by opacity).
+            if focused {
+                shape
+                    .fill(Color.clear)
+                    .glassEffect(.regular, in: shape)
+                    .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 1.5))
+                    .padding(-Theme.Spacing.md)
+                    .transition(.opacity)
+            }
+        } else {
+            shape
+                .fill(Theme.Palette.surface.opacity(focused ? 0.9 : 0))
+                .overlay(
+                    shape.strokeBorder(Color.white.opacity(focused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings
+                )
+                .padding(-Theme.Spacing.md)
+        }
     }
+
+
 
     private var teaserText: some View {
         Text(overview ?? "")
@@ -403,4 +419,10 @@ struct DetailCinematicHero<Actions: View>: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("detail_credits")
     }
+}
+
+/// A/B (Christian, 2026-10-18): `-debug.synopsisPlatter surface` draws About's surface platter
+/// behind the focused synopsis instead of Liquid Glass (read once at launch).
+nonisolated enum DetailTeaserPlatterAB {
+    static let glass: Bool = UserDefaults.standard.string(forKey: "debug.synopsisPlatter") != "surface"
 }
