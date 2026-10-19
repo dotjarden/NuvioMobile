@@ -44,11 +44,11 @@ nonisolated enum AmbientWashTuning {
     static let tintAmount: Float = 0.25
     /// Exposure window on the encoded mean luma: a brighter wash is scaled down to `maxMeanLuma`, a
     /// darker one is lifted toward `minMeanLuma` by at most `maxGain`.
-    /// UX-16 (Steven rc3, "too much fog"): 0.26 / 1.8 lifted dark art into a grey haze; first
-    /// retune 2026-10-19, judged on the TV.
-    static let maxMeanLuma: Float = 0.20
+    /// UX-16 (Steven rc3, "too much fog"): 0.26 / 1.8 lifted dark art into a grey haze. Retuned on
+    /// the TV 2026-10-19: 0.20 / 1.4 was better but "still a little too foggy" (Christian).
+    static let maxMeanLuma: Float = 0.17
     static let minMeanLuma: Float = 0.10
-    static let maxGain: Float = 1.4
+    static let maxGain: Float = 1.25
     /// The cross-fade between two washes, and its Reduce Motion variant (still a fade, just shorter).
     static let crossFade: TimeInterval = 0.4
     static let crossFadeReducedMotion: TimeInterval = 0.2
