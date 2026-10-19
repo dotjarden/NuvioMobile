@@ -773,6 +773,9 @@ struct DetailView: View {
             // up to `screenRest` when it would otherwise leave the header straddling the top scrim
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             .onChange(of: focusedRow) { old, row in
+                // Batch G device pass: leaving the hero for a row is interacting (see
+                // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
+                if row != nil, !userInteracted { userInteracted = true }
                 dimModel.motionSamples.removeAll(keepingCapacity: true)
                 // FEAT-35: a pending hero return belongs to the focus visit that armed it.
                 dimModel.awaitingHeroReturn = false
@@ -2804,6 +2807,10 @@ struct DetailView: View {
     }
 
     private func fireAutoPlayTrailer() {
+        // Device pass (Batch G, 2026-10-18): a Down off the hero is the engine's move, which
+        // `onMoveCommand` never sees, so the trailer went full screen under a viewer scrolling the
+        // rows. Focus anywhere below the hero counts as interacting.
+        guard focusedRow == nil else { return }
         guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil,
               let trailer = model.trailerVideoURL else { return }
