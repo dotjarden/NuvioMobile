@@ -173,6 +173,9 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
     var onClosed: (() -> Void)?
     private var closing = false
     private var reportedClose = false
+    /// BUG-186 review r1: watchdog retries for the current close; it gives up after `maxCloseRetries`.
+    private var closeRetries = 0
+    private static var maxCloseRetries: Int { 2 }  // computed: a generic class has no static stored properties
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -216,6 +219,13 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
 
     func close(animated: Bool) {
         guard !closing else { return }
+        // A viewer close starts a fresh retry budget; the watchdog's retries go through `beginClose`.
+        closeRetries = 0
+        beginClose(animated: animated)
+    }
+
+    private func beginClose(animated: Bool) {
+        guard !closing else { return }
         closing = true
         // BUG-186: `closing` used to latch for good. A Menu during the ~0.25 s present (or while
         // focus was being reclaimed) asked UIKit to dismiss a controller still being presented;
@@ -236,25 +246,38 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
     private func performDismiss(animated: Bool) {
         let onClosed = onClosed
         dismiss(animated: animated && !UIAccessibility.isReduceMotionEnabled) { [weak self] in
-            self?.closing = false
+            // A panel already released is gone: report the close (the pre-r1 behaviour).
+            guard let self else { onClosed?(); return }
+            self.closing = false
+            // BUG-186 review r1: with a child presented over the panel (a Menu/picker), `dismiss`
+            // closes only that child and the panel stays up; reporting the close here would leave
+            // the owner with a stale `panelHost`. Report only once the panel itself is gone.
+            guard self.presentingViewController == nil else { return }
             // A watchdog retry can race a late original completion: report the close once.
-            guard self?.reportedClose != true else { return }
-            self?.reportedClose = true
+            guard !self.reportedClose else { return }
+            self.reportedClose = true
             onClosed?()
         }
     }
 
     /// BUG-186: 0.6 s after a close, a panel that is still presented and not mid-dismiss had its
     /// dismiss dropped; reset the latch and close again without animation. `isBeingDismissed`
-    /// keeps a slow (but live) dismiss from being doubled.
+    /// keeps a slow (but live) dismiss from being doubled. Review r1: at most `maxCloseRetries`
+    /// retries per close (it used to re-arm forever); the give-up is logged once.
     private func armCloseWatchdog() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(600))
             guard let self, self.closing, self.presentingViewController != nil,
                   !self.isBeingDismissed else { return }
-            print("[PlayerPanel] BUG-186 watchdog: dismiss dropped, retrying")
+            guard self.closeRetries < Self.maxCloseRetries else {
+                print("[PlayerPanel] BUG-186 watchdog: dismiss still dropped after \(Self.maxCloseRetries) retries, giving up")
+                self.closing = false
+                return
+            }
+            self.closeRetries += 1
+            print("[PlayerPanel] BUG-186 watchdog: dismiss dropped, retry \(self.closeRetries)/\(Self.maxCloseRetries)")
             self.closing = false
-            self.close(animated: false)
+            self.beginClose(animated: false)
         }
     }
 }

@@ -134,13 +134,15 @@ struct DiscoverGridPage: View {
                 }
                 if let option = model.selectedOption, let genres = DiscoverGridPlan.genreChoices(option) {
                     let current = DiscoverGridPlan.pillValue(model.selectedGenre)
-                    PillMenu(title: DiscoverGridPlan.genreLabel(current),
+                    // BUG-189 review r1: labels deduplicated across the list.
+                    let labels = DiscoverGridPlan.genreLabels(genres)
+                    PillMenu(title: labels[current] ?? DiscoverGridPlan.genreLabel(current),
                              systemImage: "theatermasks",
                              selection: Binding(get: { current }, set: { model.select(genrePill: $0) }),
                              options: genres,
                              id: "discover.genrePicker",
                              pickerTitle: String(localized: "Genre"),
-                             label: { DiscoverGridPlan.genreLabel($0) })
+                             label: { labels[$0] ?? DiscoverGridPlan.genreLabel($0) })
                 }
                 if let type = model.selectedType, let selected = model.selectedOption {
                     let catalogs = model.catalogOptions(for: type)

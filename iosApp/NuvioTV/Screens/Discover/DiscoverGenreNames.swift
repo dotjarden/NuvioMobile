@@ -64,6 +64,21 @@ nonisolated enum DiscoverGenreNames {
         }
     }
 
+    /// Review r1 (BUG-189): the display labels for a genre LIST, in order. Two raw names can map
+    /// to the same label ("Sci-Fi" and "Science Fiction" under one translation, "Action" and
+    /// "action" under any), which would show two identical entries. The first raw name takes the
+    /// localized label; a later one whose label repeats an earlier label shows its RAW name. The
+    /// values themselves (pill values, fetch genres, row keys) never change.
+    static func displayLabels(_ raws: [String], display: (String) -> String = DiscoverGenreNames.display) -> [String] {
+        var seen = Set<String>()
+        return raws.map { raw in
+            let label = display(raw)
+            let shown = seen.contains(normalized(label)) ? raw : label
+            seen.insert(normalized(shown))
+            return shown
+        }
+    }
+
     static func normalized(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }

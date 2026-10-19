@@ -62,6 +62,17 @@ nonisolated enum DiscoverGridPlan {
         value == allGenre ? String(localized: "All") : DiscoverGenreNames.display(value)
     }
 
+    /// Review r1 (BUG-189): the Genre pill's labels keyed by pill value, deduplicated across the
+    /// whole list (`DiscoverGenreNames.displayLabels`): a later genre whose localized label repeats
+    /// an earlier one shows its raw name. "All" keeps its own label.
+    static func genreLabels(_ choices: [String]) -> [String: String] {
+        let genres = choices.filter { $0 != allGenre }
+        var labels = Dictionary(zip(genres, DiscoverGenreNames.displayLabels(genres)),
+                                uniquingKeysWith: { first, _ in first })
+        if choices.contains(allGenre) { labels[allGenre] = String(localized: "All") }
+        return labels
+    }
+
     /// The genre `option` can actually fetch with: `requested` when the catalog offers it, else
     /// nil for an optional genre ("All") or the first genre for a required one.
     static func resolvedGenre(_ requested: String?, for option: DiscoverCatalogOption) -> String? {

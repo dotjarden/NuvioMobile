@@ -49829,7 +49829,6 @@
         }
       }
     },
-    "debug_detail_focus row=%@ idx=%@": {},
     "debug_detail_hero h=%lld logo=%lld syn=%lld trunc=%lld ratings=%lld reserved=%lld": {
       "localizations": {
         "de": {
@@ -50136,7 +50135,6 @@
         }
       }
     },
-    "debug_strip %@ row=%lld key=%@ foc=%@ atTop=%lld segs=%lld seg=%@ page=%@": {},
     "debug_trailerListener %@ rebuilds=%lld recent=%@": {
       "localizations": {
         "de": {
@@ -50273,7 +50271,6 @@
         }
       }
     },
-    "debug_trailerTile outer=%@x%@ inner=%@x%@ band=%@ rOut=%@ rIn=%@ x=%@%@ base=%@x%@ baseY=%@": {},
     "debug_trailers n=%lld thumbs=%lld": {
       "localizations": {
         "de": {

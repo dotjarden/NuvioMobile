@@ -9,21 +9,23 @@ final class DetailFocusReturnTests: XCTestCase {
 
     /// The pop's reload emits `isLoading` with no meta first; a page that has one keeps it.
     func testLoadingEmissionKeepsTheMetaOnScreen() {
-        XCTAssertTrue(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: false, error: nil))
+        XCTAssertTrue(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: false))
     }
 
-    /// A meta always lands, and so does an error (the page must show it, not a stale meta).
-    func testMetaOrErrorAlwaysLands() {
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: true, error: nil))
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: false, error: "Not found"))
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: true, error: "x"))
+    /// Review r1: a reload error with no meta keeps the page too (no full-page error over content).
+    func testReloadErrorKeepsTheMetaOnScreen() {
+        XCTAssertTrue(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: false))
     }
 
-    /// A first load (nothing on screen yet) takes every emission, the loading one included.
+    /// A meta always lands.
+    func testMetaAlwaysLands() {
+        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: true, incomingMeta: true))
+    }
+
+    /// A first load (nothing on screen yet) takes every emission: loading, meta and error.
     func testFirstLoadTakesEveryEmission() {
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: false, incomingMeta: false, error: nil))
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: false, incomingMeta: true, error: nil))
-        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: false, incomingMeta: false, error: "x"))
+        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: false, incomingMeta: false))
+        XCTAssertFalse(DetailMetaAdoption.keepsCurrent(hasMeta: false, incomingMeta: true))
     }
 
     // MARK: DetailFocusMemory
@@ -44,6 +46,43 @@ final class DetailFocusReturnTests: XCTestCase {
     func testClearForgetsTheCard() {
         let memory = DetailFocusMemory()
         memory.note(row: .moreLikeThis, key: "tt0111161")
+        memory.clear()
+        memory.arm()
+        XCTAssertNil(memory.takeArmedTarget())
+    }
+
+    /// Review r1: the engine reports Play between `onDisappear` (arm) and `onAppear` (take);
+    /// that report must not disarm or forget the card.
+    func testClearWhileHiddenKeepsTheArmedCard() {
+        let memory = DetailFocusMemory()
+        memory.note(row: .cast, key: "3")
+        memory.arm()
+        XCTAssertFalse(memory.pageVisible)
+        memory.clear()
+        let target = memory.takeArmedTarget()
+        XCTAssertTrue(memory.pageVisible)
+        XCTAssertEqual(target?.row, .cast)
+        XCTAssertEqual(target?.key, "3")
+    }
+
+    /// Once the page is visible again, a move to the hero forgets the card as before.
+    func testClearAfterAppearanceForgetsTheCard() {
+        let memory = DetailFocusMemory()
+        memory.note(row: .logos, key: "1")
+        memory.arm()
+        _ = memory.takeArmedTarget()
+        memory.clear()
+        memory.arm()
+        XCTAssertNil(memory.takeArmedTarget())
+    }
+
+    /// An appearance with nothing armed still marks the page visible.
+    func testUnarmedAppearanceMarksThePageVisible() {
+        let memory = DetailFocusMemory()
+        memory.arm()
+        XCTAssertNil(memory.takeArmedTarget())
+        XCTAssertTrue(memory.pageVisible)
+        memory.note(row: .cast, key: "0")
         memory.clear()
         memory.arm()
         XCTAssertNil(memory.takeArmedTarget())

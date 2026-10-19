@@ -15,6 +15,10 @@ final class DetailFocusMemory {
     private(set) var row: DetailRowID?
     private(set) var key: String?
     private var armed = false
+    /// Review r1: false from `arm()` (the page's `onDisappear`) until `takeArmedTarget()` (its
+    /// `onAppear`). The focus engine can report Play in between (the pushed page's teardown, the
+    /// pop's first layout), and that report must not disarm the restore it is about to need.
+    private(set) var pageVisible = true
     private var generation = 0
 
     /// A card in a tracked row took focus. A nil key (focus left the row, which a push also does)
@@ -25,8 +29,11 @@ final class DetailFocusMemory {
         self.key = key
     }
 
-    /// Focus settled somewhere this box does not track (the hero, another row).
+    /// Focus settled somewhere this box does not track (the hero, another row). A no-op while
+    /// the page is not visible (review r1): a focus report between `arm()` and the next
+    /// `takeArmedTarget()` belongs to the push/pop, not to the viewer.
     func clear() {
+        guard pageVisible else { return }
         row = nil
         key = nil
         armed = false
@@ -35,10 +42,13 @@ final class DetailFocusMemory {
     /// The page is going away with a remembered card (a push from that card).
     func arm() {
         armed = row != nil && key != nil
+        pageVisible = false
     }
 
-    /// The armed target, once: a later appearance without a new push restores nothing.
+    /// The armed target, once: a later appearance without a new push restores nothing. Called on
+    /// every appearance, so it also marks the page visible again (armed or not).
     func takeArmedTarget() -> (row: DetailRowID, key: String)? {
+        pageVisible = true
         guard armed, let row, let key else { return nil }
         armed = false
         return (row, key)

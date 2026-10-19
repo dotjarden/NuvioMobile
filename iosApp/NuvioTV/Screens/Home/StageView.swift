@@ -354,7 +354,7 @@ struct StripDebugLabel: View {
     @ObservedObject private var probe = StageStripProbe.shared
 
     var body: some View {
-        Text("debug_strip \(probe.lastSummary.isEmpty ? "-" : probe.lastSummary) row=\(debug.row) key=\(debug.rowKey) foc=\(debug.foc) atTop=\(debug.atTop ? 1 : 0) segs=\(probe.segmentCount) seg=\(probe.lastSegment) page=\(debug.page)")
+        Text(verbatim: "debug_strip \(probe.lastSummary.isEmpty ? "-" : probe.lastSummary) row=\(debug.row) key=\(debug.rowKey) foc=\(debug.foc) atTop=\(debug.atTop ? 1 : 0) segs=\(probe.segmentCount) seg=\(probe.lastSegment) page=\(debug.page)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("debug_strip")

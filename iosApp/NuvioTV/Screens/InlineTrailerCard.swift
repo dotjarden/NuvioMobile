@@ -2760,7 +2760,7 @@ struct InlineTrailerCard: View {
         // (BUG-162 / D16) ` base=<w>x<h> baseY=<y>`: the base card's measured rest frame (`debugBaseFrame`).
         .overlay(alignment: .topLeading) {
             if model.tileVisible {
-                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields) base=\(Self.debugFmt(debugBaseFrame.width))x\(Self.debugFmt(debugBaseFrame.height)) baseY=\(Self.debugFmt(debugBaseFrame.minY))")
+                Text(verbatim: "debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields) base=\(Self.debugFmt(debugBaseFrame.width))x\(Self.debugFmt(debugBaseFrame.height)) baseY=\(Self.debugFmt(debugBaseFrame.minY))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_trailerTile")

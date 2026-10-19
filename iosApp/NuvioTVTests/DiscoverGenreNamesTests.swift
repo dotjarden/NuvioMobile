@@ -70,6 +70,44 @@ final class DiscoverGenreNamesTests: XCTestCase {
         XCTAssertEqual(DiscoverGenreNames.display("Popular"), "Popular")
     }
 
+    // MARK: - List labels (review r1)
+
+    /// Two raw names with one localized label: the first takes the label, the later one its raw name.
+    func testDisplayLabelsShowRawForADuplicateLabel() {
+        let french: (String) -> String = { raw in
+            ["sci-fi": "Science-fiction", "science fiction": "Science-fiction",
+             "action": "Action"][DiscoverGenreNames.normalized(raw)] ?? raw
+        }
+        XCTAssertEqual(DiscoverGenreNames.displayLabels(["Action", "Sci-Fi", "Science Fiction"], display: french),
+                       ["Action", "Science-fiction", "Science Fiction"])
+        XCTAssertEqual(DiscoverGenreNames.displayLabels(["Science Fiction", "Sci-Fi"], display: french),
+                       ["Science-fiction", "Sci-Fi"], "whichever raw comes first takes the label")
+    }
+
+    /// Distinct labels are untouched, and the real mapping collapses case variants the same way.
+    func testDisplayLabelsRealMapping() {
+        let action = String(localized: "Action", comment: "Discover genre")
+        XCTAssertEqual(DiscoverGenreNames.displayLabels(["Action", "Isekai"]), [action, "Isekai"])
+        XCTAssertEqual(DiscoverGenreNames.displayLabels(["Action", "action"]), [action, "action"])
+        XCTAssertEqual(DiscoverGenreNames.displayLabels([]), [])
+    }
+
+    func testGenrePillLabelsDeduplicateAndKeepAll() {
+        let action = String(localized: "Action", comment: "Discover genre")
+        let labels = DiscoverGridPlan.genreLabels([DiscoverGridPlan.allGenre, "Action", "action"])
+        XCTAssertEqual(labels[DiscoverGridPlan.allGenre], String(localized: "All"))
+        XCTAssertEqual(labels["Action"], action)
+        XCTAssertEqual(labels["action"], "action")
+    }
+
+    func testGenreRowsDeduplicateHeadingsButFetchRawGenre() {
+        let action = String(localized: "Action", comment: "Discover genre")
+        let movies = option("m", genres: ["Action", "action"])
+        let specs = DiscoverRowsPlan.specs(for: movies, catalogs: [movies])
+        XCTAssertEqual(specs.map(\.title), [action, "action"])
+        XCTAssertEqual(specs.map(\.genre), ["Action", "action"])
+    }
+
     // MARK: - Call sites
 
     func testGenreLabelLocalizesButAllStaysAll() {

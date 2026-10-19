@@ -3,11 +3,13 @@ import Foundation
 import SharedCore
 
 /// BUG-187 (Steven rc9): whether a `MetaDetailsUiState` emission leaves the meta on screen alone.
-/// A reload's loading emission (no meta, no error) must not blank a page that already has one;
-/// a meta or an error always lands. Pure, so `DetailMetaAdoptionTests` pins it.
+/// A reload's emission with no meta must not blank a page that already has one: neither the
+/// loading emission nor (review r1) a reload ERROR, which would put a full-page error over content
+/// that is still valid. A meta always lands, and so does an error on a page with nothing on screen.
+/// Pure, so `DetailFocusReturnTests` pins it.
 enum DetailMetaAdoption {
-    nonisolated static func keepsCurrent(hasMeta: Bool, incomingMeta: Bool, error: String?) -> Bool {
-        hasMeta && !incomingMeta && error == nil
+    nonisolated static func keepsCurrent(hasMeta: Bool, incomingMeta: Bool) -> Bool {
+        hasMeta && !incomingMeta
     }
 }
 
@@ -200,10 +202,9 @@ final class DetailViewModel: ObservableObject {
             // BUG-187 (Steven rc9): back from a cast member re-runs `start()` → `load()` after
             // `stop()` cleared the repo, and its first emission is `isLoading` with no meta. Taking
             // that nil dropped every row and focus fell to Play; the page keeps what it shows until
-            // the reload brings a meta or an error.
+            // the reload brings a meta. Review r1: a reload error with no meta keeps it too.
             if DetailMetaAdoption.keepsCurrent(hasMeta: self.meta != nil,
-                                               incomingMeta: state.meta != nil,
-                                               error: state.errorMessage) {
+                                               incomingMeta: state.meta != nil) {
                 if self.isLoading != state.isLoading { self.isLoading = state.isLoading }
                 return
             }

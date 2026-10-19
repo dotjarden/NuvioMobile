@@ -1118,7 +1118,7 @@ struct DetailView: View {
             // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
             // last remembered card key, read by the cast/More Like This Back UI leg.
             if DetailFocusProbe.enabled {
-                Text("debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey)")
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")

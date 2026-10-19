@@ -1353,13 +1353,9 @@ struct FolderDetailView: View {
     @State private var gridRevealed = false
     /// C (probe only): which tab chip holds focus.
     @FocusState private var focusedChip: Int?
-    /// BUG-190 (Steven rc9: no title poster and no synopsis on the Classic rows page): the focused
-    /// card drives a Classic Home "Show Hero OFF" panel under the folder's logo (D5). Home's own
-    /// owner (`HomeHeroModels`: the focus model, the art resolver, an idle trailer model) never
-    /// publishes, so a focus commit re-renders only the leaves (`FolderHeroDriver`,
-    /// `HomeHeroBackdropLayer`, `HomeHeroTextSlot`), never this page or its rows (perf review
-    /// 2026-10-17, #1).
-    @StateObject private var hero = HomeHeroModels()
+    /// BUG-190: the Classic rows page's hero models live in `FolderClassicHeroHost`, mounted only
+    /// by that page (review r1: a `@StateObject` here built them for every Grid and Stage Rows
+    /// folder page too).
     /// BUG-190: `HeroTextLayer` takes a CTA focus binding; the panel has no CTA (`showsCTA: false`),
     /// so nothing is ever bound to it.
     @FocusState private var ctaUnused: Bool
@@ -1410,7 +1406,7 @@ struct FolderDetailView: View {
             case .rows where homeLayout == .classic:
                 // FEAT-79 (Steven rc7): Classic + Rows keeps Classic's look, one Classic row per
                 // source. BUG-190: under a compact logo and the focused title's hero panel.
-                classicRowsPage
+                FolderClassicHeroHost { hero in classicRowsPage(hero) }
             case .rows:
                 FolderRowsPage(model: model, rowsAtTop: $rowsAtTop, requestsInitialFocus: !layoutSwitched)
             case .grid:
@@ -1443,18 +1439,14 @@ struct FolderDetailView: View {
         .onAppear {
             tabBarVisibility.pushImmersive()
             model.start()
-            // BUG-190: back from a push, the hero panel's focus model thaws; the restored card's
-            // report is the answer (BUG-138's rule, as on Home).
-            hero.focus.setCovered(false, restoresFocus: true)
+            // BUG-190: the hero panel's focus model thaws in `FolderClassicHeroHost.onAppear`.
             restoreClassicRowsFocus()
         }
         .onDisappear {
             // FEAT-79 review r1 (P2-2): arm the restore only for a push from a card (focus was on,
             // or had just left, a row card), not a tab switch or the Edit cover.
             if classicRows, editing == nil { classicFocusMemory.armIfLeavingFromCard() }
-            // BUG-190: a push froze the panel on the title it left from (a nil report under the
-            // cover is focus leaving for the pushed page, not the viewer leaving the row).
-            hero.focus.setCovered(true, restoresFocus: true)
+            // BUG-190: the hero panel freezes in `FolderClassicHeroHost.onDisappear`.
             tabBarVisibility.popImmersive()
             model.stop()
         }
@@ -1579,8 +1571,8 @@ struct FolderDetailView: View {
     /// pinned 352 pt frame at compression 0, so it draws what Home's panel draws at Medium (up to
     /// 4 synopsis lines, FEAT-61). No rising header and no compact ghost: the logo and the panel
     /// are fixed, and only the rows scroll. The Edit band (`FolderEditMenuBand`) still overlays
-    /// the top of the page from `body`.
-    private var classicRowsPage: some View {
+    /// the top of the page from `body`. `hero` is `FolderClassicHeroHost`'s (review r1).
+    private func classicRowsPage(_ hero: HomeHeroModels) -> some View {
         ZStack(alignment: .top) {
             Theme.Palette.background.ignoresSafeArea()
 
@@ -1603,7 +1595,7 @@ struct FolderDetailView: View {
                     .frame(height: Theme.Size.heroCarouselHeightPinned)
 
                 ScrollView(.vertical) {
-                    classicRowsContent
+                    classicRowsContent(heroFocus: hero.focus)
                         // Room for a focused first-row card's lift, as the grid page leaves it.
                         .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1654,7 +1646,7 @@ struct FolderDetailView: View {
     @ViewBuilder
     private var gridContent: some View {
         if classicRows {
-            classicRowsContent
+            classicRowsContent(heroFocus: nil)
         } else {
             posterGridContent
         }
@@ -1664,8 +1656,9 @@ struct FolderDetailView: View {
     /// one `CatalogRowView` per source, the row Classic Home draws (`HomeCatalogRowCell`), in the
     /// grid page's plain vertical scroll. Rows come from the same strip state the Stage page reads
     /// (`model.stripRows`); a loading source shows its skeleton, failed and empty ones drop out.
+    /// BUG-190: `heroFocus` is the Classic rows page's panel model (nil off that page).
     @ViewBuilder
-    private var classicRowsContent: some View {
+    private func classicRowsContent(heroFocus: HomeHeroFocusModel?) -> some View {
         let rows = FolderRowsPlan.visible(model.stripRows, focusedTabIndex: nil)
         if rows.isEmpty {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -1693,10 +1686,10 @@ struct FolderDetailView: View {
                     case .loaded:
                         if let section = row.section {
                             CatalogRowView(section: section, previewLimit: FolderRowsPlan.previewLimit,
-                                           onItemFocusChange: { [memory = classicFocusMemory, focus = hero.focus] item in
+                                           onItemFocusChange: { [memory = classicFocusMemory, focus = heroFocus] item in
                                                memory.note(rowKey: section.key, itemId: item?.id)
                                                // BUG-190: the focused card drives the hero panel.
-                                               focus.reportFocus(item, from: section.key)
+                                               focus?.reportFocus(item, from: section.key)
                                            })
                         }
                     case .loading:
@@ -2034,6 +2027,28 @@ struct FolderDetailView: View {
 }
 
 #if DEBUG
+/// BUG-190 review r1: owns the Classic rows page's hero models (`HomeHeroModels`: the focus
+/// model, the art resolver, an idle trailer model), so only that page builds them; the Grid and
+/// Stage Rows folder pages never do. The covered/uncovered calls moved here with them: back from a
+/// push the focus model thaws and the restored card's report is the answer (BUG-138's rule, as on
+/// Home); a push freezes the panel on the title it left from (a nil report under the cover is
+/// focus leaving for the pushed page, not the viewer leaving the row). `HomeHeroModels` never
+/// publishes, so this host never re-renders `content` on a focus commit (perf review 2026-10-17, #1).
+private struct FolderClassicHeroHost<Content: View>: View {
+    @StateObject private var hero = HomeHeroModels()
+    let content: (HomeHeroModels) -> Content
+
+    init(@ViewBuilder content: @escaping (HomeHeroModels) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(hero)
+            .onAppear { hero.focus.setCovered(false, restoresFocus: true) }
+            .onDisappear { hero.focus.setCovered(true, restoresFocus: true) }
+    }
+}
+
 /// BUG-190: `folder_classic_hero fitem=<focused card id|-> pitem=<presented identity|-> pbd=<0|1>`,
 /// the Classic rows page's hero panel state (invisible, harness-readable). A leaf.
 struct FolderClassicHeroDebugLabel: View {

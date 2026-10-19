@@ -145,9 +145,11 @@ nonisolated enum DiscoverRowsPlan {
         let genres = option.genreOptions.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if !genres.isEmpty {
             // BUG-189: `title`/`heading` are display text (localized standard names); `genre`
-            // stays the raw manifest value the fetch sends.
+            // stays the raw manifest value the fetch sends. Review r1: a later genre whose label
+            // repeats an earlier one is headed with its raw name (`displayLabels`).
+            let titles = DiscoverGenreNames.displayLabels(genres)
             return genres.enumerated().map { index, genre in
-                let title = DiscoverGenreNames.display(genre)
+                let title = titles[index]
                 return DiscoverRowSpec(key: "discover|\(option.key)|g\(index)",
                                        order: index,
                                        title: title,
