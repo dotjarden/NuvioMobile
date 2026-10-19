@@ -1333,8 +1333,8 @@ struct FolderDetailView: View {
     /// FEAT-79: the Classic rows page's last focused row and card, and the request that puts focus
     /// back there when the page reappears after a push (Back from a title landed on the first card
     /// of the first row: the device pass, 2026-10-18).
-    @State private var classicFocusRow: String?
-    @State private var classicFocusItem: String?
+    /// Review r1 (P2-3): a reference box, so a card hop writes no view state.
+    @State private var classicFocusMemory = ClassicRowsFocusMemory()
     @State private var classicFocusRequest = PinnedRowFocusRequest.none
     /// A layout switch happened while this page was open (Home Layout or, since FEAT-71, Collections
     /// Layout flipped in Settings): a Rows page mounted by it leaves focus where it is instead of
@@ -1436,6 +1436,9 @@ struct FolderDetailView: View {
             restoreClassicRowsFocus()
         }
         .onDisappear {
+            // FEAT-79 review r1 (P2-2): arm the restore only for a push from a card (focus was on,
+            // or had just left, a row card), not a tab switch or the Edit cover.
+            if classicRows, editing == nil { classicFocusMemory.armIfLeavingFromCard() }
             tabBarVisibility.popImmersive()
             model.stop()
         }
@@ -1595,10 +1598,8 @@ struct FolderDetailView: View {
                     case .loaded:
                         if let section = row.section {
                             CatalogRowView(section: section, previewLimit: FolderRowsPlan.previewLimit,
-                                           onItemFocusChange: { item in
-                                               guard let item else { return }
-                                               classicFocusRow = section.key
-                                               classicFocusItem = item.id
+                                           onItemFocusChange: { [memory = classicFocusMemory] item in
+                                               memory.note(rowKey: section.key, itemId: item?.id)
                                            })
                         }
                     case .loading:
@@ -1611,24 +1612,41 @@ struct FolderDetailView: View {
             }
             .padding(.bottom, Theme.Spacing.xl * 2)
             .environment(\.pinnedRowFocusRequest, classicFocusRequest)
+            // FEAT-79 review r1: the restore stands down on a viewer press (`ViewerInputClock`),
+            // which only the Stage strip installed before.
+            .background { ViewerInputClockInstaller().frame(width: 0, height: 0) }
             .accessibilityIdentifier("folder_classic_rows")
         }
     }
 
-    /// FEAT-79: back on the Classic rows page after a push, focus returns to the row and card it
-    /// left. Three rungs, the first two allowed to move focus inside a row the engine already
-    /// restored (`forceCard`), as Classic Home's pop restore does; nothing on the first appearance.
+    /// FEAT-79: back on the Classic rows page after a push from a card, focus returns to the row
+    /// and card it left. Review r1: armed only by such a push (P2-2); every rung stands down after
+    /// a viewer input or a newer appearance (generation); `forceCard` only while the card still
+    /// exists (P3-1); one late rung for the engine's own restoration (P3-2); and the request is
+    /// retired afterwards so a row remounting later never re-applies it (P2-1).
     private func restoreClassicRowsFocus() {
-        guard classicRows, let row = classicFocusRow else { return }
-        let item = classicFocusItem
-        for (rung, delay) in [0.0, 0.35, 0.8].enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard classicRows else { return }
+        let memory = classicFocusMemory
+        guard classicRows, let row = memory.takeArmedTarget() else { return }
+        let item = memory.itemId
+        let generation = memory.beginRestore()
+        let started = ProcessInfo.processInfo.systemUptime
+        let cardStillThere = item.map { id in
+            model.stripRows.first { $0.id == row || $0.section?.key == row }?.section?.items.contains { $0.id == id } ?? false
+        } ?? false
+        let rungs: [(delay: Double, force: Bool)] = [(0, true), (0.35, true), (0.8, false), (1.1, false)]
+        for rung in rungs {
+            DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
+                guard classicRows, memory.isCurrent(generation),
+                      !ViewerInputClock.shared.hasInput(since: started) else { return }
                 classicFocusRequest = PinnedRowFocusRequest(rowKey: row,
                                                             generation: classicFocusRequest.generation + 1,
-                                                            itemId: item,
-                                                            forceCard: rung < 2)
+                                                            itemId: cardStillThere ? item : nil,
+                                                            forceCard: rung.force && cardStillThere)
             }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
+            guard memory.isCurrent(generation) else { return }
+            classicFocusRequest = .none
         }
     }
 
@@ -1715,6 +1733,8 @@ struct FolderDetailView: View {
     /// decode bucket, `PosterCard.decodeRequest`, critique #22), wait at most `revealTimeout`, then
     /// fade the grid in. A no-op while the tab has no items or once the grid is shown.
     private func revealGridWhenWarm() async {
+        // FEAT-79 review r1 (P3-3): the Classic rows page draws no grid; nothing to warm.
+        guard !classicRows else { return }
         guard !model.items.isEmpty, !gridRevealed else { return }
         let decode = PosterCard.decodeRequest(width: posterStyle.width, height: posterStyle.height, scale: displayScale)
         let urls = model.items.prefix(Self.revealPrefetchCount).compactMap { Self.revealPrefetchURL(poster: $0.poster) }
@@ -2063,4 +2083,48 @@ private struct TabChip: View {
         }
         .buttonStyle(.chip(selected: isSelected))
     }
+}
+
+/// FEAT-79 (review r1): the Classic rows page's focus memory. A reference box held in `@State`,
+/// never observed, so recording a card hop re-renders nothing.
+@MainActor
+final class ClassicRowsFocusMemory {
+    private(set) var rowKey: String?
+    private(set) var itemId: String?
+    private var hasFocus = false
+    private var lostAt: TimeInterval?
+    private var armed = false
+    private var generation = 0
+
+    /// A card in `rowKey` took focus (`itemId`), or the row lost it (nil).
+    func note(rowKey: String, itemId: String?) {
+        if let itemId {
+            self.rowKey = rowKey
+            self.itemId = itemId
+            hasFocus = true
+        } else if self.rowKey == rowKey {
+            hasFocus = false
+            lostAt = ProcessInfo.processInfo.systemUptime
+        }
+    }
+
+    /// The page is going away: a push from a card arms the restore (focus still on a card, or it
+    /// left one in the last half second, the push's own hand-off). A tab switch or a cover does not.
+    func armIfLeavingFromCard() {
+        let now = ProcessInfo.processInfo.systemUptime
+        armed = rowKey != nil && (hasFocus || lostAt.map { now - $0 < 0.5 } ?? false)
+    }
+
+    /// The row to restore, once, if armed.
+    func takeArmedTarget() -> String? {
+        defer { armed = false }
+        return armed ? rowKey : nil
+    }
+
+    func beginRestore() -> Int {
+        generation &+= 1
+        return generation
+    }
+
+    func isCurrent(_ g: Int) -> Bool { g == generation }
 }

@@ -47,6 +47,12 @@ final class ViewerInputClock {
         installedOn = window
     }
 
+    /// FEAT-79 (review r1): a viewer press or swipe at or after `time`.
+    func hasInput(since time: TimeInterval) -> Bool {
+        guard let lastAt else { return false }
+        return lastAt >= time
+    }
+
     func record(_ kind: ViewerInputKind) {
         lastAt = ProcessInfo.processInfo.systemUptime
         lastKind = kind
