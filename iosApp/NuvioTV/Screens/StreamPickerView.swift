@@ -66,14 +66,22 @@ struct StreamPickerView: View {
 
     @StateObject private var model: StreamsViewModel
     @StateObject private var autoPlay: FirstPlayAutoPlayController
-    /// First-play auto mode for this visit. Evaluated once, at the first appearance; cleared when
-    /// the controller plays, gives up or is cancelled, so every later load — the re-appearance
-    /// after the player, the debrid-Stale reload — asks for the plain list (`manualSelection`).
-    @State private var autoPlayArmed = false
+    /// First-play auto mode for this visit. BUG-183 (Steven rc7): decided in `init` (a synchronous
+    /// settings read, like `PlayerLoadingOverlaySetting`), so the loading cover is up from the
+    /// picker's first frame instead of after `onAppear` armed the controller (the list flashed for
+    /// about a second). The controller itself is still armed once, at the first appearance. Cleared
+    /// when the controller plays, gives up or is cancelled, so every later load — the debrid-Stale
+    /// reload — asks for the plain list (`manualSelection`).
+    @State private var autoPlayArmed: Bool
     @State private var autoPlayEvaluated = false
-    /// The open player was auto-started: closing it dismisses the picker too, so Back lands on the
-    /// page that opened the picker.
-    @State private var dismissAfterPlayer = false
+    /// BUG-174/183 (Steven rc7): the loading cover stays over the list — while an auto pick's player
+    /// is being presented and up (the controller's `.done` alone hid it a beat too early), while
+    /// the Up Next failover picker is up, and while the picker closes after a player (the list
+    /// must not show on the way out).
+    @State private var coverHold = false
+    /// BUG-174: the player closed onto something the viewer needs to see on the list (an auto walk
+    /// that ended with nothing during a failover). Read once, by `handlePlayerDismissed`.
+    @State private var keepListAfterPlayer = false
     /// Up Next failover: the picker for the episode whose source failed, presented once the player
     /// has closed (`pendingFailoverTarget` waits for that).
     @State private var failoverTarget: FailoverTarget?
@@ -134,6 +142,9 @@ struct StreamPickerView: View {
     private static let testRowKey = "test-stream"
     /// Spinner key for a "Try Next Source" resolve (its row may be collapsed or off-screen).
     private static let failoverRowKey = "failover-next"
+    /// Spinner key while an external hand-off waits for the add-on subtitles (D5) with no row of
+    /// its own (the auto path).
+    private static let handOffRowKey = "external-handoff"
     /// `ExternalPlayerApp.id`s of the external players that report the stop position back over an
     /// x-callback return (`ExternalPlaybackReturn`): Infuse (7.6.2+, `x-success` with `position`)
     /// and, FEAT-56 (GitHub #5), SenPlayer (6.1.1+ returns the current playback time on exit; the
@@ -174,6 +185,8 @@ struct StreamPickerView: View {
         self.season = season
         self.episode = episode
         self.episodes = episodes
+        // BUG-183: decided here, not in `onAppear` — the cover must be in the first frame.
+        _autoPlayArmed = State(initialValue: !forceManual && Self.firstStreamAutoPlayOn())
         _model = StateObject(wrappedValue: StreamsViewModel(
             type: type, videoId: videoId, parentMetaId: parentMetaId, season: season, episode: episode
         ))
@@ -346,8 +359,8 @@ struct StreamPickerView: View {
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // Under the auto-play overlay nothing in the list may take focus or a Select.
-                .disabled(autoPlayOverlayVisible)
+                // Under the loading cover nothing in the list may take focus or a Select.
+                .disabled(loadingCoverVisible)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.Palette.background.ignoresSafeArea())
@@ -364,16 +377,9 @@ struct StreamPickerView: View {
                 }
             }
             .overlay {
-                if autoPlayOverlayVisible, let message = FirstPlayAutoPlayController.Policy.overlayMessage(for: autoPlay.phase) {
-                    FirstPlayAutoPlayOverlay(
-                        title: title,
-                        logoUrl: logoUrl,
-                        artworkUrl: episodeStill ?? poster,
-                        message: message,
-                        onCancel: cancelAutoPlay
-                    )
-                    .transition(.opacity)
-                }
+                // BUG-182/183: the player's own loading look, no fade of its own (a swap to the
+                // player's overlay must be invisible).
+                if loadingCoverVisible { loadingCover }
             }
             .onReceive(model.$autoPlayFeed) { feed in autoPlay.ingest(feed) }
             .onReceive(autoPlay.events) { event in handleAutoPlayEvent(event) }
@@ -428,7 +434,7 @@ struct StreamPickerView: View {
                 // user has moved it to a real row/header: only fires while focus is nowhere or
                 // on the (now hidden) test button. Never while the auto-play overlay holds focus
                 // (the list is disabled under it); `focusListAfterAutoPlay()` runs when it lifts.
-                guard !autoPlayOverlayVisible else { return }
+                guard !loadingCoverVisible else { return }
                 guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
                 if ids.count == 1, let firstKey = model.firstRowKey {
                     DispatchQueue.main.async { focusedRow = firstKey }
@@ -445,7 +451,7 @@ struct StreamPickerView: View {
                 externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
                 if !autoPlayEvaluated {
                     autoPlayEvaluated = true
-                    autoPlayArmed = !forceManual && Self.firstStreamAutoPlayOn()
+                    // `autoPlayArmed` was decided in `init` (BUG-183).
                     if autoPlayArmed {
                         autoPlay.arm()
                     } else if let notice {
@@ -469,7 +475,13 @@ struct StreamPickerView: View {
             // Review r2 P3-2: every playback start (a row, "Try Next Source", auto-play, the Up
             // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
             .onChange(of: selected?.id) { _, playing in
-                if playing != nil { invalidateYouTubeResolve() }
+                if playing != nil {
+                    invalidateYouTubeResolve()
+                } else {
+                    // BUG-174: the player is closing. Cover the list before its slide-down reveals
+                    // it when the picker closes too; drop the cover when the list has to show.
+                    prepareForPlayerClose()
+                }
             }
             .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
@@ -512,10 +524,37 @@ struct StreamPickerView: View {
     /// "Start Over" still applies to the next playback this picker starts.
     private var startsOver: Bool { startFromBeginning && !startOverHonoured }
 
-    /// The auto-play overlay is up (not while a failover resolves behind the open player).
-    private var autoPlayOverlayVisible: Bool {
-        autoPlay.isOverlayVisible && !autoPlay.isFailoverWalk
+    /// The loading cover is up (BUG-183): auto mode is armed or working (not while a failover
+    /// resolves behind the open player), or `coverHold` keeps it.
+    private var loadingCoverVisible: Bool {
+        StreamPickerCoverPolicy.showsCover(armed: autoPlayArmed, phase: autoPlay.phase,
+                                           isFailoverWalk: autoPlay.isFailoverWalk, held: coverHold)
     }
+
+    /// BUG-182/183: the cover itself, out of `body` so the type checker stays fast.
+    private var loadingCover: some View {
+        let cancel: (() -> Void)? = loadingCoverCancels ? { cancelAutoPlay() } : nil
+        let line: String? = PlayerLoadingOverlay.episodeLine(
+            season: season, episode: episode,
+            episodes: episodes.isEmpty ? fetchedEpisodes : episodes)
+        return FirstPlayAutoPlayOverlay(
+            title: title,
+            parentMetaId: parentMetaId,
+            episodeLine: line,
+            pulseKey: videoId,
+            message: loadingCoverMessage,
+            onCancel: cancel
+        )
+    }
+
+    /// The cover's spoken label while auto mode works; nil while it is only held.
+    private var loadingCoverMessage: String? {
+        StreamPickerCoverPolicy.message(armed: autoPlayArmed, phase: autoPlay.phase,
+                                        isFailoverWalk: autoPlay.isFailoverWalk)
+    }
+
+    /// Menu on the cover cancels auto mode only while auto mode is working; a held cover swallows it.
+    private var loadingCoverCancels: Bool { loadingCoverMessage != nil }
 
     // MARK: - Group headers
 
@@ -790,7 +829,6 @@ struct StreamPickerView: View {
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
             // A manual stream pick is user interaction — reset the Still Watching run.
             NextEpisodeEngine.consecutiveAutoPlays = 0
-            dismissAfterPlayer = false
             selected = context(url: url, stream: stream, listedStream: stream, streamKey: streamKey,
                                launchSource: .manual, attempt: attempt)
             return
@@ -820,7 +858,6 @@ struct StreamPickerView: View {
                     return
                 }
                 NextEpisodeEngine.consecutiveAutoPlays = 0
-                dismissAfterPlayer = false
                 selected = context(url: url, stream: resolved, listedStream: stream, streamKey: streamKey,
                                    launchSource: .manual, attempt: attempt)
             }
@@ -852,7 +889,6 @@ struct StreamPickerView: View {
                 let resolvedUrl: String? = success.stream.playableDirectUrl
                 if let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) {
                     NextEpisodeEngine.consecutiveAutoPlays = 0
-                    dismissAfterPlayer = false
                     selected = context(url: url, stream: success.stream, listedStream: stream, streamKey: streamKey,
                                        launchSource: .manual, attempt: attempt)
                     return
@@ -939,7 +975,7 @@ struct StreamPickerView: View {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty {
             openExternally(urlString: direct, stream: stream, listed: stream, playerId: playerId,
-                           fallbackToInternal: fallbackToInternal)
+                           rowKey: rowKey, fallbackToInternal: fallbackToInternal)
             return
         }
 
@@ -963,7 +999,7 @@ struct StreamPickerView: View {
                     return
                 }
                 openExternally(urlString: resolvedUrl, stream: resolved, listed: stream, playerId: playerId,
-                               fallbackToInternal: fallbackToInternal)
+                               rowKey: rowKey, fallbackToInternal: fallbackToInternal)
             }
             return
         }
@@ -996,6 +1032,7 @@ struct StreamPickerView: View {
                         stream: success.stream,
                         listed: stream,
                         playerId: playerId,
+                        rowKey: rowKey,
                         fallbackToInternal: fallbackToInternal
                     )
                     return
@@ -1026,11 +1063,41 @@ struct StreamPickerView: View {
     /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).
     ///
     /// `autoAttempt` (1-based) marks the first-play auto start handing its pick to the viewer's
-    /// external default: its built-in fallback is then an auto start too (`.autoPlay`, Back leaves
-    /// the picker, a failure continues the walk). Returns true when the external player opened.
-    @discardableResult
+    /// external default: its built-in fallback is then an auto start too (`.autoPlay`, the walk
+    /// continues on a failure).
+    ///
+    /// D5 (Steven rc7): the request also carries the add-on subtitles this picker fetched
+    /// (`SubtitleRepository`, prefetched since the picker opened), the stream's own first, then the
+    /// viewer's preferred subtitle language first (`ExternalSubtitleHandOff`). When that fetch has
+    /// not finished, the hand-off waits for it at most `ExternalSubtitleHandOff.waitSeconds`
+    /// (row spinner on, one hand-off at a time) and then sends what has arrived.
+    ///
+    /// BUG-174 (Steven rc7): a hand-off that opened closes the picker, manual picks included (the
+    /// auto path always did), so coming back from the external player lands on the page the viewer
+    /// started from.
     private func openExternally(urlString: String, stream: StreamItem, listed: StreamItem, playerId: String,
-                                fallbackToInternal: Bool = false, autoAttempt: Int? = nil) -> Bool {
+                                rowKey: String? = nil, fallbackToInternal: Bool = false, autoAttempt: Int? = nil) {
+        let spinnerKey = rowKey ?? Self.handOffRowKey
+        resolvingKey = spinnerKey
+        let type = type
+        let videoId = videoId
+        Task { @MainActor in
+            let addonSubtitles = await ExternalSubtitleHandOff.liveAddonSubtitles(type: type, videoId: videoId)
+            if resolvingKey == spinnerKey { resolvingKey = nil }
+            // The viewer left the picker, or something else started playing, while it waited.
+            guard pickerOnScreen, selected == nil else {
+                print("[StreamPicker] external hand-off dropped: the picker moved on while subtitles loaded")
+                return
+            }
+            openExternallyNow(urlString: urlString, stream: stream, listed: listed, playerId: playerId,
+                              addonSubtitles: addonSubtitles, fallbackToInternal: fallbackToInternal,
+                              autoAttempt: autoAttempt)
+        }
+    }
+
+    /// `openExternally` once the add-on subtitles are in hand.
+    private func openExternallyNow(urlString: String, stream: StreamItem, listed: StreamItem, playerId: String,
+                                   addonSubtitles: [AddonSubtitle], fallbackToInternal: Bool, autoAttempt: Int?) {
         let progress = WatchProgressRepository.shared.progressForVideo(
             videoId: videoId,
             parentMetaId: parentMetaId,
@@ -1063,15 +1130,17 @@ struct StreamPickerView: View {
             callbackSuccessUrl = callbacks.first.map { $0 as String }
             callbackErrorUrl = callbacks.second.map { $0 as String }
         }
+        let subtitles = ExternalSubtitleHandOff.requestSubtitles(stream: stream, addonSubtitles: addonSubtitles)
+        print("[StreamPicker] external hand-off player=\(playerId) subtitles=\(subtitles.count) (stream=\(stream.externalSubtitles.count) addon=\(addonSubtitles.count))")
         let request = ExternalPlayerPlaybackRequest(
             sourceUrl: urlString,
             title: title,
             streamTitle: nil,
             sourceHeaders: [:],
             resumePositionMs: resumeMs,
-            subtitles: stream.externalSubtitles.map { sub in
-                SubtitleInput(url: sub.url, name: { let n: String? = sub.name; return n }() ?? sub.language, lang: sub.language)
-            },
+            // Each player's builder keeps its own rules (VLC/VidHub take the first; Native
+            // Player keeps http(s) SRT only), so the order here is what decides.
+            subtitles: subtitles,
             season: season.map { KotlinInt(int: Int32($0)) },
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,
@@ -1083,7 +1152,12 @@ struct StreamPickerView: View {
         )
         let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
-        guard result != ExternalPlayerOpenResult.opened else { return true }
+        if result == ExternalPlayerOpenResult.opened {
+            // BUG-174: handed off — the picker leaves (manual picks too); Back from the external
+            // player returns to the page that opened it.
+            closePicker()
+            return
+        }
         if let launchSessionId {
             // Nothing was handed off: drop the pending return session (only if it is still this one).
             ExternalPlaybackReturn.shared.cancelLaunch(sessionId: launchSessionId)
@@ -1093,18 +1167,17 @@ struct StreamPickerView: View {
             NextEpisodeEngine.consecutiveAutoPlays = 0
             if let autoAttempt {
                 autoPlayLog("[AutoPlay] external player \(playerId) did not open — attempt #\(autoAttempt) plays in NuvioTV")
-                dismissAfterPlayer = true
                 selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
                                    launchSource: .autoPlay, attempt: autoAttempt - 1)
             } else {
-                dismissAfterPlayer = false
                 selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
                                    launchSource: .manual)
             }
         } else {
+            // An auto pick's cover was held for the hand-off: the list shows with the toast.
+            coverHold = false
             showToast(String(localized: "Couldn\u{2019}t open the external player."))
         }
-        return false
     }
 
     /// Duration for the external-player return: the stored progress entry's, else the episode's
@@ -1141,28 +1214,28 @@ struct StreamPickerView: View {
                 autoPlayLog("[AutoPlay] failover result after the player closed — dropped")
                 return
             }
+            // BUG-183: the cover stays up while the player is presented (`.done` alone would hide
+            // it and show the list for a beat before the player's cover is up).
+            coverHold = true
             autoPlayArmed = false
             NextEpisodeEngine.consecutiveAutoPlays = 0
             if case let .external(playerId) = FirstPlayAutoPlayController.Policy.startDestination(
                 isFailover: isFailover, defaultExternalPlayerId: activeDefaultExternalPlayer?.id
             ) {
                 // The viewer's default player is external: the auto pick goes there, as Select on a
-                // row would. Handed off, the picker leaves too (Back from the player would have);
-                // a handoff that does not open plays in NuvioTV as this same auto start.
+                // row would. Handed off, the picker leaves too (`openExternally`, BUG-174); a
+                // handoff that does not open plays in NuvioTV as this same auto start.
                 autoPlayLog("[AutoPlay] attempt #\(attempt) to external player \(playerId) key=\(candidate.streamKey)")
-                let opened = openExternally(urlString: url.absoluteString, stream: resolved, listed: candidate.stream,
-                                            playerId: playerId, fallbackToInternal: true, autoAttempt: attempt)
-                if opened {
-                    DispatchQueue.main.async { dismiss() }
-                }
+                openExternally(urlString: url.absoluteString, stream: resolved, listed: candidate.stream,
+                               playerId: playerId, fallbackToInternal: true, autoAttempt: attempt)
                 return
             }
-            dismissAfterPlayer = true
             // Set straight from the event: during a failover this swaps the open player in place.
             selected = context(url: url, stream: resolved, listedStream: candidate.stream,
                                streamKey: candidate.streamKey, launchSource: .autoPlay, attempt: attempt - 1)
         case let .gaveUp(reason, duringFailover):
             autoPlayArmed = false
+            coverHold = false
             rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
             if duringFailover {
                 // The viewer already left the player: nothing to explain.
@@ -1170,7 +1243,8 @@ struct StreamPickerView: View {
                     autoPlayLog("[AutoPlay] walk ended (\(reason)) after the player had closed — nothing shown, rejected=\(rejectedKeys.count)")
                     return
                 }
-                dismissAfterPlayer = false
+                // BUG-174: this close shows the list (with the toast below), not the opener.
+                keepListAfterPlayer = true
                 selected = nil
             }
             let listedStreams = model.groups.reduce(0) { $0 + $1.streams.count }
@@ -1186,6 +1260,7 @@ struct StreamPickerView: View {
     private func cancelAutoPlay() {
         autoPlay.cancel(why: "Menu on the overlay")
         autoPlayArmed = false
+        coverHold = false
         focusListAfterAutoPlay()
     }
 
@@ -1269,7 +1344,6 @@ struct StreamPickerView: View {
                 retry: retryContext,
                 retryEngine: retryEngine
             )
-            dismissAfterPlayer = false
             selected = nil
         }
     }
@@ -1297,41 +1371,81 @@ struct StreamPickerView: View {
         return list[index]
     }
 
-    /// The player cover closed. A context swap (failover, Up Next) re-presents instead and leaves
-    /// `selected` set; a real close raises whatever the failure queued — never in the same runloop
-    /// as the dismissal — or, after an auto-started playback, dismisses the picker as well.
-    private func handlePlayerDismissed() {
-        guard selected == nil else { return }
-        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
-        if let pending = pendingManualFailureAlert {
-            pendingManualFailureAlert = nil
-            DispatchQueue.main.async { manualFailureAlert = pending }
-            return
-        }
-        if let pending = pendingFailoverTarget {
-            pendingFailoverTarget = nil
-            DispatchQueue.main.async { failoverTarget = pending }
-            return
-        }
-        // A failover still resolving behind the closed player must not reopen it.
-        autoPlay.cancel(why: "player closed")
-        if dismissAfterPlayer {
-            dismissAfterPlayer = false
-            DispatchQueue.main.async { dismiss() }
+    /// What the closing player leads to (BUG-174): the queued alert, the queued Up Next failover
+    /// picker, the list (an auto walk that ended with nothing), or — everything else, manual picks
+    /// included — closing the picker so Back lands on the page that opened it.
+    private var afterPlayerOutcome: StreamPickerExitPolicy.AfterPlayer {
+        StreamPickerExitPolicy.afterPlayerClosed(
+            alertQueued: pendingManualFailureAlert != nil,
+            failoverPickerQueued: pendingFailoverTarget != nil,
+            listRequested: keepListAfterPlayer
+        )
+    }
+
+    /// `selected` went nil (the player is closing; its slide-down has not revealed the list yet).
+    /// BUG-174: when the picker closes too (or the Up Next failover picker takes over), the loading
+    /// cover goes over the list first, with no animation, so the list never shows on the way out;
+    /// when the list has to show (the alert, an ended walk), the cover drops.
+    private func prepareForPlayerClose() {
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            switch afterPlayerOutcome {
+            case .closePicker, .openFailoverPicker: coverHold = true
+            case .raiseAlert, .keepList: coverHold = false
+            }
         }
     }
 
-    /// The Up Next failover picker closed. Both pickers share the one `StreamsRepository`, so this
-    /// picker's list is reloaded; after an auto-started visit, Back keeps going to the opener.
-    private func handleFailoverPickerDismissed() {
-        if dismissAfterPlayer {
-            dismissAfterPlayer = false
-            DispatchQueue.main.async { dismiss() }
-            return
-        }
-        model.stop()
-        model.start(forceManual: true)
+    /// The player cover closed. A context swap (failover, Up Next) re-presents instead and leaves
+    /// `selected` set; a real close raises whatever the failure queued — never in the same runloop
+    /// as the dismissal — or closes the picker as well (BUG-174, Steven rc7: Back from a player
+    /// returns to the page you started from, manual picks included; D1).
+    private func handlePlayerDismissed() {
+        guard selected == nil else { return }
         rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+        switch afterPlayerOutcome {
+        case .raiseAlert:
+            guard let pending = pendingManualFailureAlert else { return }
+            pendingManualFailureAlert = nil
+            coverHold = false
+            DispatchQueue.main.async { manualFailureAlert = pending }
+        case .openFailoverPicker:
+            guard let pending = pendingFailoverTarget else { return }
+            pendingFailoverTarget = nil
+            // The nested picker's own close closes this one too: the cover keeps the list hidden
+            // under it and on the way out.
+            coverHold = true
+            DispatchQueue.main.async { failoverTarget = pending }
+        case .keepList:
+            keepListAfterPlayer = false
+            coverHold = false
+            autoPlay.cancel(why: "player closed")
+        case .closePicker:
+            // A failover still resolving behind the closed player must not reopen it.
+            autoPlay.cancel(why: "player closed")
+            closePicker()
+        }
+    }
+
+    /// The Up Next failover picker closed (Back from its list, or its own player closed it).
+    /// BUG-174: this picker's list is for the episode before, so the picker closes as well and
+    /// Back lands on the page that opened it.
+    private func handleFailoverPickerDismissed() {
+        closePicker()
+    }
+
+    /// BUG-174: closes the picker without the list showing — the cover goes up and both changes
+    /// run without animation (the picker's own slide-down would otherwise reveal the list).
+    private func closePicker() {
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) { coverHold = true }
+        // Not gated on `pickerOnScreen`: the player's full-screen cover can take the picker off
+        // screen (`onDisappear`) until after this runs.
+        DispatchQueue.main.async {
+            withTransaction(instant) { dismiss() }
+        }
     }
 
     /// Mirrors the shared `DirectDebridPlayableResult.toastMessage()` wording (tvOS renders the
@@ -1424,5 +1538,130 @@ private struct ExternalPlayMenu: ViewModifier {
                 }
             }
         }
+    }
+}
+
+/// BUG-174 / BUG-183 (Steven rc7): the stream picker's loading cover and what a closing player
+/// leads to. Pure, so `StreamPickerExitPolicyTests` pins every case.
+enum StreamPickerCoverPolicy {
+    typealias Phase = FirstPlayAutoPlayController.Phase
+
+    /// The cover is over the list: held (an auto pick's player being presented or up, the Up Next
+    /// failover picker up, the picker closing), auto mode armed but not started yet (the first
+    /// frame, before `onAppear` arms the controller), or auto mode working — except a failover
+    /// walk, which resolves behind the open player.
+    static func showsCover(armed: Bool, phase: Phase, isFailoverWalk: Bool, held: Bool) -> Bool {
+        if held { return true }
+        return message(armed: armed, phase: phase, isFailoverWalk: isFailoverWalk) != nil
+    }
+
+    /// The cover's spoken label while auto mode works ("Finding the best source…"); nil otherwise.
+    static func message(armed: Bool, phase: Phase, isFailoverWalk: Bool) -> String? {
+        if phase == .idle { return armed ? FirstPlayAutoPlayController.Policy.overlayMessage(for: .searching) : nil }
+        guard !isFailoverWalk else { return nil }
+        return FirstPlayAutoPlayController.Policy.overlayMessage(for: phase)
+    }
+}
+
+enum StreamPickerExitPolicy {
+    enum AfterPlayer: Equatable {
+        /// "Couldn't play this source" (a manual pick failed): the picker stays on its list.
+        case raiseAlert
+        /// The Up Next episode's source failed: its own picker opens over this one.
+        case openFailoverPicker
+        /// An auto walk ended with nothing during a failover: the list shows with a toast.
+        case keepList
+        /// D1: everything else — the picker closes with the player.
+        case closePicker
+    }
+
+    static func afterPlayerClosed(alertQueued: Bool, failoverPickerQueued: Bool, listRequested: Bool) -> AfterPlayer {
+        if alertQueued { return .raiseAlert }
+        if failoverPickerQueued { return .openFailoverPicker }
+        if listRequested { return .keepList }
+        return .closePicker
+    }
+}
+
+/// D5 (Steven rc7): the subtitles an external player is handed — the stream's own first, then the
+/// add-on subtitles this app fetched, the viewer's preferred subtitle language(s) first, each URL
+/// once, at most `cap`. The players' URL builders apply their own rules after this
+/// (`ExternalPlayerPlatform.apple.kt`: VLC and VidHub take the first, Native Player keeps http(s)
+/// SRT only), so the order is what matters.
+enum ExternalSubtitleHandOff {
+    struct Item: Equatable {
+        let url: String
+        let name: String
+        let lang: String
+    }
+
+    static let cap = 10
+    /// The longest a hand-off waits for an add-on subtitle fetch that has not finished.
+    static let waitSeconds: TimeInterval = 1.5
+
+    /// Pure. `matches(trackLanguage, target)` is the shared `languageMatchesPreference` live.
+    static func merge(own: [Item], addon: [Item], preferredTargets: [String],
+                      matches: (String, String) -> Bool, cap: Int = cap) -> [Item] {
+        func rank(_ lang: String) -> Int {
+            preferredTargets.firstIndex { matches(lang, $0) } ?? preferredTargets.count
+        }
+        struct Ranked { let offset: Int; let item: Item; let rank: Int }
+        var ranked: [Ranked] = []
+        for (offset, item) in addon.enumerated() {
+            ranked.append(Ranked(offset: offset, item: item, rank: rank(item.lang)))
+        }
+        ranked.sort { lhs, rhs in
+            lhs.rank != rhs.rank ? lhs.rank < rhs.rank : lhs.offset < rhs.offset
+        }
+        let rankedAddon: [Item] = ranked.map { $0.item }
+        var seen = Set<String>()
+        var out: [Item] = []
+        for item in own + rankedAddon {
+            guard out.count < cap else { break }
+            let key = item.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            out.append(item)
+        }
+        return out
+    }
+
+    /// The add-on subtitles for this title: the picker's prefetch (`fetchAddonSubtitles` is a no-op
+    /// when that fetch already covers it), waited for at most `waitSeconds` when still running,
+    /// then whatever has arrived. "Show only preferred languages" applies, as in both players.
+    @MainActor
+    static func liveAddonSubtitles(type: String, videoId: String) async -> [AddonSubtitle] {
+        let repository = SubtitleRepository.shared
+        repository.fetchAddonSubtitles(type: type, videoId: videoId)
+        let key = repository.requestKey(type: type, videoId: videoId)
+        let deadline = Date().addingTimeInterval(waitSeconds)
+        while (repository.completedRequest.value_ as? String) != key, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let subtitles = repository.addonSubtitles.value_ as? [AddonSubtitle] ?? []
+        guard let settings = playerSettings() else { return subtitles }
+        return PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subtitles, settings: settings)
+    }
+
+    /// The request's `subtitles` for `stream` plus `addonSubtitles`, ordered by the viewer's
+    /// subtitle language preference (the targets both players resolve).
+    @MainActor
+    static func requestSubtitles(stream: StreamItem, addonSubtitles: [AddonSubtitle]) -> [SubtitleInput] {
+        let own = stream.externalSubtitles.map { sub in
+            Item(url: sub.url, name: { let n: String? = sub.name; return n }() ?? sub.language, lang: sub.language)
+        }
+        let addon = addonSubtitles.map { Item(url: $0.url, name: $0.display, lang: $0.language) }
+        let targets: [String] = playerSettings().map {
+            PlayerTrackSelectionKt.preferredSubtitleTargetsForSettings(settings: $0)
+        } ?? []
+        return merge(own: own, addon: addon, preferredTargets: targets) { track, target in
+            PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: track, targetLanguage: target)
+        }
+        .map { SubtitleInput(url: $0.url, name: $0.name, lang: $0.lang) }
+    }
+
+    @MainActor
+    private static func playerSettings() -> PlayerSettingsUiState? {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        return PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
     }
 }

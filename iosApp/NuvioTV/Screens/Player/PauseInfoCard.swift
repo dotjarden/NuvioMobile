@@ -44,8 +44,8 @@ struct PauseInfoCard: View {
         .foregroundStyle(.white)
         .padding(28)
         .frame(maxWidth: 860, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+        // BUG-180 (Steven rc7): solid player surface, not glass + shadow (see PlayerSurfaceStyle).
+        .playerSurface(in: RoundedRectangle(cornerRadius: 16))
         .accessibilityIdentifier("player.pauseCard")
     }
 

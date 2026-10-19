@@ -60,6 +60,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceNavigation = "appearance.navigation"
     // Home Stage & Strip (H9, FEAT-45): the Rail row under Navigation, shown only with Rail.
     case appearanceRail = "appearance.rail"
+    case appearanceRailPosition = "appearance.railPosition"
+    case appearanceRailLabels = "appearance.railLabels"
     // Search & Discover batch (A5): where Discover lives.
     case appearanceDiscoverPlacement = "appearance.discoverPlacement"
     case appearanceTypeface = "appearance.typeface"
@@ -264,6 +266,8 @@ enum SettingsDescriptions {
         case .appearanceHeadingDetails: return LocalizedStringResource("Adds the add-on's name after row headings on the Stage and Discover, and the source count under a collection folder on both Home layouts. Off by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Rail replaces it with a column of icons on the left edge. Press Left at the edge of a page, or Menu, to open it. Default: Top Tabs.")
+        case .appearanceRailPosition: return LocalizedStringResource("Where the rail sits on the left edge: centred, or at the top-left corner. Default: Centre.")
+        case .appearanceRailLabels: return LocalizedStringResource("Shown widens the rail to show each tab's name when you open it. Icons Only keeps it narrow and shows just the icons. Default: Shown.")
         case .appearanceRail: return LocalizedStringResource("Always Visible keeps the rail on screen and moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Hidden keeps it off screen until you press Left from the first card or Menu. Default: Always Visible.")
         case .appearanceDiscoverPlacement: return LocalizedStringResource("Own Tab puts Discover on the tab bar and rail. Under Search adds a Discover row to the Search page that opens it. Off hides Discover everywhere, and syncs as Hide Discover to your other devices. Default: Own Tab.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")

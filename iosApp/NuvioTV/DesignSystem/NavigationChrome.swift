@@ -25,6 +25,10 @@ nonisolated enum NavigationChrome {
     static let styleKey = "sidebar_style"
     /// New with the rail: Always Visible / Hide While Browsing / Hidden (FEAT-62).
     static let railVisibilityKey = "rail_visibility"
+    /// FEAT-80 (Steven rc7): where the pill sits on the left edge, and whether it shows labels.
+    /// Device-local like the two keys above.
+    static let railPositionKey = "rail_position"
+    static let railLabelsKey = "rail_labels"
     /// FEAT-30's stored value. Reads as Rail, and `migrateLegacy` rewrites it once.
     static let legacySidebarValue = "sidebar"
 
@@ -42,6 +46,32 @@ nonisolated enum NavigationChrome {
         /// again as soon as focus leaves it. Reserves no width, like Hide While Browsing.
         case hidden
     }
+
+    /// FEAT-80: Centre (the default, vertically centred) or Top (top-left).
+    enum RailPosition: String, Equatable, Sendable, CaseIterable {
+        case centre
+        case top
+    }
+
+    /// FEAT-80: Shown (the default; the pill grows to show labels when it opens) or Icons Only (the
+    /// pill keeps its collapsed width and never draws labels).
+    enum RailLabels: String, Equatable, Sendable, CaseIterable {
+        case shown
+        case iconsOnly = "icons"
+    }
+
+    /// Anything but "top" is Centre, so a missing or unknown value keeps today's rail.
+    static func railPosition(raw: String?) -> RailPosition {
+        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailPosition.top.rawValue ? .top : .centre
+    }
+
+    /// Anything but "icons" is Shown, so a missing or unknown value keeps today's rail.
+    static func railLabels(raw: String?) -> RailLabels {
+        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailLabels.iconsOnly.rawValue ? .iconsOnly : .shown
+    }
+
+    /// FEAT-80: the pill's distance from the top edge in Top position, inside the TV's safe area.
+    static let topInset: CGFloat = 60
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
 

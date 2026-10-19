@@ -63,7 +63,7 @@ extension MetaTrailer {
 
 /// One 16:9 trailer thumbnail in the "Trailers & Extras" shelf: YouTube still + scrim, title and
 /// type/year caption below. Same lockup language as `EpisodeThumbCard` — platter-free, used inside
-/// a `.borderless` Button so it carries the standard focus ring/scale/shadow.
+/// a `cardFocusButtonStyle()` Button; the tile draws its own focus treatment (`DetailTileFocusLift`).
 struct TrailerThumbCard: View {
     let trailer: MetaTrailer
     /// True while `DetailViewModel` is resolving a playable stream URL for this trailer (shows a
@@ -74,35 +74,63 @@ struct TrailerThumbCard: View {
     // BUG-32 (beta.13 review, frame-verified at t=80): shared corner token, not the hardcoded
     // Theme.Radius.card, so the Corners setting reaches trailer thumbnails.
     @Environment(\.posterStyle) private var posterStyle
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-177: ring/zoom/poster-colour settings from the root (`ProvidesFocusAppearance`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    @Environment(\.cardDepthStyle) private var depthStyle
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// BUG-177: the rail colour sampled when the still lands ("Depth Takes Poster Color").
+    @State private var depthRailTint: Color?
+
+    private var samplesDepthColor: Bool {
+        DetailTileFocus.samplesRailColor(depthTakesPosterColor: focusAppearance.depthTakesPosterColor,
+                                         depthEnabled: depthStyle.isEnabled(for: .trailers),
+                                         artworkURL: trailer.thumbnailURLString)
+    }
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
                 CachedAsyncImage(string: trailer.thumbnailURLString)
+                    .onImageLoaded { _ in
+                        DetailTileRailTint.imageLoaded(samples: samplesDepthColor,
+                                                       source: trailer.thumbnailURLString) { color in
+                            if depthRailTint != color { depthRailTint = color }
+                        }
+                    }
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
                     // hqdefault.jpg bakes in 4:3 letterbox bars top/bottom; cropping to our fixed
                     // 16:9 frame trims them the same way upstream's `ContentScale.Crop` does.
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-                    .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .trailers)
 
                 // Upstream parity: a flat dark scrim over every still, not just on focus.
+                // BUG-177: now UNDER the depth layer (inside the clip, before `nuvioCardDepth`) —
+                // it used to sit over the rail and sheen and dim them to near-invisible.
                 Color.black.opacity(0.2)
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
                     .allowsHitTesting(false)
-
-                if isResolving {
-                    Color.black.opacity(0.45)
-                        .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-                        .allowsHitTesting(false)
-                    ProgressView()
-                        .tint(.white)
-                }
             }
             .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .clipShape(shape)
+            .nuvioCardDepth(shape, surface: .trailers,
+                            railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
+                                                                  source: trailer.thumbnailURLString,
+                                                                  sampled: depthRailTint))
+            .overlay {
+                if isResolving {
+                    ZStack {
+                        Color.black.opacity(0.45)
+                            .clipShape(shape)
+                        ProgressView()
+                            .tint(.white)
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
             // BUG-31: goes still under "No Zoom on Focus" (which this tile used to ignore).
-            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
+            // BUG-177 (Steven rc7): draws the accent ring and owns its lift in ring mode.
+            .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
+                                 size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
+                                 tintSource: trailer.thumbnailURLString)
 
             // UX-15 class: both caption lines drop together under the system lift so the lifted
             // artwork never grows over them (same arithmetic as PosterCard's BUG-54 treatment).
@@ -122,13 +150,16 @@ struct TrailerThumbCard: View {
                     .padding(.horizontal, Theme.Spacing.xs)
             }
             .modifier(CardCaptionFocusDrop(
-                mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                            noZoomOnFocus: focusAppearance.noZoomOnFocus),
                 isFocused: isFocused,
                 artworkHeight: Theme.Size.episodeHeight
             ))
         }
         .frame(width: Theme.Size.episodeWidth)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // BUG-177: gated on Reduce Motion now that this wraps ring mode's manual scale (the
+        // `CastCard` BUG-108 rule: a blanket animation here would undo `CardArtworkFocusLift`'s nil).
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 
     /// "Trailer · 2024", or just the type when there's no publish year.

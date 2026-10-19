@@ -46,6 +46,8 @@ struct AppearanceSettingsPane: View {
     /// every page; `"browsing"` floats it and slides it away while browsing. Also part of the `.id`
     /// remount key (it changes every tab root's inset).
     @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = NavigationChrome.RailVisibility.always.rawValue
+    @AppStorage(NavigationChrome.railPositionKey) private var railPosition = NavigationChrome.RailPosition.centre.rawValue
+    @AppStorage(NavigationChrome.railLabelsKey) private var railLabels = NavigationChrome.RailLabels.shown.rawValue
     /// Home Stage & Strip (P3 #22): Hide Hero Artwork While Browsing only means something in
     /// Classic, so the row hides in Stage. Live, like every Home Layout reader.
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
@@ -91,6 +93,16 @@ struct AppearanceSettingsPane: View {
     /// H9 Rail row options. Values are the raw `rail_visibility` strings. FEAT-62 (Steven,
     /// beta.19-rc3 follow-up 2026-10-08: "hide it on the first line, show it on Left/Back") adds
     /// Hidden: off screen at rest, revealed by Left from the first card or Menu.
+    /// FEAT-80 (Steven rc7) options. Values are the raw `rail_position` / `rail_labels` strings.
+    private static let railPositionOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailPosition.centre.rawValue, String(localized: "Centre")),
+        (NavigationChrome.RailPosition.top.rawValue, String(localized: "Top")),
+    ]
+    private static let railLabelsOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailLabels.shown.rawValue, String(localized: "Shown")),
+        (NavigationChrome.RailLabels.iconsOnly.rawValue, String(localized: "Icons Only")),
+    ]
+
     private static let railVisibilityOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailVisibility.always.rawValue, String(localized: "Always Visible")),
         (NavigationChrome.RailVisibility.whileBrowsing.rawValue, String(localized: "Hide While Browsing")),
@@ -334,6 +346,30 @@ struct AppearanceSettingsPane: View {
                     )
                     .accessibilityIdentifier("appearance_row_rail")
                     .focused($appearanceRowFocus, equals: "railVisibility")
+
+                    // FEAT-80: live (`@AppStorage` in `NavigationRail`), so no remount and no focus
+                    // reclaim needed.
+                    SettingsPickerRow(
+                        title: String(localized: "Rail Position"),
+                        selection: Binding(
+                            get: { NavigationChrome.railPosition(raw: railPosition).rawValue },
+                            set: { railPosition = $0 }),
+                        options: Self.railPositionOptions.map(\.value),
+                        descriptionID: .appearanceRailPosition,
+                        label: { value in Self.railPositionOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail_position")
+
+                    SettingsPickerRow(
+                        title: String(localized: "Rail Labels"),
+                        selection: Binding(
+                            get: { NavigationChrome.railLabels(raw: railLabels).rawValue },
+                            set: { railLabels = $0 }),
+                        options: Self.railLabelsOptions.map(\.value),
+                        descriptionID: .appearanceRailLabels,
+                        label: { value in Self.railLabelsOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail_labels")
                 }
 
                 // Search & Discover batch (A5): Own Tab / Under Search / Off. Off syncs as Hide

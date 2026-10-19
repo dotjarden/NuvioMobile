@@ -277,6 +277,8 @@ struct NavigationRail: View {
     let tabBarVisibility: TabBarVisibility
 
     @AppStorage(NavigationChrome.railVisibilityKey) private var visibilityRaw = NavigationChrome.RailVisibility.always.rawValue
+    @AppStorage(NavigationChrome.railPositionKey) private var railPositionRaw = NavigationChrome.RailPosition.centre.rawValue
+    @AppStorage(NavigationChrome.railLabelsKey) private var railLabelsRaw = NavigationChrome.RailLabels.shown.rawValue
     /// A6: whether the Discover item is listed. Handed down from `MainTabView.showsDiscoverTab`,
     /// the same once-per-tree value that decides whether `Tab(value: 6)` exists, so the rail never
     /// lists an item without a tab or the reverse (review r1 P2-1). The rail never reads
@@ -355,8 +357,23 @@ struct NavigationRail: View {
         .easeOut(duration: RailMetrics.slideDuration)
     }
 
+    /// FEAT-80 (Steven rc7): Top position puts the pill at the top-left instead of centred.
+    private var pillAlignment: Alignment {
+        NavigationChrome.railPosition(raw: railPositionRaw) == .top ? .topLeading : .leading
+    }
+
+    /// FEAT-80: Icons Only keeps the pill at its collapsed width and never draws labels.
+    private var showsLabels: Bool {
+        NavigationChrome.railLabels(raw: railLabelsRaw) == .shown
+    }
+
+    /// The pill's width: grows only while expanded AND labels are shown.
+    private var pillWidth: CGFloat {
+        expanded && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
+    }
+
     var body: some View {
-        ZStack(alignment: .leading) {
+        ZStack(alignment: pillAlignment) {
             // The dim: always mounted at opacity 0, so it cross-fades with or without Reduce Motion
             // (#20). Behind the pill, never hit-testable, never focusable.
             Color.black
@@ -368,12 +385,13 @@ struct NavigationRail: View {
             if shown {
                 pill
                     .padding(.leading, RailMetrics.bezelInset)
+                    .padding(.top, pillAlignment == .topLeading ? NavigationChrome.topInset : 0)
                     .transition(reduceMotion ? AnyTransition.opacity
                                 : AnyTransition.move(edge: .leading).combined(with: .opacity))
             }
         }
         .animation(slideAnimation, value: shown)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: pillAlignment)
         .ignoresSafeArea()
         // Zero-sized, always mounted in Rail mode: keeps the hidden system bar out of the focus
         // engine, redirects a stranded landing into the rail (S1), and carries the UIKit gate.
@@ -441,7 +459,7 @@ struct NavigationRail: View {
         }
         .padding(.vertical, RailMetrics.verticalPadding)
         .padding(.horizontal, RailMetrics.innerPadding)
-        .frame(width: expanded ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth, alignment: .leading)
+        .frame(width: pillWidth, alignment: .leading)
         .background(alignment: .leading) {
             RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous)
                 .fill(Color.clear)
@@ -492,21 +510,25 @@ struct NavigationRail: View {
 
     private func itemLabel(_ item: RailItem, focused: Bool) -> some View {
         let selected = item.id == selectedTab
-        let width = (expanded ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth) - 2 * RailMetrics.innerPadding
+        let width = pillWidth - 2 * RailMetrics.innerPadding
         return HStack(spacing: RailMetrics.labelGap) {
             itemGlyph(item, selected: selected, focused: focused)
                 .frame(width: RailMetrics.itemPlatter, height: RailMetrics.itemPlatter)
             // Always mounted at its full width, faded in and out with the expansion (#20); it draws
-            // past the collapsed frame only while invisible.
-            Text(itemTitle(item))
-                .font(Theme.Font.body)
-                .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
-                .lineLimit(1)
-                .fixedSize()
-                .opacity(expanded ? 1 : 0)
-                .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
+            // past the collapsed frame only while invisible. FEAT-80: not mounted with Icons Only.
+            if showsLabels {
+                Text(itemTitle(item))
+                    .font(Theme.Font.body)
+                    .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .opacity(expanded ? 1 : 0)
+                    .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
+            }
         }
         .frame(width: width, alignment: .leading)
+        // FEAT-80: VoiceOver and the UI tests still read the title with Icons Only.
+        .accessibilityLabel(itemTitle(item))
     }
 
     @ViewBuilder

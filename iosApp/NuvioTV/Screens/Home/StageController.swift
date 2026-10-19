@@ -185,6 +185,8 @@ final class StageController: ObservableObject {
     private var uncoverRestoreGeneration = 0
     /// The pop (`restoreAfterUncover`) while its request still waits for the pager.
     private var uncoverRequestedAt: TimeInterval?
+    /// BUG-176: the row a pending (not yet issued) restore is for; nil whenever `uncoverRequestedAt` is.
+    private var uncoverPendingRowKey: String?
     /// The live restore once its request went to the pager. See `UncoverRestorePolicy`.
     ///
     /// BUG-156 (device pass 2026-10-15, Living Room ATV): on hardware the engine's OWN deferred
@@ -234,6 +236,7 @@ final class StageController: ObservableObject {
         uncoverRestoreTarget = nil
         let requestedAt = ProcessInfo.processInfo.systemUptime
         uncoverRequestedAt = requestedAt
+        uncoverPendingRowKey = rowKey
         StageStripProbe.shared.log("restore pop row=\(rowKey) item=\(itemId ?? "memory") clock=\(ViewerInputClock.shared.isLive ? 1 : 0) source=\(uncoverSource)")
         attemptUncoverRestore(rowKey: rowKey, itemId: itemId, requestedAt: requestedAt,
                               generation: uncoverRestoreGeneration, attempt: 0)
@@ -243,8 +246,14 @@ final class StageController: ObservableObject {
     /// pop restore will re-grab it (the engine's late restoration, not the viewer's move). Same
     /// decision the restore makes in `handleUncoverMove`, asked before the page instead of after.
     func uncoverHoldsPage(forRowKey key: String) -> Bool {
-        guard let target = uncoverRestoreTarget else { return false }
         let clock = ViewerInputClock.shared
+        guard let target = uncoverRestoreTarget else {
+            // BUG-176: the restore is still waiting for the pager; hold for the engine's move too.
+            return UncoverRestorePolicy.holdsWhilePending(pendingRowKey: uncoverPendingRowKey, key: key,
+                                                          requestedAt: uncoverRequestedAt,
+                                                          now: ProcessInfo.processInfo.systemUptime,
+                                                          viewerInputAt: clock.lastAt)
+        }
         if case .regrab = UncoverRestorePolicy.decide(target, key: key,
                                                       now: ProcessInfo.processInfo.systemUptime,
                                                       viewerInputAt: clock.lastAt,
@@ -259,6 +268,7 @@ final class StageController: ObservableObject {
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
         uncoverRequestedAt = nil
+        uncoverPendingRowKey = nil
         pagerHandle.setUncoverGate(nil)
     }
 
@@ -295,6 +305,7 @@ final class StageController: ObservableObject {
                                                generation: generation, attempt: attempt + 1)
                 } else {
                     self.uncoverRequestedAt = nil
+                    self.uncoverPendingRowKey = nil
                     StageStripProbe.shared.log("restore row=\(rowKey) rung=0 landed=0 reason=\(self.uncoverReason) nopager")
                 }
                 return
@@ -304,6 +315,7 @@ final class StageController: ObservableObject {
             // The engine may have restored the row already (its row change came before this).
             let alreadyOn = self.stripOwnsFocus && self.currentRowKey == rowKey
             self.uncoverRequestedAt = nil
+            self.uncoverPendingRowKey = nil
             self.uncoverRestoreTarget = UncoverRestorePolicy.Target(rowKey: rowKey, itemId: card,
                                                                     requestedAt: requestedAt, issuedAt: now,
                                                                     landedAt: alreadyOn ? now : nil)

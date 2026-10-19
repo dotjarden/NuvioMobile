@@ -291,6 +291,25 @@ nonisolated enum DetailDim {
         }
     }
 
+    /// BUG-178 (Steven rc7: scrolling back up, "the shadow that appears going down moves up with"
+    /// the page): `DetailTopScrim` used to switch fully on at the first 0.05 dim step and fully off
+    /// at 0, so on the way back up it sat as a solid 0.96-black band until the very top and then
+    /// vanished in 0.12 s. Its opacity now follows the dim, saturating at `topScrimFullDim`, so it
+    /// fades out with the page instead. With the A/B knob `debug.detailTopScrimStep` the old
+    /// on/off step is back (read once at launch).
+    static let topScrimFullDim: Double = 0.3
+
+    static func topScrimOpacity(dim: Double, stepped: Bool = false) -> Double {
+        if stepped { return dim > 0.001 ? 1 : 0 }
+        return min(1, max(0, dim / topScrimFullDim))
+    }
+
+    /// BUG-178: the A/B knobs, both launch-time reads (`-debug.detailEdgeEffectShown YES`,
+    /// `-debug.detailTopScrimStep YES`), both default to the fix. Not DEBUG-gated, so a release
+    /// build on the TV can be A/B'd with `defaults` or a launch argument.
+    static let edgeEffectShown = UserDefaults.standard.bool(forKey: "debug.detailEdgeEffectShown")
+    static let topScrimStepped = UserDefaults.standard.bool(forKey: "debug.detailTopScrimStep")
+
     /// Same clamp and 0.05 quantisation as the live dim closure in `DetailView`.
     static func value(scrolled: CGFloat, rampDistance: CGFloat) -> Double {
         guard rampDistance > 0 else { return 0 }

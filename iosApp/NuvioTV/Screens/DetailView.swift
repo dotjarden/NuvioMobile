@@ -184,8 +184,11 @@ private struct DetailTopScrim: View {
             .frame(maxWidth: .infinity)
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
-            .opacity(model.value > 0.001 ? 1 : 0)
-            .animation(.linear(duration: 0.12), value: model.value > 0.001)
+            // BUG-178: ramps with the dim (`DetailDim.topScrimOpacity`) instead of on/off, so it
+            // fades with the page on the way back up rather than riding it as a solid band. The
+            // 0.12 s linear smooths the 0.05 dim steps (the `ScrollDimOverlay` rule).
+            .opacity(DetailDim.topScrimOpacity(dim: model.value, stepped: DetailDim.topScrimStepped))
+            .animation(.linear(duration: 0.12), value: model.value)
     }
 }
 
@@ -524,6 +527,8 @@ struct DetailView: View {
     /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
     /// `cardFocusButtonStyle`'s doc comment).
     @FocusState private var focusedCompanyIndex: Int?
+    /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
+    @FocusState private var focusedTrailerIndex: Int?
     /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
     /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
@@ -729,6 +734,13 @@ struct DetailView: View {
                 .coordinateSpace(name: DetailRowAnchor.contentSpace)
             }
             .scrollPosition($detailScrollPosition)
+            // BUG-178 (Steven rc7: scrolling back up, "the shadow that appears going down moves up
+            // with" the page): the tvOS 26 system top scroll-edge effect draws its own soft shadow
+            // under the top edge while content sits under it, and it follows the content. Home
+            // already opts out (`.scrollEdgeEffectStyle(.hard, for: .top)`); Detail has its own
+            // fixed scrim (`DetailTopScrim`), so the system one is hidden here. A/B:
+            // `-debug.detailEdgeEffectShown YES` puts it back.
+            .scrollEdgeEffectHidden(!DetailDim.edgeEffectShown, for: .top)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
             // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
@@ -2642,15 +2654,20 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
-                        ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { _, trailer in
+                        ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
                             Button {
                                 model.playTrailer(trailer)
                             } label: {
                                 TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
                             }
-                            // BUG-93: TrailerThumbCard has no manual treatment - keep the native lift in ring mode.
-                            .cardFocusButtonStyle(lift: .plain)
+                            // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
+                            // (`DetailTileFocusLift`), so the default `.card` style takes the native
+                            // lift away in ring mode; ring off is the same `.borderless` as before.
+                            .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
+                            .focused($focusedTrailerIndex, equals: index)
+                            // BUG-177: the lifted card draws over its right neighbour.
+                            .zIndex(focusedTrailerIndex == index ? 1 : 0)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)

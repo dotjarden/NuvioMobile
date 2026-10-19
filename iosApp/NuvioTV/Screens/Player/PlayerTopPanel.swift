@@ -71,6 +71,8 @@ struct PlayerTopPanel: View {
                 tab = newValue
             }
         }
+        // BUG-180: tells the engine which tab is on screen (mpv refreshes Stream Info only for Info).
+        .onChange(of: tab, initial: true) { _, newValue in model.onTabChange?(newValue) }
         .onExitCommand { model.onClose?() }
     }
 
@@ -86,12 +88,11 @@ struct PlayerTopPanel: View {
         .padding(.top, Theme.Spacing.xl)
         .padding(.bottom, Theme.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .top)
-        // Same recipe as the mpv transport bar (PlayerControlsOverlay): dark-tinted glass keeps text
-        // legible over bright scenes; only the bottom corners are rounded (the top edge is the screen edge).
-        .glassEffect(.regular.tint(.black.opacity(0.35)),
-                     in: UnevenRoundedRectangle(bottomLeadingRadius: Theme.Radius.hero,
-                                                bottomTrailingRadius: Theme.Radius.hero, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        // Only the bottom corners are rounded (the top edge is the screen edge). BUG-180 (Steven rc7):
+        // a solid fill, not glass + shadow — a full-width glass panel re-sampled the 4K/HDR video every
+        // frame and dragged the film behind it to ~10 fps on mpv.
+        .playerSurface(in: UnevenRoundedRectangle(bottomLeadingRadius: Theme.Radius.hero,
+                                                  bottomTrailingRadius: Theme.Radius.hero, style: .continuous))
     }
 
     private var tabRow: some View {

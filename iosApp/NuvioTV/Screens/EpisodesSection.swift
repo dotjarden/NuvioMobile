@@ -21,6 +21,8 @@ struct EpisodesSection: View {
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
     @FocusState private var focusedEpisodeId: String?
+    /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
+    @FocusState private var focusedSeason: Int?
     /// Review r1 #4: the "N aired unwatched" count, cached per (meta, season, watched keys) so a
     /// Left/Right press (a body evaluation) does not re-read the date and re-parse every episode.
     /// A reference held in `@State`: filling it never invalidates the view.
@@ -90,11 +92,16 @@ struct EpisodesSection: View {
                                         isSelected: season == current
                                     )
                                 }
-                                // BUG-93: SeasonPosterCard has no manual treatment - keep the native lift in ring mode.
-                                .cardFocusButtonStyle(lift: .plain)
+                                // BUG-177 (Steven rc7): SeasonPosterCard owns its ring-mode lift now
+                                // (`DetailTileFocusLift`), so ring mode takes the native lift away
+                                // (`.card`, the default); ring off is the same `.borderless` as before.
+                                .cardFocusButtonStyle()
                                 // BUG-32: follow the user's Corners setting (system radius
                                 // otherwise overrides it — the BUG-25 class).
                                 .posterButtonShape()
+                                .focused($focusedSeason, equals: season)
+                                // BUG-177: the lifted poster draws over its right neighbour.
+                                .zIndex(focusedSeason == season ? 1 : 0)
                                 .accessibilityIdentifier("season_poster_\(season)")
                             }
                         }
@@ -159,11 +166,14 @@ struct EpisodesSection: View {
                                         settingOn: hideSpoilers, isWatched: isWatched(episode))
                                 )
                             }
-                            // BUG-93: EpisodeThumbCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
-                            .cardFocusButtonStyle(lift: .plain)
+                            // BUG-177 (Steven rc7): EpisodeThumbCard owns its ring-mode lift now
+                            // (`DetailTileFocusLift`), so the default `.card` style applies.
+                            .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)
+                            // BUG-177: the lifted card draws over its right neighbour.
+                            .zIndex(focusedEpisodeId == episode.id ? 1 : 0)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -394,8 +404,8 @@ private struct EpisodeRoute: Identifiable {
 }
 
 /// One 16:9 episode thumbnail in the horizontal shelf: still + watched/rating badges over a bottom
-/// scrim, title below. Platter-free — used inside a `.poster` Button, so it carries the same focus
-/// ring/scale/shadow language as `LandscapeCard`.
+/// scrim, title below. Platter-free — used inside a `cardFocusButtonStyle()` Button; draws the same
+/// focus ring/scale/shadow language as `LandscapeCard` itself (`DetailTileFocusLift`, BUG-177).
 private struct EpisodeThumbCard: View {
     let episode: MetaVideo
     let fallbackImage: String?
@@ -409,46 +419,69 @@ private struct EpisodeThumbCard: View {
     @Environment(\.isFocused) private var isFocused
     // BUG-32: shared corner token, not the hardcoded Theme.Radius.card.
     @Environment(\.posterStyle) private var posterStyle
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-177: ring/zoom/poster-colour settings from the root (`ProvidesFocusAppearance`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    @Environment(\.cardDepthStyle) private var depthStyle
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// BUG-177: the rail colour sampled when the still lands ("Depth Takes Poster Color").
+    @State private var depthRailTint: Color?
+
+    private var samplesDepthColor: Bool {
+        DetailTileFocus.samplesRailColor(depthTakesPosterColor: focusAppearance.depthTakesPosterColor,
+                                         depthEnabled: depthStyle.isEnabled(for: .episodeCards),
+                                         artworkURL: thumbnailURL)
+    }
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack(alignment: .bottom) {
                 // Decoded at the card's focused size (×1.2 covers the lift), not the 1920 px default.
                 CachedAsyncImage(string: thumbnailURL,
                                  decodeSize: .points(width: Theme.Size.episodeWidth * 1.2,
                                                      height: Theme.Size.episodeHeight * 1.2))
+                    .onImageLoaded { _ in
+                        DetailTileRailTint.imageLoaded(samples: samplesDepthColor, source: thumbnailURL) { color in
+                            if depthRailTint != color { depthRailTint = color }
+                        }
+                    }
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
                     .blur(radius: hidesSpoiler ? EpisodeSpoilerRules.stillBlurRadius : 0, opaque: true)
                     // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
                     // the `.fill` image overflows this fixed frame and the hover lift copies the
                     // overflow as a ghost-doubled subject. Clip inside the frame first.
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-                    .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .episodeCards)
 
                 // Soft scrim so the rating badge reads over bright stills.
+                // BUG-177: under the depth layer now (inside the clip, before `nuvioCardDepth`).
                 if rating != nil {
                     LinearGradient(
                         colors: [.clear, .black.opacity(0.45)],
                         startPoint: .top, endPoint: .bottom
                     )
                     .frame(height: 70)
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
                     .allowsHitTesting(false)
                 }
             }
+            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .clipShape(shape)
+            .nuvioCardDepth(shape, surface: .episodeCards,
+                            railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
+                                                                  source: thumbnailURL,
+                                                                  sampled: depthRailTint))
             .overlay(alignment: .topTrailing) {
                 if isWatched { WatchedCheckBadge().padding(10) }
             }
             .overlay(alignment: .bottomTrailing) {
                 if let rating { ratingBadge(rating).padding(10) }
             }
-            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
             // BUG-31/BUG-25: highlight geometry pinned to the card's own corner radius; goes
             // still under "No Zoom on Focus" (which this tile used to ignore).
-            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
+            // BUG-177 (Steven rc7): draws the accent ring and owns its lift in ring mode.
+            .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
+                                 size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
+                                 tintSource: thumbnailURL)
 
             Text(heading)
                 .font(Theme.Font.cardTitle)
@@ -459,12 +492,14 @@ private struct EpisodeThumbCard: View {
                 .frame(width: Theme.Size.episodeWidth, alignment: .leading)
                 // UX-15 class: keep the artwork↔title gap constant under the system lift.
                 .modifier(CardCaptionFocusDrop(
-                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                                noZoomOnFocus: focusAppearance.noZoomOnFocus),
                     isFocused: isFocused,
                     artworkHeight: Theme.Size.episodeHeight
                 ))
         }
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // BUG-177: Reduce Motion gate — see `TrailerThumbCard`.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 
     /// Heatmap-colored IMDb rating chip (green ≥ 8.5, lime ≥ 7, orange ≥ 5.5, red below).
@@ -517,8 +552,9 @@ struct WatchedCheckBadge: View {
 
 /// FEAT-24: one season in the poster selector — 2:3 artwork with the season label under it, the
 /// selected season outlined in the accent (the same "selected vs focused" split the text chips
-/// draw with colour). Same idioms as `TrailerThumbCard`: `.borderless` button, `tileFocusLift`
-/// (goes still under No Zoom on Focus), `Theme.Font.cardTitle` caption.
+/// draw with colour). Same idioms as `TrailerThumbCard`: `cardFocusButtonStyle()` button,
+/// `detailTileFocusLift` (the accent ring in ring mode, still under No Zoom on Focus, BUG-177),
+/// `Theme.Font.cardTitle` caption.
 // beta.19-rc1 verdict (review r1, I1): internal (was private) only so `SeasonPosterDecodeSizeTests`
 // can pin `decodeSize`; nothing outside this file constructs it.
 struct SeasonPosterCard: View {
@@ -529,7 +565,17 @@ struct SeasonPosterCard: View {
     // BUG-32: read the shared corner token instead of hardcoding Theme.Radius.card, so the
     // Poster Style → Corners setting reaches this card (both states, focused and not).
     @Environment(\.posterStyle) private var posterStyle
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-177: ring/zoom/poster-colour settings from the root (`ProvidesFocusAppearance`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    @Environment(\.cardDepthStyle) private var depthStyle
+    /// BUG-177: the rail colour sampled when the poster lands ("Depth Takes Poster Color").
+    @State private var depthRailTint: Color?
+
+    private var samplesDepthColor: Bool {
+        DetailTileFocus.samplesRailColor(depthTakesPosterColor: focusAppearance.depthTakesPosterColor,
+                                         depthEnabled: depthStyle.isEnabled(for: .posters),
+                                         artworkURL: imageURL)
+    }
 
     // FEAT-26: 180×270 — the same miniPoster size as More Like This, so the season row no longer
     // reads as the smallest tile on the detail screen (it shipped at 120×180).
@@ -549,6 +595,11 @@ struct SeasonPosterCard: View {
             ZStack {
                 if let imageURL, !imageURL.isEmpty {
                     CachedAsyncImage(string: imageURL, decodeSize: Self.decodeSize)
+                        .onImageLoaded { _ in
+                            DetailTileRailTint.imageLoaded(samples: samplesDepthColor, source: imageURL) { color in
+                                if depthRailTint != color { depthRailTint = color }
+                            }
+                        }
                 } else {
                     Theme.Palette.surface
                     // FEAT-26: at 180×270 the caption2 label got lost in the empty surface — meta
@@ -562,14 +613,23 @@ struct SeasonPosterCard: View {
             .frame(width: Self.width, height: Self.height)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-            // FEAT-26: these cards were the only detail tiles without the card-depth treatment —
-            // same surface as the poster rows, attached to the artwork like EpisodeThumbCard.
-            .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .posters)
+            // BUG-177 (Steven rc7): the selection stroke now sits UNDER the depth layer (it used
+            // to be stroked over the rail and hide it on every card). The selected season keeps its
+            // 4 pt accent outline; the rail draws its thin highlight over the outline's top edge.
             .overlay {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
                     .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 4 : 1)
             }
-            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
+            // FEAT-26: these cards were the only detail tiles without the card-depth treatment —
+            // same surface as the poster rows, attached to the artwork like EpisodeThumbCard.
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .posters,
+                            railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
+                                                                  source: imageURL,
+                                                                  sampled: depthRailTint))
+            // BUG-177: draws the accent ring and owns its lift in ring mode (`DetailTileFocusLift`).
+            .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
+                                 size: CGSize(width: Self.width, height: Self.height),
+                                 tintSource: imageURL)
 
             Text(label)
                 .font(Theme.Font.cardTitle)
@@ -580,7 +640,8 @@ struct SeasonPosterCard: View {
                 // artwork's bottom edge over this caption. Same fix as PosterCard's BUG-54
                 // treatment — the focused caption drops by the lift's bottom expansion.
                 .modifier(CardCaptionFocusDrop(
-                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                                noZoomOnFocus: focusAppearance.noZoomOnFocus),
                     isFocused: isFocused,
                     artworkHeight: Self.height
                 ))

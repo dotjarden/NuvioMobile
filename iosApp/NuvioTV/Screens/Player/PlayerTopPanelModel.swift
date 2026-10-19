@@ -76,6 +76,9 @@ final class PlayerTopPanelModel: ObservableObject {
     var onSubtitleDelayChange: ((Int) -> Void)?
     var onSelectChapter: ((PlayerPanelChapter) -> Void)?
     var onClose: (() -> Void)?
+    /// BUG-180 (Steven rc7): the panel's selected tab, on open and on every switch. The mpv screen
+    /// refreshes its Stream Info rows only while Info is on screen; unset on the native engine.
+    var onTabChange: ((PlayerPanelTab) -> Void)?
 
     init(info: PlayerPanelInfo) {
         self.info = info

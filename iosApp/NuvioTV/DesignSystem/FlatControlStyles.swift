@@ -187,8 +187,11 @@ struct ChipButtonStyle: ButtonStyle {
 }
 
 /// A pill on the mpv player's transport bar. Not a `ButtonStyle`: the pills are not focusable (the
-/// controller routes the remote and passes `focused`). At rest a plain glass disc; focused, the
+/// controller routes the remote and passes `focused`). At rest a dark translucent disc; focused, the
 /// app's system-focus look (near-white platter, dark glyph, small lift).
+/// BUG-180 (Steven rc7): the resting disc was live glass and every pill carried a lift shadow, both
+/// re-sampled from the 4K/HDR video each frame (film behind the bar at ~10 fps on mpv). Player-only
+/// view, so the change stays on the player: solid `PlayerSurfaceStyle` disc, no shadow.
 struct PlayerPillDisc: View {
     let symbol: String
     let focused: Bool
@@ -202,10 +205,9 @@ struct PlayerPillDisc: View {
             if focused {
                 glyph.background(Circle().fill(FocusLook.platter))
             } else {
-                glyph.glassEffect(.regular, in: Circle())
+                glyph.playerSurface(in: Circle(), fill: PlayerSurfaceStyle.chipFill)
             }
         }
-        .shadow(color: FocusLook.liftShadow(focused), radius: 16, y: 8)
         .scaleEffect(focused ? FocusLook.liftScale : 1)
         .animation(FocusLook.anim, value: focused)
     }

@@ -570,65 +570,62 @@ extension FirstPlayAutoPlayController {
 
 // MARK: - Overlay
 
-/// Full-screen "Finding the best source…" cover over the stream list while auto mode works.
+/// Full-screen cover over the stream list while auto mode works, while the auto pick's player is
+/// being presented, and while the picker closes after a player (BUG-174/183).
+///
+/// BUG-183 (Steven rc7): it is the player's own loading screen (`PlayerLoadingOverlay`: black, the
+/// pulsing title logo, the episode line), drawn from the picker's first frame when auto mode is on,
+/// so picker → player reads as one screen and the list never flashes. D2: the "Finding the best
+/// source…" text is no longer drawn; it stays the cover's accessibility label (the UI legs read it).
+///
 /// Holds the only focusable element on screen (the list underneath is disabled), so Menu reaches
 /// its `onExitCommand` — which cancels auto mode and reveals the list — instead of closing the
-/// picker. The tvOS rule that every screen keeps something focusable is met by the status block.
+/// picker. `onCancel` nil (the cover held over a player, or over the close) swallows Menu.
 struct FirstPlayAutoPlayOverlay: View {
     let title: String
-    let logoUrl: String?
-    let artworkUrl: String?
-    let message: String
-    let onCancel: () -> Void
+    let parentMetaId: String
+    let episodeLine: String?
+    /// The playback's video id: the shared pulse clock's key (BUG-182).
+    let pulseKey: String
+    /// "Finding the best source…" / "Trying another source (n of m)…", spoken only; nil while held.
+    let message: String?
+    let onCancel: (() -> Void)?
 
-    /// beta.19-rc1 verdict (review r2, P3-1): the title logo's decode, the SAME request the stream
-    /// picker's header underneath uses (`StreamPickerView`: `.points(width: 600, height: 120)`,
-    /// `upgrade: .logo`), so the two share one decode and one download of the TMDB `original`. It
-    /// was `.legacy` with no upgrade: the legacy floor is 1920 px for a URL never decoded itself, so
-    /// after Detail had decoded the `original` for its own slot, this header showed it only as a
-    /// placeholder, fetched `w500` and faded DOWN to a 500 px logo. A slot-sized request accepts any
-    /// decode of the picture that covers the slot (Detail's 600 × 180 pt `original` included). Drawn
-    /// in `TitleLogoHeader`'s slot (at most `heroLogoMaxWidth` × the pinned slot height), which this
-    /// covers.
+    /// beta.19-rc1 verdict (review r2, P3-1): the title logo decode the stream picker's header uses
+    /// (`StreamPickerView`: `.points(width: 600, height: 120)`, `upgrade: .logo`). The cover draws
+    /// metahub's logo like the player's overlay now (BUG-183, one look across the swap); the size
+    /// stays the header's contract, which `ArtworkMemoryTests` pins.
     static let logoDecodeSize: ArtworkDecodeSize = .points(width: 600, height: 120)
 
     @FocusState private var focused: Bool
+    /// Settings › Playback › Loading Screen: off, the players draw the plain spinner, so the cover
+    /// does too (the same screen either way).
+    @State private var loadingLookOn = PlayerLoadingOverlaySetting.enabled
 
     var body: some View {
-        ZStack {
-            Theme.Palette.background
-            if let artworkUrl, let url = URL(string: artworkUrl) {
-                // `Color.clear` takes the screen's size; the filled artwork rides on it and is
-                // clipped there, so its own (larger) size never stretches the stack.
-                Color.clear
-                    .overlay {
-                        AsyncImage(url: url) { image in
-                            image.resizable().scaledToFill()
-                        } placeholder: {
-                            Color.clear
-                        }
-                    }
-                    .clipped()
-                    .overlay(Color.black.opacity(0.65))
+        Group {
+            if loadingLookOn {
+                PlayerLoadingOverlay(
+                    title: title,
+                    parentMetaId: parentMetaId,
+                    background: nil,
+                    episodeLine: episodeLine,
+                    pulseKey: pulseKey,
+                    takesFocus: true,
+                    accessibilityID: "streamPicker.loadingCover",
+                    accessibilityText: message,
+                    pulsePaused: false
+                )
+            } else {
+                PlayerLoadingSpinner()
+                    .focusable()
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(message ?? title))
+                    .accessibilityIdentifier("streamPicker.loadingCover")
             }
-            VStack(spacing: Theme.Spacing.lg) {
-                TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
-                                decodeSize: Self.logoDecodeSize, upgrade: .logo)
-                ProgressView()
-                    .scaleEffect(1.5)
-                    .padding(.vertical, Theme.Spacing.md)
-                Text(message)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(Theme.Spacing.screen)
-            .frame(maxWidth: 1100)
-            .focusable()
-            .focused($focused)
-            .onExitCommand(perform: onCancel)
         }
-        .ignoresSafeArea()
+        .focused($focused)
+        .onExitCommand { onCancel?() }
         .onAppear { DispatchQueue.main.async { focused = true } }
     }
 }

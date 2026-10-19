@@ -18,6 +18,16 @@ struct PersonDetailView: View {
     @Namespace private var topFocusNamespace
     /// Drives the focus affordance on the otherwise non-interactive `topBlock`.
     @FocusState private var topFocused: Bool
+    /// BUG-179 (Steven rc7: the actor biography is cut off with no way to read the rest): the
+    /// rendered (8-line) and full heights of the biography, measured at the same width. The ⌄
+    /// shows and Select opens the full text only when the full text is taller.
+    @State private var bioShownHeight: CGFloat = 0
+    @State private var bioFullHeight: CGFloat = 0
+    @State private var showsFullBio = false
+
+    private var bioTruncated: Bool {
+        PersonBioTeaser.isTruncated(fullHeight: bioFullHeight, shownHeight: bioShownHeight)
+    }
 
     init(personId: Int, personName: String) {
         self.personId = personId
@@ -60,6 +70,13 @@ struct PersonDetailView: View {
             }
         }
         .onAppear { model.start() }
+        // BUG-179: the full biography, in the same sheet the Cinematic Detail page uses for a long
+        // synopsis (Menu closes it through the cover's own dismissal; focus comes back to the
+        // top block, the only focusable it covered).
+        .fullScreenCover(isPresented: $showsFullBio) {
+            DetailSynopsisSheet(title: model.person?.name ?? personName, logoURL: nil,
+                                overview: model.person?.biography ?? "")
+        }
     }
 
     // MARK: - Sections
@@ -74,22 +91,52 @@ struct PersonDetailView: View {
     /// returns), so it takes initial focus and *keeps* it when the credits arrive, and it gives
     /// D-pad Up out of the first credit row somewhere real to land.
     ///
-    /// Select does nothing here on purpose — `.focusable()` without an action is inert, so this
-    /// stays a reading surface, and Menu still pops the screen (no `onExitCommand` anywhere).
+    /// It stays a plain `.focusable()` region, never a `Button`, so its focus anchoring and the
+    /// look of its platter are unchanged. BUG-179 (Steven rc7): when the biography is cut off, a ⌄
+    /// follows the text and Select opens the whole biography (`DetailSynopsisSheet`); with a
+    /// biography that fits, Select still does nothing. Menu still pops the screen (no
+    /// `onExitCommand` anywhere).
     private var topBlock: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             headerBlock
 
             if let bio = model.person?.biography, !bio.isEmpty {
-                Text(bio)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    // Keeps the focusable region shorter than the screen. A focus target taller
-                    // than the viewport can only be scrolled to its nearest edge, which would put
-                    // the header back off-screen when arrowing Up out of the credits — the exact
-                    // symptom being fixed. TMDB bios run arbitrarily long, so they get capped.
-                    .lineLimit(8)
-                    .frame(maxWidth: 1100, alignment: .leading)
+                HStack(alignment: .lastTextBaseline, spacing: 12) {
+                    Text(bio)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        // Keeps the focusable region shorter than the screen. A focus target taller
+                        // than the viewport can only be scrolled to its nearest edge, which would put
+                        // the header back off-screen when arrowing Up out of the credits — the exact
+                        // symptom being fixed. TMDB bios run arbitrarily long, so they get capped
+                        // (BUG-179: the rest is one Select away).
+                        .lineLimit(PersonBioTeaser.maxLines)
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { height in
+                            if bioShownHeight != height { bioShownHeight = height }
+                        })
+                        // BUG-179: the full text at the same width, hidden, to decide truncation
+                        // (`DetailCinematicHero`'s teaser measures the same way).
+                        .background(alignment: .topLeading) {
+                            Text(bio)
+                                .font(Theme.Font.body)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .hidden()
+                                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { height in
+                                    if bioFullHeight != height { bioFullHeight = height }
+                                })
+                                .accessibilityHidden(true)
+                        }
+                    if bioTruncated {
+                        // Text, not a bare Image (the Batch C teaser rule): an image in a focused
+                        // label can be lifted on its own by the system focus effect.
+                        Text(Image(systemName: "chevron.down"))
+                            .font(Theme.Font.body.weight(.semibold))
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .accessibilityHidden(true)
+                            .accessibilityIdentifier("person_bio_more")
+                    }
+                }
+                .frame(maxWidth: 1100, alignment: .leading)
             }
         }
         // Full-bleed width so an Up move from *any* poster (rows scroll horizontally, so a poster
@@ -99,7 +146,15 @@ struct PersonDetailView: View {
         .focusable()
         .focused($topFocused)
         .prefersDefaultFocus(true, in: topFocusNamespace)
+        // BUG-179: Select on the focused block. A tap gesture, not a `Button`, so the block keeps
+        // its BUG-34 focus behaviour and its own platter.
+        .onTapGesture {
+            if bioTruncated { showsFullBio = true }
+        }
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(bioTruncated ? .isButton : [])
+        .accessibilityHint(bioTruncated ? String(localized: "Shows the full biography") : "")
+        .accessibilityIdentifier("person_top_block")
         .animation(.easeInOut(duration: 0.15), value: topFocused)
     }
 
@@ -220,5 +275,20 @@ struct PersonDetailView: View {
         if let died = model.person?.deathday, !died.isEmpty { parts.append(String(localized: "Died \(died)")) }
         if let place = model.person?.placeOfBirth, !place.isEmpty { parts.append(place) }
         return parts.joined(separator: "  \u{00B7}  ")
+    }
+}
+
+/// BUG-179: the biography teaser's rules, pure so `PersonBioTeaserTests` can pin them.
+nonisolated enum PersonBioTeaser {
+    /// The cap BUG-34 put on the biography (keeps the focusable top block shorter than the screen).
+    static let maxLines = 8
+    /// Sub-point rounding between the two measurements must not read as truncation.
+    static let tolerance: CGFloat = 1
+
+    /// True when the full biography is taller than what the capped text shows. No measurement yet
+    /// → not truncated (no ⌄, Select does nothing).
+    static func isTruncated(fullHeight: CGFloat, shownHeight: CGFloat) -> Bool {
+        guard fullHeight > 0, shownHeight > 0 else { return false }
+        return fullHeight > shownHeight + tolerance
     }
 }

@@ -94,6 +94,9 @@ nonisolated struct ThumbScheduler {
         var scrubCeiling: Int64
         /// The thumbnailer opened (`.ready`).
         var opened: Bool
+        /// BUG-180 (Steven rc7): the transport bar or the top panel is on screen without a scrub.
+        /// Pre-warm (and the pre-warm open) waits; a scrub job still runs (the bar is up for it).
+        var overlayUp: Bool = false
     }
 
     // MARK: Budget and cache helpers (pure, for the controller)
@@ -262,7 +265,8 @@ nonisolated struct ThumbScheduler {
         advanceClock(i)
         guard enabled, stopped == nil, !openRequested, !i.opened, !i.cacheWait else { return false }
         // Once the pre-warm has stopped only a scrub opens (the reopen after an idle close).
-        guard pendingScrub != nil || (prewarmStopped == nil && healthyPlaySec >= config.openAfterHealthySec) else {
+        guard pendingScrub != nil
+                || (prewarmStopped == nil && !i.overlayUp && healthyPlaySec >= config.openAfterHealthySec) else {
             return false
         }
         openRequested = true
@@ -380,7 +384,7 @@ nonisolated struct ThumbScheduler {
         if i.bytesRead >= i.byteBudget { stopPrewarm(.byteBudget); return nil }
         if decoded >= config.frameCap { stopPrewarm(.frameCap); return nil }
         if !i.store.acceptsDecode { stopPrewarm(.storeFull); return nil }
-        let quiet = !i.scrubbing && !i.recentInput && pendingScrub == nil
+        let quiet = !i.scrubbing && !i.recentInput && !i.overlayUp && pendingScrub == nil
             && i.now >= lastScrubEnd + config.quietAfterScrubSec
             && i.now >= lastSeekLanded + config.quietAfterSeekSec
         guard quiet, cacheHealthy(i) else { endPass(); return nil }

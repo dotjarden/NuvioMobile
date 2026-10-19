@@ -9,7 +9,8 @@ import SwiftUI
 // Spec: docs/research/player-p4-spec-native-parity.md §8.1–8.3.
 
 extension PlayerLoadingStage {
-    /// The status line under the title. `.started` renders nothing (the overlay is fading out).
+    /// The stage's status copy. D2 (Steven rc7): no longer drawn under the logo; kept for the
+    /// stage tests and as the wording the native caption shares (`NativePreparingLabel`).
     var statusText: String {
         switch self {
         case .checking: String(localized: "Checking the stream\u{2026}")
@@ -44,13 +45,64 @@ enum PlayerLoadingOverlaySetting {
 }
 
 struct PlayerLoadingOverlay: View {
-    let context: PlaybackContext
-    let stage: PlayerLoadingStage
+    /// What the overlay draws. `init(context:stage:)` fills it from a playback context; the stream
+    /// picker's auto-play cover (`FirstPlayAutoPlayOverlay`, BUG-183) fills it from its own inputs
+    /// before any context exists, so picker → player reads as one screen.
+    let title: String
+    let parentMetaId: String
+    let background: String?
+    /// D2 (Steven rc7): the episode line, series only ("S1 · E4 · Name"); nil for a movie.
+    let episodeLine: String?
+    /// BUG-182: the shared pulse clock's key (`PlayerLoadingPulseClock`), the playback's video id.
+    let pulseKey: String
+    /// nil for the picker's cover (no engine stage yet).
+    let stage: PlayerLoadingStage?
+    /// DEBUG history key (the playback context's id); nil = not a player overlay.
+    let historyContextID: String?
+    /// The picker's cover holds focus so Menu reaches its `onExitCommand`; the player's overlays
+    /// never take focus or a hit (the remote reaches the engine underneath).
+    var takesFocus: Bool = false
+    var accessibilityID: String = "player.loadingOverlay"
+    /// Spoken label override (the picker's "Finding the best source…", which UI tests read).
+    var accessibilityText: String? = nil
+    /// Stops the pulse clock's timeline (the scale holds where it is).
+    var pulsePaused: Bool = false
+
+    init(context: PlaybackContext, stage: PlayerLoadingStage) {
+        self.title = context.title
+        self.parentMetaId = context.parentMetaId
+        self.background = context.background
+        self.episodeLine = Self.episodeLine(season: context.season, episode: context.episode,
+                                            episodes: context.episodes)
+        self.pulseKey = context.videoId
+        self.stage = stage
+        self.historyContextID = context.id
+    }
+
+    init(title: String, parentMetaId: String, background: String?, episodeLine: String?, pulseKey: String,
+         takesFocus: Bool, accessibilityID: String, accessibilityText: String?, pulsePaused: Bool) {
+        self.title = title
+        self.parentMetaId = parentMetaId
+        self.background = background
+        self.episodeLine = episodeLine
+        self.pulseKey = pulseKey
+        self.stage = nil
+        self.historyContextID = nil
+        self.takesFocus = takesFocus
+        self.accessibilityID = accessibilityID
+        self.accessibilityText = accessibilityText
+        self.pulsePaused = pulsePaused
+    }
 
     /// FEAT-77 (D18; Steven, rc5 + rc6 verdicts: the official apps' loading look): the title logo
-    /// centred, pulsing slowly (1.0 ↔ 1.08), with the episode line and the stage text under it. The
-    /// title in text while the logo loads, or when the title has none. No setting.
-    @State private var pulse = false
+    /// centred, pulsing slowly (1.0 ↔ 1.08), with the episode line under it. The title in text
+    /// while the logo loads, or when the title has none. No setting.
+    ///
+    /// BUG-182 (Steven rc7): up to three of these replace each other while a video starts (the
+    /// picker's cover, `PlayerScreen`'s `.deciding`, then the engine's own), and each restarted a
+    /// per-instance `@State` pulse. The scale now comes from a clock shared per playback
+    /// (`PlayerLoadingPulseClock`), so a swap is invisible. D2: the status line ("Connecting…",
+    /// "Buffering…") is gone; the stage stays the accessibility value the UI legs read.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let pulseScale: CGFloat = 1.08
@@ -63,51 +115,78 @@ struct PlayerLoadingOverlay: View {
         return URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img")
     }
 
+    /// D2 (Steven rc7, "keep only the title"): the one line kept under the logo, series only —
+    /// "S1 · E4 · Episode name", or "S1 · E4" when the list has no name. Never the stream's release
+    /// name (the old fallback), which the picker cannot know and which made the line jump on the swap.
+    static func episodeLine(season: Int?, episode: Int?, episodes: [MetaVideo]) -> String? {
+        guard let season, let episode else { return nil }
+        let name = episodes.first { $0.season?.intValue == season && $0.episode?.intValue == episode }?.title
+        return episodeLine(season: season, episode: episode, episodeName: name)
+    }
+
+    static func episodeLine(season: Int, episode: Int, episodeName: String?) -> String {
+        let marker = String(localized: "S\(season) · E\(episode)")
+        guard let episodeName, !episodeName.isEmpty else { return marker }
+        return "\(marker) · \(episodeName)"
+    }
+
     var body: some View {
         ZStack {
             Color.black
-            if let background = context.background, !background.isEmpty {
+            if let background, !background.isEmpty {
                 CachedAsyncImage(string: background)
                     .opacity(0.28)
                     .blur(radius: 30)
                     .clipped()
             }
             VStack(spacing: 28) {
-                titleMark
-                    .scaleEffect(pulse ? Self.pulseScale : 1)
-                    .animation(reduceMotion ? nil
-                               : .easeInOut(duration: Self.pulseSeconds).repeatForever(autoreverses: true),
-                               value: pulse)
-                if let subtitle = NativeInfoHeader(context: context).subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
+                pulsingTitleMark
+                if let episodeLine, !episodeLine.isEmpty {
+                    Text(episodeLine)
                         .font(Theme.Font.body)
                         .foregroundStyle(.white.opacity(0.8))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                 }
-                Text(stage.statusText.isEmpty ? " " : stage.statusText)
-                    .font(Theme.Font.body).monospacedDigit()
-                    .foregroundStyle(Theme.Palette.textSecondary)
             }
             .frame(maxWidth: 1200)
         }
         .ignoresSafeArea()
-        .allowsHitTesting(false)
-        .focusable(false)
-        .onAppear { if !reduceMotion { pulse = true } }
+        .allowsHitTesting(takesFocus)
+        .focusable(takesFocus)
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("player.loadingOverlay")
-        .accessibilityValue(stage.debugName)
+        .accessibilityLabel(Text(accessibilityText ?? title))
+        .accessibilityIdentifier(accessibilityID)
+        .accessibilityValue(stage?.debugName ?? "")
         #if DEBUG
         // A fast start can come and go between two XCUITest snapshots; the history label keeps
         // the stage the overlay was first drawn at.
-        .onAppear { PlayerLoadingHistory.shared.noteOverlayDrawn(stage, contextID: context.id) }
+        .onAppear {
+            if let stage, let historyContextID {
+                PlayerLoadingHistory.shared.noteOverlayDrawn(stage, contextID: historyContextID)
+            }
+        }
         #endif
+    }
+
+    /// BUG-182: the scale is read off the shared clock every frame, so whichever overlay is on
+    /// screen continues the same breath. Reduce Motion: no pulse at all.
+    @ViewBuilder
+    private var pulsingTitleMark: some View {
+        if reduceMotion {
+            titleMark
+        } else {
+            TimelineView(.animation(minimumInterval: nil, paused: pulsePaused)) { timeline in
+                let began = PlayerLoadingPulseClock.start(for: pulseKey)
+                titleMark
+                    .scaleEffect(PlayerLoadingPulseClock.scale(elapsed: timeline.date.timeIntervalSince(began)))
+            }
+        }
     }
 
     @ViewBuilder
     private var titleMark: some View {
-        if let logo = Self.logoURL(parentMetaId: context.parentMetaId) {
+        if let logo = Self.logoURL(parentMetaId: parentMetaId) {
             CachedAsyncImage(url: logo, contentMode: .fit, loading: { titleText }, failure: { titleText })
                 .frame(maxWidth: 640, maxHeight: 200)
         } else {
@@ -116,11 +195,55 @@ struct PlayerLoadingOverlay: View {
     }
 
     private var titleText: some View {
-        Text(context.title)
+        Text(title)
             .font(Theme.Font.screenTitle)
             .foregroundStyle(.white)
             .lineLimit(2)
             .multilineTextAlignment(.center)
+    }
+}
+
+/// BUG-182 (Steven rc7): one pulse clock per playback, shared by every loading overlay that draws
+/// it. The first overlay drawn for a video id starts the clock; a later overlay for the same id
+/// within `continuityGrace` of the last frame drawn (the picker's cover handing over to
+/// `PlayerScreen`'s, then to the engine's) continues it, so the logo never snaps back to 1.0 on a
+/// swap. A new video id, or the same one after a pause longer than the grace (a replay, the
+/// next episode), starts a fresh breath at 1.0.
+@MainActor
+enum PlayerLoadingPulseClock {
+    static let continuityGrace: TimeInterval = 2
+
+    private static var key: String?
+    private static var began = Date.distantPast
+    private static var lastSeen = Date.distantPast
+
+    /// The clock's start for `key`, touching it as seen at `now`.
+    static func start(for key: String, now: Date = Date()) -> Date {
+        if key == self.key, now.timeIntervalSince(lastSeen) <= continuityGrace, now >= lastSeen {
+            lastSeen = now
+            return began
+        }
+        self.key = key
+        began = now
+        lastSeen = now
+        return began
+    }
+
+    /// Tests only.
+    static func reset() {
+        key = nil
+        began = .distantPast
+        lastSeen = .distantPast
+    }
+
+    /// 1.0 at the start, `pulseScale` after `pulseSeconds`, back to 1.0 after twice that: an
+    /// ease-in-out (cosine) breath, the curve the old `repeatForever(autoreverses:)` drew.
+    static func scale(elapsed: TimeInterval) -> CGFloat {
+        let half = PlayerLoadingOverlay.pulseSeconds
+        guard elapsed.isFinite, elapsed > 0, half > 0 else { return 1 }
+        let phase = elapsed.truncatingRemainder(dividingBy: half * 2) / (half * 2)
+        let wave = (1 - cos(phase * 2 * .pi)) / 2
+        return 1 + (PlayerLoadingOverlay.pulseScale - 1) * CGFloat(wave)
     }
 }
 

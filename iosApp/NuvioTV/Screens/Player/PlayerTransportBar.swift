@@ -317,7 +317,8 @@ struct PlayerTransportBar: View {
     }
 
     /// The frame you will land on (letterboxed on a black body, never cropped), with the chapter
-    /// title above it. No frame: no card body, the title keeps its position.
+    /// title above it. No frame yet with previews on: a solid dark placeholder card of the same
+    /// size (BUG-181), never an empty slot. Previews off: no card body, the title keeps its position.
     @ViewBuilder
     private func scrubCard(_ layout: TransportBarLayout) -> some View {
         let fade: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.15)
@@ -340,6 +341,18 @@ struct PlayerTransportBar: View {
                     .transition(.opacity)
                     .accessibilityIdentifier("player.bar.previewCard")
                     .accessibilityHidden(true)
+                } else if model.previewCardEnabled {
+                    // BUG-181 (Steven rc7): Dolby Vision had an empty box here until a harvested
+                    // frame existed. Same frame, corners and stroke as the real card.
+                    let f = layout.previewCardFrame(centreX: cx)
+                    let shape = RoundedRectangle(cornerRadius: TransportBarLayout.cardCornerRadius, style: .continuous)
+                    shape.fill(Color(white: 0.08).opacity(0.92))
+                        .overlay(shape.strokeBorder(.white.opacity(0.4), lineWidth: 2))
+                        .frame(width: f.width, height: f.height)
+                        .position(x: f.midX, y: f.midY)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("player.bar.previewPlaceholder")
+                        .accessibilityHidden(true)
                 }
                 if let title = model.chapterTitle(at: target) {
                     let w = min(chapterWidth, TransportBarLayout.cardSize.width)

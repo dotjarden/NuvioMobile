@@ -48,6 +48,8 @@ final class MPVPlaybackState: ObservableObject {
     @Published var subtitleTracks: [PlayerTrack] = []
     /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
     @Published var panelOpen: Bool = false
+    /// BUG-180: the panel's selected tab while it is open (nil = closed). Read on ticks, not published.
+    var panelTab: PlayerPanelTab?
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
 
@@ -175,6 +177,9 @@ final class MPVTVPlayerViewController: UIViewController {
     private var scrubPublishWork: DispatchWorkItem?     // trailing publish of the 30 Hz scrub throttle
     private var lastScrubPublishUptime: TimeInterval = 0
     private var previewFrameThrottle = PreviewFrameThrottle()
+    /// BUG-180: uptime of the last Stream Info rebuild (`refreshState` throttles it).
+    private var lastStreamInfoRefresh: TimeInterval = 0
+    private static let streamInfoRefreshSec: TimeInterval = 2
     private var previewFrameWork: DispatchWorkItem?     // the throttle's `.wait` timer
     private var previewFrameToken = 0                   // bumped when a scrub ends: late frames are dropped
     private var lastPublishedScrubbing = false
@@ -588,6 +593,8 @@ final class MPVTVPlayerViewController: UIViewController {
         // included (critique C22). Decode adds the keyframe thumbnailer beside the harvest.
         if !seekPreviewMode.allowsHarvest { harvest = HarvestScheduler(intervalSec: 0) }
         thumbs = ThumbScheduler(enabled: seekPreviewMode.allowsDecode)
+        // BUG-181: a placeholder card only when something can fill the store.
+        state.transport.previewCardEnabled = harvest.intervalSec > 0 || seekPreviewMode.allowsDecode
         #if DEBUG
         rebuildPreviewSummary()   // the DEBUG row exists from the start (Off mode has no store events)
         #endif
@@ -1955,7 +1962,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if fps > 0 { info.fps = String(format: "%.3f fps", fps) }
         info.hwdec = getString("hwdec-current") ?? ""
         let vbr = getDouble("video-bitrate")
-        if vbr > 0 { info.videoBitrate = String(format: "%.1f Mbps", vbr / 1_000_000) }
+        if vbr > 0 { info.videoBitrate = Self.streamInfoRate(vbr / 1_000_000, unit: "Mbps") }
         let audioCodec = getString("audio-codec-name") ?? ""
         let channels = getInt("audio-params/channel-count")
         let sampleRate = getInt("audio-params/samplerate")
@@ -1965,11 +1972,17 @@ final class MPVTVPlayerViewController: UIViewController {
         info.audio = audioParts.filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
         var cacheParts: [String] = []
         let cacheSec = getDouble("demuxer-cache-duration")
-        if cacheSec > 0 { cacheParts.append(String(format: "%.0fs buffered", cacheSec)) }
+        if cacheSec > 0 { cacheParts.append(String(format: "%.0fs buffered", cacheSec.rounded())) }
         let cacheSpeed = getDouble("cache-speed")
-        if cacheSpeed > 0 { cacheParts.append(String(format: "%.1f MB/s", cacheSpeed / 1_000_000)) }
+        if cacheSpeed > 0 { cacheParts.append(Self.streamInfoRate(cacheSpeed / 1_000_000, unit: "MB/s")) }
         info.cache = cacheParts.joined(separator: " \u{00B7} ")
         return info
+    }
+
+    /// BUG-180: rates are rounded before they reach the snapshot, so the equality gate in
+    /// `refreshStreamInfoAsync` holds on small wobble: one decimal below 10, whole numbers above.
+    nonisolated static func streamInfoRate(_ value: Double, unit: String) -> String {
+        value >= 10 ? String(format: "%.0f %@", value.rounded(), unit) : String(format: "%.1f %@", value, unit)
     }
 
     // MARK: - Watch progress (resume + save)
@@ -2089,7 +2102,8 @@ final class MPVTVPlayerViewController: UIViewController {
                         playing: fileLoaded && !snap.paused && !snap.cacheWait && !snap.coreIdle && !snap.eof && snap.videoW > 0,
                         transportIdle: !transport.mode.isActive,
                         seekInFlight: skipPlanner.seekInFlight != nil,
-                        recentInput: harvestNow - lastClickUptime < HarvestScheduler.recentInputSec),
+                        recentInput: harvestNow - lastClickUptime < HarvestScheduler.recentInputSec,
+                        overlayUp: playerOverlayUp),
            thumbs.inFlight == nil {
             // One heavy thing at a time: the tick stays due until a decode is not in flight.
             startHarvest()
@@ -2136,7 +2150,12 @@ final class MPVTVPlayerViewController: UIViewController {
             }
         }
 
-        if state.showStreamInfo || state.panelOpen {
+        // BUG-180 (Steven rc7): only while someone can see the rows — the Stream Info overlay, or
+        // the panel's Info tab (its rows and chips). Every other tab skipped a dozen mpv reads and a
+        // publish twice a second. At most once every 2 s: diagnostics, not a meter.
+        if state.showStreamInfo || (state.panelOpen && state.panelTab == .info),
+           harvestNow - lastStreamInfoRefresh >= Self.streamInfoRefreshSec {
+            lastStreamInfoRefresh = harvestNow
             refreshStreamInfoAsync()
         }
 
@@ -2531,6 +2550,13 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    /// BUG-180 (Steven rc7): the transport bar or the top panel is on screen. Seek-preview harvest
+    /// and decode pre-warm wait while it is (both compete with the overlay over a 4K/HDR frame);
+    /// a scrub's own decode is not gated. `presentedViewController` covers a stale `panelOpen`.
+    private var playerOverlayUp: Bool {
+        state.controlsVisible || state.panelOpen || presentedViewController != nil
+    }
+
     /// What the byte budget has charged across every thumbnailer of this file (review r1 P1).
     private var thumbBytesCharged: Int64 { thumbBytesClosed + (thumbnailer?.bytesCharged ?? 0) }
 
@@ -2546,7 +2572,8 @@ final class MPVTVPlayerViewController: UIViewController {
             cacheFill: cacheHealthFill, seekInFlight: skipPlanner.seekInFlight != nil, scrubbing: isScrubbing,
             recentInput: now - lastClickUptime < HarvestScheduler.recentInputSec, harvestInFlight: harvest.inFlight,
             store: storeMirror, bytesRead: thumbBytesCharged, byteBudget: thumbByteBudget,
-            scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened)
+            scrubCeiling: ThumbScheduler.scrubCeiling(budget: thumbByteBudget), opened: thumbOpened,
+            overlayUp: playerOverlayUp)
     }
 
     /// A scrub lookup missed (or landed more than 5 s off): ask for the keyframe at `target`
@@ -3354,12 +3381,20 @@ final class MPVTVPlayerViewController: UIViewController {
             let token = previewFrameToken
             Task { @MainActor [weak self] in
                 let match = await source.match(near: target)
+                // BUG-181 (Steven rc7): a miss shows the nearest stored frame at any distance (DV
+                // P5 never decodes, so its store holds only harvested frames). Empty store: keep
+                // whatever the card shows; the frame is cleared only when the scrub ends.
+                let shown: SeekPreviewMatch?
+                if let match { shown = match } else { shown = await source.nearest(to: target) }
                 // A scrub that ended (or a newer one) bumped the token: drop the late frame, and
                 // do not touch the reset throttle.
                 guard let self, self.previewFrameToken == token else { return }
-                self.state.transport.previewFrame = match?.image
-                self.state.transport.previewFrameSec = match?.sec
+                if let shown {
+                    self.state.transport.previewFrame = shown.image
+                    self.state.transport.previewFrameSec = shown.sec
+                }
                 // P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there.
+                // Reads the tolerance-bounded match (BUG-181 leaves the refine rule as it was).
                 if self.thumbs.lookupWantsRefine(target: target, matchSec: match?.sec) {
                     self.noteThumbScrubMiss(target: target)
                 }
@@ -4369,11 +4404,14 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
             panel.modalPresentationStyle = .overFullScreen
             panel.modalTransitionStyle = .crossDissolve
             model.onClose = { [weak panel] in panel?.close(animated: true) }
+            model.onTabChange = { [weak state] in state?.panelTab = $0 }
             panel.onClosed = { [weak state] in
                 state?.panelOpen = false
+                state?.panelTab = nil
                 state?.reclaimFocus?()     // libmpv's controller must be first responder again
             }
             state.panelOpen = true
+            state.panelTab = tab
             controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
         }
         return controller
@@ -4725,8 +4763,8 @@ private struct StreamInfoOverlayView: View {
         }
         .padding(24)
         .frame(maxWidth: 560, alignment: .leading)
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 14))
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+        // BUG-180 (Steven rc7): solid player surface, not glass + shadow (see PlayerSurfaceStyle).
+        .playerSurface(in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

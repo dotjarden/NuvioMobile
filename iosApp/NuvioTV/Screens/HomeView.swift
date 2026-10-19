@@ -5287,6 +5287,10 @@ struct ContinueWatchingRow: View {
                                 }
                             }
                             .id(entry.videoId)
+                            // BUG-175 (Steven rc7): the focused landscape card lifts over its right
+                            // neighbour, which LazyHStack otherwise draws on top (Batch F did the
+                            // catalog rows; Classic and Stage both use this row).
+                            .zIndex(focusedVideoId == entry.videoId ? 1 : 0)
                         }
                     }
                     // Always positive — the reach lives inside the buttons (see CatalogRowView).

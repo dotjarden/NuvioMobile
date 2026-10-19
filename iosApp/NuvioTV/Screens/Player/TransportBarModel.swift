@@ -9,6 +9,10 @@ protocol SeekPreviewSource: AnyObject, Sendable {
     func thumbnail(near sec: Double) async -> CGImage?
     /// P3: the frame plus its stamp and origin, so the scrub path can tell a near hit from a far one.
     func match(near sec: Double) async -> SeekPreviewMatch?
+    /// BUG-181 (Steven rc7): the stored frame nearest `sec` at any distance (nil only when the
+    /// store is empty). The scrub card shows it when `match(near:)` misses, so a Dolby Vision file
+    /// (decode refuses DV P5, harvested frames only) never shows an empty card.
+    func nearest(to sec: Double) async -> SeekPreviewMatch?
 }
 
 /// Where a stored preview frame came from (P3): played by the viewer, or decoded ahead of them.
@@ -43,8 +47,12 @@ enum PillKind: String, CaseIterable { case subtitles, audio, speed, aspect, sour
     @Published var showsClock = false
     @Published var pills: [PillKind] = []
     @Published var focusedPill: PillKind? = nil
-    /// The scrub card's frame for the current preview target (nil = time only).
+    /// The scrub card's frame for the current preview target (nil = no frame yet).
     @Published var previewFrame: CGImage? = nil
+    /// BUG-181 (Steven rc7): seek previews are on for this file (a harvest or the decoder can fill
+    /// the store), so a scrub with no frame yet draws a placeholder card instead of an empty slot.
+    /// False (Seek Preview Frames Off, harvest off after a crash) keeps the time-only card.
+    @Published var previewCardEnabled = false
     /// The swipe scrub rate curve, for the probe: "o" Orivio, "b" bobsupra.
     @Published var scrubCurveCode = "o"
     /// Frames in the seek-preview store (P2-B), for the probe's `thumbs=` field.

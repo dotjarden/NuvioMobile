@@ -129,7 +129,8 @@ struct PlayerAspectFlash: View {
             .foregroundStyle(Theme.Palette.textPrimary)
             .padding(.horizontal, 40)
             .padding(.vertical, 18)
-            .glassEffect(.regular.tint(PlayerChipStyle.glassTint), in: Capsule())
+            // BUG-180 (Steven rc7): solid player surface, not glass (see PlayerSurfaceStyle).
+            .playerSurface(in: Capsule(), fill: PlayerSurfaceStyle.chipFill)
             .transition(.opacity)
             .accessibilityIdentifier("player.aspect.flash")
     }

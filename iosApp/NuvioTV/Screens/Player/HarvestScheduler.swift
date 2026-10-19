@@ -4,8 +4,8 @@ import Foundation
 /// `refreshState` and starts a harvest when `tick` returns true.
 ///
 /// Counts playback time, not wall clock: paused, buffering, a moving transport (step, scan,
-/// scrub), a seek in flight, a harvest in flight, or a press in the last 1.5 s make a tick
-/// ineligible, and ineligible time does not count toward the interval. A landed seek schedules
+/// scrub), a seek in flight, a harvest in flight, a press in the last 1.5 s, or a player overlay on
+/// screen (the transport bar or the top panel, BUG-180) make a tick ineligible, and ineligible time does not count toward the interval. A landed seek schedules
 /// one extra harvest 1 s later (a newer landing replaces it); a due seek harvest that meets an
 /// ineligible tick waits for the next eligible one. A harvest that took over 60 ms triples the
 /// interval for the rest of the file (critique C18) and ends seek harvests for it.
@@ -33,12 +33,15 @@ nonisolated struct HarvestScheduler {
     }
 
     /// Called from every `refreshState` tick. Returns true when a harvest should start now.
+    /// `overlayUp` (BUG-180, Steven rc7): the transport bar or the top panel is on screen. The
+    /// `screenshot-raw` readback then competes with the overlay's composite over a 4K/HDR frame,
+    /// which is when the film behind the menus dropped to ~10 fps; harvest waits until they close.
     mutating func tick(now: TimeInterval, playing: Bool, transportIdle: Bool, seekInFlight: Bool,
-                       recentInput: Bool) -> Bool {
+                       recentInput: Bool, overlayUp: Bool = false) -> Bool {
         let dt = lastTick.map { min(max(now - $0, 0), 1.0) } ?? 0
         lastTick = now
         guard intervalSec > 0 else { return false }
-        let eligible = playing && transportIdle && !seekInFlight && !inFlight && !recentInput
+        let eligible = playing && transportIdle && !seekInFlight && !inFlight && !recentInput && !overlayUp
         guard eligible else { return false }
         playedSinceLast += dt
         if playedSinceLast >= intervalSec { return true }

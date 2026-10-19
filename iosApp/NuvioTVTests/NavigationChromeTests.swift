@@ -227,4 +227,19 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(RailGateMode.resolve("disabled"), .uikit)
         XCTAssertEqual(RailGateMode.defaultsKey, "debug.railGate")
     }
+
+    // FEAT-80 (Steven rc7): rail position and labels resolve to today's rail unless set.
+    func testRailPositionResolution() {
+        XCTAssertEqual(NavigationChrome.railPosition(raw: nil), .centre)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: "centre"), .centre)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: " Top "), .top)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: "bottom"), .centre)
+    }
+
+    func testRailLabelsResolution() {
+        XCTAssertEqual(NavigationChrome.railLabels(raw: nil), .shown)
+        XCTAssertEqual(NavigationChrome.railLabels(raw: "shown"), .shown)
+        XCTAssertEqual(NavigationChrome.railLabels(raw: "ICONS"), .iconsOnly)
+        XCTAssertEqual(NavigationChrome.railLabels(raw: "none"), .shown)
+    }
 }

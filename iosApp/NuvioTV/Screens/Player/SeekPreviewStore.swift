@@ -216,6 +216,11 @@ actor SeekPreviewStore {
     /// `SeekPreviewSource` (P3): the frame, its stamp and its origin.
     func match(near sec: Double) -> SeekPreviewMatch? { match(near: sec, tolerance: nil) }
 
+    /// BUG-181 (Steven rc7): the nearest entry with no distance limit (nil only when empty). The
+    /// scrub path's fallback when `match(near:)` misses; its refine decision still reads the
+    /// tolerance-bounded match.
+    func nearest(to sec: Double) -> SeekPreviewMatch? { match(near: sec, tolerance: .infinity) }
+
     func match(near sec: Double, tolerance: Double?) -> SeekPreviewMatch? {
         guard sec.isFinite, let i = nearestIndex(to: sec) else { return nil }
         let tol = tolerance ?? defaultTolerance()

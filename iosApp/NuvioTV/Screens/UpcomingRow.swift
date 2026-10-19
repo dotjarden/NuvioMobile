@@ -75,6 +75,9 @@ struct UpcomingRow: View {
                         .posterButtonShape()
                         .focused($focusedKey, equals: item.showKey)
                         .id(item.showKey)
+                        // BUG-175 (Steven rc7): same as Continue Watching — the focused landscape
+                        // card draws over its right neighbour.
+                        .zIndex(focusedKey == item.showKey ? 1 : 0)
                     }
                 }
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).

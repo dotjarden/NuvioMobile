@@ -1,3 +1,4 @@
+import Combine
 import SharedCore
 import SwiftUI
 
@@ -8,12 +9,23 @@ import SwiftUI
 /// shared with the native engine's `NativePlaybackTab` (P4 A8).
 /// Same rules as the other tabs: default tvOS button focus, Theme tokens, no accent.
 struct MPVPlaybackTab: View {
-    @ObservedObject var state: MPVPlaybackState
+    /// BUG-180 (Steven rc7): the three values this tab draws, not the whole `MPVPlaybackState`
+    /// (which publishes the position twice a second and re-rendered the open tab on every tick).
+    @StateObject private var values: MPVPlaybackTabValues
     @ObservedObject var engine: NextEpisodeEngine
     /// True when the presenter can swap playback contexts (episode jump / source switching).
     let canSwitchStreams: Bool
     /// Closes the panel after an action that replaces playback (episode jump, source switch).
     let onClose: () -> Void
+    private let state: MPVPlaybackState
+
+    init(state: MPVPlaybackState, engine: NextEpisodeEngine, canSwitchStreams: Bool, onClose: @escaping () -> Void) {
+        self.state = state
+        _values = StateObject(wrappedValue: MPVPlaybackTabValues(state: state))
+        _engine = ObservedObject(wrappedValue: engine)
+        self.canSwitchStreams = canSwitchStreams
+        self.onClose = onClose
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.xl) {
@@ -40,13 +52,13 @@ struct MPVPlaybackTab: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 PlayerPanelSectionCaption(text: String(localized: "Playback Speed"))
-                PlayerSpeedRow(current: state.playbackSpeed) { state.setSpeed?($0) }
+                PlayerSpeedRow(current: values.playbackSpeed) { state.setSpeed?($0) }
 
                 // Subtitle delay moved to the Subtitles tab's "Timing" row (beta.15 §B1) — that's
                 // where a viewer actually looks when subs are out of sync, and it now persists
                 // per title/profile. Audio delay stays here and persists per title/profile, like the subtitle delay.
                 PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
-                delayRow(title: String(localized: "Audio Delay"), value: state.audioDelaySec, step: 0.25, limit: 10) {
+                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: 10) {
                     state.setAudioDelay?($0)
                 }
                 Text("Positive values delay the track; negative values play it earlier.")
@@ -56,8 +68,8 @@ struct MPVPlaybackTab: View {
                 PlayerPanelSectionCaption(text: String(localized: "Diagnostics")).padding(.top, Theme.Spacing.sm)
                 Button { state.showStreamInfo.toggle() } label: {
                     HStack(spacing: Theme.Spacing.sm) {
-                        Image(systemName: state.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
-                        Text(state.showStreamInfo ? String(localized: "Hide Stream Info") : String(localized: "Show Stream Info"))
+                        Image(systemName: values.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
+                        Text(values.showStreamInfo ? String(localized: "Hide Stream Info") : String(localized: "Show Stream Info"))
                     }
                     .font(Theme.Font.body)
                 }
@@ -82,5 +94,23 @@ struct MPVPlaybackTab: View {
             // Always mounted (see PlayerSubtitlesTab): a Reset that vanished on press dropped focus.
             Button(String(localized: "Reset")) { if value != 0 { apply(0) } }.font(Theme.Font.meta)
         }
+    }
+}
+
+/// BUG-180: mirrors only the `MPVPlaybackState` values the Playback tab draws, each de-duplicated,
+/// so the tab re-renders when one of them changes and not on every position tick.
+@MainActor
+final class MPVPlaybackTabValues: ObservableObject {
+    @Published private(set) var playbackSpeed: Double
+    @Published private(set) var audioDelaySec: Double
+    @Published private(set) var showStreamInfo: Bool
+
+    init(state: MPVPlaybackState) {
+        playbackSpeed = state.playbackSpeed
+        audioDelaySec = state.audioDelaySec
+        showStreamInfo = state.showStreamInfo
+        state.$playbackSpeed.removeDuplicates().assign(to: &$playbackSpeed)
+        state.$audioDelaySec.removeDuplicates().assign(to: &$audioDelaySec)
+        state.$showStreamInfo.removeDuplicates().assign(to: &$showStreamInfo)
     }
 }

@@ -33,6 +33,19 @@ nonisolated enum UncoverRestorePolicy {
     /// can be stamped a beat after the row change it caused. `HomeUpSwipeCatcher.settleWindow`'s value.
     static let regrabDefer: TimeInterval = 0.15
 
+    /// BUG-176 (Steven rc7: "going back from a collection to Home: still two moves on the new Home").
+    /// Between the pop and the moment the request reaches the pager (it waits for the pager's handle,
+    /// up to 1 s), there was no target yet, so `uncoverHoldsPage` held nothing: the engine's default
+    /// candidate paged the strip away, and the restore then paged it back. While a restore is
+    /// pending, a row change to any OTHER row with no viewer input since the pop is the engine's,
+    /// and the strip holds its page for it too.
+    static func holdsWhilePending(pendingRowKey: String?, key: String, requestedAt: TimeInterval?,
+                                  now: TimeInterval, viewerInputAt: TimeInterval?) -> Bool {
+        guard let pendingRowKey, let requestedAt, key != pendingRowKey else { return false }
+        if let input = viewerInputAt, input >= requestedAt { return false }
+        return now - requestedAt < unlandedWindow
+    }
+
     /// A live restore. `requestedAt` is the pop (when `restoreAfterUncover` was called), `issuedAt`
     /// when the request went to the pager (the pager may not be installed yet at the pop).
     struct Target: Equatable {
