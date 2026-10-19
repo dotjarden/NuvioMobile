@@ -66,10 +66,13 @@ object DiscoverSources {
         type: String?,
         preferredCatalogKey: String?,
     ): DiscoverCatalogOption? {
+        val preferred = preferredCatalogKey?.trim()?.takeIf { it.isNotEmpty() }
+        // Review r1 (P2): with no type yet (a cold start), the persisted pick may be of any type,
+        // not only the first type's.
+        if (type == null) options.firstOrNull { option -> option.key == preferred }?.let { return it }
         val resolvedType = type ?: options.firstOrNull()?.type ?: return null
         val candidates = options.filter { option -> option.type == resolvedType }
         if (candidates.isEmpty()) return null
-        val preferred = preferredCatalogKey?.trim()?.takeIf { it.isNotEmpty() }
         candidates.firstOrNull { option -> option.key == preferred }?.let { return it }
         return candidates.firstOrNull { option -> option.genreOptions.isNotEmpty() && !option.genreRequired }
             ?: candidates.firstOrNull { option -> option.genreOptions.isNotEmpty() }

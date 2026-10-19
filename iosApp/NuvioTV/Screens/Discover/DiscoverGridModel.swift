@@ -435,7 +435,11 @@ final class DiscoverGridViewModel: ObservableObject {
             let merged = reset
                 ? CatalogDataKt.dedupeCatalogItems(items: page.items)
                 : CatalogDataKt.mergeCatalogItems(existing: items, incoming: page.items)
-            let loadedNewItems = reset || merged.count > items.count
+            // Review r1 (P3): a page the hide-unreleased filter emptied still brought new RAW titles;
+            // counting it as a duplicate stopped paging for good after three such pages.
+            let filteredAll = page.items.isEmpty && page.rawItemCount > 0
+            let countBefore = items.count
+            let loadedNewItems = reset || merged.count > countBefore || filteredAll
             let state = CatalogDataKt.nextCatalogPaginationState(
                 supportsPagination: DiscoverGridPlan.supportsPagination(option: option,
                                                                         rawItemCount: Int(page.rawItemCount)),
@@ -451,7 +455,12 @@ final class DiscoverGridViewModel: ObservableObject {
             if phase != newPhase { phase = newPhase }
             // A page the unreleased filter emptied: pull the next one (bounded), so a catalog
             // whose first titles are all upcoming still shows something.
-            if merged.isEmpty, nextSkip != nil, emptyPageAdvances < DiscoverGridPlan.emptyPageAdvanceLimit {
+            // Review r1 (P3): also when the grid has titles but this page added none (no new tile
+            // appears to trigger the next load).
+            let addedNone = merged.isEmpty || (!reset && merged.count == countBefore)
+            // The refill budget is per run of empty pages, not per selection.
+            if !addedNone { emptyPageAdvances = 0 }
+            if addedNone, nextSkip != nil, emptyPageAdvances < DiscoverGridPlan.emptyPageAdvanceLimit {
                 emptyPageAdvances += 1
                 loadMore()
             }

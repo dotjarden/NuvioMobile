@@ -197,7 +197,8 @@ struct DiscoverGridPage: View {
     private var grid: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                // Review r1 (P3): identity is the dedupe key (type:id), not the bare id.
+                ForEach(Array(model.items.enumerated()), id: \.element.discoverTileKey) { index, item in
                     let key = Self.tileKey(item)
                     NavigationLink(value: TitleRoute(preview: item)) {
                         PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
@@ -417,3 +418,8 @@ private struct DiscoverGridProbeLabel: View {
     }
 }
 #endif
+
+extension MetaPreview {
+    /// FEAT-73 review r1: the grid's `ForEach` identity, the same `type:id` the items are deduped by.
+    var discoverTileKey: String { DiscoverGridPage.tileKey(self) }
+}

@@ -248,9 +248,14 @@ final class DiscoverRowsViewModel: ObservableObject {
             pendingCatalogKey = catalogKey
             return
         }
+        guard let option = options.first(where: { $0.key == catalogKey }) else {
+            // Review r1 (P3): stale options (an add-on added while stopped): keep the key for the
+            // next `applySources` instead of dropping it.
+            pendingCatalogKey = catalogKey
+            return
+        }
         pendingCatalogKey = nil
-        guard catalogKey != selectedCatalogKey,
-              let option = options.first(where: { $0.key == catalogKey }) else { return }
+        guard catalogKey != selectedCatalogKey else { return }
         let newSpecs = DiscoverRowsPlan.specs(for: option,
                                               catalogs: DiscoverRowsPlan.catalogs(ofType: option.type, in: options))
         activate(option, specs: newSpecs, reason: "browse")

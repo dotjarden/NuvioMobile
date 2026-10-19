@@ -41,6 +41,12 @@ class DiscoverGridDefaultCatalogTest {
         assertEquals(series, DiscoverSources.gridDefaultCatalog(listOf(series, optional), null, null))
     }
 
+    /// Review r1 (P2): on a cold start (no type) a persisted Series pick wins over the first type.
+    @Test
+    fun nullTypeHonoursAPersistedPickOfAnotherType() {
+        assertEquals(series, DiscoverSources.gridDefaultCatalog(listOf(optional, series), null, series.key))
+    }
+
     @Test
     fun noOptionsOfTheTypeIsNull() {
         assertNull(DiscoverSources.gridDefaultCatalog(listOf(series), "movie", null))
