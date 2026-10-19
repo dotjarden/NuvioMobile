@@ -262,6 +262,14 @@ nonisolated enum LibraryGridPolicy {
 
     // MARK: - Hold menu
 
+    /// Whether the hold menu shows the remove action. The local library (no list key) always can;
+    /// a provider list can unless its owner marks it read-only (Batch K: MDBList external, dynamic
+    /// and liked lists, upstream 3913a140b / 2cc2e6a61), where the remove would be a no-op.
+    static func offersRemove(listKey: String?, canRemoveFromList: (String) -> Bool) -> Bool {
+        guard let listKey else { return true }
+        return canRemoveFromList(listKey)
+    }
+
     /// The remove action's label. A provider list names the list; the local library (or a
     /// provider library with no list picked) keeps "Remove from Library".
     static func removeLabel(listTitle: String?) -> String {

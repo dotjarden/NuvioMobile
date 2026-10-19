@@ -187,4 +187,17 @@ final class LibraryGridPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.removeFailedMessage("  HTTP 429 \n"), "HTTP 429")
         XCTAssertEqual(Policy.removeFailedMessage(""), "Something went wrong. Try again.")
     }
+
+    /// Batch K: read-only MDBList lists (external / dynamic / liked, upstream 3913a140b /
+    /// 2cc2e6a61) get no remove; the local library (no list key) always keeps it.
+    func testOffersRemoveOnlyOnWritableLists() {
+        let readOnly: Set<String> = ["mdblist:external:7", "mdblist:dynamic:8", "mdblist:liked:9"]
+        let canRemove: (String) -> Bool = { !readOnly.contains($0) }
+        XCTAssertTrue(Policy.offersRemove(listKey: nil, canRemoveFromList: canRemove))
+        XCTAssertTrue(Policy.offersRemove(listKey: "mdblist:list:1", canRemoveFromList: canRemove))
+        XCTAssertTrue(Policy.offersRemove(listKey: "mdblist:watchlist", canRemoveFromList: canRemove))
+        for key in readOnly {
+            XCTAssertFalse(Policy.offersRemove(listKey: key, canRemoveFromList: canRemove), key)
+        }
+    }
 }

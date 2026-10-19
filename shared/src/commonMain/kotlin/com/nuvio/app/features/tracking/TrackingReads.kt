@@ -11,6 +11,8 @@ enum class TrackingLibraryTabKind {
     WATCHLIST,
     PERSONAL,
     STATUS,
+    // Upstream 3913a140b (PR #2172): read-only MDBList external, dynamic and liked lists.
+    EXTERNAL,
 }
 
 data class TrackingLibraryTab(

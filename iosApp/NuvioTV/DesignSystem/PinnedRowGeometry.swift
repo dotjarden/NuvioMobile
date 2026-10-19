@@ -457,6 +457,171 @@ enum PinnedRowGeometry {
         }
     }
 
+    // MARK: - FEAT-61 (Steven rc3): Synopsis Length
+
+    /// FEAT-61 (Steven rc3, 2026-10-06): Settings › Home Screen › "Synopsis Length". Steven prefers
+    /// Classic Home but wants the Stage's longer description there. Standard is today's hero, byte
+    /// for byte; Long lets the Classic hero's description take more lines out of room the hero
+    /// ALREADY owns. Device-local `@AppStorage` (not synced), like `home_layout`.
+    nonisolated enum SynopsisLength: String, CaseIterable, Sendable {
+        case standard
+        case long
+
+        static let defaultsKey = "home_synopsis_length"
+        static let defaultValue: SynopsisLength = .standard
+
+        /// nil, blank or unknown resolves to `defaultValue`.
+        static func resolve(_ raw: String?) -> SynopsisLength {
+            guard let raw else { return defaultValue }
+            return SynopsisLength(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                ?? defaultValue
+        }
+
+        var label: String {
+            switch self {
+            case .standard: return String(localized: "Standard")
+            case .long: return String(localized: "Long")
+            }
+        }
+    }
+
+    /// FEAT-61 (Steven rc3): how many synopsis lines the Classic hero shows with Synopsis Length =
+    /// Long, and where the extra height comes from.
+    ///
+    /// ## The rule: the rows never pay
+    ///
+    /// The hero's FRAME is untouched. Its height is `heroCarouselHeightPinned − plan.compression`
+    /// in the pinned forms and `heroCarouselHeight` in the in-scroll Classic hero, and `plan` (the
+    /// rows' reaches, their floors, the viewport, the rest range) is computed exactly as before,
+    /// with no knowledge of this setting. BUG-87/89's title-under-poster overlap lives entirely in
+    /// that plan, so it cannot come back through here. Long only redistributes height INSIDE the
+    /// frame, in this order:
+    ///
+    ///  1. the frame's unused slack — what `HeroSlotGive.split` did not already spend
+    ///     (`heroPinnedFrameSlack` 22 in the pinned forms, 46 in the in-scroll hero). Free: no
+    ///     content gives anything, the centred content block just grows into it;
+    ///  2. the logo slot, down to `pinnedLogoFloor` (64) in the pinned forms or `classicLogoFloor`
+    ///     (110, the pinned hero's full slot) in the in-scroll hero.
+    ///
+    /// It takes only what the next whole lines need, never more, so the logo shrinks the least it
+    /// can. Capped at `maxLines` (4). If not even one more line fits in what is left, nothing is
+    /// spent and the hero keeps Standard's count. The meta line, the CTA, the gaps and the paddings
+    /// are never touched.
+    ///
+    /// Collection folder heroes are excluded by the caller: they have no synopsis to lengthen.
+    nonisolated enum LongSynopsis {
+
+        /// The Stage shows up to 5; Classic stops at 4 (the panel's Standard count at most sizes).
+        static let maxLines = 4
+
+        /// Same 1 pt tolerance `HomeHeroForeground.synopsisLineLimit` gives a slot that is a hair
+        /// short of a whole line: the fixed-height frame hides an overhang that small.
+        static let lineTolerance: CGFloat = 1
+
+        /// Added on top of the exact need so `lines(slot:)` lands ON the target line count rather
+        /// than a floating-point hair below it.
+        static let roundingMargin: CGFloat = 0.25
+
+        /// Long's logo floor in the pinned hero. Below Standard's 76
+        /// (`heroLogoSlotHeightPinnedFloor`) on purpose: at Large with zoom on, the compression has
+        /// already spent the slack and the logo down to 76, and the reporter's Open Sans second line
+        /// is 2 pt away. 64 still draws a 2:1 wordmark 128 pt wide. Only Long reaches it.
+        static let pinnedLogoFloor: CGFloat = 64
+
+        /// Long's logo floor in the in-scroll Classic hero (150 pt slot): the pinned hero's full slot.
+        static let classicLogoFloor: CGFloat = Theme.Size.heroLogoSlotHeightPinned
+
+        /// What Long changes. All zero (and `lines` == the Standard count) when nothing fits.
+        struct Grant: Equatable, Sendable {
+            /// Points added to the synopsis slot.
+            var synopsisGrowth: CGFloat
+            /// Points taken from the logo slot (the rest of `synopsisGrowth` is frame slack).
+            var logoGive: CGFloat
+            /// The synopsis line limit to draw.
+            var lines: Int
+
+            var slackSpent: CGFloat { synopsisGrowth - logoGive }
+            var isGrowing: Bool { synopsisGrowth > 0 }
+        }
+
+        /// Whole lines a `slot` holds — the exact formula `HomeHeroForeground.synopsisLineLimit`
+        /// uses for the pinned hero (at least 1).
+        static func lines(slot: CGFloat, lineHeight: CGFloat) -> Int {
+            guard lineHeight > 0 else { return 1 }
+            return max(1, Int(((slot + lineTolerance) / lineHeight).rounded(.down)))
+        }
+
+        /// The core rule, on plain numbers.
+        ///
+        /// - Parameters:
+        ///   - slot: the synopsis slot Standard draws.
+        ///   - standardLines: the line limit Standard draws (2 fixed in the in-scroll hero).
+        ///   - logoSlot: the logo slot Standard draws.
+        ///   - logoFloor: how far Long may shrink the logo slot.
+        ///   - unusedSlack: frame height the content does not fill today.
+        ///   - lineHeight: `Theme.Font.synopsisLineHeight` for the active font.
+        static func grant(slot: CGFloat,
+                          standardLines: Int,
+                          logoSlot: CGFloat,
+                          logoFloor: CGFloat,
+                          unusedSlack: CGFloat,
+                          lineHeight: CGFloat) -> Grant {
+            let unchanged = Grant(synopsisGrowth: 0, logoGive: 0, lines: standardLines)
+            guard lineHeight > 0, standardLines < maxLines else { return unchanged }
+            let slack = max(unusedSlack, 0)
+            let available = slack + max(logoSlot - logoFloor, 0)
+            for target in stride(from: maxLines, through: standardLines + 1, by: -1) {
+                let need = max(CGFloat(target) * lineHeight - lineTolerance - slot + roundingMargin, 0)
+                guard need <= available else { continue }
+                let fromSlack = min(need, slack)
+                return Grant(synopsisGrowth: need, logoGive: need - fromSlack, lines: target)
+            }
+            return unchanged
+        }
+
+        /// The pinned title hero (Nuvio-style carousel, `showsCTA`, or the Show Hero OFF panel) at
+        /// `compression` (`PinnedRowGeometry.Plan.compression`). Standard's slots come from
+        /// `HeroSlotGive.split`, so this starts from exactly what Standard draws.
+        static func pinned(compression: CGFloat, showsCTA: Bool, lineHeight: CGFloat) -> Grant {
+            let split = HeroSlotGive.split(compression: compression, showsCTA: showsCTA, folderHero: false)
+            let baseSlot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                                    : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+            let slot = baseSlot - split.synopsis
+            // Frame minus content: the content gave up `split.total`, the frame `compression`.
+            let unusedSlack = Theme.Size.heroPinnedFrameSlack - max(compression, 0) + split.total
+            return grant(slot: slot,
+                         standardLines: lines(slot: slot, lineHeight: lineHeight),
+                         logoSlot: Theme.Size.heroLogoSlotHeightPinned - split.logo,
+                         logoFloor: pinnedLogoFloor,
+                         unusedSlack: unusedSlack,
+                         lineHeight: lineHeight)
+        }
+
+        /// The in-scroll Classic hero (Nuvio-Style Hero OFF, `HomeHeroForeground.classicLayout`):
+        /// 150 logo + 72 synopsis at a fixed 2 lines inside the 452 pt frame.
+        static func classic(showsCTA: Bool, lineHeight: CGFloat) -> Grant {
+            grant(slot: Theme.Size.heroSynopsisSlotHeight,
+                  standardLines: 2,
+                  logoSlot: Theme.Size.heroLogoSlotHeight,
+                  logoFloor: classicLogoFloor,
+                  unusedSlack: classicFrameSlack(showsCTA: showsCTA),
+                  lineHeight: lineHeight)
+        }
+
+        /// The in-scroll hero's frame (`heroCarouselHeight`, 452) minus what `classicLayout` draws
+        /// in it: 2·24 padding + 150 logo + 2·16 + 32 meta + 72 synopsis, plus 16 + 56 CTA when the
+        /// CTA shows. 46 with the CTA.
+        static func classicFrameSlack(showsCTA: Bool) -> CGFloat {
+            let content = 2 * Theme.Spacing.lg
+                + Theme.Size.heroLogoSlotHeight
+                + 2 * Theme.Spacing.md
+                + Theme.Size.heroMetaSlotHeight
+                + Theme.Size.heroSynopsisSlotHeight
+                + (showsCTA ? Theme.Spacing.md + Theme.Size.heroButtonSlotHeight : 0)
+            return max(Theme.Size.heroCarouselHeight - content, 0)
+        }
+    }
+
     // MARK: - The plan
 
     /// Resolves one regime. Pure: the same inputs always produce an equal `Plan` (the probe log

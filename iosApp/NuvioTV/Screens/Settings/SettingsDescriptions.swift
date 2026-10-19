@@ -94,6 +94,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeRefreshAddons = "home.refreshAddons"
     case homeShowHero = "home.showHero"
     case homeNuvioStyleHero = "home.nuvioStyleHero"
+    // FEAT-61 (Steven rc3): Classic's Synopsis Length picker.
+    case homeSynopsisLength = "home.synopsisLength"
     case homeHeroSources = "home.heroSources"
     case homeHeroSource = "home.heroSource"
     case homeTrailersOnFocus = "home.trailersOnFocus"
@@ -299,6 +301,7 @@ enum SettingsDescriptions {
         case .homeRefreshAddons: return LocalizedStringResource("Checks your installed add-ons again for catalogs. Use it if Home rows are missing even though add-ons are installed.")
         case .homeShowHero: return LocalizedStringResource("On shows a rotating banner at the top of Home, built from up to two of your catalogs. Off shows the focused title's artwork and description instead. On by default.")
         case .homeNuvioStyleHero: return LocalizedStringResource("On puts the title and description on the left, the artwork on the right, and keeps the banner in place while rows scroll. Off uses the classic layout with the logo at the lower left. Off by default.")
+        case .homeSynopsisLength: return LocalizedStringResource("How much of the description the top of Classic Home shows. Long shows up to four lines when there is room for them, using spare space first and then a slightly smaller logo. The rows below stay where they are. Default: Standard.")
         case .homeHeroSources: return LocalizedStringResource("Opens the list of catalogs that can feed the rotating banner. Pick up to two.")
         case .homeHeroSource: return LocalizedStringResource("Turns this catalog on or off as a source for the rotating banner. At most two can be on at once.")
         case .homeTrailersOnFocus: return LocalizedStringResource("Plays a muted trailer preview after you rest on a poster for a moment. Off by default.")

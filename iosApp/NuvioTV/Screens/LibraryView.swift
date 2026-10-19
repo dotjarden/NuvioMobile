@@ -186,11 +186,14 @@ struct LibraryView: View {
                     // Read once, when the menu is built: the label and the action name one list.
                     let listKey = model.selectedSectionKey
                     let listTitle = model.selectedSectionTitle
-                    Button(role: .destructive) {
-                        model.requestRemove(entry, listKey: listKey, listTitle: listTitle)
-                    } label: {
-                        Label(LibraryGridPolicy.removeLabel(listTitle: listTitle),
-                              systemImage: "trash")
+                    // Batch K: read-only MDBList lists (external, dynamic, liked) get no remove.
+                    if model.selectedSectionAllowsRemove {
+                        Button(role: .destructive) {
+                            model.requestRemove(entry, listKey: listKey, listTitle: listTitle)
+                        } label: {
+                            Label(LibraryGridPolicy.removeLabel(listTitle: listTitle),
+                                  systemImage: "trash")
+                        }
                     }
                 }
             }

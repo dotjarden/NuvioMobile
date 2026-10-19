@@ -54,6 +54,11 @@ struct HomeScreenSettingsPane: View {
     /// classic layout is the default). Local-only.
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
+    /// FEAT-61 (Steven rc3): mirrors HomeHeroForeground's Synopsis Length key
+    /// (`PinnedRowGeometry.SynopsisLength`, "standard" | "long"). Default Standard. Local-only.
+    @AppStorage(PinnedRowGeometry.SynopsisLength.defaultsKey)
+    private var synopsisLengthRaw = PinnedRowGeometry.SynopsisLength.defaultValue.rawValue
+
     /// Mirrors HomeView's `home_upcoming_row_enabled` key: the "Upcoming" row of followed shows'
     /// next airing episodes, directly under Continue Watching. Default ON. Local-only.
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
@@ -161,6 +166,19 @@ struct HomeScreenSettingsPane: View {
                             set: { model.setHeroEnabled($0) }
                         ),
                         descriptionID: .homeShowHero
+                    )
+
+                    // FEAT-61 (Steven rc3): Classic's description length, for the rotating banner
+                    // and the Show Hero OFF panel alike (Stage has its own). Device-local.
+                    SettingsPickerRow(
+                        title: String(localized: "Synopsis Length"),
+                        selection: Binding(
+                            get: { PinnedRowGeometry.SynopsisLength.resolve(synopsisLengthRaw) },
+                            set: { synopsisLengthRaw = $0.rawValue }
+                        ),
+                        options: PinnedRowGeometry.SynopsisLength.allCases,
+                        descriptionID: .homeSynopsisLength,
+                        label: { $0.label }
                     )
                 }
 

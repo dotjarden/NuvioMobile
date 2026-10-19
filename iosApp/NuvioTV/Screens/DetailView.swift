@@ -493,6 +493,9 @@ struct DetailView: View {
     /// Set the moment the user swipes/moves focus at all (see `onMoveCommand` below); cancels the
     /// pending auto-play so it never yanks focus away from someone who's already exploring the page.
     @State private var userInteracted = false
+    /// BUG-153: see `trailerMountCandidate`.
+    @State private var trailerMounted = false
+    @State private var pageScrolling = false
     /// Review r3 #4: the late Play claim only applies while the page is still settling. A Select on
     /// Watched/Library is not a move command, so a claim that fired after add-ons finished loading
     /// could pull focus away from where the user is working.
@@ -1035,6 +1038,12 @@ struct DetailView: View {
             // BUG-41: hysteresis latch driving `trailerLayerVisible` — see `trailerDimmedOut`'s doc
             // comment. Wired on the outer ZStack (not inside `ScrollDimOverlay`) since it needs to
             // reach the trailer-mount `if` above, not just the overlay's own opacity.
+            // BUG-153: the deferred trailer mount (see `trailerMountCandidate`).
+            .onChange(of: trailerMountCandidate, initial: true) { _, _ in updateTrailerMount() }
+            .onReceive(dimModel.$isScrolling.removeDuplicates()) { scrolling in
+                if pageScrolling != scrolling { pageScrolling = scrolling }
+                updateTrailerMount()
+            }
             .onReceive(dimModel.$value) { newValue in
                 // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as
                 // long as it is visibly exposed. See `trailerDimmedOut`'s doc comment.
@@ -1419,7 +1428,23 @@ struct DetailView: View {
     /// trailer's own `if` in `body` and the `trailerActive` flag `ScrollDimOverlay` uses to decide
     /// whether to animate or step (see `trailerDimmedOut`'s doc comment for the "why tear it down"
     /// reasoning).
-    private var trailerLayerVisible: Bool { isTrailerActive && !trailerDimmedOut }
+    private var trailerLayerVisible: Bool { trailerMounted }
+
+    /// BUG-153 (Steven rc3: the first Down on heavy pages stutters). Release Time Profiler on the
+    /// Living Room ATV (2026-10-19, Sheriff Country): the first Down's two ~50 ms main-thread bursts
+    /// held the rows' first build AND the background trailer's `AVPlayerLayer` creation, the trailer
+    /// URL having resolved a beat earlier. A trailer that becomes mountable while the page scrolls
+    /// now mounts once the scroll settles (`ScrollDimModel.isScrolling`, ~150 ms debounce); one that
+    /// is already mounted is never torn down for scrolling (only by the dim latch, as before).
+    private var trailerMountCandidate: Bool { isTrailerActive && !trailerDimmedOut }
+
+    private func updateTrailerMount() {
+        guard trailerMountCandidate else {
+            if trailerMounted { trailerMounted = false }
+            return
+        }
+        if !trailerMounted, !pageScrolling { trailerMounted = true }
+    }
 
     /// BUG-96: one anchor pass. Codex r1 (P2): geometry is read HERE, at fire time — the row's
     /// content-space top and the live top inset — never captured before the wait (a parental-guide

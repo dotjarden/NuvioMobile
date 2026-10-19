@@ -17,6 +17,18 @@ final class MdbListLibraryListsPolicyTests: XCTestCase {
         XCTAssertEqual(rows.map(\.key), ["mdblist:list:1", "mdblist:list:2"])
     }
 
+    /// Batch K: external, dynamic and liked lists (upstream 3913a140b / 2cc2e6a61) can be hidden too.
+    func testReadOnlyListsAreListed() {
+        let rows = MdbListLibraryListsPolicy.rows([
+            option("mdblist:watchlist", "Watchlist"),
+            option("mdblist:list:1", "Favourites"),
+            option("mdblist:dynamic:2", "Trending"),
+            option("mdblist:external:3", "IMDb Top 250"),
+            option("mdblist:liked:4", "Someone's picks", false),
+        ])
+        XCTAssertEqual(rows.map(\.key), ["mdblist:list:1", "mdblist:dynamic:2", "mdblist:external:3", "mdblist:liked:4"])
+    }
+
     func testEmptyWhenOnlyWatchlist() {
         XCTAssertTrue(MdbListLibraryListsPolicy.rows([option("mdblist:watchlist", "Watchlist")]).isEmpty)
         XCTAssertTrue(MdbListLibraryListsPolicy.rows([]).isEmpty)

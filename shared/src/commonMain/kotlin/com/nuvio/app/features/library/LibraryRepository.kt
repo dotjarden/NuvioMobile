@@ -605,6 +605,22 @@ object LibraryRepository {
         }
     }
 
+    /**
+     * Fork (tvOS, Batch K): whether the Library grid's hold menu may offer "Remove from <list>" for
+     * [listKey]. False for lists the owning provider marks read-only (`isMembershipDestination =
+     * false`): MDBList's external, dynamic and liked lists (upstream 3913a140b / 2cc2e6a61), whose
+     * writes the MDBList writer skips, so a Remove there would silently do nothing. Simkl's
+     * read-only tabs answer false too. True for a list no connected provider owns: the remove then
+     * reports "This list is no longer available" itself.
+     */
+    fun canRemoveFromList(listKey: String): Boolean {
+        ensureLoaded()
+        val tab = TrackingProviderRegistry.connectedLibraryProviders().firstNotNullOfOrNull { provider ->
+            provider.snapshot().tabs.firstOrNull { tab -> tab.key == listKey }
+        } ?: return true
+        return tab.isMembershipDestination
+    }
+
     private fun libraryProviderOwning(listKey: String): TrackingLibraryProvider? =
         TrackingProviderRegistry.connectedLibraryProviders().firstOrNull { provider ->
             provider.snapshot().tabs.any { tab -> tab.key == listKey }

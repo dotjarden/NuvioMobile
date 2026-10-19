@@ -6283,6 +6283,32 @@ struct HomeHeroForeground: View {
     /// that needs it (Large today; Small/Medium compute 0 and are bit-identical to Wave 9).
     var compression: CGFloat = 0
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
+    /// FEAT-61 (Steven rc3): Settings › Home Screen › Synopsis Length. Standard draws exactly what
+    /// shipped; Long is `longSynopsis` below.
+    @AppStorage(PinnedRowGeometry.SynopsisLength.defaultsKey)
+    private var synopsisLengthRaw = PinnedRowGeometry.SynopsisLength.defaultValue.rawValue
+
+    /// FEAT-61 (Steven rc3): with Synopsis Length = Long, the extra synopsis height and the logo
+    /// height it takes (`PinnedRowGeometry.LongSynopsis`). nil with Standard, for collection folder
+    /// heroes (nothing to lengthen) and for the non-pinned Nuvio-style hero (already 3–5 lines), so
+    /// every one of those draws exactly what shipped. The hero's FRAME, and the rows' plan, never
+    /// change: Long only moves height between the logo, the frame's unused slack and the synopsis.
+    private var longSynopsis: PinnedRowGeometry.LongSynopsis.Grant? {
+        guard PinnedRowGeometry.SynopsisLength.resolve(synopsisLengthRaw) == .long,
+              !isCollectionHero(item) else { return nil }
+        let grant: PinnedRowGeometry.LongSynopsis.Grant
+        if compact && usesNuvioLayout {
+            grant = PinnedRowGeometry.LongSynopsis.pinned(compression: compression,
+                                                          showsCTA: showsCTA,
+                                                          lineHeight: Theme.Font.synopsisLineHeight)
+        } else if !compact && !usesNuvioLayout {
+            grant = PinnedRowGeometry.LongSynopsis.classic(showsCTA: showsCTA,
+                                                           lineHeight: Theme.Font.synopsisLineHeight)
+        } else {
+            return nil
+        }
+        return grant.isGrowing ? grant : nil
+    }
 
     /// The compression split across the two elastic slots, each bounded by its own floor.
     ///
@@ -6340,7 +6366,11 @@ struct HomeHeroForeground: View {
     /// three-slot layout would have used, so the panel's total height never changes — see that
     /// layout's comment).
     private var logoSlotHeight: CGFloat {
-        compact ? Theme.Size.heroLogoSlotHeightPinned - logoSlotGive : Theme.Size.heroLogoSlotHeight
+        // FEAT-61 (Steven rc3): Long's logo give, on top of the compression's (nil = Standard).
+        if compact, let long = longSynopsis {
+            return Theme.Size.heroLogoSlotHeightPinned - logoSlotGive - long.logoGive
+        }
+        return compact ? Theme.Size.heroLogoSlotHeightPinned - logoSlotGive : Theme.Size.heroLogoSlotHeight
     }
 
     private var usesNuvioLayout: Bool { forceNuvioLayout || heroNuvioStyle }
@@ -6469,6 +6499,10 @@ struct HomeHeroForeground: View {
         }
         let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
                             : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+        // FEAT-61 (Steven rc3): Long's growth (nil = Standard, the shipped expression).
+        if let long = longSynopsis {
+            return slot - synopsisSlotGive + long.synopsisGrowth
+        }
         return slot - synopsisSlotGive
     }
 
@@ -6492,6 +6526,8 @@ struct HomeHeroForeground: View {
     /// the real ~35pt line fits 3). Measured via `Theme.Font.bodyLineHeight` instead of assumed.
     private var synopsisLineLimit: Int {
         guard compact else { return showsCTA ? 3 : 5 }
+        // FEAT-61 (Steven rc3): Long's line count, sized to the grown slot above.
+        if let long = longSynopsis { return long.lines }
         // Measured, not assumed — see `Theme.Font.synopsisLineHeight` (rc14: the synopsis is set
         // in `Theme.Font.synopsis`, one text style below `body`, so its own metric is the one that
         // counts). A slot that is short of a whole line by less than `lineTolerance` still gets
@@ -6582,7 +6618,7 @@ struct HomeHeroForeground: View {
             } else {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     HeroLogo(item: item, image: textPresentation.logo, ink: textPresentation.logoInk)
-                        .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                        .frame(height: classicLogoSlotHeight, alignment: .bottomLeading)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(metaLine)
@@ -6594,9 +6630,9 @@ struct HomeHeroForeground: View {
                     Text(synopsis)
                         .font(Theme.Font.synopsis)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                        .lineLimit(2)
+                        .lineLimit(classicSynopsisLineLimit)
                         .frame(maxWidth: 1000, alignment: .leading)
-                        .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
+                        .frame(height: classicSynopsisSlotHeight, alignment: .topLeading)
                         // Wave H: see the same line in `nuvioLayout` — a late description must
                         // not animate.
                         .animation(nil, value: synopsis)
@@ -6605,6 +6641,19 @@ struct HomeHeroForeground: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// FEAT-61 (Steven rc3): the in-scroll Classic hero's three synopsis/logo numbers. Standard
+    /// (`longSynopsis == nil`) returns the shipped constants untouched; Long grows the synopsis
+    /// into the 452 pt frame's 46 pt of unused slack first, then the logo down to 110.
+    private var classicLogoSlotHeight: CGFloat {
+        guard let long = longSynopsis else { return Theme.Size.heroLogoSlotHeight }
+        return Theme.Size.heroLogoSlotHeight - long.logoGive
+    }
+    private var classicSynopsisSlotHeight: CGFloat {
+        guard let long = longSynopsis else { return Theme.Size.heroSynopsisSlotHeight }
+        return Theme.Size.heroSynopsisSlotHeight + long.synopsisGrowth
+    }
+    private var classicSynopsisLineLimit: Int { longSynopsis?.lines ?? 2 }
 
     /// FEAT-29's merged folder box, `height` tall (the exact sum the three-slot column would have
     /// consumed, so the hero's total height never moves).

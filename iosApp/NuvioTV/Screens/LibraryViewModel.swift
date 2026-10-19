@@ -70,6 +70,15 @@ final class LibraryViewModel: ObservableObject {
         return sections.first { $0.type == key }?.displayTitle
     }
 
+    /// Whether the hold menu offers "Remove from ‹list›" on the open list. Batch K: MDBList's
+    /// external, dynamic and liked lists (upstream 3913a140b / 2cc2e6a61) are read-only, and the
+    /// MDBList writer skips them, so a Remove there would do nothing. Read when the menu is built.
+    var selectedSectionAllowsRemove: Bool {
+        LibraryGridPolicy.offersRemove(listKey: selectedSectionKey) { key in
+            LibraryRepository.shared.canRemoveFromList(listKey: key)
+        }
+    }
+
     private var libraryState: LibraryUiState?
     /// Newest drawable progress per content id (`WatchProgressEntry.parentMetaId`).
     private var progressByContentId: [String: Double] = [:]
