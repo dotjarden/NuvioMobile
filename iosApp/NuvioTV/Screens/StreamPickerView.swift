@@ -79,6 +79,12 @@ struct StreamPickerView: View {
     /// the Up Next failover picker is up, and while the picker closes after a player (the list
     /// must not show on the way out).
     @State private var coverHold = false
+    /// BUG-185 (Steven rc9, D6): the held cover is the close-time hold (the picker is leaving after
+    /// a player or a hand-off), drawn as plain black: the title logo is for starts only.
+    @State private var coverIsCloseHold = false
+    /// BUG-185: when the viewer's close of the player reached the cover binding, for the
+    /// setter → `onDismiss` timing line (under 100 ms reads as an instant dismiss).
+    @State private var playerCloseRequestedAt: CFAbsoluteTime?
     /// BUG-174: the player closed onto something the viewer needs to see on the list (an auto walk
     /// that ended with nothing during a failover). Read once, by `handlePlayerDismissed`.
     @State private var keepListAfterPlayer = false
@@ -479,6 +485,7 @@ struct StreamPickerView: View {
             // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
             .onChange(of: selected?.id) { _, playing in
                 if playing != nil {
+                    coverIsCloseHold = false
                     invalidateYouTubeResolve()
                 } else {
                     // BUG-174: the player is closing. Cover the list before its slide-down reveals
@@ -486,7 +493,7 @@ struct StreamPickerView: View {
                     prepareForPlayerClose()
                 }
             }
-            .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
+            .fullScreenCover(item: playerCoverBinding, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
                 // episode's context (a same-position cover would otherwise keep the old libmpv
                 // controller and just ignore the new context). Failover swaps in place the same
@@ -547,7 +554,32 @@ struct StreamPickerView: View {
             episodeLine: line,
             pulseKey: videoId,
             message: loadingCoverMessage,
-            onCancel: cancel
+            onCancel: cancel,
+            showsLogo: !coverIsCloseHold
+        )
+    }
+
+    /// BUG-185 (Steven rc9, D6): the player cover's binding. When the viewer closes the player and
+    /// the picker is going to close too (`.closePicker`), the nil is written with animations
+    /// disabled, so the player cover leaves without its slide-down and `handlePlayerDismissed`
+    /// closes the picker straight after: Back lands on the opener in one pass. Every other close
+    /// (the alert, the failover picker, the list) keeps the animated dismiss.
+    private var playerCoverBinding: Binding<PlaybackContext?> {
+        Binding(
+            get: { selected },
+            set: { newValue in
+                guard newValue == nil, selected != nil, afterPlayerOutcome == .closePicker else {
+                    selected = newValue
+                    return
+                }
+                playerCloseRequestedAt = CFAbsoluteTimeGetCurrent()
+                if StreamPickerCloseAnimation.uiKitFallback {
+                    StreamPickerCloseAnimation.suspendUIKitAnimations()
+                }
+                var instant = Transaction()
+                instant.disablesAnimations = true
+                withTransaction(instant) { selected = nil }
+            }
         )
     }
 
@@ -1159,12 +1191,32 @@ struct StreamPickerView: View {
             callbackSuccessUrl: callbackSuccessUrl,
             callbackErrorUrl: callbackErrorUrl
         )
-        let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
-        // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
-        if result == ExternalPlayerOpenResult.opened {
+        // BUG-185 (Steven rc9, D6): build the URL, close the picker FIRST, then leave the app, so
+        // coming back from the external player lands on the opener with no loading cover to flash
+        // (the old order opened the player while the picker, under its cover, was still up).
+        let intent = ExternalPlayerPlatform.shared.buildIntent(request: request, playerId: playerId)
+        if let success = intent as? ExternalPlayerIntentResult.Success, let url = success.intent as? URL {
+            if UserDefaults.standard.bool(forKey: "debug.extPlayerProbe") {
+                // Knob-gated, console-only (the shared `open` rule): the URL embeds debrid tokens.
+                NSLog("%@", "[ExtPlayerProbe] open player=\(playerId) url=\(url.absoluteString)")
+            }
             // BUG-174: handed off — the picker leaves (manual picks too); Back from the external
             // player returns to the page that opened it.
             closePicker()
+            let sessionId = launchSessionId
+            // Not capturing the view: the picker is dismissing by the time this runs.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(100))
+                UIApplication.shared.open(url, options: [:]) { opened in
+                    // Upstream 99ced26a (as `ExternalPlayerPlatform.apple.kt`'s `open`): a launch
+                    // that carried a return callback but never opened drops its pending session
+                    // (`cancelLaunch(sessionId:)` only drops it if it is still this one).
+                    if !opened, let sessionId {
+                        print("[StreamPicker] external player did not open; dropping its return session")
+                        ExternalPlaybackReturn.shared.cancelLaunch(sessionId: sessionId)
+                    }
+                }
+            }
             return
         }
         if let launchSessionId {
@@ -1401,8 +1453,15 @@ struct StreamPickerView: View {
         instant.disablesAnimations = true
         withTransaction(instant) {
             switch afterPlayerOutcome {
-            case .closePicker, .openFailoverPicker: coverHold = true
-            case .raiseAlert, .keepList: coverHold = false
+            case .closePicker:
+                coverHold = true
+                coverIsCloseHold = true
+            case .openFailoverPicker:
+                coverHold = true
+                coverIsCloseHold = false
+            case .raiseAlert, .keepList:
+                coverHold = false
+                coverIsCloseHold = false
             }
         }
     }
@@ -1412,6 +1471,12 @@ struct StreamPickerView: View {
     /// as the dismissal — or closes the picker as well (BUG-174, Steven rc7: Back from a player
     /// returns to the page you started from, manual picks included; D1).
     private func handlePlayerDismissed() {
+        StreamPickerCloseAnimation.resumeUIKitAnimations()
+        if let requestedAt = playerCloseRequestedAt {
+            playerCloseRequestedAt = nil
+            let ms = Int((CFAbsoluteTimeGetCurrent() - requestedAt) * 1000)
+            print("[StreamPicker] BUG-185 player close: setter \u{2192} onDismiss \(ms) ms uiKitFallback=\(StreamPickerCloseAnimation.uiKitFallback ? 1 : 0)")
+        }
         guard selected == nil else { return }
         rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
         let outcome = afterPlayerOutcome
@@ -1422,6 +1487,7 @@ struct StreamPickerView: View {
             guard let pending = pendingManualFailureAlert else { return }
             pendingManualFailureAlert = nil
             coverHold = false
+            coverIsCloseHold = false
             DispatchQueue.main.async { manualFailureAlert = pending }
         case .openFailoverPicker:
             guard let pending = pendingFailoverTarget else { return }
@@ -1429,10 +1495,12 @@ struct StreamPickerView: View {
             // The nested picker's own close closes this one too: the cover keeps the list hidden
             // under it and on the way out.
             coverHold = true
+            coverIsCloseHold = false
             DispatchQueue.main.async { failoverTarget = pending }
         case .keepList:
             keepListAfterPlayer = false
             coverHold = false
+            coverIsCloseHold = false
             autoPlay.cancel(why: "player closed")
         case .closePicker:
             // A failover still resolving behind the closed player must not reopen it.
@@ -1453,7 +1521,11 @@ struct StreamPickerView: View {
     private func closePicker() {
         var instant = Transaction()
         instant.disablesAnimations = true
-        withTransaction(instant) { coverHold = true }
+        // BUG-185: the close-time hold is plain black (no logo flash on the way out).
+        withTransaction(instant) {
+            coverHold = true
+            coverIsCloseHold = true
+        }
         // Not gated on `pickerOnScreen`: the player's full-screen cover can take the picker off
         // screen (`onDisappear`) until after this runs.
         DispatchQueue.main.async {
@@ -1551,6 +1623,38 @@ private struct ExternalPlayMenu: ViewModifier {
                 }
             }
         }
+    }
+}
+
+/// BUG-185 (Steven rc9): the fallback if a disabled-animations Transaction on the cover binding
+/// still lets the player cover slide down. `-debug.pickerCloseUIKitNoAnim YES` (read per close,
+/// any build) also turns UIKit animations off from the binding's setter until the player cover's
+/// `onDismiss`, with a 1 s watchdog so a dismiss that never reports cannot leave the whole app
+/// unanimated.
+@MainActor
+enum StreamPickerCloseAnimation {
+    static var uiKitFallback: Bool { UserDefaults.standard.bool(forKey: "debug.pickerCloseUIKitNoAnim") }
+
+    private static var suspended = false
+    private static var generation = 0
+
+    static func suspendUIKitAnimations() {
+        suspended = true
+        generation += 1
+        let mine = generation
+        UIView.setAnimationsEnabled(false)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard suspended, generation == mine else { return }
+            print("[StreamPicker] BUG-185 UIKit animation watchdog fired (no onDismiss within 1 s)")
+            resumeUIKitAnimations()
+        }
+    }
+
+    static func resumeUIKitAnimations() {
+        guard suspended else { return }
+        suspended = false
+        UIView.setAnimationsEnabled(true)
     }
 }
 

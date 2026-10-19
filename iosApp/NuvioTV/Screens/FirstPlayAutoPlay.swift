@@ -592,6 +592,10 @@ struct FirstPlayAutoPlayOverlay: View {
     /// "Finding the best source…" / "Trying another source (n of m)…", spoken only; nil while held.
     let message: String?
     let onCancel: (() -> Void)?
+    /// BUG-185 (Steven rc9, D6): false for the hold while the picker closes after a player — the
+    /// title logo is for starts only, so the close draws plain black. Still focusable (BUG-47: the
+    /// cover must hold focus so Menu never reaches the list or closes the picker twice).
+    var showsLogo = true
 
     /// beta.19-rc1 verdict (review r2, P3-1): the title logo decode the stream picker's header uses
     /// (`StreamPickerView`: `.points(width: 600, height: 120)`, `upgrade: .logo`). The cover draws
@@ -606,7 +610,14 @@ struct FirstPlayAutoPlayOverlay: View {
 
     var body: some View {
         Group {
-            if loadingLookOn {
+            if !showsLogo {
+                Color.black
+                    .ignoresSafeArea()
+                    .focusable()
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(title))
+                    .accessibilityIdentifier("streamPicker.closeHold")
+            } else if loadingLookOn {
                 PlayerLoadingOverlay(
                     title: title,
                     parentMetaId: parentMetaId,
