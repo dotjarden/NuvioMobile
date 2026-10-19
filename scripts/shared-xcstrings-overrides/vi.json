@@ -1,3 +1,8 @@
 {
+  "library_status_completed": "Đã xem xong",
+  "library_status_dropped": "Đã bỏ",
+  "library_status_on_hold": "Tạm dừng",
+  "library_status_plan_to_watch": "Dự định xem",
+  "library_status_watching": "Đang xem",
   "trakt_authorization_expired_reconnect": "Ủy quyền Trakt của bạn không còn hiệu lực. Hãy kết nối lại tài khoản Trakt."
 }

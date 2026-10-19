@@ -1,5 +1,7 @@
 package com.nuvio.app.features.mdblist
 
+import com.nuvio.app.core.i18n.StringKey
+import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.features.tracking.LibraryListPrivacy
 import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.tracking.TrackingLibraryTabKind
@@ -160,7 +162,7 @@ data class MdbListLibrarySnapshot(
 
     fun tabs(): List<TrackingLibraryTab> = listOf(
         TrackingLibraryTab(
-            MDBLIST_WATCHLIST_KEY, "Watchlist", TrackingProviderId.MDBLIST, TrackingLibraryTabKind.WATCHLIST, supportedContentTypes = movieContentTypes + showContentTypes
+            MDBLIST_WATCHLIST_KEY, resourceString("Watchlist", StringKey.trakt_watchlist), TrackingProviderId.MDBLIST, TrackingLibraryTabKind.WATCHLIST, supportedContentTypes = movieContentTypes + showContentTypes
         )
     ) + lists.map(MdbListLibraryList::tab) + dynamicLists.map(MdbListDynamicList::tab) +
         externalLists.map(MdbListExternalList::tab) + likedLists.map(MdbListLikedList::tab)

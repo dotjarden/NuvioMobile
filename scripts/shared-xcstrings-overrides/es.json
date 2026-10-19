@@ -1,0 +1,7 @@
+{
+  "library_status_completed": "Completado",
+  "library_status_dropped": "Abandonado",
+  "library_status_on_hold": "En pausa",
+  "library_status_plan_to_watch": "Pendiente de ver",
+  "library_status_watching": "Viendo"
+}

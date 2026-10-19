@@ -1564,6 +1564,11 @@
     <string name="trakt_sign_in_complete_failed">Failed to complete Trakt sign in</string>
     <string name="trakt_user_fallback">Trakt user</string>
     <string name="trakt_watchlist">Watchlist</string>
+    <string name="library_status_watching">Watching</string>
+    <string name="library_status_plan_to_watch">Plan to Watch</string>
+    <string name="library_status_on_hold">On Hold</string>
+    <string name="library_status_completed">Completed</string>
+    <string name="library_status_dropped">Dropped</string>
     <!-- Trakt library sync errors -->
     <string name="trakt_error_authorization_expired">Trakt authorization expired</string>
     <string name="trakt_error_list_not_found">Trakt list not found</string>
