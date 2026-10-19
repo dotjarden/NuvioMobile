@@ -17,6 +17,7 @@ import com.nuvio.app.features.library.sync.consumeCursorPages
 import com.nuvio.app.features.library.sync.libraryDeltaPageSize
 import com.nuvio.app.features.library.sync.librarySnapshotPageSize
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
+import com.nuvio.app.features.mdblist.isMdbListReadOnlyListKey
 import com.nuvio.app.features.mdblist.localizedMdbListMessage
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
@@ -607,19 +608,13 @@ object LibraryRepository {
 
     /**
      * Fork (tvOS, Batch K): whether the Library grid's hold menu may offer "Remove from <list>" for
-     * [listKey]. False for lists the owning provider marks read-only (`isMembershipDestination =
-     * false`): MDBList's external, dynamic and liked lists (upstream 3913a140b / 2cc2e6a61), whose
-     * writes the MDBList writer skips, so a Remove there would silently do nothing. Simkl's
-     * read-only tabs answer false too. True for a list no connected provider owns: the remove then
-     * reports "This list is no longer available" itself.
+     * [listKey]. False only for MDBList's external, dynamic and liked lists (upstream 3913a140b /
+     * 2cc2e6a61), whose writes the MDBList writer skips, so a Remove there would silently do
+     * nothing. Review r1 (P2): not `isMembershipDestination` — Simkl's Completed is not an ADD
+     * destination but removing from it works (L1's confirmed Simkl removal). A pure key check, so
+     * the per-cell hold-menu builder pays nothing.
      */
-    fun canRemoveFromList(listKey: String): Boolean {
-        ensureLoaded()
-        val tab = TrackingProviderRegistry.connectedLibraryProviders().firstNotNullOfOrNull { provider ->
-            provider.snapshot().tabs.firstOrNull { tab -> tab.key == listKey }
-        } ?: return true
-        return tab.isMembershipDestination
-    }
+    fun canRemoveFromList(listKey: String): Boolean = !isMdbListReadOnlyListKey(listKey)
 
     private fun libraryProviderOwning(listKey: String): TrackingLibraryProvider? =
         TrackingProviderRegistry.connectedLibraryProviders().firstOrNull { provider ->

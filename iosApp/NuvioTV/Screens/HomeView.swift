@@ -6294,8 +6294,10 @@ struct HomeHeroForeground: View {
     /// every one of those draws exactly what shipped. The hero's FRAME, and the rows' plan, never
     /// change: Long only moves height between the logo, the frame's unused slack and the synopsis.
     private var longSynopsis: PinnedRowGeometry.LongSynopsis.Grant? {
+        // Review r1 (P3): folders are excluded only in the carousel (its merged folder box); the
+        // Show Hero OFF panel draws a folder's description in the same column, so it follows Long.
         guard PinnedRowGeometry.SynopsisLength.resolve(synopsisLengthRaw) == .long,
-              !isCollectionHero(item) else { return nil }
+              !(isCollectionHero(item) && showsCTA) else { return nil }
         let grant: PinnedRowGeometry.LongSynopsis.Grant
         if compact && usesNuvioLayout {
             grant = PinnedRowGeometry.LongSynopsis.pinned(compression: compression,
