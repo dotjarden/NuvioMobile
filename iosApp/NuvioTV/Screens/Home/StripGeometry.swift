@@ -232,6 +232,18 @@ nonisolated struct StripGeometry: Equatable, Sendable {
         return Double(1 - 0.4 * min(minY / pageHeight, 1))
     }
 
+    /// Batch F fit pages: the row's measured height plus room below it, never taller than the fixed
+    /// `page`. With the zoom on that room is the focus lift above and below the row (2 × 20).
+    ///
+    /// BUG-191 (Steven rc9, No Zoom): the lift is 0 there, so a fit page used to equal the measured
+    /// row. A collection row ends with `sm` 12 of padding, a catalog row with `lg` 24, so the
+    /// collection row's last 12 pt sat inside the next page's 24 pt top feather
+    /// (`StripEdgeMask(gutter: stageBottomGap)`) and its captions faded. With No Zoom the page now
+    /// adds `stageBottomGap` (24), the feather's own band, so no row ends inside it.
+    static func fitPageHeight(measured: CGFloat, page: CGFloat, focusLift: CGFloat) -> CGFloat {
+        min(page, (measured + (focusLift > 0 ? 2 * focusLift : stageBottomGap)).rounded(.up))
+    }
+
     /// Rounds up to the half-point grid. The 1e-6 slack (on the doubled value) keeps an exact half
     /// point computed with float noise above it (475.50000000000006) from rounding up a whole step.
     static func pixelCeil(_ x: CGFloat) -> CGFloat {

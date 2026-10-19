@@ -361,4 +361,18 @@ struct StripDebugLabel: View {
             .allowsHitTesting(false)
     }
 }
+
+/// BUG-191: `debug_strip_fit key=<rowKey> m=<measured> h=<page> | …`, every measured row's fit page
+/// in strip order (`-` before the first measurement or with Short Rows Fit off). A LEAF.
+struct StripFitDebugLabel: View {
+    @ObservedObject var debug: StageDebugState
+
+    var body: some View {
+        Text(verbatim: "debug_strip_fit \(debug.fit)")
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .accessibilityIdentifier("debug_strip_fit")
+            .allowsHitTesting(false)
+    }
+}
 #endif

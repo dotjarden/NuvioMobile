@@ -100,6 +100,7 @@ struct StageStripHome: View {
             }
             #if DEBUG
             StripDebugLabel(debug: stage.swap.debug)
+            StripFitDebugLabel(debug: stage.swap.debug)
             StageTrailerDebugLabel(debug: stage.swap.debug)
             #endif
         }

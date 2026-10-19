@@ -663,6 +663,13 @@ final class StageDebugState: ObservableObject {
         if page != key { page = key }
     }
 
+    /// BUG-191: the fit pages, for `debug_strip_fit` only (see `StripPager.noteFitDebug`).
+    @Published private(set) var fit = "-"
+
+    func setFit(_ line: String) {
+        if fit != line { fit = line }
+    }
+
     func setSwap(line: String, rest: String, disp: String) {
         if swapLine != line { swapLine = line }
         if self.rest != rest { self.rest = rest }

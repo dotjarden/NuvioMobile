@@ -425,6 +425,7 @@ struct StripPager<Row: View>: View {
         .onChange(of: positionId) { old, new in
             StageStripProbe.shared.log("position \(old ?? "-") -> \(new ?? "-")")
         }
+        .onChange(of: fitHeights) { _, _ in noteFitDebug() }
         #endif
         .onChange(of: reduceMotion, initial: true) { _, motion in
             box.reduceMotion = motion
@@ -496,11 +497,25 @@ struct StripPager<Row: View>: View {
     static var fitResizeSeconds: TimeInterval { 0.3 }
 
     /// Batch F: the fixed page, or (fit mode) the row's measured height plus the focus lift above
-    /// and below it, never taller than the fixed page. An unmeasured row keeps the fixed page.
+    /// and below it (BUG-191: the feather's 24 with No Zoom), never taller than the fixed page
+    /// (`StripGeometry.fitPageHeight`). An unmeasured row keeps the fixed page.
     private func fitPageHeight(_ key: String, page: CGFloat) -> CGFloat {
         guard StageStripTuning.fitRows, let measured = fitHeights[key], measured > 0 else { return page }
-        return min(page, (measured + 2 * geometry.focusLift).rounded(.up))
+        return StripGeometry.fitPageHeight(measured: measured, page: page, focusLift: geometry.focusLift)
     }
+
+    #if DEBUG
+    /// BUG-191: `debug_strip_fit` (`StripFitDebugLabel`), every measured row in strip order as
+    /// `key=<rowKey> m=<measured> h=<page>`, so a UI leg can check h ≥ m + 24 under No Zoom.
+    private func noteFitDebug() {
+        let page = geometry.pageHeight
+        let entries = rowKeys.compactMap { key -> String? in
+            guard let measured = fitHeights[key] else { return nil }
+            return "key=\(key) m=\(StageDebugLabel.number(measured)) h=\(StageDebugLabel.number(fitPageHeight(key, page: page)))"
+        }
+        controller.swap.debug.setFit(entries.isEmpty ? "-" : entries.joined(separator: " | "))
+    }
+    #endif
 
     private var probeConfiguration: String {
         "\(geometry.pageHeight)|\(geometry.stripHeight)|\(rowKeys.count)"
