@@ -172,6 +172,7 @@ protocol PlayerPanelPresenting: AnyObject {
 final class PlayerPanelHostController<Content: View>: UIHostingController<Content>, PlayerPanelPresenting {
     var onClosed: (() -> Void)?
     private var closing = false
+    private var reportedClose = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -187,21 +188,73 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
             close(animated: true)
             return
         }
+        #if DEBUG
+        // BUG-186 UI leg: the simulator cannot swipe, so `-debug.panelSwipeUpForce YES` binds
+        // Play/Pause on the panel to the swipe-up handler itself.
+        if Self.swipeUpForced, presses.contains(where: { $0.type == .playPause }) {
+            handleSwipeUp()
+            return
+        }
+        #endif
         super.pressesBegan(presses, with: event)
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         // Swallow the matching Menu release too, so nothing below sees a half press.
         if presses.contains(where: { $0.type == .menu }) { return }
+        #if DEBUG
+        if Self.swipeUpForced, presses.contains(where: { $0.type == .playPause }) { return }
+        #endif
         super.pressesEnded(presses, with: event)
     }
+
+    #if DEBUG
+    private static var swipeUpForced: Bool { UserDefaults.standard.bool(forKey: "debug.panelSwipeUpForce") }
+    #endif
 
     @objc private func handleSwipeUp() { close(animated: true) }
 
     func close(animated: Bool) {
         guard !closing else { return }
         closing = true
+        // BUG-186: `closing` used to latch for good. A Menu during the ~0.25 s present (or while
+        // focus was being reclaimed) asked UIKit to dismiss a controller still being presented;
+        // UIKit dropped that dismiss, the panel stayed up, and every later Menu hit the guard
+        // above and was swallowed, so the player could not be left. Now a close that lands
+        // mid-present waits for the present to finish, the flag is reset once a dismiss
+        // completes, and a watchdog retries a dismiss that never started.
+        if isBeingPresented, let coordinator = transitionCoordinator {
+            _ = coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.performDismiss(animated: animated)
+            }
+        } else {
+            performDismiss(animated: animated)
+        }
+        armCloseWatchdog()
+    }
+
+    private func performDismiss(animated: Bool) {
         let onClosed = onClosed
-        dismiss(animated: animated && !UIAccessibility.isReduceMotionEnabled) { onClosed?() }
+        dismiss(animated: animated && !UIAccessibility.isReduceMotionEnabled) { [weak self] in
+            self?.closing = false
+            // A watchdog retry can race a late original completion: report the close once.
+            guard self?.reportedClose != true else { return }
+            self?.reportedClose = true
+            onClosed?()
+        }
+    }
+
+    /// BUG-186: 0.6 s after a close, a panel that is still presented and not mid-dismiss had its
+    /// dismiss dropped; reset the latch and close again without animation. `isBeingDismissed`
+    /// keeps a slow (but live) dismiss from being doubled.
+    private func armCloseWatchdog() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, self.closing, self.presentingViewController != nil,
+                  !self.isBeingDismissed else { return }
+            print("[PlayerPanel] BUG-186 watchdog: dismiss dropped, retrying")
+            self.closing = false
+            self.close(animated: false)
+        }
     }
 }
