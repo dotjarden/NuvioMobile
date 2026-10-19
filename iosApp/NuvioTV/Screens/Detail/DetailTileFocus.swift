@@ -22,7 +22,9 @@ import SwiftUI
 /// Codex 2026-08-29 collision `CastCard`'s `stillFocused` parameter exists for).
 enum DetailTileFocus {
     /// Whether the tile takes the ring architecture (true) or keeps `TileFocusLift` (false).
-    static func drawsOwnRing(accentFocusRing: Bool) -> Bool { accentFocusRing }
+    static func drawsOwnRing(accentFocusRing: Bool) -> Bool {
+        accentFocusRing && !DetailBug153Knobs.noTileRing
+    }
 
     // The tiles' captions drop by `CardFocusMode.resolve(...)` (`CardCaptionFocusDrop`): 20 pt in
     // both zoom-on modes, 0 with No Zoom, so the caption follows ring mode's manual lift too.

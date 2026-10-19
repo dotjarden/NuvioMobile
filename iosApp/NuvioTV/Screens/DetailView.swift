@@ -291,6 +291,18 @@ enum DetailScrollProbe {
     nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: "debug.detailScrollProbe") }
 }
 
+/// Batch M Wave 0 (BUG-153 regressed in rc9): launch-latched A/B knobs, one per rc7 → rc9 suspect,
+/// set per run with launch arguments (`-debug.detailImmediateTrailerMount YES`, …) and compared
+/// under `debug.detailScrollProbe`.
+enum DetailBug153Knobs {
+    /// Restores rc7's immediate trailer mount (Batch K deferred it until the scroll settles).
+    static let immediateTrailerMount = UserDefaults.standard.bool(forKey: "debug.detailImmediateTrailerMount")
+    /// Skips the FEAT-60 compact logo overlay (Batch C).
+    static let noCompactLogo = UserDefaults.standard.bool(forKey: "debug.detailNoCompactLogo")
+    /// Puts Trailers, Episodes and Season tiles back on `TileFocusLift` (BUG-177's ring path off).
+    static let noTileRing = UserDefaults.standard.bool(forKey: "debug.detailNoTileRing")
+}
+
 /// BUG-41 item 6: a device-side hitch counter for one Detail visit, armed only while
 /// `DetailScrollProbe.enabled`. `CADisplayLink` fires on every vsync (~60 Hz on Apple TV); any gap
 /// over 25ms between consecutive ticks (roughly 1.5 frames) is counted as a hitch. Summarized once,
@@ -749,7 +761,7 @@ struct DetailView: View {
             // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
             // hero, a small title logo fades in at the top so the page still names what it is.
             .overlay(alignment: .top) {
-                if detailLayout == .cinematic {
+                if detailLayout == .cinematic, !DetailBug153Knobs.noCompactLogo {
                     DetailCompactLogo(title: title, logoUrl: logoUrl, model: dimModel,
                                       inRows: focusedRow != nil && bridgePhase == .idle,
                                       reduceMotion: reduceMotion)
@@ -1443,7 +1455,7 @@ struct DetailView: View {
             if trailerMounted { trailerMounted = false }
             return
         }
-        if !trailerMounted, !pageScrolling { trailerMounted = true }
+        if !trailerMounted, !pageScrolling || DetailBug153Knobs.immediateTrailerMount { trailerMounted = true }
     }
 
     /// BUG-96: one anchor pass. Codex r1 (P2): geometry is read HERE, at fire time — the row's
