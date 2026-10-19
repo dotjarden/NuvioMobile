@@ -260,19 +260,26 @@ final class StageController: ObservableObject {
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
         uncoverRequestedAt = nil
+        uncoverGateRowKey = nil
         pagerHandle.setUncoverGate(nil)
     }
+
+    /// BUG-188: the row the landed restore's gate holds open, nil while the gate is open (mirrors
+    /// what `closeUncoverGate` hands the pager, for `UncoverRestorePolicy.regrabsImmediately`).
+    private var uncoverGateRowKey: String?
 
     /// BUG-156 (B13): from the landing until the re-grab window closes, only the target row can
     /// take focus, so the engine's late restoration has nowhere else to go and the strip never
     /// moves. A viewer input retires the restore (`cancelUncoverRestore` opens the gate).
     private func closeUncoverGate(rowKey: String) {
+        uncoverGateRowKey = rowKey
         pagerHandle.setUncoverGate(rowKey)
         StageStripProbe.shared.log("restore gate row=\(rowKey) source=\(uncoverSource)")
         let generation = uncoverRestoreGeneration
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(UncoverRestorePolicy.landedWindow))
             guard let self, generation == self.uncoverRestoreGeneration else { return }
+            self.uncoverGateRowKey = nil
             self.pagerHandle.setUncoverGate(nil)
             StageStripProbe.shared.log("restore gate open row=\(rowKey) why=window source=\(self.uncoverSource)")
         }
@@ -339,15 +346,18 @@ final class StageController: ObservableObject {
         case .retire(let why):
             retireUncover(why: why, rowKey: target.rowKey, from: key, cancelsPager: why == "viewer")
         case .regrab(let age, let from):
+            // BUG-188: what the engine put focus on when it left the strip, read in every build (the
+            // immediate re-grab below needs it; the DEBUG diagnostic logs it).
+            let window = key == nil
+                ? UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+                : nil
+            let focused = window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
+            let item = focused.map { String(describing: type(of: $0)) } ?? "-"
             #if DEBUG
             // BUG-176 (Steven rc7) diagnostic: on the Living Room ATV the engine's late restoration
             // after a pop lands on SwiftUI's `UIKitFocusableFillerItem` (a lazy row's stand-in),
             // which scrolls the strip a row up before this regrab glides it back (4/4 runs, 10-18).
             if key == nil {
-                let window = UIApplication.shared.connectedScenes
-                    .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
-                let focused = window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
-                let item = focused.map { String(describing: type(of: $0)) } ?? "-"
                 let frame: CGRect = {
                     guard let focused, let window,
                           let space = focused.parentFocusEnvironment?.focusItemContainer?.coordinateSpace else { return .null }
@@ -361,6 +371,21 @@ final class StageController: ObservableObject {
             uncoverRestoreTarget = target
             let generation = uncoverRestoreGeneration
             let n = target.regrabs
+            // BUG-188: the engine parked focus on a filler while the gate is closed. Nothing the
+            // viewer did put it there (`regrabsImmediately`), so re-grab in this turn instead of a
+            // beat later: the ~195 ms out-and-back was the landed card's flicker. The strip stays
+            // `scrollDisabled` meanwhile (BUG-176), so the filler never scrolls it.
+            let inputSinceLanding = clock.lastAt.map { $0 >= (target.landedAt ?? target.requestedAt) } ?? false
+            if key == nil,
+               UncoverRestorePolicy.regrabsImmediately(
+                   fillerFocused: UncoverRestorePolicy.isFocusableFiller(typeName: item),
+                   gateClosed: uncoverGateRowKey == target.rowKey,
+                   viewerInputSinceLanding: inputSinceLanding) {
+                StageStripProbe.shared.log("restore regrab row=\(target.rowKey) item=\(target.itemId ?? "-") from=outside age=\(Int(age * 1000)) since=\(from) n=\(n) immediate=filler reason=uncover source=\(uncoverSource)")
+                requestFocus(rowKey: target.rowKey, itemId: target.itemId,
+                             reason: "uncover-regrab source=\(uncoverSource)")
+                return
+            }
             // Deferred one beat, then re-checked: the press behind a row change can reach the
             // window's recognizer just after the move it caused (`UncoverRestorePolicy.regrabDefer`).
             Task { [weak self] in

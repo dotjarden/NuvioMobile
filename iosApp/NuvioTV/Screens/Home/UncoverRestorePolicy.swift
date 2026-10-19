@@ -82,6 +82,26 @@ nonisolated enum UncoverRestorePolicy {
         guard let viewerInputAt else { return false }
         return viewerInputAt >= target.requestedAt
     }
+
+    /// BUG-188 (Steven rc9; rig log 2026-10-19, `console-bug188.log`): ~40 ms after `restore
+    /// landed`, the engine's late restoration moved focus to `UIKitFocusableFillerItem` at y = −218,
+    /// the row above's horizontal-scroller stand-in, which the gate's `.disabled` does not cover
+    /// (the BUG-176 class). The deferred re-grab (`regrabDefer`) left it there ~195 ms: the landed
+    /// card's single flicker. No stage swap happened, so holding swaps would change nothing.
+    ///
+    /// A filler under a CLOSED gate is never a viewer's target (every other row is disabled, and a
+    /// viewer press retires the restore before this is asked), so the re-grab skips the defer and
+    /// runs in the same turn. Without the gate, or after a viewer input since the landing, the
+    /// deferred path stands.
+    static func regrabsImmediately(fillerFocused: Bool, gateClosed: Bool, viewerInputSinceLanding: Bool) -> Bool {
+        fillerFocused && gateClosed && !viewerInputSinceLanding
+    }
+
+    /// SwiftUI's stand-in for a lazy row's scroller (`UIKitFocusableFillerItem`), by its runtime type
+    /// name: a private type, so the name is all there is to match on.
+    static func isFocusableFiller(typeName: String) -> Bool {
+        typeName.contains("FocusableFillerItem")
+    }
 }
 
 /// See the file header. The folder Rows page learns of a push over it only at its `onDisappear`,
