@@ -118,13 +118,15 @@ nonisolated enum DiscoverRowsPlan {
     }
 
     /// The Catalog pill's label for `option`: its name, plus the add-on when another option of the
-    /// same type carries the same name ("Popular · Cinemeta" beside "Popular · TMDB").
+    /// same type carries the same name ("Popular · Cinemeta" beside "Popular · TMDB"). BUG-189:
+    /// the clash check compares the RAW manifest names; only the output is localized.
     static func catalogLabel(_ option: DiscoverCatalogOption, among options: [DiscoverCatalogOption]) -> String {
         let clashes = options.contains { other in
             other.key != option.key
                 && other.catalogName.caseInsensitiveCompare(option.catalogName) == .orderedSame
         }
-        return clashes ? "\(option.catalogName) \u{00B7} \(option.addonName)" : option.catalogName
+        let name = DiscoverGenreNames.catalogDisplay(option.catalogName)
+        return clashes ? "\(name) \u{00B7} \(option.addonName)" : name
     }
 
     /// The row heading text (`title · add-on`), `StageCopy.headingAddon`'s rule. B1 (BUG-145 +
@@ -142,18 +144,21 @@ nonisolated enum DiscoverRowsPlan {
         let subtitle = typeLabel(option.type)
         let genres = option.genreOptions.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if !genres.isEmpty {
+            // BUG-189: `title`/`heading` are display text (localized standard names); `genre`
+            // stays the raw manifest value the fetch sends.
             return genres.enumerated().map { index, genre in
-                DiscoverRowSpec(key: "discover|\(option.key)|g\(index)",
-                                order: index,
-                                title: genre,
-                                heading: heading(title: genre, addonName: option.addonName, showsAddon: true),
-                                subtitle: subtitle,
-                                addonName: option.addonName,
-                                manifestUrl: option.manifestUrl,
-                                type: option.type,
-                                catalogId: option.catalogId,
-                                genre: genre,
-                                supportsPagination: option.supportsPagination)
+                let title = DiscoverGenreNames.display(genre)
+                return DiscoverRowSpec(key: "discover|\(option.key)|g\(index)",
+                                       order: index,
+                                       title: title,
+                                       heading: heading(title: title, addonName: option.addonName, showsAddon: true),
+                                       subtitle: subtitle,
+                                       addonName: option.addonName,
+                                       manifestUrl: option.manifestUrl,
+                                       type: option.type,
+                                       catalogId: option.catalogId,
+                                       genre: genre,
+                                       supportsPagination: option.supportsPagination)
             }
         }
         return fallbackSpecs(selected: option, catalogs: catalogs)
@@ -170,10 +175,11 @@ nonisolated enum DiscoverRowsPlan {
         let subtitle = typeLabel(selected.type)
         return ordered.enumerated().map { index, option in
             let genre: String? = option.genreRequired ? option.genreOptions.first : nil
+            let title = DiscoverGenreNames.catalogDisplay(option.catalogName)   // BUG-189: display only
             return DiscoverRowSpec(key: "discover|\(selected.type)|c\(index)",
                                    order: index,
-                                   title: option.catalogName,
-                                   heading: heading(title: option.catalogName, addonName: option.addonName,
+                                   title: title,
+                                   heading: heading(title: title, addonName: option.addonName,
                                                     showsAddon: true),
                                    subtitle: subtitle,
                                    addonName: option.addonName,

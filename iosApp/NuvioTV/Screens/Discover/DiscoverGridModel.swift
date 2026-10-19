@@ -57,8 +57,9 @@ nonisolated enum DiscoverGridPlan {
     /// The selection genre for a pill value ("All" = nil).
     static func genre(fromPill value: String) -> String? { value == allGenre ? nil : value }
 
+    /// BUG-189: display only (the pill value stays the raw manifest genre).
     static func genreLabel(_ value: String) -> String {
-        value == allGenre ? String(localized: "All") : value
+        value == allGenre ? String(localized: "All") : DiscoverGenreNames.display(value)
     }
 
     /// The genre `option` can actually fetch with: `requested` when the catalog offers it, else
