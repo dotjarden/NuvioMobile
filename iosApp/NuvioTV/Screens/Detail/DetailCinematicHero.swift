@@ -298,18 +298,21 @@ struct DetailCinematicHero<Actions: View>: View {
                     onOpenSynopsis()
                     showSynopsisSheet = true
                 } label: {
-                    // Batch C (Steven, rc2 reference photo): a ⌄ after the cut-off text says there
-                    // is more. Truncated text is always truncated at the slightly narrower width.
-                    HStack(alignment: .lastTextBaseline, spacing: 12) {
+                    // Batch C (Steven, rc2 reference photo), revised 2026-10-18 (Christian): a
+                    // "more" after the cut-off text says there is more (was a ⌄), and the focused
+                    // teaser draws About's platter so it reads as focused.
+                    HStack(alignment: .lastTextBaseline, spacing: 10) {
                         teaserText
-                        // Text, not a bare Image: `.borderless` lifts the images in its label on
-                        // focus, which floated the chevron alone with a shadow (device pass).
-                        Text(Image(systemName: "chevron.down"))
+                        Text(String(localized: "more", comment: "Detail synopsis: shown after the cut-off text; Select opens the full synopsis"))
                             .font(Theme.Font.synopsis.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .fixedSize()
                             .accessibilityHidden(true)
                             .accessibilityIdentifier("detail_synopsis_more")
                     }
+                    .background { teaserPlatter(focused: heroFocus.wrappedValue == .teaser) }
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15),
+                               value: heroFocus.wrappedValue == .teaser)
                 }
                 .buttonStyle(.borderless)
                 .focused(heroFocus, equals: .teaser)
@@ -347,6 +350,18 @@ struct DetailCinematicHero<Actions: View>: View {
                 })
                 .accessibilityHidden(true)
         }
+    }
+
+    /// Same platter as `DetailAboutSection`'s focus: drawn outside the text through negative
+    /// padding, so focusing the teaser never shifts the layout.
+    private func teaserPlatter(focused: Bool) -> some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.hero)
+            .fill(Theme.Palette.surface.opacity(focused ? 0.9 : 0))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.hero)
+                    .strokeBorder(Color.white.opacity(focused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings
+            )
+            .padding(-Theme.Spacing.md)
     }
 
     private var teaserText: some View {
