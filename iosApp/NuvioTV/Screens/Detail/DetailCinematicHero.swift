@@ -300,7 +300,7 @@ struct DetailCinematicHero<Actions: View>: View {
                 } label: {
                     // Batch C (Steven, rc2 reference photo), revised 2026-10-18 (Christian): a
                     // "more" after the cut-off text says there is more (was a ⌄), and the focused
-                    // teaser draws About's platter so it reads as focused.
+                    // teaser draws a Liquid Glass platter so it reads as focused.
                     HStack(alignment: .lastTextBaseline, spacing: 10) {
                         teaserText
                         Text(String(localized: "more", comment: "Detail synopsis: shown after the cut-off text; Select opens the full synopsis"))
@@ -354,31 +354,21 @@ struct DetailCinematicHero<Actions: View>: View {
 
     /// Same platter as `DetailAboutSection`'s focus: drawn outside the text through negative
     /// padding, so focusing the teaser never shifts the layout.
+    /// Christian, 2026-10-18: Liquid Glass behind the focused teaser (chosen over About's surface
+    /// fill on the TV). Drawn outside the text through negative padding, so nothing shifts;
+    /// mounted only while focused, because a glass layer cannot fade by opacity.
     @ViewBuilder
     private func teaserPlatter(focused: Bool) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.Radius.hero)
-        if DetailTeaserPlatterAB.glass {
-            // A/B (Christian, 2026-10-18): Liquid Glass behind the focused teaser. Mounted only
-            // while focused (a glass layer cannot fade by opacity).
-            if focused {
-                shape
-                    .fill(Color.clear)
-                    .glassEffect(.regular, in: shape)
-                    .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 1.5))
-                    .padding(-Theme.Spacing.md)
-                    .transition(.opacity)
-            }
-        } else {
+        if focused {
+            let shape = RoundedRectangle(cornerRadius: Theme.Radius.hero)
             shape
-                .fill(Theme.Palette.surface.opacity(focused ? 0.9 : 0))
-                .overlay(
-                    shape.strokeBorder(Color.white.opacity(focused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings
-                )
+                .fill(Color.clear)
+                .glassEffect(.regular, in: shape)
+                .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 1.5))
                 .padding(-Theme.Spacing.md)
+                .transition(.opacity)
         }
     }
-
-
 
     private var teaserText: some View {
         Text(overview ?? "")
@@ -421,8 +411,3 @@ struct DetailCinematicHero<Actions: View>: View {
     }
 }
 
-/// A/B (Christian, 2026-10-18): `-debug.synopsisPlatter surface` draws About's surface platter
-/// behind the focused synopsis instead of Liquid Glass (read once at launch).
-nonisolated enum DetailTeaserPlatterAB {
-    static let glass: Bool = UserDefaults.standard.string(forKey: "debug.synopsisPlatter") != "surface"
-}
