@@ -548,6 +548,14 @@ struct DetailView: View {
     /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
     /// `cardFocusButtonStyle`'s doc comment).
     @FocusState private var focusedCompanyIndex: Int?
+    /// BUG-187: the last card focus held in Cast / Studios / Collection / More Like This, for the
+    /// fallback restore after a pop (`DetailFocusMemory`). A reference box: writes never invalidate.
+    @State private var focusMemory = DetailFocusMemory()
+    /// BUG-187: the restore rung handed to the rows that own their `FocusState` (Collection, More
+    /// Like This). Changes only during a restore.
+    @State private var detailFocusRestore = DetailFocusRestoreRequest.none
+    /// BUG-187: the `debug_detail_focus` probe's card key; written only under `DetailFocusProbe`.
+    @State private var detailFocusProbeKey = "-"
     /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
     /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
@@ -792,6 +800,8 @@ struct DetailView: View {
             // up to `screenRest` when it would otherwise leave the header straddling the top scrim
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             .onChange(of: focusedRow) { old, row in
+                // BUG-187: focus settled on a row with no remembered card; forget the last one.
+                if let row, !DetailFocusRestore.tracks(row) { focusMemory.clear() }
                 // Batch G device pass: leaving the hero for a row is interacting (see
                 // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
                 if row != nil, !userInteracted { userInteracted = true }
@@ -1093,8 +1103,19 @@ struct DetailView: View {
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_bridge")
+            // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
+            // last remembered card key, read by the cast/More Like This Back UI leg.
+            if DetailFocusProbe.enabled {
+                Text("debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_detail_focus")
+            }
             #endif
         }
+        // BUG-187: the fallback restore stands down on a viewer press (`ViewerInputClock`); the
+        // clock is installed once per window, so this is a no-op once Home has mounted it.
+        .background { ViewerInputClockInstaller().frame(width: 0, height: 0) }
         // FEAT-35 (correction F18): land on Play/Resume, not on the Cinematic synopsis teaser above
         // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
         // above Play, so this names the target the engine already picked there.
@@ -1122,8 +1143,12 @@ struct DetailView: View {
             cancelTrailerDurationTask()
             // BUG-41 item 6: no-op unless `DetailScrollProbe.enabled` (checked inside `start()`).
             hitchCounter.start()
+            // BUG-187: back from a push off a Cast / Studios / Collection / More Like This card.
+            restoreDetailFocusIfArmed()
         }
         .onDisappear {
+            // BUG-187: a push from a remembered card arms the restore for the return.
+            focusMemory.arm()
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
@@ -1156,6 +1181,8 @@ struct DetailView: View {
             if interacted { cancelAutoPlayTrailer() }
         }
         .onChange(of: heroFocus) { old, new in
+            // BUG-187: back in the hero, nothing below is remembered.
+            if new != nil { focusMemory.clear() }
             if DetailLatePlayFocus.latchesClaim(pending: latePlayClaimPending, new: new) {
                 didClaimLatePlayFocus = true
             } else if DetailLatePlayFocus.isUserMove(old: old, new: new) {
@@ -1766,6 +1793,8 @@ struct DetailView: View {
             actionRow
         }
         .focused($heroHasFocus)
+        // BUG-187: the Cinematic teaser is in the hero but not in `heroFocus`; forget the card too.
+        .onChange(of: heroHasFocus) { _, inHero in if inHero { focusMemory.clear() } }
         // W2-A: the hero's real height for the dim ramp. Rounded, and written only on a change,
         // which happens about once per visit (the BUG-41 rule: no per-frame state writes).
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
@@ -2280,6 +2309,59 @@ struct DetailView: View {
         }
     }
 
+    /// BUG-187: a tracked row's card took (or left) focus. Writes the box, never view state —
+    /// except the probe's key, and only under `DetailFocusProbe`.
+    private func noteDetailFocus(_ row: DetailRowID, _ key: String?) {
+        focusMemory.note(row: row, key: key)
+        #if DEBUG
+        if DetailFocusProbe.enabled, let key, detailFocusProbeKey != key { detailFocusProbeKey = key }
+        #endif
+    }
+
+    /// BUG-187 fallback: back from a push off a remembered card, put focus back on it if the
+    /// engine's own restoration does not. FEAT-79's rungs (`DetailFocusRestore.rungs`); every rung
+    /// stands down after a viewer press or swipe (`ViewerInputClock`) or a newer appearance, and
+    /// the row request is retired afterwards so a row remounting later never re-applies it.
+    private func restoreDetailFocusIfArmed() {
+        let memory = focusMemory
+        guard let target = memory.takeArmedTarget() else { return }
+        let generation = memory.beginRestore()
+        let started = ProcessInfo.processInfo.systemUptime
+        for rung in DetailFocusRestore.rungs {
+            DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
+                guard memory.isCurrent(generation),
+                      !ViewerInputClock.shared.hasInput(since: started) else { return }
+                applyDetailFocusRung(row: target.row, key: target.key, force: rung.force)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + DetailFocusRestore.retireDelay) {
+            guard memory.isCurrent(generation) else { return }
+            detailFocusRestore = .none
+        }
+    }
+
+    /// BUG-187: one rung. Cast and Studios focus states live here; Collection and More Like This
+    /// own theirs, so they get the request and apply the same rule (`DetailFocusRestore.shouldApply`).
+    private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool) {
+        switch row {
+        case .cast:
+            guard let index = Int(key),
+                  DetailFocusRestore.shouldApply(force: force, current: focusedCastIndex.map(String.init),
+                                                 target: key) else { return }
+            focusedCastIndex = index
+        case .logos:
+            guard let index = Int(key),
+                  DetailFocusRestore.shouldApply(force: force, current: focusedCompanyIndex.map(String.init),
+                                                 target: key) else { return }
+            focusedCompanyIndex = index
+        case .collection, .moreLikeThis:
+            detailFocusRestore = DetailFocusRestoreRequest(row: row, key: key, force: force,
+                                                           generation: detailFocusRestore.generation + 1)
+        default:
+            break
+        }
+    }
+
     /// FEAT-35: Start Over sits in the row only in Cinematic, and only when there is a saved
     /// position (`DetailViewModel.hasResumableProgress`).
     private var showsStartOver: Bool {
@@ -2395,6 +2477,8 @@ struct DetailView: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
+                // BUG-187: remember the card a push to a person page leaves from.
+                .onChange(of: focusedCastIndex) { _, index in noteDetailFocus(.cast, index.map(String.init)) }
                 .scrollClipDisabled()
                 // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
                 // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
@@ -2410,33 +2494,11 @@ struct DetailView: View {
     private var moreLikeThisRow: some View {
         let items = model.meta?.moreLikeThis ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("More Like This")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(items, id: \.id) { item in
-                            NavigationLink(value: TitleRoute(preview: item)) {
-                                PosterCard(
-                                    title: item.name,
-                                    imageURL: item.poster,
-                                    fallbackImageURL: item.rawPosterUrl,
-                                    width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight
-                                )
-                            }
-                            .cardFocusButtonStyle()
-                            .posterButtonShape()
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
-                .rowEdgeEffectStyle()
-            }
-            .focusSection()
+            // BUG-187: a child view owning its `FocusState`, so the remembered card costs
+            // `DetailView` no new focus state (and no body re-run per Left/Right).
+            DetailPosterLinkRow(row: .moreLikeThis, title: String(localized: "More Like This"),
+                                items: items, restore: detailFocusRestore,
+                                onFocus: { noteDetailFocus(.moreLikeThis, $0) })
         }
     }
 
@@ -2545,29 +2607,10 @@ struct DetailView: View {
     private var collectionRow: some View {
         let items = model.meta?.collectionItems ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text(collectionTitle)
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    // BUG-106: the ring-mode lift grows a 16:9 card ≈71 pt in width, so `lg` (24)
-                    // put the raised card onto its neighbour — see `landscapeLiftRowGap`.
-                    LazyHStack(spacing: Theme.Spacing.landscapeLiftRowGap) {
-                        ForEach(items, id: \.id) { item in
-                            NavigationLink(value: TitleRoute(preview: item)) {
-                                SagaCard(item: item)
-                            }
-                            .cardFocusButtonStyle()
-                            .posterButtonShape()
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
-                .rowEdgeEffectStyle()
-            }
-            .focusSection()
+            // BUG-187: a child view owning its `FocusState` — see `moreLikeThisRow`.
+            DetailPosterLinkRow(row: .collection, title: collectionTitle,
+                                items: items, restore: detailFocusRestore,
+                                onFocus: { noteDetailFocus(.collection, $0) })
         }
     }
 
@@ -2624,6 +2667,8 @@ struct DetailView: View {
             }
             // Full-width: a section that hugs its chips was skipped by Up/Down from the right side.
             .focusRow(alignment: .leading)
+            // BUG-187: remember the chip a push to a studio/network page leaves from.
+            .onChange(of: focusedCompanyIndex) { _, index in noteDetailFocus(.logos, index.map(String.init)) }
         }
     }
 
@@ -2881,6 +2926,63 @@ private struct InfoRow: Identifiable {
     let label: String
     let value: String
     var id: String { label }
+}
+
+/// BUG-187: the More Like This and Collection rows, pulled out of `DetailView` so each owns the
+/// `FocusState` the fallback restore needs (`DetailFocusMemory`) without adding one to the page.
+/// The cards, spacings and styles are the ones the two rows had inline.
+private struct DetailPosterLinkRow: View {
+    /// `.moreLikeThis` (portrait `PosterCard`s) or `.collection` (FEAT-34's 16:9 `SagaCard`s).
+    let row: DetailRowID
+    let title: String
+    let items: [MetaPreview]
+    let restore: DetailFocusRestoreRequest
+    let onFocus: (String?) -> Void
+
+    @FocusState private var focusedId: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(title)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                // BUG-106: the ring-mode lift grows a 16:9 card ≈71 pt in width, so `lg` (24)
+                // put the raised saga card onto its neighbour — see `landscapeLiftRowGap`.
+                LazyHStack(spacing: row == .collection ? Theme.Spacing.landscapeLiftRowGap : Theme.Spacing.lg) {
+                    ForEach(items, id: \.id) { item in
+                        NavigationLink(value: TitleRoute(preview: item)) {
+                            if row == .collection {
+                                SagaCard(item: item)
+                            } else {
+                                PosterCard(
+                                    title: item.name,
+                                    imageURL: item.poster,
+                                    fallbackImageURL: item.rawPosterUrl,
+                                    width: Theme.Size.miniPosterWidth,
+                                    height: Theme.Size.miniPosterHeight
+                                )
+                            }
+                        }
+                        .cardFocusButtonStyle()
+                        .posterButtonShape()
+                        .focused($focusedId, equals: item.id)
+                    }
+                }
+                .padding(.vertical, Theme.Spacing.md)
+            }
+            .scrollClipDisabled()
+            // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+            .rowEdgeEffectStyle()
+        }
+        .focusSection()
+        .onChange(of: focusedId) { _, id in onFocus(id) }
+        .onChange(of: restore) { _, request in
+            guard request.row == row, let key = request.key,
+                  DetailFocusRestore.shouldApply(force: request.force, current: focusedId, target: key) else { return }
+            focusedId = key
+        }
+    }
 }
 
 /// BUG-153 (Batch M): the Trailers & Extras row, pulled out of `DetailView` so the row's own

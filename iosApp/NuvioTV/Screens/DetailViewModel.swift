@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import SharedCore
 
+/// BUG-187 (Steven rc9): whether a `MetaDetailsUiState` emission leaves the meta on screen alone.
+/// A reload's loading emission (no meta, no error) must not blank a page that already has one;
+/// a meta or an error always lands. Pure, so `DetailMetaAdoptionTests` pins it.
+enum DetailMetaAdoption {
+    nonisolated static func keepsCurrent(hasMeta: Bool, incomingMeta: Bool, error: String?) -> Bool {
+        hasMeta && !incomingMeta && error == nil
+    }
+}
+
 /// Loads and observes the full metadata for a single title via the shared `MetaDetailsRepository`,
 /// and tracks its Watched / Library state via the shared `WatchedRepository` / `LibraryRepository`.
 ///
@@ -188,8 +197,19 @@ final class DetailViewModel: ObservableObject {
             } else if Self.currentOwner != self.ownerToken {
                 return
             }
+            // BUG-187 (Steven rc9): back from a cast member re-runs `start()` → `load()` after
+            // `stop()` cleared the repo, and its first emission is `isLoading` with no meta. Taking
+            // that nil dropped every row and focus fell to Play; the page keeps what it shows until
+            // the reload brings a meta or an error.
+            if DetailMetaAdoption.keepsCurrent(hasMeta: self.meta != nil,
+                                               incomingMeta: state.meta != nil,
+                                               error: state.errorMessage) {
+                if self.isLoading != state.isLoading { self.isLoading = state.isLoading }
+                return
+            }
             self.isLoading = state.isLoading
-            self.meta = state.meta
+            // BUG-187: an equal meta (the reload's copy of the one on screen) is not re-published.
+            if state.meta != self.meta { self.meta = state.meta }
             self.errorMessage = state.errorMessage
             if let m = state.meta {
                 self.resolveTrailerIfNeeded(m)
