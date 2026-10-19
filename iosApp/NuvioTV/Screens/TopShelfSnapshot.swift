@@ -45,6 +45,10 @@ struct TopShelfItemSnapshot: Codable, Equatable {
     let poster: String?
     let background: String?
     let progressPercent: Double?
+    /// A7 review r1 (P3): the custom-pattern poster the tile draws. `poster` stays the title's own
+    /// poster, which the deep link carries (a custom URL must never become the title's poster).
+    /// Optional, so an older snapshot or extension decodes it fine.
+    var displayPoster: String? = nil
 }
 
 struct TopShelfSnapshot: Codable {
@@ -156,12 +160,13 @@ final class TopShelfUpdater: ObservableObject {
                 episodeTitle: entry.episodeTitle,
                 season: entry.seasonNumber?.value,
                 episode: entry.episodeNumber?.value,
-                poster: Self.customPoster(entry, pattern: posterPattern) ?? entry.poster,
+                poster: entry.poster,
                 background: entry.background ?? entry.episodeThumbnail,
                 // `progressFraction` covers both kinds of entry: a stored percentage (Trakt/Simkl)
                 // or position / duration (local playback saves no percentage, so they used to
                 // carry none and the Top Shelf showed no bar for them).
-                progressPercent: entry.progressFraction > 0 ? Double(entry.progressFraction) * 100 : nil
+                progressPercent: entry.progressFraction > 0 ? Double(entry.progressFraction) * 100 : nil,
+                displayPoster: Self.customPoster(entry, pattern: posterPattern)
             )
         }
         // Skip the write when the items are unchanged at Top Shelf's resolution: the progress bar
@@ -220,7 +225,8 @@ final class TopShelfUpdater: ObservableObject {
             videoId: item.videoId, parentMetaId: item.parentMetaId, parentMetaType: item.parentMetaType,
             title: item.title, episodeTitle: item.episodeTitle, season: item.season, episode: item.episode,
             poster: item.poster, background: item.background,
-            progressPercent: item.progressPercent.map { $0.rounded() }
+            progressPercent: item.progressPercent.map { $0.rounded() },
+            displayPoster: item.displayPoster
         )
     }
 }

@@ -131,6 +131,9 @@ object FilenameEpisodeMatcher {
             nextSeason: Int?,
             nextEpisode: Int,
         ): String? {
+            // Fork deviation (review r1 P3): this pattern carries no season, so a season change
+            // (S1E10 → S2E1) must not rewrite E10 → E01 and match season 1's first episode.
+            if (nextSeason != null && currentSeason != null && nextSeason != currentSeason) return null
             val match = regex.find(filename) ?: return null
             val matchedEpisode = match.groupValues[2].toIntOrNull() ?: return null
             if (matchedEpisode != currentEpisode) return null
@@ -187,14 +190,21 @@ object FilenameEpisodeMatcher {
         currentEpisode: Int?,
         nextSeason: Int?,
         nextEpisode: Int?,
-    ): String? =
+    ): String? {
+        val current = currentFilename?.takeIf { it.isNotBlank() } ?: return null
         buildNextFilename(
-            filename = currentFilename.orEmpty(),
+            filename = current,
             currentSeason = currentSeason,
             currentEpisode = currentEpisode ?: 0,
             nextSeason = nextSeason,
             nextEpisode = nextEpisode ?: 0,
-        ) ?: currentFilename?.takeIf { it.isNotBlank() }
+        )?.let { return it }
+        // Fork deviation (review r1 P3): the same-name fallback only when the playing file carries
+        // no episode token at all (a pack named the same for every episode). A token that did not
+        // match (absolute anime numbering, a season change on an episode-only name) would make the
+        // fallback match the CURRENT episode's file again.
+        return if (extractSeasonEpisode(current) == null) current else null
+    }
 
     /**
      * The first stream, in list order, whose `behaviorHints.filename` equals [expectedFilename]

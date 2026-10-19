@@ -150,12 +150,22 @@ class FilenameEpisodeMatcherTest {
     }
 
     @Test
-    fun expectedNextFilenameFallsBackToTheSameFilenameWhenTheTokenDisagrees() {
-        // Absolute numbering in the context, season numbering in the file: no rewrite.
-        assertEquals(
-            "Show.S02E01.mkv",
-            FilenameEpisodeMatcher.expectedNextFilename("Show.S02E01.mkv", 1, 13, 1, 14),
-        )
+    fun expectedNextFilenameIsNullWhenTheTokenDisagrees() {
+        // Fork deviation (review r1): absolute numbering in the context, season numbering in the
+        // file — the same-name fallback would match the current episode's file again.
+        assertNull(FilenameEpisodeMatcher.expectedNextFilename("Show.S02E01.mkv", 1, 13, 1, 14))
+    }
+
+    @Test
+    fun expectedNextFilenameFallsBackToTheSameNameOnlyWithoutAnyToken() {
+        assertEquals("Show.Complete.Pack.mkv",
+                     FilenameEpisodeMatcher.expectedNextFilename("Show.Complete.Pack.mkv", 1, 3, 1, 4))
+    }
+
+    @Test
+    fun episodeOnlyNameNeverRewritesAcrossASeason() {
+        // Fork deviation (review r1): E10 → E01 across S1 → S2 would be season 1's first episode.
+        assertNull(FilenameEpisodeMatcher.expectedNextFilename("Show.S01.E10.mkv", 1, 10, 2, 1))
     }
 
     @Test
@@ -167,7 +177,8 @@ class FilenameEpisodeMatcherTest {
     @Test
     fun expectedNextFilenameTreatsMissingEpisodeNumbersAsZero() {
         // Upstream passes `episode ?: 0`; with no episode number the token cannot match.
-        assertEquals("Show.S01E03.mkv", FilenameEpisodeMatcher.expectedNextFilename("Show.S01E03.mkv", 1, null, 1, null))
+        // Fork deviation (review r1): the token is present but cannot match, so no same-name fallback.
+        assertNull(FilenameEpisodeMatcher.expectedNextFilename("Show.S01E03.mkv", 1, null, 1, null))
     }
 
     // --- findMatch (fork) ---
