@@ -298,21 +298,14 @@ struct DetailCinematicHero<Actions: View>: View {
                     onOpenSynopsis()
                     showSynopsisSheet = true
                 } label: {
-                    // Batch C (Steven, rc2 reference photo), revised 2026-10-18 (Christian): a
-                    // "more" after the cut-off text says there is more (was a ⌄), and the focused
-                    // teaser draws a Liquid Glass platter so it reads as focused.
-                    HStack(alignment: .lastTextBaseline, spacing: 10) {
-                        teaserText
-                        Text(String(localized: "more", comment: "Detail synopsis: shown after the cut-off text; Select opens the full synopsis"))
-                            .font(Theme.Font.synopsis.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .fixedSize()
-                            .accessibilityHidden(true)
-                            .accessibilityIdentifier("detail_synopsis_more")
-                    }
-                    .background { teaserPlatter(focused: heroFocus.wrappedValue == .teaser) }
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15),
-                               value: heroFocus.wrappedValue == .teaser)
+                    // Batch C (Steven, rc2 reference photo), revised 2026-10-18 (Christian): the
+                    // focused teaser draws a Liquid Glass platter so it reads as focused.
+                    // BUG-192 (Steven rc9, D3): the "more" after the cut-off text is gone, with no
+                    // affordance in its place; the focused glass already says it opens.
+                    teaserText
+                        .background { teaserPlatter(focused: heroFocus.wrappedValue == .teaser) }
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.15),
+                                   value: heroFocus.wrappedValue == .teaser)
                 }
                 .buttonStyle(.borderless)
                 .focused(heroFocus, equals: .teaser)
