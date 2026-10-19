@@ -348,7 +348,13 @@ final class StageController: ObservableObject {
                     .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
                 let focused = window.flatMap { UIFocusSystem.focusSystem(for: $0)?.focusedItem }
                 let item = focused.map { String(describing: type(of: $0)) } ?? "-"
-                StageStripProbe.shared.log("restore outside focused=\(item)")
+                let frame: CGRect = {
+                    guard let focused, let window,
+                          let space = focused.parentFocusEnvironment?.focusItemContainer?.coordinateSpace else { return .null }
+                    return space.convert(focused.frame, to: window.coordinateSpace)
+                }()
+                let parent = focused?.parentFocusEnvironment.map { String(describing: type(of: $0)) } ?? "-"
+                StageStripProbe.shared.log("restore outside focused=\(item) parent=\(parent) frame=\(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height))")
             }
             #endif
             target.regrabs += 1
@@ -370,6 +376,22 @@ final class StageController: ObservableObject {
                                   reason: "uncover-regrab source=\(self.uncoverSource)")
             }
         }
+    }
+
+    /// BUG-176 (Steven rc7; device pass 2026-10-18): an Up or Down pressed while the landed
+    /// restore's gate was closed went nowhere (every other row was disabled), so the viewer needed
+    /// a second press. The press reaches the window's recognizer after the engine's failed move:
+    /// if focus is still on the restored row, make the move it asked for.
+    private func replaySwallowedRowMove(_ target: UncoverRestorePolicy.Target) {
+        guard target.landedAt != nil, stripOwnsFocus, currentRowKey == target.rowKey,
+              let kind = ViewerInputClock.shared.lastKind, kind == .up || kind == .down else { return }
+        let keys = pagerHandle.rowKeys
+        guard let index = keys.firstIndex(of: target.rowKey) else { return }
+        let next = kind == .down ? index + 1 : index - 1
+        guard keys.indices.contains(next) else { return }
+        let key = keys[next]
+        StageStripProbe.shared.log("restore replay \(kind.rawValue) row=\(key) source=\(uncoverSource)")
+        requestFocus(rowKey: key, itemId: memory.itemId(for: key), reason: "uncover-replay")
     }
 
     /// The restore is over. `cancelsPager`: the viewer moved, so an in-flight request's later rungs
@@ -405,6 +427,7 @@ final class StageController: ObservableObject {
                 ?? (now - target.issuedAt >= UncoverRestorePolicy.unlandedWindow)
             retireUncover(why: windowOver ? "expired" : "viewer", rowKey: target.rowKey, from: nil,
                           cancelsPager: !windowOver)
+            if !windowOver { replaySwallowedRowMove(target) }
         } else if let requestedAt = uncoverRequestedAt,
                   let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
             // Not issued yet (the pager is not back): just stand the attempt down.

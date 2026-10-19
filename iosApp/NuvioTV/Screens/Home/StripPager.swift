@@ -46,6 +46,9 @@ final class StripPagerHandle {
     /// Whether a pager is mounted and listening.
     var isInstalled: Bool { request != nil }
 
+    /// BUG-176: the installed pager's rows, in order (empty when none is installed).
+    var rowKeys: [String] { (owner as? StripPagerBox)?.rowKeys ?? [] }
+
     func install(owner: AnyObject, cancel: Cancel? = nil, syncPage: SyncPage? = nil,
                  gate: Gate? = nil, _ request: @escaping Request) {
         self.owner = owner
@@ -372,6 +375,11 @@ struct StripPager<Row: View>: View {
         }
         .scrollPosition(id: $positionId, anchor: .top)
         .scrollTargetBehavior(.viewAligned)
+        // BUG-176 (Steven rc7; device pass 2026-10-18): while the pop restore's gate is closed the
+        // strip does not scroll for focus. The engine's late restoration lands on a neighbour row's
+        // `UIKitFocusableFillerItem` (its horizontal scroller's stand-in, which `.disabled` does not
+        // cover) and scrolled the strip up a row; the regrab then glided it back.
+        .scrollDisabled(uncoverGateKey != nil)
         // D4 / #3: the spike's clip, with its top edge feathered across the stage's 24 pt bottom
         // gutter, so a row leaving upward softens there and never draws over the synopsis. A
         // clip/mask never touches focusability.
@@ -861,3 +869,4 @@ private struct StripExitCommandModifier: ViewModifier {
         }
     }
 }
+
