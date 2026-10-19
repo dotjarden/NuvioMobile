@@ -26,6 +26,24 @@ enum DetailTileFocus {
         accentFocusRing && !DetailBug153Knobs.noTileRing
     }
 
+    /// BUG-153 (Batch M): the Trailers, Season and Episode rows raise the focused tile only when
+    /// SwiftUI draws its lift (`liftedCastZIndex`'s rule); the system lift composites into its own
+    /// layer, so a zIndex flip there only re-sorted the row on every Left/Right.
+    static func raisedZIndex(isFocused: Bool, accentFocusRing: Bool, noZoomOnFocus: Bool) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && isFocused ? 1 : 0
+    }
+
+    /// BUG-153 (Batch M): the tile's own `value: isFocused` animation. Nil under Reduce Motion as
+    /// before, and nil in ring mode under the `debug.detailTileRingNoAnim` knob.
+    static func tileFocusAnimation(reduceMotion: Bool, accentFocusRing: Bool,
+                                   ringNoAnim: Bool = DetailBug153Knobs.ringNoAnim) -> Animation? {
+        if reduceMotion { return nil }
+        if ringNoAnim, drawsOwnRing(accentFocusRing: accentFocusRing) { return nil }
+        return .easeOut(duration: 0.15)
+    }
+
     // The tiles' captions drop by `CardFocusMode.resolve(...)` (`CardCaptionFocusDrop`): 20 pt in
     // both zoom-on modes, 0 with No Zoom, so the caption follows ring mode's manual lift too.
 
@@ -72,34 +90,67 @@ struct DetailTileFocusLift: ViewModifier {
         let accent = focusAppearance.accentFocusRing
         let noZoom = focusAppearance.noZoomOnFocus
         if DetailTileFocus.drawsOwnRing(accentFocusRing: accent) {
-            content
-                .scaleEffect(x: DetailTileFocus.bandScale(size.width),
-                             y: DetailTileFocus.bandScale(size.height))
-                .overlay {
-                    if let ring = PlainLabelRing.resolve(accentFocusRing: accent,
-                                                         noZoomOnFocus: noZoom,
-                                                         focused: isFocused) {
-                        RoundedRectangle(cornerRadius: cornerRadius)
-                            .strokeBorder(ringTint ?? ring.color, lineWidth: ringWidth)
+            sampleRingColorIfNeeded(
+                content
+                    .scaleEffect(x: DetailTileFocus.bandScale(size.width),
+                                 y: DetailTileFocus.bandScale(size.height))
+                    .overlay {
+                        if let ring = PlainLabelRing.resolve(accentFocusRing: accent,
+                                                             noZoomOnFocus: noZoom,
+                                                             focused: isFocused) {
+                            RoundedRectangle(cornerRadius: cornerRadius)
+                                .strokeBorder(ringTint ?? ring.color, lineWidth: ringWidth)
+                        }
                     }
-                }
-                // Outermost of the pair so ring, band, depth rail and picture scale as one layer
-                // (BUG-108's rule on `FolderTile`).
-                .modifier(CardArtworkFocusLift(
-                    mode: PlainLabelRing.lift(accentFocusRing: accent, noZoomOnFocus: noZoom),
-                    isFocused: isFocused,
-                    artworkHeight: size.height,
-                    cornerRadius: cornerRadius
-                ))
-                .onChange(of: isFocused, initial: true) { _, focused in
-                    guard focused, samplesRingColor else { return }
-                    ArtworkColorStore.shared.color(for: [tintSource]) { color in
-                        guard posterRingTint != color else { return }
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
-                    }
-                }
+                    // Outermost of the pair so ring, band, depth rail and picture scale as one layer
+                    // (BUG-108's rule on `FolderTile`).
+                    .modifier(CardArtworkFocusLift(
+                        mode: PlainLabelRing.lift(accentFocusRing: accent, noZoomOnFocus: noZoom),
+                        isFocused: isFocused,
+                        artworkHeight: size.height,
+                        cornerRadius: cornerRadius,
+                        // BUG-153 (Batch M): the `debug.detailTileRingNoShadow` A/B knob.
+                        focusShadow: !DetailBug153Knobs.ringNoShadow
+                    ))
+                    .modifier(DetailTileRingNoAnim())
+            )
         } else {
             content.tileFocusLift(cornerRadius: cornerRadius)
+        }
+    }
+
+    /// BUG-153 (Batch M): the poster-colour sampler is attached only when "Focus Ring Takes Poster
+    /// Color" can use it, so a plain ring tile carries no `onChange` (its `initial: true` ran on
+    /// every tile as the row mounted). The branch flips only with the setting or the tile's art.
+    @ViewBuilder
+    private func sampleRingColorIfNeeded<V: View>(_ view: V) -> some View {
+        if samplesRingColor {
+            view.onChange(of: isFocused, initial: true) { _, focused in
+                guard focused, samplesRingColor else { return }
+                ArtworkColorStore.shared.color(for: [tintSource]) { color in
+                    guard posterRingTint != color else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+                }
+            }
+        } else {
+            view
+        }
+    }
+}
+
+/// BUG-153 (Batch M): the `debug.detailTileRingNoAnim` knob. `disablesAnimations` stops the
+/// `.animation(_:value:)` modifiers below it (`CardArtworkFocusLift.manualLift`'s) from inserting
+/// their animation, and the nil animation drops the tile's outer `value: isFocused` one, so the
+/// ring, band and lift snap. Launch-latched: the branch never flips within a run.
+private struct DetailTileRingNoAnim: ViewModifier {
+    func body(content: Content) -> some View {
+        if DetailBug153Knobs.ringNoAnim {
+            content.transaction { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        } else {
+            content
         }
     }
 }

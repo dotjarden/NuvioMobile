@@ -847,6 +847,11 @@ struct CardArtworkFocusLift: ViewModifier {
     /// (`PlainLabelRing.smallLabelRise(height:)`) — see that function for why a 52pt capsule
     /// cannot share the 20pt flat rise every taller card class uses.
     var rise: CGFloat? = nil
+    /// BUG-153 (Batch M): whether `.manualScale` draws its black platter + 22 pt drop shadow under
+    /// the focused artwork. Defaulted to true and appended last, the `rise` rule above, so every
+    /// existing call site stays byte-identical; only `DetailTileFocusLift` passes it, from the
+    /// `debug.detailTileRingNoShadow` A/B knob (`DetailBug153Knobs.ringNoShadow`).
+    var focusShadow: Bool = true
     /// BUG-158: `.highlight` (platter + specular edge) for resting cards; `InlineTrailerCard` puts
     /// `.lift` (scale + shadow, no standing edge) in the environment once its tile is showing.
     @Environment(\.cardSystemLiftStyle) private var liftStyle
@@ -883,7 +888,8 @@ struct CardArtworkFocusLift: ViewModifier {
             // `CardArtworkShape`: down here the attached view's bounds ARE the artwork, so
             // there is no caption slot to carve out of the shape.
             .background {
-                if isFocused {
+                // BUG-153: `focusShadow` false skips the platter (the Detail tiles' A/B knob).
+                if isFocused, focusShadow {
                     RoundedRectangle(cornerRadius: cornerRadius)
                         .fill(Color.black)
                         .shadow(color: .black.opacity(0.6), radius: 22, y: 10)

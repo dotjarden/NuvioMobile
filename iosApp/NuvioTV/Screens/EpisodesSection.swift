@@ -21,8 +21,8 @@ struct EpisodesSection: View {
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
     @FocusState private var focusedEpisodeId: String?
-    /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
-    @FocusState private var focusedSeason: Int?
+    /// BUG-153 (Batch M): gates the episode row's `zIndex` (`DetailTileFocus.raisedZIndex`).
+    @Environment(\.focusAppearance) private var focusAppearance
     /// Review r1 #4: the "N aired unwatched" count, cached per (meta, season, watched keys) so a
     /// Left/Right press (a body evaluation) does not re-read the date and re-parse every episode.
     /// A reference held in `@State`: filling it never invalidates the view.
@@ -80,39 +80,15 @@ struct EpisodesSection: View {
                 // out until someone asks), so no new strings either.
                 let posterBySeason = grouping.posterBySeason
                 if posterBySeason.values.contains(where: { $0 != nil }) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
-                            ForEach(seasons, id: \.self) { season in
-                                Button {
-                                    selectedSeason = season
-                                } label: {
-                                    SeasonPosterCard(
-                                        label: Self.seasonLabel(season),
-                                        imageURL: posterBySeason[season] ?? nil ?? meta.poster ?? meta.background,
-                                        isSelected: season == current
-                                    )
-                                }
-                                // BUG-177 (Steven rc7): SeasonPosterCard owns its ring-mode lift now
-                                // (`DetailTileFocusLift`), so ring mode takes the native lift away
-                                // (`.card`, the default); ring off is the same `.borderless` as before.
-                                .cardFocusButtonStyle()
-                                // BUG-32: follow the user's Corners setting (system radius
-                                // otherwise overrides it — the BUG-25 class).
-                                .posterButtonShape()
-                                .focused($focusedSeason, equals: season)
-                                // BUG-177: the lifted poster draws over its right neighbour.
-                                .zIndex(focusedSeason == season ? 1 : 0)
-                                .accessibilityIdentifier("season_poster_\(season)")
-                            }
-                        }
-                        .padding(.vertical, Theme.Spacing.md)
-                    }
-                    .scrollClipDisabled()
-                    // beta.19-rc1 verdict (F, FEAT-54): the season-poster row wears the Appearance
-                    // "Row Edge Fade" like every other row. The text season-chip row below has no
-                    // `scrollClipDisabled`, so it is left alone.
-                    .rowEdgeEffectStyle()
-                    .focusSection()
+                    // BUG-153 (Batch M): its own view, so the season row's FocusState re-runs only
+                    // the row on Left/Right, not the whole section (and the episode shelf with it).
+                    SeasonPosterRow(
+                        seasons: seasons,
+                        posterBySeason: posterBySeason,
+                        fallbackImage: meta.poster ?? meta.background,
+                        current: current,
+                        onSelect: { selectedSeason = $0 }
+                    )
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
@@ -173,7 +149,11 @@ struct EpisodesSection: View {
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)
                             // BUG-177: the lifted card draws over its right neighbour.
-                            .zIndex(focusedEpisodeId == episode.id ? 1 : 0)
+                            // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                            .zIndex(DetailTileFocus.raisedZIndex(
+                                isFocused: focusedEpisodeId == episode.id,
+                                accentFocusRing: focusAppearance.accentFocusRing,
+                                noZoomOnFocus: focusAppearance.noZoomOnFocus))
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -324,7 +304,7 @@ struct EpisodesSection: View {
         return a.title < b.title
     }
 
-    private static func seasonLabel(_ season: Int) -> String {
+    fileprivate static func seasonLabel(_ season: Int) -> String {
         season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
     }
 
@@ -400,6 +380,61 @@ private struct EpisodeRoute: Identifiable {
         if let o, !o.isEmpty { return o }
         let d: String? = meta.description_
         return d
+    }
+}
+
+/// FEAT-24's season poster row, pulled out of `EpisodesSection.body` (BUG-153, Batch M) so its
+/// `FocusState` invalidates only this row. Same buttons, styles and identifiers as before.
+private struct SeasonPosterRow: View {
+    let seasons: [Int]
+    let posterBySeason: [Int: String?]
+    /// The show poster (else background) — a season without its own poster falls back to it.
+    let fallbackImage: String?
+    let current: Int?
+    let onSelect: (Int) -> Void
+
+    /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
+    @FocusState private var focusedSeason: Int?
+    @Environment(\.focusAppearance) private var focusAppearance
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                ForEach(seasons, id: \.self) { season in
+                    Button {
+                        onSelect(season)
+                    } label: {
+                        SeasonPosterCard(
+                            label: EpisodesSection.seasonLabel(season),
+                            imageURL: posterBySeason[season] ?? nil ?? fallbackImage,
+                            isSelected: season == current
+                        )
+                    }
+                    // BUG-177 (Steven rc7): SeasonPosterCard owns its ring-mode lift now
+                    // (`DetailTileFocusLift`), so ring mode takes the native lift away
+                    // (`.card`, the default); ring off is the same `.borderless` as before.
+                    .cardFocusButtonStyle()
+                    // BUG-32: follow the user's Corners setting (system radius
+                    // otherwise overrides it — the BUG-25 class).
+                    .posterButtonShape()
+                    .focused($focusedSeason, equals: season)
+                    // BUG-177: the lifted poster draws over its right neighbour.
+                    // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                    .zIndex(DetailTileFocus.raisedZIndex(
+                        isFocused: focusedSeason == season,
+                        accentFocusRing: focusAppearance.accentFocusRing,
+                        noZoomOnFocus: focusAppearance.noZoomOnFocus))
+                    .accessibilityIdentifier("season_poster_\(season)")
+                }
+            }
+            .padding(.vertical, Theme.Spacing.md)
+        }
+        .scrollClipDisabled()
+        // beta.19-rc1 verdict (F, FEAT-54): the season-poster row wears the Appearance
+        // "Row Edge Fade" like every other row. The text season-chip row below has no
+        // `scrollClipDisabled`, so it is left alone.
+        .rowEdgeEffectStyle()
+        .focusSection()
     }
 }
 
@@ -498,8 +533,11 @@ private struct EpisodeThumbCard: View {
                     artworkHeight: Theme.Size.episodeHeight
                 ))
         }
-        // BUG-177: Reduce Motion gate — see `TrailerThumbCard`.
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+        // BUG-177: Reduce Motion gate — see `TrailerThumbCard`. BUG-153 (Batch M): also nil in
+        // ring mode under the `debug.detailTileRingNoAnim` knob.
+        .animation(DetailTileFocus.tileFocusAnimation(reduceMotion: reduceMotion,
+                                                      accentFocusRing: focusAppearance.accentFocusRing),
+                   value: isFocused)
     }
 
     /// Heatmap-colored IMDb rating chip (green ≥ 8.5, lime ≥ 7, orange ≥ 5.5, red below).

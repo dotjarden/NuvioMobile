@@ -301,6 +301,12 @@ enum DetailBug153Knobs {
     static let noCompactLogo = UserDefaults.standard.bool(forKey: "debug.detailNoCompactLogo")
     /// Puts Trailers, Episodes and Season tiles back on `TileFocusLift` (BUG-177's ring path off).
     static let noTileRing = UserDefaults.standard.bool(forKey: "debug.detailNoTileRing")
+    /// Batch M Wave 1: keeps the tile ring but drops the focused tile's black platter + 22 pt
+    /// shadow (`CardArtworkFocusLift.focusShadow`), the main suspect under the SwiftUI scale.
+    static let ringNoShadow = UserDefaults.standard.bool(forKey: "debug.detailTileRingNoShadow")
+    /// Batch M Wave 1: keeps the tile ring but snaps it: no animation on the ring branch's lift,
+    /// ring and band (`DetailTileFocusLift`), nor on the tile's own `value: isFocused` animation.
+    static let ringNoAnim = UserDefaults.standard.bool(forKey: "debug.detailTileRingNoAnim")
 }
 
 /// BUG-41 item 6: a device-side hitch counter for one Detail visit, armed only while
@@ -542,8 +548,6 @@ struct DetailView: View {
     /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
     /// `cardFocusButtonStyle`'s doc comment).
     @FocusState private var focusedCompanyIndex: Int?
-    /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
-    @FocusState private var focusedTrailerIndex: Int?
     /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
     /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
@@ -2688,45 +2692,10 @@ struct DetailView: View {
     private var trailersRow: some View {
         let trailers = model.meta?.trailers ?? []
         if !trailers.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Trailers & Extras")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
-                        ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
-                            Button {
-                                model.playTrailer(trailer)
-                            } label: {
-                                TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
-                            }
-                            // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
-                            // (`DetailTileFocusLift`), so the default `.card` style takes the native
-                            // lift away in ring mode; ring off is the same `.borderless` as before.
-                            .cardFocusButtonStyle()
-                            .posterButtonShape() // BUG-32: honor the Corners setting
-                            .focused($focusedTrailerIndex, equals: index)
-                            // BUG-177: the lifted card draws over its right neighbour.
-                            .zIndex(focusedTrailerIndex == index ? 1 : 0)
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
-                .rowEdgeEffectStyle()
-                #if DEBUG
-                // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
-                // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
-                // text rows to thumbnail cards without depending on pixel comparison.
-                let rendered = Array(trailers.prefix(10))
-                Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
-                    .font(.system(size: 8))
-                    .opacity(0.011)
-                    .accessibilityIdentifier("debug_trailers")
-                #endif
-            }
-            .focusSection()
+            // BUG-153 (Batch M): a child view, so the row's focus state re-runs only the row.
+            DetailTrailersRow(trailers: trailers,
+                              resolvingTrailerId: model.resolvingTrailerId,
+                              onPlay: { model.playTrailer($0) })
         }
     }
 
@@ -2912,6 +2881,65 @@ private struct InfoRow: Identifiable {
     let label: String
     let value: String
     var id: String { label }
+}
+
+/// BUG-153 (Batch M): the Trailers & Extras row, pulled out of `DetailView` so the row's own
+/// `FocusState` (BUG-177's zIndex raise) invalidates only this row on Left/Right, not the whole
+/// Detail body. `.detailRowAnchored(.trailers, …)` stays on the call site.
+private struct DetailTrailersRow: View {
+    let trailers: [MetaTrailer]
+    let resolvingTrailerId: String?
+    let onPlay: (MetaTrailer) -> Void
+
+    /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
+    @FocusState private var focusedIndex: Int?
+    @Environment(\.focusAppearance) private var focusAppearance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Trailers & Extras")
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                    ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
+                        Button {
+                            onPlay(trailer)
+                        } label: {
+                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id)
+                        }
+                        // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
+                        // (`DetailTileFocusLift`), so the default `.card` style takes the native
+                        // lift away in ring mode; ring off is the same `.borderless` as before.
+                        .cardFocusButtonStyle()
+                        .posterButtonShape() // BUG-32: honor the Corners setting
+                        .focused($focusedIndex, equals: index)
+                        // BUG-177: the lifted card draws over its right neighbour.
+                        // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                        .zIndex(DetailTileFocus.raisedZIndex(
+                            isFocused: focusedIndex == index,
+                            accentFocusRing: focusAppearance.accentFocusRing,
+                            noZoomOnFocus: focusAppearance.noZoomOnFocus))
+                    }
+                }
+                .padding(.vertical, Theme.Spacing.md)
+            }
+            .scrollClipDisabled()
+            // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+            .rowEdgeEffectStyle()
+            #if DEBUG
+            // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
+            // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
+            // text rows to thumbnail cards without depending on pixel comparison.
+            let rendered = Array(trailers.prefix(10))
+            Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_trailers")
+            #endif
+        }
+        .focusSection()
+    }
 }
 
 /// Circular cast avatar + name/role. Platter-free: used inside a `.poster`-styled NavigationLink
