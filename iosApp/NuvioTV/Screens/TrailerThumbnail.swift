@@ -159,7 +159,10 @@ struct TrailerThumbCard: View {
         .frame(width: Theme.Size.episodeWidth)
         // BUG-177: gated on Reduce Motion now that this wraps ring mode's manual scale (the
         // `CastCard` BUG-108 rule: a blanket animation here would undo `CardArtworkFocusLift`'s nil).
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+        // BUG-153 (Batch M): also nil in ring mode under the `debug.detailTileRingNoAnim` knob.
+        .animation(DetailTileFocus.tileFocusAnimation(reduceMotion: reduceMotion,
+                                                      accentFocusRing: focusAppearance.accentFocusRing),
+                   value: isFocused)
     }
 
     /// "Trailer · 2024", or just the type when there's no publish year.
