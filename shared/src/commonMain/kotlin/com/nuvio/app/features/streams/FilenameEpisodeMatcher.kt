@@ -229,4 +229,24 @@ object FilenameEpisodeMatcher {
                 matches(stream.behaviorHints.filename, expectedFilename)
         }
     }
+
+    /**
+     * Upstream d2cc0fb8a's second step: the first stream, in list order, in the same non-blank
+     * [bingeGroup] whose torrent info hash ([StreamItem.p2pInfoHash]: top-level, `clientResolve`,
+     * magnet or `torrent://`) equals [infoHash] (case-insensitive). Covers season packs, where one
+     * torrent serves every episode and the add-on gives no usable filename. Same candidate rules
+     * as [findMatch]. Null for a blank group or a null / blank hash.
+     */
+    fun findInfoHashMatch(
+        streams: List<StreamItem>,
+        infoHash: String?,
+        bingeGroup: String?,
+    ): StreamItem? {
+        val hash = infoHash?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val group = bingeGroup?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return streams.firstOrNull { stream ->
+            stream.behaviorHints.bingeGroup == group &&
+                stream.p2pInfoHash.equals(hash, ignoreCase = true)
+        }
+    }
 }

@@ -222,6 +222,75 @@ class FilenameEpisodeMatcherTest {
         assertSame(plugin, FilenameEpisodeMatcher.findMatch(listOf(plugin), "Show.S01E04.mkv", null))
     }
 
+    // --- findInfoHashMatch (upstream d2cc0fb8a) ---
+
+    @Test
+    fun findInfoHashMatchTakesTheSameGroupAndHashIgnoringCase() {
+        val otherGroup = hashStream("A", bingeGroup = "group-b", infoHash = "ABCDEF0123")
+        val wanted = hashStream("B", bingeGroup = "group-a", infoHash = "abcdef0123")
+        assertSame(wanted, FilenameEpisodeMatcher.findInfoHashMatch(listOf(otherGroup, wanted), "ABCDEF0123", "group-a"))
+    }
+
+    @Test
+    fun findInfoHashMatchNeedsTheSameBingeGroup() {
+        val s = hashStream("A", bingeGroup = "group-b", infoHash = "abcdef0123")
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(s), "abcdef0123", "group-a"))
+    }
+
+    @Test
+    fun findInfoHashMatchNeedsANonBlankGroup() {
+        val s = hashStream("A", bingeGroup = null, infoHash = "abcdef0123")
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(s), "abcdef0123", null))
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(s), "abcdef0123", "  "))
+    }
+
+    @Test
+    fun findInfoHashMatchNeedsAHash() {
+        val noHash = hashStream("A", bingeGroup = "group-a", infoHash = null)
+        val withHash = hashStream("B", bingeGroup = "group-a", infoHash = "abcdef0123")
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(noHash, withHash), null, "group-a"))
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(noHash, withHash), "  ", "group-a"))
+        assertNull(FilenameEpisodeMatcher.findInfoHashMatch(listOf(noHash), "abcdef0123", "group-a"))
+    }
+
+    @Test
+    fun findInfoHashMatchReadsClientResolveAndMagnetHashes() {
+        val resolve = hashStream(
+            "A", bingeGroup = "group-a", infoHash = null,
+            clientResolve = StreamClientResolve(infoHash = "1111AAAA"),
+        )
+        val magnet = hashStream(
+            "B", bingeGroup = "group-a", infoHash = null,
+            externalUrl = "magnet:?xt=urn:btih:2222BBBB&dn=Show",
+        )
+        assertSame(resolve, FilenameEpisodeMatcher.findInfoHashMatch(listOf(resolve, magnet), "1111aaaa", "group-a"))
+        assertSame(magnet, FilenameEpisodeMatcher.findInfoHashMatch(listOf(resolve, magnet), "2222bbbb", "group-a"))
+    }
+
+    @Test
+    fun findInfoHashMatchTakesTheFirstInListOrder() {
+        val first = hashStream("A", bingeGroup = "group-a", infoHash = "abcdef0123")
+        val second = hashStream("B", bingeGroup = "group-a", infoHash = "abcdef0123")
+        assertSame(first, FilenameEpisodeMatcher.findInfoHashMatch(listOf(first, second), "abcdef0123", "group-a"))
+    }
+
+    private fun hashStream(
+        addonName: String,
+        bingeGroup: String?,
+        infoHash: String?,
+        clientResolve: StreamClientResolve? = null,
+        externalUrl: String? = null,
+    ) = StreamItem(
+        name = "$addonName stream",
+        url = null,
+        infoHash = infoHash,
+        externalUrl = externalUrl,
+        clientResolve = clientResolve,
+        addonName = addonName,
+        addonId = addonName.lowercase(),
+        behaviorHints = StreamBehaviorHints(bingeGroup = bingeGroup),
+    )
+
     private fun stream(addonName: String, bingeGroup: String?, filename: String?) = StreamItem(
         name = "$addonName stream",
         url = "https://example.com/$addonName.mkv",

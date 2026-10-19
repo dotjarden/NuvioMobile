@@ -923,6 +923,12 @@ final class NextEpisodeEngine: ObservableObject {
             didSelect(match)
             return
         }
+        // Upstream d2cc0fb8a: then the same torrent (season packs carry no per-episode filename).
+        if let match = bingeGroupInfoHashMatch(groups: groups, settings: settings) {
+            print("[UpNext] binge group + infoHash match")
+            didSelect(match)
+            return
+        }
         if let match = select(from: groups, settings: settings, bingeGroupOnly: true,
                               installedAddonIds: latestStreamsState?.installedAddonIds ?? []) {
             didSelect(match)
@@ -943,6 +949,12 @@ final class NextEpisodeEngine: ObservableObject {
         if settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil,
            let match = bingeGroupFilenameMatch(groups: groups, settings: settings) {
             print("[UpNext] binge group + filename match")
+            didSelect(match)
+            return
+        }
+        if settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil,
+           let match = bingeGroupInfoHashMatch(groups: groups, settings: settings) {
+            print("[UpNext] binge group + infoHash match")
             didSelect(match)
             return
         }
@@ -974,6 +986,14 @@ final class NextEpisodeEngine: ObservableObject {
         let filename: String? = context.listedStream?.behaviorHints.filename
         guard let filename, !filename.isEmpty else { return nil }
         return filename
+    }
+
+    /// The playing stream's torrent info hash (`p2pInfoHash`: top-level, `clientResolve`, magnet or
+    /// `torrent://`), from the same `listedStream` as `playingFilename`.
+    private var playingInfoHash: String? {
+        let hash: String? = context.listedStream?.p2pInfoHash
+        guard let hash, !hash.isEmpty else { return nil }
+        return hash
     }
 
     /// The filename the next episode's stream carries when it is the same release, or nil.
@@ -1016,6 +1036,16 @@ final class NextEpisodeEngine: ObservableObject {
               let expected = expectedNextFilename() else { return nil }
         return FilenameEpisodeMatcher.shared.findMatch(
             streams: selectableStreams(groups), expectedFilename: expected, bingeGroup: group)
+    }
+
+    /// Upstream d2cc0fb8a: same binge group and the playing stream's info hash (a season pack serves
+    /// every episode from one torrent; the debrid resolve picks the file from the episode context).
+    private func bingeGroupInfoHashMatch(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) -> StreamItem? {
+        guard autoPlayInEffect(settings), settings.streamAutoPlayPreferBingeGroup,
+              let group = context.bingeGroup, !group.isEmpty,
+              let hash = playingInfoHash else { return nil }
+        return FilenameEpisodeMatcher.shared.findInfoHashMatch(
+            streams: selectableStreams(groups), infoHash: hash, bingeGroup: group)
     }
 
     /// Upstream `tryFilenameOnly`: the expected filename in any binge group (the add-on changed
