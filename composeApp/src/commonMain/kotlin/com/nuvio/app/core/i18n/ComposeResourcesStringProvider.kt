@@ -36,6 +36,11 @@ import nuvio.composeapp.generated.resources.collections_folder_trakt_series_list
 import nuvio.composeapp.generated.resources.collections_tab_all
 import nuvio.composeapp.generated.resources.trakt_library_load_failed
 import nuvio.composeapp.generated.resources.trakt_watchlist
+import nuvio.composeapp.generated.resources.library_status_watching
+import nuvio.composeapp.generated.resources.library_status_plan_to_watch
+import nuvio.composeapp.generated.resources.library_status_on_hold
+import nuvio.composeapp.generated.resources.library_status_completed
+import nuvio.composeapp.generated.resources.library_status_dropped
 import nuvio.composeapp.generated.resources.trakt_list_fallback_title
 import nuvio.composeapp.generated.resources.trakt_error_request_failed
 import nuvio.composeapp.generated.resources.trakt_error_empty_response
@@ -435,6 +440,11 @@ object ComposeResourcesStringProvider : StringProvider {
         StringKey.collections_tab_all -> Res.string.collections_tab_all
         StringKey.trakt_library_load_failed -> Res.string.trakt_library_load_failed
         StringKey.trakt_watchlist -> Res.string.trakt_watchlist
+        StringKey.library_status_watching -> Res.string.library_status_watching
+        StringKey.library_status_plan_to_watch -> Res.string.library_status_plan_to_watch
+        StringKey.library_status_on_hold -> Res.string.library_status_on_hold
+        StringKey.library_status_completed -> Res.string.library_status_completed
+        StringKey.library_status_dropped -> Res.string.library_status_dropped
         StringKey.trakt_list_fallback_title -> Res.string.trakt_list_fallback_title
         StringKey.trakt_error_request_failed -> Res.string.trakt_error_request_failed
         StringKey.trakt_error_empty_response -> Res.string.trakt_error_empty_response
