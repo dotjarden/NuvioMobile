@@ -356,9 +356,10 @@ struct FolderRowsPage: View {
         guard forward else { return }
         stage.report(item,
                      source: row.id,
+                     // BUG-151: unfiltered — `warmRow` filters the logo half itself and warms
+                     // every leading item's localized copy.
                      logoCandidates: {
-                         section.items.prefix(FolderRowsPlan.previewLimit)
-                             .filter { TitleLogoStore.isLookupCandidate($0.logo) }
+                         Array(section.items.prefix(FolderRowsPlan.previewLimit))
                      },
                      prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
     }

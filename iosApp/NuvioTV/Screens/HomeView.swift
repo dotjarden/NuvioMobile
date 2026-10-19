@@ -620,9 +620,10 @@ struct HomeView: View {
         }
         actions.catalogFocus = { item, section in
             reportRowFocus(item, source: section.key,
+                           // BUG-151: unfiltered, as on the Stage — `warmRow` filters the logo half
+                           // itself and warms every leading item's localized copy.
                            logoCandidates: {
-                               section.items.prefix(CatalogRowView.homePreviewLimit)
-                                   .filter { TitleLogoStore.isLookupCandidate($0.logo) }
+                               Array(section.items.prefix(CatalogRowView.homePreviewLimit))
                            },
                            prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
         }
@@ -3496,10 +3497,19 @@ final class HomeHeroFocusModel: ObservableObject {
             // Adopt the newly focused card's content immediately — the title is already
             // committed, so there's no dwell to honor — and leave a byte-identical re-report as
             // the pure no-op it should be (Codex review finding).
-            if let item, focusedItem?.isEqual(item) != true {
-                requestLogoIfNeeded(item)
-                focusedItem = item
-                enrichIfNeeded(item)
+            //
+            // BUG-151 (Steven rc3/rc4): the adopted preview carries the title's localized copy only
+            // when the item on screen already shows it (its commit was localized); a title
+            // committed in the catalog's language keeps that language on screen
+            // (`StageLocalizedCopyStore.adoptMode`). The equality check runs on the prepared
+            // preview, so a raw re-report of an already localized title stays a no-op.
+            if let item {
+                let adopted = StageLocalizedCopyStore.shared.preparedForAdopt(item, shown: focusedItem)
+                if focusedItem?.isEqual(adopted) != true {
+                    requestLogoIfNeeded(adopted)
+                    focusedItem = adopted
+                    enrichIfNeeded(adopted)
+                }
             }
             return
         }
@@ -3525,9 +3535,15 @@ final class HomeHeroFocusModel: ObservableObject {
                         guard !Task.isCancelled, self.generation == generationAtStart else { return }
                     }
                 }
-                self.requestLogoIfNeeded(item)
-                self.focusedItem = item
-                self.enrichIfNeeded(item)
+                // BUG-151 (Steven rc3/rc4): a new title takes the stage, so its text is new
+                // anyway: commit it with the cached localized name, synopsis and genres (the
+                // user's TMDB Metadata Language, as Detail shows it). A cache miss commits the
+                // catalog copy unchanged and starts the lookup for the title's next commit;
+                // nothing already on screen is ever swapped (the BUG-42 rule).
+                let committed = StageLocalizedCopyStore.shared.preparedForCommit(item)
+                self.requestLogoIfNeeded(committed)
+                self.focusedItem = committed
+                self.enrichIfNeeded(committed)
             }
         } else {
             pendingIsRevert = true

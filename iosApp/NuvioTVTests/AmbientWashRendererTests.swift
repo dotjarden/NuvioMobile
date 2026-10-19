@@ -59,9 +59,9 @@ final class AmbientWashRendererTests: XCTestCase {
         XCTAssertEqual(AmbientWashTuning.screenWidthPoints, 1920)
         XCTAssertEqual(AmbientWashTuning.saturationBoost, 1.25)
         XCTAssertEqual(AmbientWashTuning.tintAmount, 0.25)
-        XCTAssertEqual(AmbientWashTuning.maxMeanLuma, 0.26)
+        XCTAssertEqual(AmbientWashTuning.maxMeanLuma, 0.20)
         XCTAssertEqual(AmbientWashTuning.minMeanLuma, 0.10)
-        XCTAssertEqual(AmbientWashTuning.maxGain, 1.8)
+        XCTAssertEqual(AmbientWashTuning.maxGain, 1.4)
         XCTAssertEqual(AmbientWashTuning.crossFade, 0.4)
         XCTAssertEqual(AmbientWashTuning.crossFadeReducedMotion, 0.2)
         XCTAssertEqual(AmbientWashTuning.prepareDebounce, 0.15)
@@ -95,15 +95,15 @@ final class AmbientWashRendererTests: XCTestCase {
 
     func testExposureGainWindow() {
         // Brighter than the cap: scaled down to it.
-        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.6), 0.26 / 0.6, accuracy: 1e-6)
-        // Darker than the floor: lifted by at most 1.8.
-        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.04), 1.8, accuracy: 1e-6)
-        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.05), 1.8, accuracy: 1e-6)
+        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.6), 0.20 / 0.6, accuracy: 1e-6)
+        // Darker than the floor: lifted by at most 1.4.
+        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.04), 1.4, accuracy: 1e-6)
+        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.05), 1.4, accuracy: 1e-6)
         // Darker than the floor, but within reach: lifted exactly to it.
         XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.08), 0.10 / 0.08, accuracy: 1e-5)
         // Inside the window: untouched.
-        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.18), 1, accuracy: 1e-6)
-        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.26), 1, accuracy: 1e-6)
+        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.15), 1, accuracy: 1e-6)
+        XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.20), 1, accuracy: 1e-6)
         XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0.10), 1, accuracy: 1e-6)
         // Nothing to scale.
         XCTAssertEqual(AmbientWashRenderer.exposureGain(meanLuma: 0), 1, accuracy: 1e-6)
@@ -313,13 +313,13 @@ final class AmbientWashRendererTests: XCTestCase {
     func testWhiteArtIsCappedAtTheMaxMeanLuma() throws {
         let output = try XCTUnwrap(AmbientWashRenderer.render(try grey(1)))
         XCTAssertLessThanOrEqual(output.meanLuma, AmbientWashTuning.maxMeanLuma + 0.001)
-        XCTAssertEqual(output.meanLuma, 0.26, accuracy: 0.002)
-        // The pixels agree with the reported mean: white scaled to 0.26 on every channel.
+        XCTAssertEqual(output.meanLuma, 0.20, accuracy: 0.002)
+        // The pixels agree with the reported mean: white scaled to 0.20 on every channel.
         let floats = try halfFloats(of: output.image)
         let centre = pixel(floats, x: 80, y: 45)
-        XCTAssertEqual(centre.r, 0.26, accuracy: 0.002)
-        XCTAssertEqual(centre.g, 0.26, accuracy: 0.002)
-        XCTAssertEqual(centre.b, 0.26, accuracy: 0.002)
+        XCTAssertEqual(centre.r, 0.20, accuracy: 0.002)
+        XCTAssertEqual(centre.g, 0.20, accuracy: 0.002)
+        XCTAssertEqual(centre.b, 0.20, accuracy: 0.002)
     }
 
     func testNearBlackArtIsLiftedByTheMaxGain() throws {
@@ -327,7 +327,7 @@ final class AmbientWashRendererTests: XCTestCase {
         // What the 8-bit bitmap actually holds for 0.02 (5/255), whatever rounding Core Graphics used.
         let input = Float(try XCTUnwrap(AmbientWashRenderer.downsample(source, width: 160, height: 90))[0]) / 255
         let output = try XCTUnwrap(AmbientWashRenderer.render(source))
-        XCTAssertEqual(output.meanLuma, input * 1.8, accuracy: 0.002)
+        XCTAssertEqual(output.meanLuma, input * AmbientWashTuning.maxGain, accuracy: 0.002)
         XCTAssertLessThan(output.meanLuma, AmbientWashTuning.minMeanLuma, "near-black stays dark, it is not lifted to grey")
     }
 
@@ -339,7 +339,7 @@ final class AmbientWashRendererTests: XCTestCase {
             XCTAssertEqual(p.r, p.g, accuracy: 0.002, "x=\(x) y=\(y)")
             XCTAssertEqual(p.g, p.b, accuracy: 0.002, "x=\(x) y=\(y)")
         }
-        XCTAssertEqual(output.meanLuma, 0.26, accuracy: 0.002, "0.5 grey is scaled down to the cap")
+        XCTAssertEqual(output.meanLuma, 0.20, accuracy: 0.002, "0.5 grey is scaled down to the cap")
     }
 
     func testVividArtKeepsItsHueAndAnEvenWashOfIt() throws {
@@ -348,7 +348,8 @@ final class AmbientWashRendererTests: XCTestCase {
         let output = try XCTUnwrap(AmbientWashRenderer.render(try solid(red: 0.8, green: 0.2, blue: 0.1)))
         let floats = try halfFloats(of: output.image)
         let centre = pixel(floats, x: 80, y: 45)
-        XCTAssertGreaterThan(centre.r, 0.6)
+        // UX-16 retune (cap 0.26 → 0.20): the red channel scales with the cap.
+        XCTAssertGreaterThan(centre.r, 0.45)
         XCTAssertLessThan(centre.g, 0.25)
         XCTAssertLessThan(centre.b, 0.1)
         XCTAssertEqual(luma(centre.r, centre.g, centre.b), output.meanLuma, accuracy: 0.003)

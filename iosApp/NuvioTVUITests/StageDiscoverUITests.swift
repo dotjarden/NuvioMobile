@@ -1,5 +1,10 @@
 import XCTest
 
+/// FEAT-73 (Steven rc4): Discover is grid-first. The tab (and the Under Search push) lands on the
+/// grid page (`discover_grid_state mode=grid type= catalog= genre= items= state=`); the stage rows
+/// below are one push away behind the Browse pill (`discover.browseButton`), on the `.pushed` host,
+/// so Menu at their row 0 pops back to the grid. The legs were re-pointed at that shape.
+///
 /// Search & Discover batch (W3, 2026-10-06): the stage Discover page's UI legs, plan A8 D01–D07
 /// (`docs/search-discover-stage-plan-2026-10-06.md`). Every leg pins Stage Home, Discover as its own
 /// tab and the strip's motion probe (`-home_layout stage -discover_placement tab
@@ -100,6 +105,8 @@ final class StageDiscoverUITests: XCTestCase {
     }
 
     private func discover(_ app: XCUIApplication) -> String { label(app, "discover_rows_state") }
+    /// FEAT-73: the grid-first page's readout.
+    private func gridLine(_ app: XCUIApplication) -> String { label(app, "discover_grid_state") }
     private func railState(_ app: XCUIApplication) -> String { label(app, "rail_state") }
 
     private static func token(_ line: String, _ key: String) -> String? {
@@ -204,7 +211,42 @@ final class StageDiscoverUITests: XCTestCase {
             remote.press(.select)
             pause(2.0)
         }
+        try requireGrid(app)
+    }
+
+    /// FEAT-73: waits for the grid-first page to settle with titles (`state=loaded items≥1`).
+    private func requireGrid(_ app: XCUIApplication) throws {
+        let ready = poll(30, step: 0.5) {
+            let line = gridLine(app)
+            return Self.token(line, "state") == "loaded" && (Self.int(line, "items") ?? 0) >= 1
+        }
+        guard ready else {
+            throw HarnessAbort("the Discover grid never settled with titles: '\(gridLine(app))'")
+        }
+    }
+
+    /// FEAT-73: from the grid page, focus the Browse pill and push the stage rows (the `.pushed`
+    /// host lands focus on row 0's first card by itself).
+    private func openBrowse(_ app: XCUIApplication) throws {
+        let browse = pill(app, "discover.browseButton")
+        guard browse.waitForExistence(timeout: 4) else { throw HarnessAbort("discover.browseButton missing") }
+        // Tabs: the tab bar holds focus after the tab opens; Down reaches the band.
+        for _ in 0..<3 where tabBarFocused(app) {
+            remote.press(.down)
+            pause(0.7)
+        }
+        guard moveFocus(app, .right, untilFrameOf: browse, max: 6) || moveFocus(app, .left, untilFrameOf: browse, max: 6) else {
+            throw HarnessAbort("focus never reached the Browse pill — focused=\(focusedNodes(app).map(\.label))")
+        }
+        remote.press(.select)
+        XCTAssertTrue(poll(8) { !discover(app).isEmpty }, "Browse must push the stage rows")
         try requireRows(app)
+    }
+
+    /// FEAT-73: the grid leg's way to the rows (`openDiscover` + `openBrowse`).
+    private func openDiscoverRows(_ app: XCUIApplication) throws {
+        try openDiscover(app)
+        try openBrowse(app)
     }
 
     /// Waits for the page to settle on rows (`state=rows` with a loaded row).
@@ -239,9 +281,10 @@ final class StageDiscoverUITests: XCTestCase {
 
     // MARK: - D01
 
-    /// D01: the Discover tab sits after Search; opening it settles on rows, and a Down from the band
-    /// puts `row=0` on the strip. The page's own stage readout is mounted.
-    func testD01_TabOpensOnRows() throws {
+    /// D01 (FEAT-73): the Discover tab sits after Search and lands on the grid-first page (titles
+    /// loaded, the Type pill and the first tile on screen); Browse pushes the stage rows with focus
+    /// on row 0 and the page's own stage readout mounted.
+    func testD01_TabOpensOnGrid() throws {
         let app = launch(Self.arguments())
         let search = app.buttons["Search"], tab = app.buttons["Discover"], library = app.buttons["Library"]
         XCTAssertTrue(tab.waitForExistence(timeout: 6), "the Discover tab must exist at placement tab")
@@ -250,14 +293,20 @@ final class StageDiscoverUITests: XCTestCase {
             XCTAssertLessThan(tab.frame.midX, library.frame.midX, "Discover comes before Library: \(tab.frame) vs \(library.frame)")
         }
         try openDiscover(app)
-        note("D01_opened", discover(app))
+        let line = gridLine(app)
+        note("D01_grid", line)
+        shot("discover-tab-grid")
+        XCTAssertEqual(Self.token(line, "mode"), "grid", "\(line)")
+        XCTAssertTrue(pill(app, "discover.typePicker").exists, "the Type pill must be on the grid page")
+        XCTAssertTrue(pill(app, "discover.gridFirstTile").exists, "the grid's first tile must be on screen")
+        XCTAssertTrue(discover(app).isEmpty, "the rows page is not the landing page any more")
+        try openBrowse(app)
         try requireRow0(app)
-        let line = discover(app)
-        note("D01_row0", "\(line) | stage=\(label(app, "debug_stage_discover"))")
-        shot("discover-tab-stage")
-        XCTAssertEqual(Self.int(line, "row"), 0, "\(line)")
-        XCTAssertEqual(Self.token(line, "state"), "rows", "\(line)")
-        XCTAssertFalse(label(app, "debug_stage_discover").isEmpty, "the page's stage readout must be mounted")
+        let rows = discover(app)
+        note("D01_row0", "\(rows) | stage=\(label(app, "debug_stage_discover"))")
+        XCTAssertEqual(Self.int(rows, "row"), 0, "\(rows)")
+        XCTAssertEqual(Self.token(rows, "state"), "rows", "\(rows)")
+        XCTAssertFalse(label(app, "debug_stage_discover").isEmpty, "the rows page's stage readout must be mounted")
     }
 
     // MARK: - D02
@@ -265,7 +314,7 @@ final class StageDiscoverUITests: XCTestCase {
     /// D02: Down from row 0 pages one genre (`row=1`), and the row headings read "<genre> · <add-on>".
     func testD02_DownPagesOneGenre() throws {
         let app = launch(Self.arguments())
-        try openDiscover(app)
+        try openDiscoverRows(app)
         try requireRow0(app)
         remote.press(.down)
         XCTAssertTrue(poll(4) { row(app) == 1 && stripFocused(app) }, "one Down must reach row 1: \(discover(app))")
@@ -282,7 +331,7 @@ final class StageDiscoverUITests: XCTestCase {
     /// (`strip=0`, `discover.typePicker` on screen). Token-based (no reliance on a pill's own focus).
     func testD03_UpFromRow0ToPills() throws {
         let app = launch(Self.arguments())
-        try openDiscover(app)
+        try openDiscoverRows(app)
         try requireRow0(app)
         remote.press(.down)
         _ = poll(4) { row(app) == 1 }
@@ -305,7 +354,7 @@ final class StageDiscoverUITests: XCTestCase {
     /// with the strip still on row 0.
     func testD04_GridPillRoundTrip() throws {
         let app = launch(Self.arguments())
-        try openDiscover(app)
+        try openDiscoverRows(app)
         try requireRow0(app)
         // A row heading ("Action · Cinemeta"), not the stage's meta line ("2026 · Action · …").
         let heading = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", " \u{00B7} Cinemeta")).firstMatch
@@ -336,11 +385,12 @@ final class StageDiscoverUITests: XCTestCase {
 
     // MARK: - D05
 
-    /// D05 (Tabs): Menu at row 2 pages back to row 0; a second Menu at row 0 goes to the system
-    /// default (the tab bar takes focus). Never a third Menu (the next would leave the app).
+    /// D05 (Tabs): Menu at row 2 pages back to row 0; a second Menu at row 0 pops the Browse rows
+    /// back to the grid page (FEAT-73: the rows are pushed); a third Menu on the grid goes to the
+    /// system default (the tab bar takes focus). Never a fourth Menu (the next would leave the app).
     func testD05_MenuRow2ToRow0ThenTabBar() throws {
         let app = launch(Self.arguments())
-        try openDiscover(app)
+        try openDiscoverRows(app)
         try requireRow0(app)
         for target in 1...2 {
             remote.press(.down)
@@ -352,19 +402,24 @@ final class StageDiscoverUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
         pause(1.5)
         remote.press(.menu)
-        XCTAssertTrue(poll(4) { tabBarFocused(app) }, "Menu at row 0 must hand focus to the tab bar — focused=\(focusedNodes(app).map(\.label)) | \(discover(app))")
-        XCTAssertEqual(app.state, .runningForeground, "the second Menu must not leave the app")
+        XCTAssertTrue(poll(4) { discover(app).isEmpty && !gridLine(app).isEmpty },
+                      "Menu at row 0 must pop the rows back to the grid page: \(gridLine(app))")
+        pause(1.5)
+        remote.press(.menu)
+        XCTAssertTrue(poll(4) { tabBarFocused(app) }, "Menu on the grid must hand focus to the tab bar — focused=\(focusedNodes(app).map(\.label)) | \(gridLine(app))")
+        XCTAssertEqual(app.state, .runningForeground, "the third Menu must not leave the app")
         shot("D05_tab_bar")
     }
 
-    /// D05 (Rail): Menu at row 2 pages to row 0 with the rail closed; Menu at row 0 opens the rail
-    /// (`reason=menu`). Closed with Right, never Menu (inside a Menu-opened rail Menu suspends).
+    /// D05 (Rail): Menu at row 2 pages to row 0 with the rail closed; Menu at row 0 pops the Browse
+    /// rows to the grid page (FEAT-73); Menu on the grid opens the rail (`reason=menu`). Closed with
+    /// Right, never Menu (inside a Menu-opened rail Menu suspends).
     func testD05b_MenuRow2ToRow0ThenRail() throws {
         let app = launch(Self.arguments(navigation: "rail"))
         guard poll(10, step: 0.5, { !railState(app).isEmpty }) else {
             throw HarnessAbort("rail_state missing with -sidebar_style rail (DEBUG build?)")
         }
-        try openDiscover(app)
+        try openDiscoverRows(app)
         try requireRow0(app)
         for target in 1...2 {
             remote.press(.down)
@@ -376,7 +431,12 @@ final class StageDiscoverUITests: XCTestCase {
         XCTAssertEqual(Self.token(railState(app), "expanded"), "0", "the first Menu pages; it must not open the rail: \(railState(app))")
         pause(1.5)
         remote.press(.menu)
-        XCTAssertTrue(poll(3) { Self.token(railState(app), "expanded") == "1" }, "Menu at row 0 must open the rail: \(railState(app))")
+        XCTAssertTrue(poll(4) { discover(app).isEmpty && !gridLine(app).isEmpty },
+                      "Menu at row 0 must pop the rows back to the grid page: \(gridLine(app))")
+        XCTAssertEqual(Self.token(railState(app), "expanded"), "0", "the pop must not open the rail: \(railState(app))")
+        pause(1.5)
+        remote.press(.menu)
+        XCTAssertTrue(poll(3) { Self.token(railState(app), "expanded") == "1" }, "Menu on the grid must open the rail: \(railState(app))")
         note("D05b_rail", railState(app))
         shot("D05b_rail")
         XCTAssertEqual(Self.token(railState(app), "reason"), "menu", "\(railState(app))")
@@ -389,7 +449,7 @@ final class StageDiscoverUITests: XCTestCase {
 
     /// D06: placement variants. Off (Tabs): no Discover tab; Off (Rail): no `rail_item_Discover`;
     /// Under Search: no Discover tab, Search's idle page carries the entry row, and a tile pushes
-    /// the same stage page (`discover_rows_state`), which Menu pops.
+    /// the same grid-first page (FEAT-73, `discover_grid_state`) on the tile's type, which Menu pops.
     func testD06_PlacementVariants() throws {
         let offTabs = launch(Self.arguments(placement: "off"))
         XCTAssertTrue(offTabs.buttons["Search"].waitForExistence(timeout: 6))
@@ -433,30 +493,26 @@ final class StageDiscoverUITests: XCTestCase {
         if !hasFocusByFrame(under, series) { moveFocus(under, .right, untilFrameOf: series, max: 2) }
         XCTAssertTrue(hasFocusByFrame(under, series), "the Series tile must take focus")
         remote.press(.select)
-        XCTAssertTrue(poll(8) { !discover(under).isEmpty }, "the Series tile must push the stage Discover page")
-        try requireRows(under)
-        XCTAssertTrue(poll(8) { Self.token(discover(under), "type") == "series" && Self.token(discover(under), "state") == "rows" },
-                      "the Series tile must open the page on type=series: \(discover(under))")
-        // Bug 2: the pushed page lands focus on its first card and the stage shows that title.
-        XCTAssertTrue(poll(8) { stripFocused(under) && row(under) == 0 },
-                      "the pushed page must put focus on row 0's first card: \(discover(under))")
-        XCTAssertTrue(poll(8) { (Self.token(discover(under), "disp") ?? "-") != "-" },
-                      "the pushed page's stage must show a title: \(discover(under))")
-        note("D06_pushed", discover(under))
+        XCTAssertTrue(poll(8) { !gridLine(under).isEmpty }, "the Series tile must push the grid-first Discover page")
+        try requireGrid(under)
+        XCTAssertTrue(poll(8) { Self.token(gridLine(under), "type") == "series" && Self.token(gridLine(under), "state") == "loaded" },
+                      "the Series tile must open the page on type=series: \(gridLine(under))")
+        // BUG-47: the pushed page holds focus (the band), so Menu pops instead of leaving the app.
+        XCTAssertFalse(tabBarFocused(under), "the pushed page must keep focus: focused=\(focusedNodes(under).map(\.label))")
+        note("D06_pushed", gridLine(under))
         shot("D06_pushed_discover")
         remote.press(.menu)
         pause(1.0)
-        if !discover(under).isEmpty { remote.press(.menu); pause(1.0) } // a strip row deeper than 0 pages first
-        XCTAssertTrue(poll(4) { discover(under).isEmpty && entry.exists }, "Menu must pop back to Search's idle page")
+        if !gridLine(under).isEmpty { remote.press(.menu); pause(1.0) } // a deep tile scrolls up first
+        XCTAssertTrue(poll(4) { gridLine(under).isEmpty && entry.exists }, "Menu must pop back to Search's idle page")
         XCTAssertEqual(under.state, .runningForeground)
     }
 
     // MARK: - D06b
 
-    /// D06b (review r2 P2-B): a later push whose route type is already cached still lands focus.
-    /// Under Search: Movies tile → Menu → Series tile → Menu → Movies tile. On the third push the
-    /// movie selection is a cache hit, so its rows and `selectionKey` land in one update; the page
-    /// must still put focus on row 0's first card with `type=movie`.
+    /// D06b (review r2 P2-B, re-pointed for FEAT-73): repeat pushes apply each tile's type once.
+    /// Under Search: Movies tile → Menu → Series tile → Menu → Movies tile; every push opens the
+    /// grid-first page on the tile's type with titles loaded and focus inside the page.
     func testD06b_RepeatPushLandsFocus() throws {
         let app = launch(Self.arguments(placement: "search"))
         for _ in 0..<40 where !tabBarFocused(app) {
@@ -491,17 +547,16 @@ final class StageDiscoverUITests: XCTestCase {
             }
             XCTAssertTrue(hasFocusByFrame(app, tile), "\(step): the \(type) tile must take focus")
             remote.press(.select)
-            XCTAssertTrue(poll(8) { !discover(app).isEmpty }, "\(step): the tile must push the stage Discover page")
-            try requireRows(app)
-            XCTAssertTrue(poll(8) { Self.token(discover(app), "type") == type },
-                          "\(step): the page must open on type=\(type): \(discover(app))")
-            XCTAssertTrue(poll(8) { stripFocused(app) && row(app) == 0 },
-                          "\(step): the pushed page must put focus on row 0's first card (row=0 strip=1): \(discover(app))")
-            note("D06b_\(step)", discover(app))
+            XCTAssertTrue(poll(8) { !gridLine(app).isEmpty }, "\(step): the tile must push the grid-first Discover page")
+            try requireGrid(app)
+            XCTAssertTrue(poll(8) { Self.token(gridLine(app), "type") == type },
+                          "\(step): the page must open on type=\(type): \(gridLine(app))")
+            XCTAssertFalse(tabBarFocused(app), "\(step): the pushed page must keep focus")
+            note("D06b_\(step)", gridLine(app))
             remote.press(.menu)
             pause(1.0)
-            if !discover(app).isEmpty { remote.press(.menu); pause(1.0) }
-            XCTAssertTrue(poll(4) { discover(app).isEmpty && entry.exists }, "\(step): Menu must pop back to Search's idle page")
+            if !gridLine(app).isEmpty { remote.press(.menu); pause(1.0) }
+            XCTAssertTrue(poll(4) { gridLine(app).isEmpty && entry.exists }, "\(step): Menu must pop back to Search's idle page")
             pause(1.0)
         }
 
@@ -513,19 +568,23 @@ final class StageDiscoverUITests: XCTestCase {
 
     // MARK: - D07
 
-    /// D07: a Type change through the `discover.typePicker` Menu flips `type=` and rebuilds the rows
-    /// (state back to rows with a loaded row of the new type).
-    func testD07_TypeChangeRebuildsRows() throws {
+    /// D07 (FEAT-73): a Type change through the grid page's `discover.typePicker` Menu flips
+    /// `type=` and reloads the grid (state back to loaded with titles of the new type). A Type pick
+    /// persists nothing on the grid page (only Catalog and Genre picks do), so no restore is needed;
+    /// the leg still flips back to Movies to leave the session where it found it.
+    func testD07_TypeChangeReloadsGrid() throws {
         let app = launch(Self.arguments())
         try openDiscover(app)
-        try requireRow0(app)
-        let before = discover(app)
+        let before = gridLine(app)
         let fromType = Self.token(before, "type") ?? "-"
         let toLabel = fromType == "series" ? "Movies" : "Series"
         let toType = fromType == "series" ? "movie" : "series"
-        XCTAssertTrue(upToBand(app), "Up from row 0 must reach the band: \(discover(app))")
         let type = pill(app, "discover.typePicker")
         guard type.waitForExistence(timeout: 3) else { throw HarnessAbort("discover.typePicker missing") }
+        for _ in 0..<3 where tabBarFocused(app) {
+            remote.press(.down)
+            pause(0.7)
+        }
         guard moveFocus(app, .left, untilFrameOf: type, max: 4) || moveFocus(app, .right, untilFrameOf: type, max: 4) else {
             throw HarnessAbort("focus never reached the Type pill — focused=\(focusedNodes(app).map(\.label))")
         }
@@ -544,38 +603,16 @@ final class StageDiscoverUITests: XCTestCase {
             throw HarnessAbort("focus never reached the '\(toLabel)' option — focused=\(focusedNodes(app).map(\.label))")
         }
         remote.press(.select)
-        XCTAssertTrue(poll(6) { Self.token(discover(app), "type") == toType }, "type= must flip to \(toType): \(before) → \(discover(app))")
-        try requireRows(app)
+        XCTAssertTrue(poll(6) { Self.token(gridLine(app), "type") == toType }, "type= must flip to \(toType): \(before) → \(gridLine(app))")
+        try requireGrid(app)
         pause(1.5)
-        let after = discover(app)
+        let after = gridLine(app)
         note("D07", "before=\(before)\nafter=\(after)\nfocused=\(focusedNodes(app).map(\.label))")
         shot("D07_after_type_change")
         XCTAssertNotEqual(Self.token(after, "catalog"), Self.token(before, "catalog"), "the catalog must change with the type: \(after)")
-        XCTAssertEqual(Self.token(after, "state"), "rows", "\(after)")
-
-        // Restore: the pick is persisted (`discover_catalog_key`), so leave the fixture on its
-        // baseline, Movies (the default first catalog), whichever type the leg started from.
-        guard toType != "movie" else { return }
-        let backLabel = "Movies"
-        if !hasFocusByFrame(app, type) {
-            for _ in 0..<3 where stripFocused(app) { _ = upToBand(app) }
-            if !moveFocus(app, .left, untilFrameOf: type, max: 4) { _ = moveFocus(app, .right, untilFrameOf: type, max: 4) }
-        }
-        guard hasFocusByFrame(app, type) else {
-            XCTFail("restore: focus never returned to the Type pill — the fixture is left on \(toType)")
-            return
-        }
-        remote.press(.select)
-        pause(1.5)
-        let back = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label == %@ AND identifier != 'discover.typePicker'", backLabel)).firstMatch
-        if back.waitForExistence(timeout: 4) {
-            if !moveFocus(app, .up, untilFrameOf: back, max: 3) { _ = moveFocus(app, .down, untilFrameOf: back, max: 4) }
-            if hasFocusByFrame(app, back) { remote.press(.select) } else { remote.press(.menu) }
-        } else {
-            remote.press(.menu)
-        }
-        XCTAssertTrue(poll(6) { Self.token(discover(app), "type") == "movie" }, "restore: type= must return to movie: \(discover(app))")
+        XCTAssertEqual(Self.token(after, "state"), "loaded", "\(after)")
+        // Focus stays on the band (the grid below remounted on its `.id`).
+        XCTAssertTrue(hasFocusByFrame(app, type), "focus must stay on the Type pill — focused=\(focusedNodes(app).map(\.label))")
     }
 
     // MARK: - Evidence

@@ -52,6 +52,42 @@ object DiscoverSources {
         DiscoverSelectionStorage.saveGenre(key, genre)
     }
 
+    /// FEAT-73 (Steven rc4): the catalog the grid-first Discover page opens on. A persisted
+    /// explicit pick (`discover_catalog_key`) wins when it is still offered for [type]; otherwise
+    /// [gridDefaultCatalog]'s rule over the type's options. [type] null = the first option's type.
+    fun gridDefaultCatalog(options: List<DiscoverCatalogOption>, type: String?): DiscoverCatalogOption? =
+        gridDefaultCatalog(options, type, DiscoverSelectionStorage.loadCatalogKey())
+
+    /// Pure half of the grid default (FEAT-73). Among [type]'s options: the persisted pick, else
+    /// the first with genres where the genre is optional (the grid opens on "All"), else the first
+    /// with genres, else the first. Null when the type has no options.
+    fun gridDefaultCatalog(
+        options: List<DiscoverCatalogOption>,
+        type: String?,
+        preferredCatalogKey: String?,
+    ): DiscoverCatalogOption? {
+        val resolvedType = type ?: options.firstOrNull()?.type ?: return null
+        val candidates = options.filter { option -> option.type == resolvedType }
+        if (candidates.isEmpty()) return null
+        val preferred = preferredCatalogKey?.trim()?.takeIf { it.isNotEmpty() }
+        candidates.firstOrNull { option -> option.key == preferred }?.let { return it }
+        return candidates.firstOrNull { option -> option.genreOptions.isNotEmpty() && !option.genreRequired }
+            ?: candidates.firstOrNull { option -> option.genreOptions.isNotEmpty() }
+            ?: candidates.first()
+    }
+
+    /// FEAT-73: the genre a catalog's grid opens on: the per-catalog memory (C4) when the catalog
+    /// still offers it, else its default (null = "All" for an optional genre, the first genre for a
+    /// required one).
+    fun gridGenre(option: DiscoverCatalogOption): String? =
+        option.resolveGenreSelection(DiscoverSelectionStorage.loadGenre(option.key))
+
+    /// FEAT-73: persists a grid pick: the catalog key (shared with Search's Discover and the
+    /// Browse rows) and that catalog's genre (null clears it, "All").
+    fun saveGridSelection(option: DiscoverCatalogOption, genre: String?) {
+        saveSelection(option.key, option.resolveGenreSelection(genre))
+    }
+
     /// Pure half of [restoreSelection], for tests and for the C4 genre hook.
     internal fun restoreSelection(
         options: List<DiscoverCatalogOption>,

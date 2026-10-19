@@ -1234,6 +1234,18 @@ nonisolated enum ArtworkProbe {
 struct ImageURLChain: Hashable {
     let urls: [URL]
     let request: ArtworkDecodeRequest
+
+    /// Black poster (Steven rc3): true when `other` loads the same picture — the heads share an
+    /// `ArtworkURLUpgrade.family` (the same art at another CDN size, or the upgrade toggled) —
+    /// whatever the decode size or scale. A new chain in the same family keeps the image already on
+    /// screen until its own load resolves; only a different picture clears it. An empty chain is
+    /// never the same family as anything.
+    func sharesURLFamily(with other: ImageURLChain) -> Bool {
+        guard let head = urls.first, let otherHead = other.urls.first else { return false }
+        if head == otherHead { return true }
+        let family = Set(ArtworkURLUpgrade.family(head))
+        return ArtworkURLUpgrade.family(otherHead).contains { family.contains($0) }
+    }
 }
 
 /// Attempt order for a primary URL plus an optional upgraded variant and an optional fallback
@@ -1352,13 +1364,22 @@ private final class CachedImageLoader: ObservableObject {
 
     func load(_ chain: ImageURLChain) {
         guard chain != currentChain else { return }
+        // Black poster (Steven rc3): a changed decode size or scale makes a new chain for the SAME
+        // picture (a row relayout, the trailer tile growing next to this card). Clearing the image
+        // here dropped the card to the shimmer — a dark card — for as long as the refetch took, and
+        // a starved fetch slot made that "for good". Keep the current image until the new chain
+        // resolves; clear it only when the picture itself changes.
+        let keepsCurrent = image != nil && chain.sharesURLFamily(with: currentChain)
         currentChain = chain
         task?.cancel()
         failed = false
-        image = nil
+        if !keepsCurrent { image = nil }
 
         let candidates = chain.urls
-        guard !candidates.isEmpty else { return }
+        guard !candidates.isEmpty else {
+            image = nil
+            return
+        }
         let request = chain.request
 
         let hasFallback = candidates.count > 1
@@ -1395,6 +1416,8 @@ private final class CachedImageLoader: ObservableObject {
             if let fetched {
                 withAnimation(.easeIn(duration: 0.25)) { self.image = fetched }
             } else {
+                // A kept image (same family, see `load`) stays on screen, exactly as a seeded
+                // placeholder always has: the body draws `image` ahead of the failure surface.
                 self.failed = true
             }
         }

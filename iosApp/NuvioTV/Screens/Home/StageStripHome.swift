@@ -330,9 +330,10 @@ struct StageStripHome: View {
             onItemFocusChange: { item in
                 stage.report(item,
                              source: section.key,
+                             // BUG-151: unfiltered — `warmRow` filters the logo half itself and
+                             // warms every leading item's localized copy.
                              logoCandidates: {
-                                 section.items.prefix(CatalogRowView.homePreviewLimit)
-                                     .filter { TitleLogoStore.isLookupCandidate($0.logo) }
+                                 Array(section.items.prefix(CatalogRowView.homePreviewLimit))
                              },
                              prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
             }

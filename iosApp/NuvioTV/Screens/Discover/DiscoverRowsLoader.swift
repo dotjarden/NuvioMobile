@@ -50,7 +50,8 @@ struct DiscoverRowsServices {
                 catalogId: spec.catalogId,
                 genre: spec.genre,
                 maxItems: Int32(DiscoverRowsPlan.pageItems),
-                forceRefresh: forceRefresh
+                forceRefresh: forceRefresh,
+                skip: nil
             )
             CustomPosterUrlRepository.shared.ensureLoaded()
             let pattern = CustomPosterUrlRepository.shared.patternForScreen(screen: .search)
@@ -112,6 +113,8 @@ final class DiscoverRowsViewModel: ObservableObject {
     /// The last catalog picked per type, so Type › Series → Movies returns to the Movies catalog.
     private var catalogByType: [String: String] = [:]
     private var optionsSignature: String?
+    /// FEAT-73 (Steven rc4): the grid page's catalog, waiting for the add-on options (`show`).
+    private var pendingCatalogKey: String?
 
     private var addonWatcher: FlowWatcher?
     private var started = false
@@ -193,13 +196,16 @@ final class DiscoverRowsViewModel: ObservableObject {
             clearSelection()
             return
         }
-        let keep = selectedCatalogKey.flatMap { key in options.first { $0.key == key } }
+        // FEAT-73: a Browse push from the grid page names its catalog before the options arrive.
+        let pending = pendingCatalogKey.flatMap { key in options.first { $0.key == key } }
+        pendingCatalogKey = nil
+        let keep = pending ?? selectedCatalogKey.flatMap { key in options.first { $0.key == key } }
         let option = keep
             ?? services.restoreCatalogKey(options).flatMap { key in options.first { $0.key == key } }
             ?? options[0]
         let newSpecs = DiscoverRowsPlan.specs(for: option,
                                               catalogs: DiscoverRowsPlan.catalogs(ofType: option.type, in: options))
-        if keep != nil, newSpecs == specs {
+        if keep != nil, option.key == selectedCatalogKey, newSpecs == specs {
             return   // the shown rows are still right; only other selections were dropped
         }
         activate(option, specs: newSpecs, reason: "sources")
@@ -232,6 +238,22 @@ final class DiscoverRowsViewModel: ObservableObject {
         guard let option = catalogByType[type].flatMap({ key in candidates.first { $0.key == key } })
             ?? candidates.first else { return }
         choose(option)
+    }
+
+    /// FEAT-73 (Steven rc4): the grid page's Browse pill opens these rows on the grid's catalog.
+    /// Not a pick: nothing is persisted (the grid persisted its own explicit picks). Before the
+    /// add-on options have arrived (the rows were never started), the key waits for them.
+    func show(catalogKey: String) {
+        guard !options.isEmpty else {
+            pendingCatalogKey = catalogKey
+            return
+        }
+        pendingCatalogKey = nil
+        guard catalogKey != selectedCatalogKey,
+              let option = options.first(where: { $0.key == catalogKey }) else { return }
+        let newSpecs = DiscoverRowsPlan.specs(for: option,
+                                              catalogs: DiscoverRowsPlan.catalogs(ofType: option.type, in: options))
+        activate(option, specs: newSpecs, reason: "browse")
     }
 
     /// Catalog pill.

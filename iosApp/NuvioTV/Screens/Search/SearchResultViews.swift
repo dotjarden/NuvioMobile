@@ -244,7 +244,8 @@ struct SearchEmptyStateView: View {
 /// B3 h: the idle page's way into the stage Discover page when Discover lives under Search. Two
 /// tiles, Movies and Series, pushing `DiscoverRoute(type: "movie")` / `DiscoverRoute(type: "series")`
 /// (the page opens on that type; its own Type pill picks the rest). The tiles report nothing to
-/// the wash.
+/// the wash. FEAT-73 (Steven rc4): the page they push is now the grid-first Discover page
+/// (`DiscoverGridPage`), its Type pill set to the tile's type; Browse there reaches the stage rows.
 struct DiscoverEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {

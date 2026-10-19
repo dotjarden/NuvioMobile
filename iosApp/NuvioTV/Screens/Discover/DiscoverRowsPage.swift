@@ -37,6 +37,12 @@ import SwiftUI
 // owns the view model; Menu at the top pops back to Search's idle page and the rail writes nothing
 // (Search already hides the rail by its own rule).
 //
+// FEAT-73 (Steven rc4, D11): Discover is grid-first (`DiscoverGridPage`). This page is now reached
+// from the grid's Browse pill on BOTH placements, always as `.pushed` (the tab root and Search each
+// push it on their own stack, `DiscoverBrowseRoute`), opened on the grid's catalog
+// (`DiscoverRowsViewModel.show(catalogKey:)`); Menu at row 0 pops back to the grid. The `.tab`
+// host's paths stay for a direct mount.
+//
 // No background trailer: only `StageStripHome` arms one, so a focused poster here plays its In Row
 // preview when Trailers on Focus is on, whatever the Trailer Location (the folder page's call).
 //
@@ -45,8 +51,9 @@ import SwiftUI
 // reference box; the band gate (`rowsAtTop`) is written only when it changes; the DEBUG probe is a
 // leaf over its own readout state.
 
-/// Search's navigation value for the pushed stage Discover page (Under Search placement). `type`
-/// is the Stremio type the entry tile stands for ("movie" / "series"); nil keeps the selection.
+/// Search's navigation value for the pushed Discover page (Under Search placement): since FEAT-73
+/// the grid-first `DiscoverGridPage`. `type` is the Stremio type the entry tile stands for
+/// ("movie" / "series"); nil keeps the selection.
 struct DiscoverRoute: Hashable {
     var type: String? = nil
 }

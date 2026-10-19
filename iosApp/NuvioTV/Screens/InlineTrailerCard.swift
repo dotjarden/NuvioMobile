@@ -381,7 +381,10 @@ final class InlineTrailerCardModel: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
     /// R2: see `MorphStage`. Always `.none` on the hero model.
-    @Published private(set) var morphStage: MorphStage = .none
+    @Published private(set) var morphStage: MorphStage = .none {
+        // Black poster (Steven rc3): every edge off `.none` arms the orphan watchdog.
+        didSet { if morphStage != .none { armStageWatchdog() } }
+    }
     /// R2: the decoded tile art, set BEFORE `.reveal` (so the first revealed frame is the picture,
     /// never a shimmer — Steven's 0:53.5 empty frame) and cleared in the completion of the final
     /// collapse transaction, token-guarded so a re-expansion during the collapse keeps it.
@@ -472,6 +475,8 @@ final class InlineTrailerCardModel: ObservableObject {
     private var stageTask: Task<Void, Never>?
     /// A collapse waiting for the expansion in flight to finish (§2.2).
     private var deferTask: Task<Void, Never>?
+    /// Black poster (Steven rc3): the orphan watchdog, alive only while `morphStage != .none`.
+    private var stageWatchdogTask: Task<Void, Never>?
     private var stageAge: TimeInterval {
         stageChangedAt.map { Self.now - $0 } ?? .greatestFiniteMagnitude
     }
@@ -953,7 +958,7 @@ final class InlineTrailerCardModel: ObservableObject {
     /// Abort: everything to `.none` in ONE frame — width, tile, art, player, in-tile logo — inside a
     /// transaction that also disables the implicit animations below it (the playing-URL fade, the
     /// in-tile title's `.transition(.opacity)`), so nothing ghosts across the gap.
-    private func abortStage(trigger: String) {
+    private func abortStage(trigger: String, resetsPhase: Bool = true) {
         guard hostsTile else { return }
         let from = morphStage
         morphToken &+= 1
@@ -968,7 +973,7 @@ final class InlineTrailerCardModel: ObservableObject {
         withTransaction(transaction) {
             morphStage = .none
             tileArt = nil
-            phase = .idle
+            if resetsPhase { phase = .idle }
         }
         guard from != .none else { return }
         let stage = from == .wide ? "wide" : "reveal"
@@ -1073,6 +1078,62 @@ final class InlineTrailerCardModel: ObservableObject {
         #endif
     }
 
+    // MARK: Black poster (Steven rc3) recovery
+
+    /// Black poster (Steven rc3): art that missed `artAwaitDeadline` used to be dropped on the
+    /// floor — `beginMorph` had already revealed the tile with no art, and nothing ever set
+    /// `tileArt` afterwards, so the tile sat as a flat dark card for the rest of the dwell. Take it
+    /// now if the tile is still showing (same dwell: `artToken` matched) and still has none.
+    private func adoptLateArt(_ art: InlineTileArt?) {
+        guard hostsTile, let art, tileArt == nil, morphStage != .none, !collapseInFlight else { return }
+        if prefersReducedMotion {
+            tileArt = art
+        } else {
+            withAnimation(.easeOut(duration: Self.revealDuration)) { tileArt = art }
+        }
+        noteStage("lateArt", key: nil, extra: "")
+    }
+
+    /// Black poster (Steven rc3): a tile stage that nothing owns any more. Every known collapse path
+    /// drives `morphStage` back to `.none` within `InlineTrailerMorphPlan.watchdogGrace` (a deferred
+    /// collapse waits at most `revealDuration + morphDuration`, then shrinks and dissolves in
+    /// `morphDuration + revealDuration`), so a stage still off `.none` past that with no live
+    /// pipeline (no `activeKey`, phase not expanded) is a stranded one — the case where the base
+    /// poster stays hidden under an artless tile forever. Polls only while the stage is off `.none`.
+    private func armStageWatchdog() {
+        guard hostsTile, stageWatchdogTask == nil else { return }
+        stageWatchdogTask = Task { [weak self] in
+            var orphanedSince: TimeInterval?
+            while true {
+                try? await Task.sleep(nanoseconds: UInt64(InlineTrailerMorphPlan.watchdogPoll * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                guard self.morphStage != .none else {
+                    self.stageWatchdogTask = nil
+                    return
+                }
+                let owned = InlineTrailerMorphPlan.stageIsOwned(hasActiveKey: self.activeKey != nil,
+                                                                 phaseExpanded: self.isExpanded)
+                let now = InlineTrailerCardModel.now
+                orphanedSince = owned ? nil : (orphanedSince ?? now)
+                if InlineTrailerMorphPlan.watchdogShouldReset(stage: self.morphStage, owned: owned,
+                                                               orphanedFor: orphanedSince.map { now - $0 }) {
+                    #if DEBUG
+                    let stage = self.morphStage == .wide ? "wide" : "reveal"
+                    let orphanMs = Int(((now - (orphanedSince ?? now)) * 1000).rounded())
+                    NSLog("[TrailerPipeline] morph watchdog fired stage=%@ orphanMs=%d collapseInFlight=%d hasArt=%d expanded=%d",
+                          stage, orphanMs, self.collapseInFlight ? 1 : 0, self.tileArt == nil ? 0 : 1,
+                          self.isExpanded ? 1 : 0)
+                    #endif
+                    self.stageWatchdogTask = nil
+                    // Phase is left alone: an orphaned stage under a fresh `.dwelling` must not
+                    // cancel that dwell's pipeline meaning.
+                    self.abortStage(trigger: "watchdog", resetsPhase: false)
+                    return
+                }
+            }
+        }
+    }
+
     // MARK: R2 tile art
 
     /// Starts the tile-art load (banner, then poster) with `.normal` admission and NO request
@@ -1089,6 +1150,7 @@ final class InlineTrailerCardModel: ObservableObject {
             if let self, self.artToken == token {
                 self.artResult = art
                 self.artDone = true
+                self.adoptLateArt(art)
             }
             return art
         }
@@ -1754,6 +1816,39 @@ private final class ResumeLatch<T> {
 /// beta.19-rc1 verdict (R2, BUG-133): the two collapse decisions, pure so
 /// `InlineTrailerMorphPlanTests` can pin them as a table.
 nonisolated enum InlineTrailerMorphPlan {
+    // MARK: Black poster (Steven rc3)
+
+    /// How often the orphan watchdog looks at a stage off `.none`.
+    static let watchdogPoll: TimeInterval = 0.25
+    /// How long a stage may stay off `.none` with no pipeline owning it before the watchdog aborts
+    /// it. The longest legitimate unowned run is a deferred collapse from `.reveal`
+    /// (`revealDuration + morphDuration`) followed by the animated collapse
+    /// (`morphDuration + revealDuration`); half a second of margin covers a busy main actor.
+    static let watchdogGrace: TimeInterval =
+        2 * InlineTrailerCardModel.revealDuration + 2 * InlineTrailerCardModel.morphDuration + 0.5
+
+    /// A stage off `.none` is owned while a pipeline is live on the card: focus is on its title
+    /// (`activeKey`) AND the phase is the expanded one the morph belongs to (`.expandedStatic` /
+    /// `.playing`). `reset()` / `collapse()` / `relinquishPlayback()` drop one or both.
+    static func stageIsOwned(hasActiveKey: Bool, phaseExpanded: Bool) -> Bool {
+        hasActiveKey && phaseExpanded
+    }
+
+    /// True when the watchdog should force the stage back to `.none`.
+    static func watchdogShouldReset(stage: InlineTrailerCardModel.MorphStage, owned: Bool,
+                                    orphanedFor: TimeInterval?, grace: TimeInterval = watchdogGrace) -> Bool {
+        guard stage != .none, !owned, let orphanedFor else { return false }
+        return orphanedFor >= grace
+    }
+
+    /// Black poster (Steven rc3): the portrait base card is hidden under the tile only while the
+    /// tile has a picture to show. An artless tile used to draw a flat `Theme.Palette.surface` over
+    /// a hidden poster — the dark card. With no art, the base card stays and the tile draws nothing
+    /// under the (later) video.
+    static func hidesBaseCard(fadesBaseCard: Bool, tileVisible: Bool, hasTileArt: Bool) -> Bool {
+        fadesBaseCard && tileVisible && hasTileArt
+    }
+
     nonisolated enum CollapseStyle: Equatable, Sendable {
         /// Nothing on screen.
         case none
@@ -2358,7 +2453,10 @@ struct InlineTrailerCard: View {
             baseCard
                 // The portrait card (and, BUG-163, a shape-landscape card) is crossfaded out. Under
                 // the global Landscape Posters toggle the base card stays (see `fadesBaseCard`).
-                .opacity(fadesBaseCard && model.tileVisible ? 0 : 1)
+                // Black poster (Steven rc3): never hidden under a tile with no art.
+                .opacity(InlineTrailerMorphPlan.hidesBaseCard(fadesBaseCard: fadesBaseCard,
+                                                              tileVisible: model.tileVisible,
+                                                              hasTileArt: model.tileArt != nil) ? 0 : 1)
                 #if DEBUG
                 // BUG-162 / D16: see `debugBaseFrame`. Only while the tile shows (the probe's own gate).
                 .background {
@@ -2526,9 +2624,11 @@ struct InlineTrailerCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: geometry.radius),
                                     surface: .posters, railTint: depthRailTintResolved)
-            } else if model.tileVisible {
+            } else if model.tileVisible, !fadesBaseCard {
                 // No art arrived inside `artAwaitDeadline` and the poster was not in memory either:
-                // a flat surface, never a shimmer.
+                // a flat surface, never a shimmer. Black poster (Steven rc3): only where the base
+                // card stays under the tile anyway (Landscape Posters); a fading card shows its own
+                // poster through instead (`hidesBaseCard`), and late art is adopted when it lands.
                 Theme.Palette.surface
             }
 

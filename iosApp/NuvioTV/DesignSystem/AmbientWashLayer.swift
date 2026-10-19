@@ -406,11 +406,17 @@ private struct AmbientWashContent: View {
     }
 
     /// Both washes, drawn as full-screen quads of a 160x90 bitmap: no `.blur`, no `.drawingGroup()`, no
-    /// `.compositingGroup()` (the whole point of the CPU render). The dimming is one opacity on the
-    /// group, so a cross-fade under OLED or Increase Contrast composites as a whole instead of
-    /// letting the old wash show through the new one.
+    /// `.compositingGroup()` (the whole point of the CPU render).
+    ///
+    /// BUG-147 (Steven rc3, OLED True Black: "the background suddenly turns dark after one second"):
+    /// the dimming was one `.opacity` on this ZStack, which SwiftUI applies to EACH child without a
+    /// compositing group. Mid cross-fade the old wash drew at 0.4 and the new one at 0.4 × t over it,
+    /// so the coverage climbed to about 0.64 and then snapped back to 0.4 when `promote` dropped the
+    /// old layer: a 37 % drop a beat after the swap. The dim is now the page colour laid OVER both
+    /// layers at `1 − dim`: the same result at rest, no offscreen pass, and nothing to snap.
     private var layers: some View {
-        ZStack {
+        let dim = AmbientWashDimming.opacity(oled: oled, increasedContrast: contrast == .increased)
+        return ZStack {
             if let base = model.base {
                 washImage(base)
             }
@@ -418,8 +424,10 @@ private struct AmbientWashContent: View {
                 washImage(incoming)
                     .opacity(model.incomingOpacity)
             }
+            if dim < 1, model.base != nil || model.incoming != nil {
+                Theme.Palette.background.opacity(1 - dim)
+            }
         }
-        .opacity(AmbientWashDimming.opacity(oled: oled, increasedContrast: contrast == .increased))
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)

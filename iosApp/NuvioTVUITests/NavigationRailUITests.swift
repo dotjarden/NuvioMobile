@@ -682,7 +682,7 @@ final class NavigationRailUITests: XCTestCase {
 
     /// At the default placement (Own Tab) the rail carries a Discover item (`rail_item_Discover`,
     /// id 6) directly under Search, and selecting it opens the Discover tab (`rail_state tab=6`, the
-    /// stage Discover page's `discover_rows_state` mounted).
+    /// grid-first Discover page's `discover_grid_state` mounted: FEAT-73, Steven rc4).
     func testRail11_DiscoverItemAtDefault() throws {
         let app = launch(Self.railArguments(discover: "tab"))
         try requireRail(app)
@@ -708,8 +708,8 @@ final class NavigationRailUITests: XCTestCase {
         guard railFocused(app) == 6 else { return }
         remote.press(.select)
         XCTAssertTrue(poll(6) { rail(app, "tab") == "6" }, "selecting Discover must switch to tab 6 — \(railState(app))")
-        XCTAssertTrue(app.descendants(matching: .any)["discover_rows_state"].firstMatch.waitForExistence(timeout: 8),
-                      "the Discover tab must mount the stage Discover page (discover_rows_state)")
+        XCTAssertTrue(app.descendants(matching: .any)["discover_grid_state"].firstMatch.waitForExistence(timeout: 8),
+                      "the Discover tab must mount the grid-first Discover page (discover_grid_state)")
         pause(2)
         shot("rail11_discover_tab")
     }

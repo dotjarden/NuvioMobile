@@ -113,8 +113,13 @@ enum HomeRowPreviews {
     /// and batch a `TitleLogoStore` lookup for the row's own logo candidates. `done` is the
     /// caller's per-row dedup set (keyed by report source), so each row pays once per lifetime.
     ///
-    /// `logoCandidates` is already filtered to lookup candidates by the caller (the catalog-row
-    /// call site is the only one that passes a non-empty closure) — no re-filtering here.
+    /// `logoCandidates` is the row's leading items (only catalog rows pass a non-empty closure).
+    /// BUG-151 (Steven rc3/rc4): the same items also warm `StageLocalizedCopyStore`, so a title
+    /// focused later in the row commits with its localized name, synopsis and genres. For that the
+    /// Stage strip and the folder Rows page now pass the row's leading items UNFILTERED, and the
+    /// logo half re-applies `TitleLogoStore.isLookupCandidate` here (idempotent, so Classic's
+    /// call site, which still passes only logo candidates, is unchanged; Classic warms the copy of
+    /// those items and gets the rest from the commit-time request).
     static func warmRow(source: String,
                         item: MetaPreview?,
                         done: inout Set<String>,
@@ -122,8 +127,11 @@ enum HomeRowPreviews {
                         prefetch: () -> [String]) {
         guard item != nil, done.insert(source).inserted else { return }
         ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
-        let candidates = logoCandidates()
+        let rowItems = logoCandidates()
+        guard !rowItems.isEmpty else { return }
+        let candidates = rowItems.filter { TitleLogoStore.isLookupCandidate($0.logo) }
         if !candidates.isEmpty { TitleLogoStore.shared.lookupIfNeeded(candidates) }
+        StageLocalizedCopyStore.shared.prefetch(rowItems)
     }
 
     /// Wave H: warm a collection row's folder artwork when the ROW appears. Shares the per-row

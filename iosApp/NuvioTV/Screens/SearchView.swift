@@ -58,9 +58,17 @@ struct SearchView: View {
             // A4 / B3 h: the stage Discover page, pushed from the idle page's entry row (Under
             // Search placement). Its view model lives on the owner, so loaded rows survive a pop;
             // the pushed page starts and stops it itself.
+            // FEAT-73 (Steven rc4): the pushed page is the grid-first Discover page; its Browse
+            // pill pushes the stage rows on the grid's catalog.
             .navigationDestination(for: DiscoverRoute.self) { discoverRoute in
-                DiscoverRowsPage(model: owner.discoverModel, host: .pushed, routeType: discoverRoute.type,
-                                 onOpenGrid: { route in
+                DiscoverGridPage(model: owner.discoverGridModel, host: .pushed, routeType: discoverRoute.type,
+                                 onBrowse: { catalogKey in
+                    owner.discoverModel.show(catalogKey: catalogKey)
+                    path.append(DiscoverBrowseRoute(catalogKey: catalogKey))
+                })
+            }
+            .navigationDestination(for: DiscoverBrowseRoute.self) { _ in
+                DiscoverRowsPage(model: owner.discoverModel, host: .pushed, onOpenGrid: { route in
                     path.append(route)
                 })
             }
@@ -100,6 +108,9 @@ final class SearchViewOwner: ObservableObject {
     /// A4: the pushed stage Discover page's model (Under Search), created on first push and kept
     /// for the tab's life so its rows survive pop and push. Not published.
     lazy var discoverModel = DiscoverRowsViewModel()
+    /// FEAT-73 (Steven rc4): the pushed grid-first Discover page's model (Under Search), kept for
+    /// the tab's life like `discoverModel`; `discoverModel` now backs the Browse rows behind it.
+    lazy var discoverGridModel = DiscoverGridViewModel()
 }
 
 /// Carries the system search field. Observes only the query box, so results updates never re-apply

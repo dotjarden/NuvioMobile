@@ -10,6 +10,9 @@ package com.nuvio.app.features.catalog
  * fetches one page per genre row straight from Swift, so it goes through this twin and gets a
  * catchable error (`try await CatalogDataBridgingKt.fetchCatalogPageChecked(...)`). The ObjC export
  * drops default arguments, so every parameter is explicit. Behaviour is exactly [fetchCatalogPage]'s.
+ *
+ * FEAT-73 (Steven rc4): `skip` (last, default null) pages the grid-first Discover page; the genre
+ * rows pass nil (their one page), the grid passes the previous page's `nextSkip`.
  */
 
 /** [fetchCatalogPage], callable from Swift with `try await`. */
@@ -21,13 +24,14 @@ suspend fun fetchCatalogPageChecked(
     genre: String?,
     maxItems: Int,
     forceRefresh: Boolean,
+    skip: Int? = null,
 ): CatalogPage = fetchCatalogPage(
     manifestUrl = manifestUrl,
     type = type,
     catalogId = catalogId,
     genre = genre,
     search = null,
-    skip = null,
+    skip = skip,
     maxItems = maxItems,
     forceRefresh = forceRefresh,
 )
