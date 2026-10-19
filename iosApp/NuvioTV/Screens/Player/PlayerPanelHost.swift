@@ -173,6 +173,8 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
     var onClosed: (() -> Void)?
     private var closing = false
     private var reportedClose = false
+    /// Review r3: the after-a-child follow-up close runs at most once per viewer close.
+    private var didFollowUp = false
     /// BUG-186 review r1: watchdog retries for the current close; it gives up after `maxCloseRetries`.
     private var closeRetries = 0
     private static var maxCloseRetries: Int { 2 }  // computed: a generic class has no static stored properties
@@ -221,6 +223,7 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
         guard !closing else { return }
         // A viewer close starts a fresh retry budget; the watchdog's retries go through `beginClose`.
         closeRetries = 0
+        didFollowUp = false
         beginClose(animated: animated)
     }
 
@@ -255,7 +258,10 @@ final class PlayerPanelHostController<Content: View>: UIHostingController<Conten
             guard self.presentingViewController == nil else {
                 // Review r2: a close aimed at the panel stopped at the child it dismissed; finish
                 // the panel itself once, so a programmatic close (a source or episode pick) lands.
-                if self.presentedViewController == nil { self.performDismiss(animated: false) }
+                if self.presentedViewController == nil, !self.didFollowUp {
+                    self.didFollowUp = true
+                    self.performDismiss(animated: false)
+                }
                 return
             }
             // A watchdog retry can race a late original completion: report the close once.
