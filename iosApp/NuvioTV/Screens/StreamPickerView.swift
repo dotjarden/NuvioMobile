@@ -224,6 +224,7 @@ struct StreamPickerView: View {
             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
             synopsis: synopsis,
             episodeStill: episodeStill,
+            logo: logoUrl,
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
@@ -542,6 +543,7 @@ struct StreamPickerView: View {
         return FirstPlayAutoPlayOverlay(
             title: title,
             parentMetaId: parentMetaId,
+            logoUrl: logoUrl,
             episodeLine: line,
             pulseKey: videoId,
             message: loadingCoverMessage,

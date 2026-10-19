@@ -50,6 +50,8 @@ struct PlayerLoadingOverlay: View {
     /// before any context exists, so picker → player reads as one screen.
     let title: String
     let parentMetaId: String
+    /// BUG-184: the opening screen's title logo (localized); nil uses metahub's English one.
+    let logoUrl: String?
     let background: String?
     /// D2 (Steven rc7): the episode line, series only ("S1 · E4 · Name"); nil for a movie.
     let episodeLine: String?
@@ -71,6 +73,7 @@ struct PlayerLoadingOverlay: View {
     init(context: PlaybackContext, stage: PlayerLoadingStage) {
         self.title = context.title
         self.parentMetaId = context.parentMetaId
+        self.logoUrl = context.logo
         self.background = context.background
         self.episodeLine = Self.episodeLine(season: context.season, episode: context.episode,
                                             episodes: context.episodes)
@@ -79,10 +82,11 @@ struct PlayerLoadingOverlay: View {
         self.historyContextID = context.id
     }
 
-    init(title: String, parentMetaId: String, background: String?, episodeLine: String?, pulseKey: String,
-         takesFocus: Bool, accessibilityID: String, accessibilityText: String?, pulsePaused: Bool) {
+    init(title: String, parentMetaId: String, logoUrl: String?, background: String?, episodeLine: String?,
+         pulseKey: String, takesFocus: Bool, accessibilityID: String, accessibilityText: String?, pulsePaused: Bool) {
         self.title = title
         self.parentMetaId = parentMetaId
+        self.logoUrl = logoUrl
         self.background = background
         self.episodeLine = episodeLine
         self.pulseKey = pulseKey
@@ -107,6 +111,12 @@ struct PlayerLoadingOverlay: View {
 
     static let pulseScale: CGFloat = 1.08
     static let pulseSeconds: Double = 1.6
+
+    /// BUG-184: the opening screen's own logo first (TMDB-localized on Detail), then metahub's.
+    static func logoURL(logoUrl: String?, parentMetaId: String) -> URL? {
+        if let logoUrl, !logoUrl.isEmpty, let url = URL(string: logoUrl) { return url }
+        return logoURL(parentMetaId: parentMetaId)
+    }
 
     /// metahub's logo for an IMDb-backed title (the same guess Home's hero makes); nil otherwise.
     static func logoURL(parentMetaId: String) -> URL? {
@@ -186,7 +196,7 @@ struct PlayerLoadingOverlay: View {
 
     @ViewBuilder
     private var titleMark: some View {
-        if let logo = Self.logoURL(parentMetaId: parentMetaId) {
+        if let logo = Self.logoURL(logoUrl: logoUrl, parentMetaId: parentMetaId) {
             CachedAsyncImage(url: logo, contentMode: .fit, loading: { titleText }, failure: { titleText })
                 .frame(maxWidth: 640, maxHeight: 200)
         } else {

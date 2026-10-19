@@ -59,6 +59,10 @@ struct PlaybackContext: Identifiable {
     /// which stays the catalog/series poster (the progress recorder persists `poster` as the
     /// parent artwork — a still must never leak into it). nil → the header shows `poster`.
     var episodeStill: String? = nil
+    /// BUG-184 (Steven, 2026-10-19: "the title logo pulsing on the loading screen is always in
+    /// English"): the title logo the opening screen shows (Detail's, TMDB-localized when TMDB is
+    /// on), for the loading overlay. nil falls back to metahub's English logo.
+    var logo: String? = nil
     /// Catalog metadata for the player's Info tab chip row (year · runtime · rating · genres). nil
     /// when the launch path has no meta at hand — the chips simply omit them.
     var meta: PlaybackMeta? = nil

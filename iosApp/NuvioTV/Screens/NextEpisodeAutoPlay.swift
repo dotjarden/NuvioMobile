@@ -512,6 +512,7 @@ final class NextEpisodeEngine: ObservableObject {
             episodes: context.episodes,
             synopsis: context.synopsis,
             episodeStill: context.episodeStill,
+            logo: context.logo,
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
@@ -1121,6 +1122,7 @@ final class NextEpisodeEngine: ObservableObject {
             // The next episode's own still/overview only — never the previous episode's.
             synopsis: Self.nonEmpty(next.overview),
             episodeStill: Self.nonEmpty(next.thumbnail),
+            logo: context.logo,   // BUG-184: the same series logo for the next episode
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(

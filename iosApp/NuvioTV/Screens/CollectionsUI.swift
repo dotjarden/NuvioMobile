@@ -1330,6 +1330,12 @@ struct FolderDetailView: View {
     /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
     /// (true while the strip's focused row is its top focusable row, or before any row had focus).
     @State private var rowsAtTop = true
+    /// FEAT-79: the Classic rows page's last focused row and card, and the request that puts focus
+    /// back there when the page reappears after a push (Back from a title landed on the first card
+    /// of the first row: the device pass, 2026-10-18).
+    @State private var classicFocusRow: String?
+    @State private var classicFocusItem: String?
+    @State private var classicFocusRequest = PinnedRowFocusRequest.none
     /// A layout switch happened while this page was open (Home Layout or, since FEAT-71, Collections
     /// Layout flipped in Settings): a Rows page mounted by it leaves focus where it is instead of
     /// pulling it to the first card (P2 §2.6).
@@ -1369,7 +1375,14 @@ struct FolderDetailView: View {
         [GridItem(.adaptive(minimum: posterStyle.width), spacing: Theme.Spacing.xl)]
     }
 
-    private var hasChips: Bool { model.tabs.count > 1 }
+    /// FEAT-79: the Classic rows page lists every source as a row, so it has no tab chips.
+    private var hasChips: Bool { model.tabs.count > 1 && !classicRows }
+
+    /// FEAT-79: Classic Home + Rows layout: the grid page with Classic rows in place of the grid.
+    private var classicRows: Bool { homeLayout == .classic && pageLayout == .rows }
+
+    /// The Stage strip page (`FolderRowsPage`) is showing (it reports `rowsAtTop` itself).
+    private var usesStripRowsPage: Bool { pageLayout == .rows && homeLayout == .stage }
 
     private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
 
@@ -1384,6 +1397,10 @@ struct FolderDetailView: View {
         let layout = pageLayout
         ZStack(alignment: .top) {
             switch layout {
+            case .rows where homeLayout == .classic:
+                // FEAT-79 (Steven rc7): Classic + Rows keeps Classic's look, the grid page's chrome
+                // (logo header, plain scroll) with one Classic row per source in place of the grid.
+                gridPage
             case .rows:
                 FolderRowsPage(model: model, rowsAtTop: $rowsAtTop, requestsInitialFocus: !layoutSwitched)
             case .grid:
@@ -1396,7 +1413,7 @@ struct FolderDetailView: View {
                 // or the grid not scrolled), the existing Edit Filters rule.
                 FolderEditMenuBand(model: model,
                                    layout: layout,
-                                   isActive: layout == .rows ? rowsAtTop : !gridScrolled,
+                                   isActive: usesStripRowsPage ? rowsAtTop : !gridScrolled,
                                    editing: $editing)
             }
         }
@@ -1416,6 +1433,7 @@ struct FolderDetailView: View {
         .onAppear {
             tabBarVisibility.pushImmersive()
             model.start()
+            restoreClassicRowsFocus()
         }
         .onDisappear {
             tabBarVisibility.popImmersive()
@@ -1496,7 +1514,8 @@ struct FolderDetailView: View {
                 #endif
             }
 
-            if homeLayout == .classic {
+            // FEAT-79: the Classic rows page has the Edit band instead (see `body`).
+            if homeLayout == .classic && !classicRows {
                 editFiltersOverlay
             }
 
@@ -1534,7 +1553,86 @@ struct FolderDetailView: View {
 
     // MARK: - Grid
 
+    @ViewBuilder
     private var gridContent: some View {
+        if classicRows {
+            classicRowsContent
+        } else {
+            posterGridContent
+        }
+    }
+
+    /// FEAT-79 (Steven rc7: "use the Classic interface in collections when Classic is selected"):
+    /// one `CatalogRowView` per source, the row Classic Home draws (`HomeCatalogRowCell`), in the
+    /// grid page's plain vertical scroll. Rows come from the same strip state the Stage page reads
+    /// (`model.stripRows`); a loading source shows its skeleton, failed and empty ones drop out.
+    @ViewBuilder
+    private var classicRowsContent: some View {
+        let rows = FolderRowsPlan.visible(model.stripRows, focusedTabIndex: nil)
+        if rows.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                if model.allSettled {
+                    Text("Nothing here yet.")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    if model.editableSource == nil {
+                        Button("Go Back") { dismiss() }
+                            .buttonStyle(.bordered)
+                    }
+                } else {
+                    HStack(spacing: Theme.Spacing.md) {
+                        ProgressView()
+                        Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.screen)
+            .padding(.top, Theme.Spacing.xl)
+        } else {
+            LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                ForEach(rows) { row in
+                    switch row.status {
+                    case .loaded:
+                        if let section = row.section {
+                            CatalogRowView(section: section, previewLimit: FolderRowsPlan.previewLimit,
+                                           onItemFocusChange: { item in
+                                               guard let item else { return }
+                                               classicFocusRow = section.key
+                                               classicFocusItem = item.id
+                                           })
+                        }
+                    case .loading:
+                        StripLoadingRow(heading: row.heading)
+                            .padding(.horizontal, Theme.Spacing.screen)
+                    case .failed, .empty:
+                        EmptyView()
+                    }
+                }
+            }
+            .padding(.bottom, Theme.Spacing.xl * 2)
+            .environment(\.pinnedRowFocusRequest, classicFocusRequest)
+            .accessibilityIdentifier("folder_classic_rows")
+        }
+    }
+
+    /// FEAT-79: back on the Classic rows page after a push, focus returns to the row and card it
+    /// left. Three rungs, the first two allowed to move focus inside a row the engine already
+    /// restored (`forceCard`), as Classic Home's pop restore does; nothing on the first appearance.
+    private func restoreClassicRowsFocus() {
+        guard classicRows, let row = classicFocusRow else { return }
+        let item = classicFocusItem
+        for (rung, delay) in [0.0, 0.35, 0.8].enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard classicRows else { return }
+                classicFocusRequest = PinnedRowFocusRequest(rowKey: row,
+                                                            generation: classicFocusRequest.generation + 1,
+                                                            itemId: item,
+                                                            forceCard: rung < 2)
+            }
+        }
+    }
+
+    private var posterGridContent: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             if model.items.isEmpty {
                 if model.isLoading || model.tabIsLoading {

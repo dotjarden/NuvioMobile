@@ -584,6 +584,8 @@ extension FirstPlayAutoPlayController {
 struct FirstPlayAutoPlayOverlay: View {
     let title: String
     let parentMetaId: String
+    /// BUG-184: the picker's (localized) title logo.
+    let logoUrl: String?
     let episodeLine: String?
     /// The playback's video id: the shared pulse clock's key (BUG-182).
     let pulseKey: String
@@ -608,6 +610,7 @@ struct FirstPlayAutoPlayOverlay: View {
                 PlayerLoadingOverlay(
                     title: title,
                     parentMetaId: parentMetaId,
+                    logoUrl: logoUrl,
                     background: nil,
                     episodeLine: episodeLine,
                     pulseKey: pulseKey,
