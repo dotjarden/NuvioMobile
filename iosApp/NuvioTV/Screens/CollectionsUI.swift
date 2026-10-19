@@ -1796,13 +1796,27 @@ struct FolderDetailView: View {
             // chips block, so it sizes itself to them; it pins with the chips.
             .background(alignment: .top) {
                 VStack(spacing: 0) {
-                    Theme.Palette.background
-                    LinearGradient(stops: EdgeFadeCurve.stops(rising: false, color: Theme.Palette.background),
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: FolderHeaderGeometry.fade)
+                    if classicRows {
+                        // FEAT-79 (device pass, Christian 2026-10-18): on the Classic rows page the
+                        // row above the focused one sits partly under the header, and the opaque
+                        // band cut its posters off with a hard edge (titles poking out below a
+                        // black box). Here the band is solid only above the title block and fades
+                        // across it, so the row above softens out under the title instead.
+                        Theme.Palette.background.frame(height: 600)
+                        LinearGradient(stops: [.init(color: Theme.Palette.background, location: 0),
+                                               .init(color: Theme.Palette.background.opacity(0.92), location: 0.55),
+                                               .init(color: Theme.Palette.background.opacity(0), location: 1)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .padding(.bottom, -FolderHeaderGeometry.fade * 2)
+                    } else {
+                        Theme.Palette.background
+                        LinearGradient(stops: EdgeFadeCurve.stops(rising: false, color: Theme.Palette.background),
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: FolderHeaderGeometry.fade)
+                    }
                 }
                 .padding(.top, -600)
-                .padding(.bottom, -FolderHeaderGeometry.fade)
+                .padding(.bottom, classicRows ? 0 : -FolderHeaderGeometry.fade)
                 .allowsHitTesting(false)
                 .visualEffect { content, proxy in
                     let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
