@@ -1195,7 +1195,7 @@ struct StreamPickerView: View {
         // coming back from the external player lands on the opener with no loading cover to flash
         // (the old order opened the player while the picker, under its cover, was still up).
         let intent = ExternalPlayerPlatform.shared.buildIntent(request: request, playerId: playerId)
-        if let success = intent as? ExternalPlayerIntentResult.Success, let url = success.intent as? URL {
+        if let success = intent as? ExternalPlayerIntentResultSuccess, let url = success.intent as? URL {
             if UserDefaults.standard.bool(forKey: "debug.extPlayerProbe") {
                 // Knob-gated, console-only (the shared `open` rule): the URL embeds debrid tokens.
                 NSLog("%@", "[ExtPlayerProbe] open player=\(playerId) url=\(url.absoluteString)")
