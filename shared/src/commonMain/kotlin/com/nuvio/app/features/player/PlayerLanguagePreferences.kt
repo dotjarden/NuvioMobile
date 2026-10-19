@@ -20,6 +20,10 @@ private val LanguageCodeAliases = mapOf(
     "pob" to "pt-BR",
     "eng" to "en",
     "spa" to "es",
+    // OpenSubtitles Spanish-EU codes (upstream NuvioTV 2a54e8cbe).
+    "spn" to "es",
+    "sp" to "es",
+    "esp" to "es",
     "es-419" to "es-419",
     "es_419" to "es-419",
     "es-la" to "es-419",

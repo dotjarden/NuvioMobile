@@ -43,6 +43,10 @@ object SubtitleLanguageMatching {
         "rus" to "ru",
         "pol" to "pl",
         "spa" to "es",
+        // OpenSubtitles Spanish-EU codes (upstream NuvioTV 2a54e8cbe).
+        "spn" to "es",
+        "sp" to "es",
+        "esp" to "es",
         "spl" to "es-419",
         "es-419" to "es-419",
         "es_419" to "es-419",
@@ -271,6 +275,13 @@ object SubtitleLanguageMatching {
         }
         if (containsAny("bahasa malaysia", "bahasa melayu", "malaysian")) {
             return "ms"
+        }
+
+        // Serbo-Croatian labels like "hbs-srp" resolve to their own language
+        // instead of grouping under "hbs" (upstream NuvioTV d34a5025d).
+        if (containsAny("hbs")) {
+            val tokenizedNoHbs = tokenized.replace("hbs", "").trim()
+            LANGUAGE_OVERRIDES[tokenizedNoHbs]?.let { return it }
         }
 
         return LANGUAGE_OVERRIDES[code] ?: normalizedCode

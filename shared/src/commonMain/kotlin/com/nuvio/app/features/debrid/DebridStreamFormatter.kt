@@ -160,7 +160,7 @@ class DebridStreamFormatter(
             "ja", "jpn", "japanese" -> "JP"
             "ko", "kor", "korean" -> "KR"
             "fr", "fre", "fra", "french" -> "FR"
-            "es", "spa", "spanish" -> "ES"
+            "es", "spa", "spn", "esp", "spanish" -> "ES" // spn/esp: upstream NuvioTV 2a54e8cbe
             "de", "ger", "deu", "german" -> "DE"
             "it", "ita", "italian" -> "IT"
             "multi" -> "Multi"

@@ -69,6 +69,7 @@ final class TopShelfUpdater: ObservableObject {
     func start() {
         guard watcher == nil else { return }
         WatchProgressRepository.shared.ensureLoaded()
+        CustomPosterUrlRepository.shared.ensureLoaded()   // A7: the pattern the snapshot applies
         watcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
             DispatchQueue.main.async { self?.scheduleWrite() }
         }
@@ -142,6 +143,10 @@ final class TopShelfUpdater: ObservableObject {
         // BUG-75: same provider-aware row Home builds (dropped shows and out-of-window entries
         // filtered), scanned short — Top Shelf only ever shows the first 10.
         let entries = WatchProgressRepository.shared.continueWatchingRow(limit: 20)
+        // NuvioTV upstream 228820681 (A7): the Continue Watching custom poster pattern applies to
+        // the Top Shelf's posters too, as it does to the in-app row. A pattern that resolves
+        // nothing (blank, screen off, unsupported id) keeps the entry's own poster.
+        let posterPattern = CustomPosterUrlRepository.shared.patternForScreen(screen: .continueWatching)
         let items = entries.prefix(10).map { entry in
             TopShelfItemSnapshot(
                 videoId: entry.videoId,
@@ -151,7 +156,7 @@ final class TopShelfUpdater: ObservableObject {
                 episodeTitle: entry.episodeTitle,
                 season: entry.seasonNumber?.value,
                 episode: entry.episodeNumber?.value,
-                poster: entry.poster,
+                poster: Self.customPoster(entry, pattern: posterPattern) ?? entry.poster,
                 background: entry.background ?? entry.episodeThumbnail,
                 // `progressFraction` covers both kinds of entry: a stored percentage (Trakt/Simkl)
                 // or position / duration (local playback saves no percentage, so they used to
@@ -196,6 +201,18 @@ final class TopShelfUpdater: ObservableObject {
 
     /// Serial, so an older snapshot can never land after a newer one (with the dedupe, a stale
     /// file would otherwise persist until the next change).
+    /// A7: the entry's parent title through the custom poster pattern, portrait shape (the Top
+    /// Shelf draws posters); nil when the pattern does not apply.
+    static func customPoster(_ entry: WatchProgressEntry, pattern: String) -> String? {
+        guard !pattern.isEmpty else { return nil }
+        return CustomPosterUrls.shared.resolveWithPattern(
+            pattern: pattern,
+            contentId: entry.parentMetaId,
+            contentType: entry.parentMetaType,
+            shape: PosterShape.poster
+        )
+    }
+
     private static let writeQueue = DispatchQueue(label: "TopShelfUpdater.write", qos: .utility)
 
     private static func roundedForComparison(_ item: TopShelfItemSnapshot) -> TopShelfItemSnapshot {

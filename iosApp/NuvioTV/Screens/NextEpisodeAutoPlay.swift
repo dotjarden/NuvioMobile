@@ -9,7 +9,8 @@ import SharedCore
 ///  - next-episode resolution over the `PlaybackContext.episodes` list (aired episodes only),
 ///  - trigger thresholds from shared `PlayerSettingsUiState` (percentage / minutes-before-end),
 ///  - stream resolution via shared `PlayerStreamsRepository.loadEpisodeStreams`,
-///  - stream choice via shared `StreamAutoPlaySelector` (binge-group preference included),
+///  - stream choice via shared `StreamAutoPlaySelector` (binge-group preference included), plus
+///    NuvioTV's same-release filename match (shared `FilenameEpisodeMatcher`, upstream 953938c72),
 ///  - a 3-2-1 countdown, then handing the new `PlaybackContext` back to the presenter.
 ///
 /// Mobile parity notes: the default settings (MANUAL mode + prefer-binge-group) auto-select the
@@ -737,7 +738,8 @@ final class NextEpisodeEngine: ObservableObject {
             let groups = state?.groups ?? []
             print("[UpNext] timeout(\(timeoutSeconds)s): groups=\(groups.count) loading=\(state?.isAnyLoading ?? false)")
             if !groups.isEmpty {
-                self.attemptSelection(groups: groups, settings: settings, loadFinished: !(state?.isAnyLoading ?? false))
+                self.attemptSelection(groups: groups, settings: settings, loadFinished: !(state?.isAnyLoading ?? false),
+                                      timedOut: true)
             }
             // Hard deadline: a hung addon can leave the flow "loading" forever, which used to strand
             // the card at "Finding source…" with no terminal state. Give stragglers a grace window
@@ -746,7 +748,7 @@ final class NextEpisodeEngine: ObservableObject {
             guard !Task.isCancelled, self.selectedStream == nil, !self.cancelled else { return }
             let late = self.latestStreamsState
             print("[UpNext] hard deadline: groups=\(late?.groups.count ?? 0) loading=\(late?.isAnyLoading ?? false) — resolving")
-            self.attemptSelection(groups: late?.groups ?? [], settings: settings, loadFinished: true)
+            self.attemptSelection(groups: late?.groups ?? [], settings: settings, loadFinished: true, timedOut: true)
         }
     }
 
@@ -914,31 +916,119 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func attemptBingeGroupOnlySelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) {
         guard settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil else { return }
+        // Upstream 953938c72: the same binge group AND the next episode's filename first (the most
+        // precise match), then the binge group alone.
+        if let match = bingeGroupFilenameMatch(groups: groups, settings: settings) {
+            print("[UpNext] binge group + filename match")
+            didSelect(match)
+            return
+        }
         if let match = select(from: groups, settings: settings, bingeGroupOnly: true,
                               installedAddonIds: latestStreamsState?.installedAddonIds ?? []) {
             didSelect(match)
         }
     }
 
+    /// `timedOut`: called from the search's soft timeout or hard deadline (`beginSearch`), where
+    /// upstream 953938c72 tries the filename-only match BEFORE the full select; when the sources
+    /// finished loading on their own it is only a rescue AFTER the full select found nothing
+    /// (upstream's add-on collector runs `trySelectStream` before it settles).
     private func attemptSelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState, loadFinished: Bool,
-                                  installedAddonIds: Set<String>? = nil) {
+                                  installedAddonIds: Set<String>? = nil, timedOut: Bool = false) {
         guard selectedStream == nil, !cancelled else { return }
         let installed = installedAddonIds ?? latestStreamsState?.installedAddonIds ?? []
+        // Upstream 953938c72: binge group + filename beats everything. In upstream every
+        // emission (the last one included) runs this before the settle; here the settle path
+        // skips `attemptBingeGroupOnlySelection`, so it runs first here too.
+        if settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil,
+           let match = bingeGroupFilenameMatch(groups: groups, settings: settings) {
+            print("[UpNext] binge group + filename match")
+            didSelect(match)
+            return
+        }
+        if timedOut, let match = filenameOnlyMatch(groups: groups, settings: settings) {
+            print("[UpNext] filename match (any binge group) at timeout")
+            didSelect(match)
+            return
+        }
         if let match = select(from: groups, settings: settings, bingeGroupOnly: false, installedAddonIds: installed) {
+            didSelect(match)
+        } else if let match = filenameOnlyMatch(groups: groups, settings: settings) {
+            print("[UpNext] filename match (any binge group) after the selector found nothing")
             didSelect(match)
         } else if loadFinished {
             finishWithoutStream()
         }
     }
 
-    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
-                        installedAddonIds: Set<String>) -> StreamItem? {
-        // Orivio batch item 2: links that failed recently for the episode about to play are never
-        // auto-selected again (`RejectedStreamLinks`, keyed like the picker's).
+    // MARK: - Filename matching (NuvioTV upstream 953938c72 / ac8d5275c / b0ca75514)
+
+    /// The fork's "binge-group cache entry" is the playing `PlaybackContext` itself (tvOS never
+    /// writes the shared `BingeGroupCacheRepository`): `bingeGroup` plus, for the filename,
+    /// `listedStream` — the stream as the picker / the source list / this engine listed it, before
+    /// any debrid resolve. Every launch that carries a stream sets it, a manual pick in
+    /// `StreamPickerView` included, so upstream's "persist the filename on manual selection"
+    /// (b0ca75514) already holds here. Its `behaviorHints.filename` is the add-on's own hint, the
+    /// same field the next episode's candidates are compared on (ac8d5275c stores exactly that).
+    private var playingFilename: String? {
+        let filename: String? = context.listedStream?.behaviorHints.filename
+        guard let filename, !filename.isEmpty else { return nil }
+        return filename
+    }
+
+    /// The filename the next episode's stream carries when it is the same release, or nil.
+    private func expectedNextFilename() -> String? {
+        guard let next = nextVideo, let current = playingFilename else { return nil }
+        return FilenameEpisodeMatcher.shared.expectedNextFilename(
+            currentFilename: current,
+            currentSeason: context.season.map { KotlinInt(int: Int32($0)) },
+            currentEpisode: context.episode.map { KotlinInt(int: Int32($0)) },
+            nextSeason: next.season,
+            nextEpisode: next.episode
+        )
+    }
+
+    /// What `select` and the filename matches start from: `allStreams` minus the links that failed
+    /// recently for the episode about to play (Orivio batch item 2: never auto-selected again,
+    /// `RejectedStreamLinks`, keyed like the picker's). The filename matches use it as is, NOT
+    /// scoped by the auto-play source / add-on / plugin filters (upstream d293973bd: same-release
+    /// reuse is not limited by those filters).
+    private func selectableStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
         let rejected: Set<String> = nextVideo.map {
             RejectedStreamLinks.rejected(for: Self.episodeVideoId(metaId: context.parentMetaId, episode: $0))
         } ?? []
-        let streams = allStreams(groups).filter { rejected.isEmpty || !rejected.contains($0.playbackStreamKey) }
+        return allStreams(groups).filter { rejected.isEmpty || !rejected.contains($0.playbackStreamKey) }
+    }
+
+    /// Auto-play is in effect for the next episode: the user's own mode, or MANUAL with the
+    /// next-episode / binge-group toggles (mobile parity, `select`). Upstream only runs the
+    /// filename match inside its auto-play flow; plain MANUAL shows the picker there and the
+    /// "no stream" card here, so a filename match must not pick for it either.
+    private func autoPlayInEffect(_ settings: PlayerSettingsUiState) -> Bool {
+        if settings.streamAutoPlayMode != StreamAutoPlayMode.manual { return true }
+        return settings.streamAutoPlayNextEpisodeEnabled || settings.streamAutoPlayPreferBingeGroup
+    }
+
+    /// Upstream `tryBingeGroupOnly`'s first step: same binge group and the expected filename.
+    private func bingeGroupFilenameMatch(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) -> StreamItem? {
+        guard autoPlayInEffect(settings), settings.streamAutoPlayPreferBingeGroup,
+              let group = context.bingeGroup, !group.isEmpty,
+              let expected = expectedNextFilename() else { return nil }
+        return FilenameEpisodeMatcher.shared.findMatch(
+            streams: selectableStreams(groups), expectedFilename: expected, bingeGroup: group)
+    }
+
+    /// Upstream `tryFilenameOnly`: the expected filename in any binge group (the add-on changed
+    /// or dropped the group between episodes, or the playing stream had none).
+    private func filenameOnlyMatch(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) -> StreamItem? {
+        guard autoPlayInEffect(settings), let expected = expectedNextFilename() else { return nil }
+        return FilenameEpisodeMatcher.shared.findMatch(
+            streams: selectableStreams(groups), expectedFilename: expected, bingeGroup: nil)
+    }
+
+    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
+                        installedAddonIds: Set<String>) -> StreamItem? {
+        let streams = selectableStreams(groups)
         guard !streams.isEmpty else { return nil }
 
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.

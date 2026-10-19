@@ -354,6 +354,9 @@ object TraktProgressRepository {
 
         if (playbackEntries == null) {
             if (!isLatestRefreshRequest(requestId)) return
+            // Keep the current snapshot, and let the next poll retry instead of treating
+            // this activity change as already fetched (upstream NuvioTV befc72857).
+            lastKnownActivityFingerprint = null
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 errorMessage = resourceString(
@@ -388,7 +391,9 @@ object TraktProgressRepository {
                 val hiddenShows = async { fetchHiddenShowIds(headers) }
                 
                 val list = history.await() + watchedShowSeeds.await()
-                hiddenProgressShowIds.value = hiddenShows.await()
+                // A failed dropped-shows fetch keeps the previous hidden set; the next
+                // refresh retries (upstream NuvioTV befc72857).
+                hiddenShows.await()?.let { hiddenProgressShowIds.value = it }
                 list
             }
         }.onFailure { error ->
@@ -665,35 +670,23 @@ object TraktProgressRepository {
         refreshNow()
     }
 
-    private suspend fun fetchHiddenShowIds(headers: Map<String, String>): Set<String> {
-        val allIds = mutableSetOf<String>()
-        var page = 1
-        val limit = 1000
-        while (true) {
+    /** Returns null when any page failed, so a failure is not mistaken for "nothing hidden". */
+    private suspend fun fetchHiddenShowIds(headers: Map<String, String>): Set<String>? =
+        collectTraktHiddenShowIds { page, limit ->
             val endpoint = "$BASE_URL/users/hidden/dropped?type=show&page=$page&limit=$limit"
             val payload = runCatching {
                 httpGetTextWithHeaders(
                     url = endpoint,
                     headers = headers,
                 )
-            }.getOrNull() ?: break
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+            }.getOrNull() ?: return@collectTraktHiddenShowIds null
 
-            val items = runCatching {
+            runCatching {
                 json.decodeFromString<List<TraktHiddenItem>>(payload)
-            }.getOrNull() ?: break
-
-            if (items.isEmpty()) break
-            for (item in items) {
-                val ids = item.show?.ids ?: continue
-                ids.imdb?.takeIf { it.isNotBlank() }?.let { allIds.add(it) }
-                ids.tmdb?.let { allIds.add("tmdb:$it") }
-                ids.trakt?.let { allIds.add("trakt:$it") }
-            }
-            if (items.size < limit) break
-            page++
+            }.getOrNull()
         }
-        return allIds
-    }
 
     private suspend fun fetchPlaybackEntries(headers: Map<String, String>): List<WatchProgressEntry> = withContext(Dispatchers.Default) {
         val moviesEndpoint = "$BASE_URL/sync/playback/movies"
@@ -763,11 +756,16 @@ object TraktProgressRepository {
                 headers = headers,
                 body = "",
             )
-            if (response.status !in 200..299) break
+            // A failed page fails the whole history fetch: treating it as the end of
+            // history would drop recently watched shows from Continue Watching
+            // (upstream NuvioTV befc72857).
+            requireTraktProgressPageSuccess(response.status, url = "sync/history/episodes")
 
             val items = runCatching {
                 json.decodeFromString<List<TraktHistoryEpisodeItem>>(response.body)
-            }.getOrDefault(emptyList())
+            }.getOrElse { error ->
+                throw TraktProgressFetchException("Trakt episode history page $page could not be decoded", error)
+            }
             if (items.isEmpty()) break
 
             var shouldStop = false
@@ -1623,7 +1621,7 @@ private data class TraktWatchedShowEpisodeSeed(
 )
 
 @Serializable
-private data class TraktMedia(
+internal data class TraktMedia(
     @SerialName("title") val title: String? = null,
     @SerialName("ids") val ids: TraktExternalIds? = null,
 )
@@ -1665,9 +1663,47 @@ private data class TraktSearchResult(
 )
 
 @Serializable
-private data class TraktHiddenItem(
+internal data class TraktHiddenItem(
     @SerialName("hidden_at") val hiddenAt: String? = null,
     @SerialName("type") val type: String? = null,
     @SerialName("show") val show: TraktMedia? = null,
     @SerialName("movie") val movie: TraktMedia? = null,
 )
+
+/** A Trakt progress request failed; callers keep their last good state (upstream NuvioTV befc72857). */
+internal class TraktProgressFetchException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
+
+internal fun requireTraktProgressPageSuccess(status: Int, url: String) {
+    if (status !in 200..299) {
+        throw TraktProgressFetchException("Trakt request $url failed with HTTP $status")
+    }
+}
+
+/**
+ * Pages through Trakt's dropped-shows list. [fetchPage] returns null when a page failed,
+ * and then the whole result is null so the caller keeps its previous hidden set instead
+ * of showing dropped shows again (upstream NuvioTV befc72857).
+ */
+internal suspend fun collectTraktHiddenShowIds(
+    limit: Int = 1000,
+    fetchPage: suspend (page: Int, limit: Int) -> List<TraktHiddenItem>?,
+): Set<String>? {
+    val allIds = mutableSetOf<String>()
+    var page = 1
+    while (true) {
+        val items = fetchPage(page, limit) ?: return null
+        if (items.isEmpty()) break
+        for (item in items) {
+            val ids = item.show?.ids ?: continue
+            ids.imdb?.takeIf { it.isNotBlank() }?.let { allIds.add(it) }
+            ids.tmdb?.let { allIds.add("tmdb:$it") }
+            ids.trakt?.let { allIds.add("trakt:$it") }
+        }
+        if (items.size < limit) break
+        page++
+    }
+    return allIds
+}
