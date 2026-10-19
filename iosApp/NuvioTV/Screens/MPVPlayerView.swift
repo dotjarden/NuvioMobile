@@ -2451,6 +2451,14 @@ final class MPVTVPlayerViewController: UIViewController {
         // The thumbnail was scaled on `eventQueue`; this queue only encodes (inside the store's
         // insert) and inserts.
         DispatchQueue.global(qos: .utility).async {
+            // BUG-181 device pass (2026-10-18): a near-black frame (a film's opening, a fade) is
+            // no preview; it was the only frame stored and the fallback showed it as a black card.
+            if HarvestFrameFilter.isNearlyBlack(thumb) {
+                #if DEBUG
+                NSLog("%@", String(format: "[Harvest] skipped dark frame at=%.1f", sec))
+                #endif
+                return
+            }
             Task {
                 let result = await store.insert(thumb, at: sec, origin: .harvest)
                 await publish(result)
@@ -3381,18 +3389,18 @@ final class MPVTVPlayerViewController: UIViewController {
             let token = previewFrameToken
             Task { @MainActor [weak self] in
                 let match = await source.match(near: target)
-                // BUG-181 (Steven rc7): a miss shows the nearest stored frame at any distance (DV
-                // P5 never decodes, so its store holds only harvested frames). Empty store: keep
-                // whatever the card shows; the frame is cleared only when the scrub ends.
+                // BUG-181 (Steven rc7): a miss shows the nearest stored frame within two minutes
+                // (DV P5 never decodes, so its store holds only harvested frames). The previous
+                // frame stays only while a lookup runs; a finished lookup with nothing near clears
+                // it, so the dark placeholder card shows (device pass 2026-10-18: scrubbing far
+                // ahead kept showing the last real thumbnail).
                 let shown: SeekPreviewMatch?
                 if let match { shown = match } else { shown = await source.nearest(to: target) }
                 // A scrub that ended (or a newer one) bumped the token: drop the late frame, and
                 // do not touch the reset throttle.
                 guard let self, self.previewFrameToken == token else { return }
-                if let shown {
-                    self.state.transport.previewFrame = shown.image
-                    self.state.transport.previewFrameSec = shown.sec
-                }
+                self.state.transport.previewFrame = shown?.image
+                self.state.transport.previewFrameSec = shown?.sec
                 // P3: no frame, or one more than 5 s off: ask the thumbnailer for the keyframe there.
                 // Reads the tolerance-bounded match (BUG-181 leaves the refine rule as it was).
                 if self.thumbs.lookupWantsRefine(target: target, matchSec: match?.sec) {

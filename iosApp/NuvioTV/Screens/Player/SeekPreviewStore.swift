@@ -216,10 +216,13 @@ actor SeekPreviewStore {
     /// `SeekPreviewSource` (P3): the frame, its stamp and its origin.
     func match(near sec: Double) -> SeekPreviewMatch? { match(near: sec, tolerance: nil) }
 
-    /// BUG-181 (Steven rc7): the nearest entry with no distance limit (nil only when empty). The
-    /// scrub path's fallback when `match(near:)` misses; its refine decision still reads the
-    /// tolerance-bounded match.
-    func nearest(to sec: Double) -> SeekPreviewMatch? { match(near: sec, tolerance: .infinity) }
+    /// BUG-181 (Steven rc7): the nearest entry within `nearestReach` (nil past it or when empty).
+    /// The scrub path's fallback when `match(near:)` misses; its refine decision still reads the
+    /// tolerance-bounded match. Device pass 2026-10-18: with no limit a scrub 24 min in showed the
+    /// film's opening frame; past two minutes the dark placeholder card says more.
+    func nearest(to sec: Double) -> SeekPreviewMatch? { match(near: sec, tolerance: Self.nearestReach) }
+
+    static let nearestReach: Double = 120
 
     func match(near sec: Double, tolerance: Double?) -> SeekPreviewMatch? {
         guard sec.isFinite, let i = nearestIndex(to: sec) else { return nil }
@@ -468,5 +471,31 @@ nonisolated enum ProcessMemory {
         }
         guard kr == KERN_SUCCESS else { return 0 }
         return Int(info.phys_footprint / 1_048_576)
+    }
+}
+
+/// BUG-181 device pass (2026-10-18): harvested frames that carry no picture.
+nonisolated enum HarvestFrameFilter {
+    /// Brightest channel in a 16 × 9 downsample at or under this (of 255) reads as black.
+    static let darkCeiling: UInt8 = 24
+
+    /// True when every sample of a 16 × 9 downsample is at or under `darkCeiling`.
+    static func isNearlyBlack(_ image: CGImage) -> Bool {
+        let w = 16, h = 9
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            ctx.interpolationQuality = .low
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return false }
+        for i in stride(from: 0, to: pixels.count, by: 4)
+        where pixels[i] > darkCeiling || pixels[i + 1] > darkCeiling || pixels[i + 2] > darkCeiling {
+            return false
+        }
+        return true
     }
 }

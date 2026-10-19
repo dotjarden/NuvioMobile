@@ -18,22 +18,35 @@ final class PlayerOverlayCostTests: XCTestCase {
         SeekPreviewStore(streamKey: "test", codec: TinyCodec(), maxEntries: 200, maxBytes: 6 * 1024 * 1024)
     }
 
-    func testNearestReturnsFrameBeyondTheTolerance() async {
+    func testNearestReturnsFrameBeyondTheToleranceWithinItsReach() async {
         let s = store()
         await s.insert(SeekPreviewStoreTests.image(width: 4), at: 100)
-        let exact = await s.match(near: 900)
-        XCTAssertNil(exact, "800 s off is past the default tolerance")
-        let nearest = await s.nearest(to: 900)
+        let exact = await s.match(near: 200)
+        XCTAssertNil(exact, "100 s off is past the default tolerance")
+        let nearest = await s.nearest(to: 200)
         XCTAssertEqual(nearest?.sec, 100)
+        // Device pass: past two minutes the placeholder card shows instead.
+        let far = await s.nearest(to: 900)
+        XCTAssertNil(far)
+    }
+
+    func testDarkFrameFilter() {
+        XCTAssertTrue(HarvestFrameFilter.isNearlyBlack(SeekPreviewStoreTests.image(width: 32, height: 18)))
+        let ctx = CGContext(data: nil, width: 32, height: 18, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        ctx.setFillColor(CGColor(red: 0.4, green: 0.4, blue: 0.4, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 18))
+        XCTAssertFalse(HarvestFrameFilter.isNearlyBlack(ctx.makeImage()!))
     }
 
     func testNearestPicksTheCloserFrameAndTheEarlierOnATie() async {
         let s = store()
         await s.insert(SeekPreviewStoreTests.image(width: 4), at: 100)
-        await s.insert(SeekPreviewStoreTests.image(width: 4), at: 500)
-        let near400 = await s.nearest(to: 400)
-        XCTAssertEqual(near400?.sec, 500)
-        let tie = await s.nearest(to: 300)
+        await s.insert(SeekPreviewStoreTests.image(width: 4), at: 300)
+        let near250 = await s.nearest(to: 250)
+        XCTAssertEqual(near250?.sec, 300)
+        let tie = await s.nearest(to: 200)
         XCTAssertEqual(tie?.sec, 100)
     }
 
@@ -46,7 +59,7 @@ final class PlayerOverlayCostTests: XCTestCase {
         let s = store()
         await s.insert(SeekPreviewStoreTests.image(width: 4), at: 10)
         let source: SeekPreviewSource = s
-        let hit = await source.nearest(to: 3_000)
+        let hit = await source.nearest(to: 100)
         XCTAssertEqual(hit?.sec, 10)
     }
 
