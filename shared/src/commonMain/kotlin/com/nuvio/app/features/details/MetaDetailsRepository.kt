@@ -306,8 +306,10 @@ object MetaDetailsRepository {
      * without touching [uiState]. Used by the post-play screen.
      */
     suspend fun moreLikeThis(type: String, id: String): List<MetaPreview> =
-        resolveMoreLikeThis(
-            meta = peek(type, id) ?: fetch(type, id),
+        resolveFilteredMoreLikeThis(
+            peeked = peek(type, id),
+            fetch = { fetch(type, id) },
+            filter = { it.withUnreleasedFilter() },
             apply = { meta -> applyMoreLikeThisSource(meta, fallbackItemId = id, fallbackItemType = type) },
         )
 
@@ -717,3 +719,19 @@ internal suspend fun resolveMoreLikeThis(
     if (meta.moreLikeThisSource != null) return meta.moreLikeThis
     return apply(meta).moreLikeThis
 }
+
+/**
+ * [resolveMoreLikeThis] with Detail's unreleased filter / custom-poster overlay ([filter]) on both
+ * entry points: a freshly fetched meta (the peeked one is already filtered) and the source chain's
+ * result. [filter] is idempotent.
+ */
+internal suspend fun resolveFilteredMoreLikeThis(
+    peeked: MetaDetails?,
+    fetch: suspend () -> MetaDetails?,
+    filter: (MetaDetails) -> MetaDetails,
+    apply: suspend (MetaDetails) -> MetaDetails,
+): List<MetaPreview> =
+    resolveMoreLikeThis(
+        meta = peeked ?: fetch()?.let(filter),
+        apply = { meta -> filter(apply(meta)) },
+    )

@@ -53,4 +53,37 @@ class MoreLikeThisResolutionTest {
         val result = resolveMoreLikeThis(m) { it.copy(moreLikeThis = emptyList(), moreLikeThisSource = null) }
         assertTrue(result.isEmpty())
     }
+
+    private val dropX: (MetaDetails) -> MetaDetails =
+        { m -> m.copy(moreLikeThis = m.moreLikeThis.filter { it.id != "x" }) }
+
+    @Test
+    fun `a fetched meta goes through the filter before its list is used`() = runTest {
+        val fetched = meta(listOf(preview("a"), preview("x")), MoreLikeThisSource.TRAKT)
+        val result = resolveFilteredMoreLikeThis(
+            peeked = null, fetch = { fetched }, filter = dropX, apply = { it },
+        )
+        assertEquals(listOf("a"), result.map { it.id })
+    }
+
+    @Test
+    fun `a peeked meta is used as is and never fetched`() = runTest {
+        var fetchCalled = false
+        val peeked = meta(listOf(preview("a")), MoreLikeThisSource.TRAKT)
+        val result = resolveFilteredMoreLikeThis(
+            peeked = peeked, fetch = { fetchCalled = true; null }, filter = dropX, apply = { it },
+        )
+        assertEquals(listOf("a"), result.map { it.id })
+        assertEquals(false, fetchCalled)
+    }
+
+    @Test
+    fun `the source chain result goes through the filter`() = runTest {
+        val m = meta(listOf(preview("raw")), null)
+        val result = resolveFilteredMoreLikeThis(
+            peeked = m, fetch = { null }, filter = dropX,
+            apply = { it.copy(moreLikeThis = listOf(preview("x"), preview("simkl")), moreLikeThisSource = MoreLikeThisSource.SIMKL) },
+        )
+        assertEquals(listOf("simkl"), result.map { it.id })
+    }
 }

@@ -230,6 +230,10 @@ struct NativePlayerScreen: View {
         }
         .onChange(of: coordinator.phase) { _, phase in
             if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
+            // P5 B22 review r1 (P3-2): load once playback runs, not while the stream opens.
+            if phase == .playing, onOpenTitle != nil {
+                moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
+            }
             evaluatePauseCard()
         }
         .onChange(of: coordinator.isPaused) { _, paused in
@@ -248,9 +252,6 @@ struct NativePlayerScreen: View {
             if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
         .onAppear {
-            if onOpenTitle != nil {
-                moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
-            }
             pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
                 .pauseOverlayEnabled != false
             let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,

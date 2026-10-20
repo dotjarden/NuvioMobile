@@ -66,6 +66,8 @@ struct StreamPickerView: View {
     /// P5 B22: set by presenters that push a Detail page once the picker closes; forwarded to the
     /// player's post-play More Like This row.
     let onOpenTitle: ((MetaPreview) -> Void)?
+    /// P5 B22: the post-play poster the viewer picked, held until the picker itself closes.
+    @State private var postPlayPick: MetaPreview?
 
     @StateObject private var model: StreamsViewModel
     @StateObject private var autoPlay: FirstPlayAutoPlayController
@@ -509,7 +511,7 @@ struct StreamPickerView: View {
                     onPlayNext: { next in selected = next },
                     onPlaybackFailed: { failure in handlePlaybackFailure(failure, context: ctx) },
                     onPlaybackHealthy: { seconds in handlePlaybackHealthy(seconds, context: ctx) },
-                    onOpenTitle: onOpenTitle
+                    onOpenTitle: onOpenTitle == nil ? nil : { postPlayPick = $0 }
                 )
                 .ignoresSafeArea()
                 .id(ctx.id)
@@ -1485,6 +1487,10 @@ struct StreamPickerView: View {
             print("[StreamPicker] BUG-185 player close: setter \u{2192} onDismiss \(ms) ms uiKitFallback=\(StreamPickerCloseAnimation.uiKitFallback ? 1 : 0)")
         }
         guard selected == nil else { return }
+        // P5 B22 review r1 (P3-1): a post-play pick is handed to the presenter only when this
+        // close also closes the picker; any other outcome drops it, so it never fires on a later Back.
+        let pick = postPlayPick
+        postPlayPick = nil
         rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
         let outcome = afterPlayerOutcome
         // Review r1 (P3): read once per close, so it never carries to the next one.
@@ -1512,6 +1518,7 @@ struct StreamPickerView: View {
         case .closePicker:
             // A failover still resolving behind the closed player must not reopen it.
             autoPlay.cancel(why: "player closed")
+            if let pick { onOpenTitle?(pick) }
             closePicker()
         }
     }

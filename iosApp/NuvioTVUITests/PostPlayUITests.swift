@@ -9,7 +9,7 @@ import XCTest
 ///
 /// Gates: mpv legs need `PLAYER_BAR_PROBE=1`, native legs `PLAYER_NATIVE_PROBE=1`; both need
 /// `PLAYER_SMOKE_URL` (a short fixture) and `PLAYER_SMOKE_DURATION_SEC` (its length in seconds),
-/// passed as `TEST_RUNNER_*`.
+/// passed as `TEST_RUNNER_*`. The legs skip, not fail, when `PLAYER_SMOKE_DURATION_SEC` is unset.
 class PostPlayUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -27,8 +27,9 @@ class PostPlayUITests: XCTestCase {
         try XCTSkipUnless(env[native ? "PLAYER_NATIVE_PROBE" : "PLAYER_BAR_PROBE"] == "1",
                           native ? "PLAYER_NATIVE_PROBE not set" : "PLAYER_BAR_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
-        let duration = try XCTUnwrap(env["PLAYER_SMOKE_DURATION_SEC"].flatMap(Double.init),
-                                     "PLAYER_SMOKE_DURATION_SEC not set")
+        guard let duration = env["PLAYER_SMOKE_DURATION_SEC"].flatMap(Double.init) else {
+            throw XCTSkip("PLAYER_SMOKE_DURATION_SEC not set")
+        }
         let resume = max(duration - 8, 12)   // the resume seek only applies above 10 s
         let app = XCUIApplication()
         var args = ["-debug.mpvSmokeURL", url, "-debug.mpvSmokeStartOver", "YES",

@@ -4790,10 +4790,13 @@ struct MPVPlayerScreen: View {
                 onOpenTitle: onOpenTitle
             )
         }
-        .onAppear {
-            if onOpenTitle != nil {
+        .onChange(of: state.playbackStarted) { _, started in
+            // P5 B22 review r1 (P3-2): load once playback runs, not while the stream opens.
+            if started, onOpenTitle != nil {
                 moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
             }
+        }
+        .onAppear {
             if let routingNote { state.routingNote = routingNote }
             // Transport bar feeds (P1): lockup text, pill row, clock, pause-card setting.
             let header = NativeInfoHeader(context: context)
