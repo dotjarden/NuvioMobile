@@ -1596,8 +1596,7 @@ struct FolderDetailView: View {
 
                 ScrollView(.vertical) {
                     classicRowsContent(heroFocus: hero.focus)
-                        // Room for a focused first-row card's lift, as the grid page leaves it.
-                        .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+                        .padding(.top, Self.classicRowsTopInset)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -1615,6 +1614,17 @@ struct FolderDetailView: View {
             #endif
         }
         .background { FolderHeroDriver(focusModel: hero.focus, resolver: hero.resolver) }
+    }
+
+    /// Batch N (BUG-190 follow-up): the first row's top inset on the hero page. Rows run in Classic
+    /// Home's pinned mode there (`classicRowsContent`), so each carries the 88 pt reach band with
+    /// its heading overlaid inside it, ahead of the artwork. The inset that used to leave room for
+    /// a focused first-row card's lift (allowance + `sm`) is shortened by what the band adds over
+    /// the plain heading block (heading line + `md` gap), so the first row's art sits where it did.
+    private static var classicRowsTopInset: CGFloat {
+        let plainHeadingBlock = Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
+        let bandOverPlain = Theme.Size.heroPinnedRowTopPad - plainHeadingBlock
+        return max(0, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm - bandOverPlain)
     }
 
     /// BUG-190: the panel never plays a trailer (no autoplay, no Trailer Location: Hero claim).
@@ -1680,7 +1690,14 @@ struct FolderDetailView: View {
             .padding(.horizontal, Theme.Spacing.screen)
             .padding(.top, Theme.Spacing.xl)
         } else {
-            LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+            // Batch N (BUG-190 follow-up; Batch M pass: the focused row's heading hid under the hero
+            // panel): on the hero page the rows use Classic Home's pinned mode. Each row's focus
+            // frame reaches up through the band its heading is overlaid in, so the engine's reveal
+            // scrolls the heading into view too; rows are self-contained, hence spacing 0 (as
+            // `HomeView.rowsScroll`). The Home values exactly: reach above 88 freezes focus
+            // resolution. The non-hero path keeps the plain heading and the xl gap.
+            let pinned = heroFocus != nil
+            LazyVStack(alignment: .leading, spacing: pinned ? 0 : Theme.Spacing.xl) {
                 ForEach(rows) { row in
                     switch row.status {
                     case .loaded:
@@ -1701,6 +1718,8 @@ struct FolderDetailView: View {
                 }
             }
             .padding(.bottom, Theme.Spacing.xl * 2)
+            .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
+            .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
             .environment(\.pinnedRowFocusRequest, classicFocusRequest)
             // FEAT-79 review r1: the restore stands down on a viewer press (`ViewerInputClock`),
             // which only the Stage strip installed before.
