@@ -48877,40 +48877,6 @@
         }
       }
     },
-    "Where the rail sits: centred on the left edge, or as a small Home tab in the top-left corner that unrolls into the full rail when you open it. Default: Centre.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wo die Seitenleiste sitzt: mittig am linken Rand oder als kleiner Start-Reiter in der oberen linken Ecke, der sich beim Öffnen zur ganzen Leiste ausrollt. Standard: Mitte."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dónde se coloca la barra lateral: centrada en el borde izquierdo, o como una pequeña pestaña de Inicio en la esquina superior izquierda que se despliega en la barra completa al abrirla. Predeterminado: Centro."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Où se place la barre latérale : centrée sur le bord gauche, ou sous forme d’un petit onglet Accueil dans le coin supérieur gauche qui se déroule en barre complète quand vous l’ouvrez. Par défaut : Centré."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dove si trova la barra laterale: al centro del bordo sinistro, oppure come una piccola linguetta Home nell’angolo in alto a sinistra che si srotola nella barra completa quando la apri. Predefinito: Al centro."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vị trí của thanh bên: ở giữa cạnh trái, hoặc là một thẻ Trang chủ nhỏ ở góc trên bên trái, mở rộng thành thanh bên đầy đủ khi bạn mở nó. Mặc định: Giữa."
-          }
-        }
-      }
-    },
     "Where the rail sits: centred on the left edge, or at the top-left as a Home icon that opens into the rail. Default: Centre.": {
       "localizations": {
         "de": {

@@ -88,11 +88,11 @@ nonisolated enum NavigationChrome {
     /// FEAT-80 Corner (Batch O): the tvOS top safe-area line on a 1920 × 1080 canvas. The Home
     /// cell lands on it, at rest (the bare glyph) and open (the pill's first row).
     static let cornerSafeTop: CGFloat = 60
-    /// The open pill's top edge: `cornerSafeTop` less the pill's vertical padding (22,
-    /// `RailMetrics.verticalPadding`), so the Home cell sits on the safe-area line. The glass's top
-    /// edge sits above the vertical safe area, as Centre's pill already sits outside the horizontal
-    /// one. Leading, the pill keeps Centre's `bezelInset`.
-    static let cornerPillTop: CGFloat = 38
+    /// The open pill's top edge (38): `cornerSafeTop` less the pill's `verticalPadding`, so the
+    /// Home cell sits on the safe-area line. The glass's top edge sits above the vertical safe
+    /// area, as Centre's pill already sits outside the horizontal one. Leading, the pill keeps
+    /// Centre's `bezelInset`.
+    static let cornerPillTop: CGFloat = cornerSafeTop - verticalPadding
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
 
@@ -100,6 +100,9 @@ nonisolated enum NavigationChrome {
     static let bezelInset: CGFloat = 16
     /// The collapsed pill's width.
     static let collapsedWidth: CGFloat = 84
+    /// The pill's padding above its first item and below the profile avatar (FEAT-80 Corner's
+    /// `cornerPillTop` is derived from it).
+    static let verticalPadding: CGFloat = 22
     /// The gap the rail keeps from content when it reserves width.
     static let contentGap: CGFloat = 16
     /// `bezelInset + collapsedWidth + contentGap`: what Always Visible reserves from the bezel.

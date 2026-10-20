@@ -6,8 +6,8 @@ import XCTest
 /// replace `test52SidebarOverlay`.
 ///
 /// Oracle: the rail's always-mounted DEBUG probe, `rail_state armed= expanded= focused= reason=
-/// gated= vis= shown= tab= route= inset= gmode=`. `focused` is the rail's own `@FocusState` (-1 =
-/// none), readable on every runtime; content focus identity (`hasFocus`) is trusted on FA87 (tvOS
+/// gated= vis= shown= tab= route= inset= gmode= kb= pos= glass= selrow=`. `focused` is the rail's
+/// own `@FocusState` (-1 = none), readable on every runtime; content focus identity (`hasFocus`) is trusted on FA87 (tvOS
 /// 26.5) only. The items are `rail_item_<Title>`: plain labels at rest, Buttons while armed.
 ///
 /// Menu discipline (P4 R4, decided Q2): Menu closes a rail that a LEFT opened; inside a rail that
@@ -744,11 +744,18 @@ final class NavigationRailUITests: XCTestCase {
         return CGPoint(x: frame.minX + outset + 30, y: frame.midY)
     }
 
-    /// At rest: the bare Home glyph in the pill's Home cell, hittable; no glass (the DEBUG oracle is
-    /// mounted only while the glass shows); the lower items out of the tree. Returns Home's frame.
+    /// At rest: the bare Home glyph in the pill's Home cell, hittable; no glass (review r1 P3-2: the
+    /// probe's `glass=`, the opacity the glass draws with, and the DEBUG oracle mounted on that same
+    /// value); on any tab but Home, the selected tab's row drawn at 0 (`selrow=0`, review r1 P2-1);
+    /// the lower items out of the tree. Returns Home's frame.
     @discardableResult
     private func assertCornerAtRest(_ app: XCUIApplication, _ step: String) -> CGRect {
-        XCTAssertTrue(poll(3.0) { !railGlass(app).exists }, "\(step): no glass at rest — \(railGlass(app).frame)")
+        XCTAssertTrue(poll(3.0) { rail(app, "glass") == "0" && !railGlass(app).exists },
+                      "\(step): no glass at rest — \(railState(app)) \(railGlass(app).frame)")
+        if rail(app, "tab") != "0" {
+            XCTAssertEqual(rail(app, "selrow"), "0",
+                           "\(step): the selected tab's row below Home is drawn at 0 at rest: \(railState(app))")
+        }
         let home = railItem(app, "Home")
         XCTAssertTrue(home.exists, "\(step): the Home glyph shows at rest")
         XCTAssertTrue(home.isHittable, "\(step): the Home glyph is the one visible item")
@@ -775,6 +782,8 @@ final class NavigationRailUITests: XCTestCase {
         }
         let glass = railGlass(app)
         XCTAssertTrue(glass.exists, "\(step): the glass shows while the rail is open")
+        XCTAssertEqual(rail(app, "glass"), "1", "\(step): the glass draws at full opacity: \(railState(app))")
+        XCTAssertEqual(rail(app, "selrow"), "1", "\(step): the selected tab's row draws: \(railState(app))")
         let column = glass.frame
         XCTAssertEqual(column.minX, Self.cornerPillOrigin.x, accuracy: 1, "\(step): Centre's bezel inset: \(column)")
         XCTAssertEqual(column.minY, Self.cornerPillOrigin.y, accuracy: 1, "\(step): anchored at the top, never flush: \(column)")
@@ -857,8 +866,11 @@ final class NavigationRailUITests: XCTestCase {
     /// selected tab's item is drawn at full opacity from the arm. Here (Labels Shown, the default):
     /// switch to Settings through the Corner rail; at the Settings root the rail rests as the bare
     /// Home glyph; Menu there opens the pill (Batch O: Centre's, 300 wide at (16, 38)) with focus on
-    /// Settings (4), every item inside the glass. Frames and the probe only: the tvOS 27 simulator
-    /// never reports `hasFocus`.
+    /// Settings (4), every item inside the glass. Batch O review r1 P2-1: then on to Search, whose
+    /// row starts 8 pt above the bottom of the resting Home pill's mask: once the rail has closed
+    /// onto Search, nothing selected is drawn or in the tree below Home (`selrow=0`, `glass=0`, no
+    /// `rail_item_Search`). The probe, not a frame: B4 hides the pill once Search's keyboard takes
+    /// focus. Frames and the probe only: the tvOS 27 simulator never reports `hasFocus`.
     func testRail12b_CornerOpensOnTheSettingsTab() throws {
         let app = launch(Self.railArguments() + ["-rail_position", "corner"])
         try requireRail(app)
@@ -906,5 +918,27 @@ final class NavigationRailUITests: XCTestCase {
         remote.press(.right)
         XCTAssertTrue(poll(3.0) { rail(app, "expanded") == "0" }, "Right must close the rail: \(railState(app))")
         XCTAssertTrue(poll(3.0) { focusedSettingsRootTitle(app) != nil }, "the rail exit must land on a Settings root row")
+
+        // Review r1 P2-1: Menu at the Settings root again, then Select on Search.
+        guard poll(3.0, { menuIsSafe(app) }) else {
+            XCTFail("precondition: rail closed on the Settings root before the Search step — \(railState(app))")
+            return
+        }
+        remote.press(.menu)
+        guard poll(2.5, { railExpanded(app) }) else {
+            XCTFail("Menu at the Settings root must open the Corner rail again: \(railState(app))")
+            return
+        }
+        XCTAssertTrue(moveRailFocus(app, to: 1), "could not move the rail's focus to Search: \(railState(app))")
+        remote.press(.select)
+        XCTAssertTrue(poll(3.0) { rail(app, "tab") == "1" && rail(app, "armed") == "0" && rail(app, "expanded") == "0" },
+                      "Select must switch to Search and close the rail: \(railState(app))")
+        XCTAssertEqual(rail(app, "selrow"), "0", "the selected Search row is drawn at 0 at rest: \(railState(app))")
+        XCTAssertEqual(rail(app, "glass"), "0", "no glass once the rail has closed onto Search: \(railState(app))")
+        XCTAssertTrue(poll(2.0) { !railItem(app, "Search").exists },
+                      "rail_item_Search must leave the tree once the rail rests on Search: \(railState(app))")
+        pause(0.4)   // the rows' fade and the shrink
+        note("rail12b_search_rest_state", railState(app))
+        shot("rail12b_corner_rest_on_search")
     }
 }

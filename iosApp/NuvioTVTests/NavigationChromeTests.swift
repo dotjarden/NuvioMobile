@@ -293,14 +293,18 @@ final class NavigationChromeTests: XCTestCase {
         }
     }
 
-    /// Batch O: the Corner rail is Centre's pill anchored at the top. Its Home cell lands on the
-    /// tvOS top safe-area line, 22 pt (the pill's vertical padding) below the pill's top edge, and
-    /// the pill keeps Centre's bezel inset and widths.
+    /// Batch O: the Corner rail is Centre's pill anchored at the top. Its Home cell (the first row,
+    /// one `verticalPadding` below the pill's top edge, the mirror `RailMetrics` reads) lands on
+    /// the tvOS top safe-area line, and the pill keeps Centre's bezel inset and widths. Review r1
+    /// P3-2: the pill's top is derived from the safe-area line and the padding, never a literal of
+    /// its own, so the relationship is what this pins.
     func testCornerPillGeometry() {
-        XCTAssertEqual(NavigationChrome.cornerSafeTop, 60)
-        XCTAssertEqual(NavigationChrome.cornerPillTop, 38)
-        XCTAssertEqual(NavigationChrome.cornerSafeTop - NavigationChrome.cornerPillTop, 22,
-                       "the Home cell sits one vertical padding below the pill's top")
+        XCTAssertEqual(NavigationChrome.cornerSafeTop, 60, "the tvOS top safe-area line on a 1920 × 1080 canvas")
+        XCTAssertEqual(NavigationChrome.cornerPillTop + NavigationChrome.verticalPadding, NavigationChrome.cornerSafeTop,
+                       "the Home cell sits one vertical padding below the pill's top, on the safe-area line")
+        XCTAssertGreaterThan(NavigationChrome.cornerPillTop, 0, "the pill keeps a gap above it, never flush")
+        XCTAssertLessThan(NavigationChrome.cornerPillTop, NavigationChrome.cornerSafeTop,
+                          "the glass rises above the safe-area line, the Home cell does not")
         XCTAssertEqual(NavigationChrome.bezelInset, 16, "Corner keeps Centre's bezel inset")
         XCTAssertEqual(NavigationChrome.collapsedWidth, 84, "Corner's Icons Only width is Centre's")
     }
