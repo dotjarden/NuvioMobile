@@ -1039,6 +1039,14 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Item failed before playback ever started. Attempt 0 → retry once with minimal signaling
     /// (some AVPlayer builds reject the full CODECS/SUPPLEMENTAL form at the master stage);
     /// attempt 1 → give up and hand the context to mpv.
+    /// P5 Wave 3 (2026-10-20, from the S2 spike): the one signaling retry exists to drop
+    /// SUPPLEMENTAL-CODECS for AVPlayer builds that reject the DV supplemental form. When the
+    /// master never carried one (P5, HDR10, SDR, H.264) the retry replays the same playlist and
+    /// costs a second ~20 s item failure before the mpv failover (console-s1b: ~50 s in all).
+    nonisolated static func signalingRetryAllowed(attempt: Int, supplementalCodecs: String?) -> Bool {
+        attempt == 0 && supplementalCodecs != nil
+    }
+
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
         // iframe.m3u8 renders nil (skipped) when the I-frame rendition is off.
         for name in ["master.m3u8", "media.m3u8", SegmentMap.iFramePlaylistName] {
@@ -1064,7 +1072,10 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             print("[NativePlayer] item error chain: " + chain.joined(separator: " ← "))
         }
-        guard signalingAttempt == 0, let servedURL else {
+        let retryAllowed = Self.signalingRetryAllowed(attempt: signalingAttempt,
+                                                      supplementalCodecs: remux?.videoSignaling?.supplementalCodecs)
+        guard retryAllowed, let servedURL else {
+            if signalingAttempt == 0 { print("[NativePlayer] no SUPPLEMENTAL-CODECS to drop — skipping the signaling retry") }
             print("[NativePlayer] failing over to mpv (item failed before playback started)")
             // C-7: AVPlayer's errors here are about our loopback origin.
             classifyFailure(PlaybackFailureClassifier.fromNSError(player.currentItem?.error, origin: .loopback))
@@ -1425,6 +1436,21 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Reset the delay to zero (panel's Reset chip). Writes 0 rather than deleting the key, so a
     /// deliberate reset survives a relaunch instead of falling back to a stale value.
     func resetSubtitleDelay() { setSubtitleDelay(ms: 0) }
+
+    // MARK: - Sync Line (P5 B19)
+
+    /// The playback position in ms, read at the moment Sync Line is pressed. `lastPositionSec` only
+    /// moves on the 3 s tick, so ask the player.
+    func currentPositionMs() -> Int64 {
+        guard let t = player?.currentTime(), t.isValid, t.seconds.isFinite, t.seconds >= 0 else { return 0 }
+        return Int64((t.seconds * 1000).rounded())
+    }
+
+    /// Cues of the selected add-on subtitle; nil when none is selected, it is embedded, or loading failed.
+    func selectedAddonSubtitleCues() async -> [SubtitleSyncCue]? {
+        guard let name = currentLegibleName, let r = subtitleRenditionsByName[name], !r.isEmbedded else { return nil }
+        return await SyncLineCueLoader.load(vtt: server?.cachedBaseVTT(index: r.index), fallbackURL: r.sourceURL)
+    }
 
     /// Make AVPlayer re-read the selected subtitle rendition's body at the current delay.
     private func forceSubtitleRefetch() {

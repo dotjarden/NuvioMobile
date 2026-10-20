@@ -239,6 +239,8 @@ data class StreamBehaviorHints(
     val videoSize: Long? = null,
     val filename: String? = null,
     val proxyHeaders: StreamProxyHeaders? = null,
+    /// P5 N1: `behaviorHints.audioDelayMs`, clamped to ±60 s at parse time. null = no hint.
+    val audioDelayMs: Int? = null,
 )
 
 data class StreamProxyHeaders(

@@ -30,6 +30,10 @@ enum PlayerTuning {
     static let edgeClickModeKey = "player.edgeClickMode"
     /// Show the time of day while the mpv player controls are up. Device-local, off by default.
     static let showClockKey = "player.showClock"
+    /// mpv only: extra loudness in dB (0, 2, 4, 6, 8, 10). Device-local, default 0.
+    static let boostDbKey = "player.boostDb"
+    /// mpv only: "off" (default) or "dialogue". Device-local.
+    static let audioModeKey = "player.audioMode"
 }
 
 /// Everything the player needs to render a stream and record watch progress for it.
@@ -68,6 +72,8 @@ struct PlaybackContext: Identifiable {
     var meta: PlaybackMeta? = nil
     /// Declared file size of the playing stream (addon `behaviorHints.videoSize`), for the Info chips.
     var fileSizeBytes: Int64? = nil
+    /// `behaviorHints.audioDelayMs` of the playing stream (P5 N1), already clamped to ±60 s. mpv only.
+    var streamAudioDelayMs: Int? = nil
     /// Sanitized HTTP request headers the addon declared for this stream
     /// (`behaviorHints.proxyHeaders.request` via shared `sanitizePlaybackHeaders` — Referer /
     /// User-Agent a scraper CDN requires; GitHub issue #2 "Some video no stream"). Empty for the

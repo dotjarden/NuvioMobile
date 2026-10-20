@@ -516,6 +516,7 @@ final class NextEpisodeEngine: ObservableObject {
             logo: context.logo,
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
+            streamAudioDelayMs: { let n: Int? = stream.behaviorHints.audioDelayMs?.intValue; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
                 headers: stream.behaviorHints.proxyHeaders?.request),
             launchSource: .manual,
@@ -1245,6 +1246,7 @@ final class NextEpisodeEngine: ObservableObject {
             logo: context.logo,   // BUG-184: the same series logo for the next episode
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
+            streamAudioDelayMs: { let n: Int? = stream.behaviorHints.audioDelayMs?.intValue; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
                 headers: stream.behaviorHints.proxyHeaders?.request),
             launchSource: .nextEpisode,

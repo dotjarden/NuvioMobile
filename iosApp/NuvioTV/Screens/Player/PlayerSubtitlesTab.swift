@@ -7,7 +7,30 @@ import SwiftUI
 struct PlayerSubtitlesTab: View {
     @ObservedObject var model: PlayerTopPanelModel
 
+    /// Sync Line (P5 B19) session: the position is captured when the row is pressed, never when a
+    /// cue is picked (the panel does not pause playback).
+    private struct SyncSession {
+        let capturedMs: Int64
+        let delayAtCaptureMs: Int
+        var cues: [SubtitleSyncCue]?
+        var failed: Bool
+    }
+
+    private enum SyncFocus: Hashable { case row, cancel, cue(Int) }
+
+    @State private var syncSession: SyncSession?
+    @FocusState private var syncFocus: SyncFocus?
+
     var body: some View {
+        if let session = syncSession {
+            syncLineList(session)
+        } else {
+            tabBody
+        }
+    }
+
+    @ViewBuilder
+    private var tabBody: some View {
         let options = model.subtitles
         let embedded = options.filter { $0.group == .embedded }
         let addon = options.filter { $0.group == .addon }
@@ -38,6 +61,7 @@ struct PlayerSubtitlesTab: View {
                 if model.supportsSubtitleDelay {
                     PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
                     subtitleDelayRow
+                    if model.syncLineAvailable { syncLineRow }
                 }
             }
             .frame(maxWidth: 1100, alignment: .leading)
@@ -96,5 +120,135 @@ struct PlayerSubtitlesTab: View {
         let clamped = min(Int(SubtitleAudioModelsKt.SUBTITLE_DELAY_MAX_MS),
                           max(Int(SubtitleAudioModelsKt.SUBTITLE_DELAY_MIN_MS), ms))
         model.onSubtitleDelayChange?(clamped)
+    }
+
+    // MARK: - Sync Line (P5 B19)
+
+    private var syncLineRow: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            Button(action: startSyncLine) {
+                Text(String(localized: "Sync Line")).font(Theme.Font.body)
+            }
+            .focused($syncFocus, equals: .row)
+            .accessibilityIdentifier("player.panel.syncLine")
+            Text(String(localized: "Press while a line is spoken, then pick that line."))
+                .font(Theme.Font.meta)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        }
+        .padding(.top, Theme.Spacing.xs)
+    }
+
+    private func startSyncLine() {
+        let captured = model.syncLineCapturePositionMs?() ?? 0
+        let delayAtCapture = model.subtitleDelayMs
+        syncSession = SyncSession(capturedMs: captured, delayAtCaptureMs: delayAtCapture, cues: nil, failed: false)
+        Task { @MainActor in
+            let loaded = await withTimeoutOrNil(seconds: 12) { await model.syncLineCues?() }
+            guard syncSession != nil else { return }
+            if let loaded {
+                syncSession?.cues = loaded
+                let windowed = SubtitleSyncLine.shared.window(cues: loaded, capturedPositionMs: captured,
+                                                              currentDelayMs: Int32(delayAtCapture))
+                let anchor = SubtitleSyncLine.shared.anchorIndex(windowed: windowed, capturedPositionMs: captured,
+                                                                 currentDelayMs: Int32(delayAtCapture))
+                focusAfterDelay(anchor.map { .cue(Int(truncating: $0)) } ?? .cancel)
+            } else {
+                syncSession?.failed = true
+                focusAfterDelay(.cancel)
+            }
+        }
+    }
+
+    /// A cue fetch that hangs or fails must not hang the panel: nil after `seconds`.
+    private func withTimeoutOrNil<T>(seconds: Double, _ work: @escaping () async -> [T]?) async -> [T]? {
+        await withTaskGroup(of: [T]?.self) { group in
+            group.addTask { await work() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func focusAfterDelay(_ target: SyncFocus) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            syncFocus = target
+        }
+    }
+
+    private func syncLineList(_ session: SyncSession) -> some View {
+        let windowed: [SubtitleSyncCue] = session.cues.map {
+            SubtitleSyncLine.shared.window(cues: $0, capturedPositionMs: session.capturedMs,
+                                           currentDelayMs: Int32(session.delayAtCaptureMs))
+        } ?? []
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                PlayerPanelSectionCaption(text: String(localized: "Sync Line"))
+                Button(action: endSyncSession) {
+                    Text(String(localized: "Cancel")).font(Theme.Font.body)
+                }
+                .focused($syncFocus, equals: .cancel)
+                .accessibilityIdentifier("player.panel.syncLine.cancel")
+                if session.failed {
+                    syncMessage(String(localized: "Unable to load subtitle lines"), id: "player.panel.syncLine.unavailable")
+                } else if session.cues == nil {
+                    HStack(spacing: Theme.Spacing.xs) {
+                        ProgressView().scaleEffect(0.6)
+                        Text(String(localized: "Loading subtitle lines…"))
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    .padding(.top, Theme.Spacing.xs)
+                } else if windowed.isEmpty {
+                    syncMessage(String(localized: "No subtitle lines found"), id: "player.panel.syncLine.empty")
+                } else {
+                    ForEach(Array(windowed.enumerated()), id: \.offset) { index, cue in
+                        Button {
+                            let delay = Int(SubtitleSyncLine.shared.delayMs(capturedPositionMs: session.capturedMs,
+                                                                           cueStartMs: cue.startTimeMs))
+                            model.onSubtitleDelayChange?(delay)
+                            endSyncSession()
+                        } label: {
+                            Text("\(Self.clock(cue.startTimeMs))  \(Self.firstLine(cue.text))")
+                                .font(Theme.Font.body)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .focused($syncFocus, equals: .cue(index))
+                        .accessibilityIdentifier("player.panel.syncLine.cue.\(index)")
+                    }
+                }
+            }
+            .frame(maxWidth: 1100, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 520, alignment: .top)
+    }
+
+    private func syncMessage(_ text: String, id: String) -> some View {
+        Text(text)
+            .font(Theme.Font.body)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .padding(.top, Theme.Spacing.xs)
+            .accessibilityIdentifier(id)
+    }
+
+    private func endSyncSession() {
+        syncSession = nil
+        focusAfterDelay(.row)
+    }
+
+    private static func clock(_ ms: Int64) -> String {
+        let total = max(0, Int(ms / 1000))
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+
+    private static func firstLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
     }
 }

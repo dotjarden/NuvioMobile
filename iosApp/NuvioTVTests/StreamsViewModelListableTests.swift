@@ -8,7 +8,7 @@ import SharedCore
 final class StreamsViewModelListableTests: XCTestCase {
 
     private let hints = StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
-                                            filename: nil, proxyHeaders: nil)
+                                            filename: nil, proxyHeaders: nil, audioDelayMs: nil)
 
     private func stream(url: String? = nil, infoHash: String? = nil, externalUrl: String? = nil,
                         ytId: String? = nil, addonId: String = "addon:x") -> StreamItem {

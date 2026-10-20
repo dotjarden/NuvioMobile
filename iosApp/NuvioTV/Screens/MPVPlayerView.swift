@@ -46,6 +46,11 @@ final class MPVPlaybackState: ObservableObject {
 
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
+    /// Sync Line (P5 B19): mpv's own `external-filename` for the selected subtitle track (an http(s)
+    /// URL or a local temp path); nil when subtitles are Off or the selected track is embedded.
+    @Published var selectedExternalSubtitleSource: String?
+    /// Playback position in ms for Sync Line, read when the row is pressed.
+    var captureSyncPositionMs: (() -> Int64)?
     /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
     @Published var panelOpen: Bool = false
     /// BUG-180: the panel's selected tab while it is open (nil = closed). Read on ticks, not published.
@@ -96,6 +101,17 @@ final class MPVPlaybackState: ObservableObject {
     var setSpeed: ((Double) -> Void)?
     var setSubtitleDelay: ((Double) -> Void)?
     var setAudioDelay: ((Double) -> Void)?
+    /// P5 B20: mpv audio effects (Boost + Audio Mode), shown in the panel's Audio tab.
+    @Published var audioEffects = PlayerAudioEffectsState(boostDb: 0, mode: .off)
+    var setAudioBoost: ((Int) -> Void)?
+    var setAudioMode: ((PlayerAudioMode) -> Void)?
+    /// P5 B23: "Remember Speed for This Show" (series only). `rememberSpeedAvailable` is set once
+    /// the file has loaded, before the panel can open.
+    @Published var rememberSpeed = false
+    var rememberSpeedAvailable = false
+    var setRememberSpeed: ((Bool) -> Void)?
+    /// P5 N1: the Audio Delay row's limit in seconds: 60 while a stream delay hint is active, else 10.
+    @Published var audioDelayLimitSec: Double = 10
     var replay: (() -> Void)?
     var reclaimFocus: (() -> Void)?
     /// Seek to a chapter start (the Chapters tab), absolute seconds.
@@ -307,6 +323,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `eventQueue` only: the log ring's subtitle attribution window is open for the load in flight.
     private var subtitleLoadWindowOpen = false
     private var fileLoaded = false
+    /// P5 N1: main only. The audio delay's saved / stream-hint / session parts for this file.
+    private var audioDelayParts = AudioDelayParts(savedMs: 0, streamMs: nil, sessionAdjustMs: 0)
+    /// P5 B20: `eventQueue` only. The `af` value last handed to mpv ("" = none).
+    private var lastAppliedAf = ""
     /// Trakt scrobbling (no-ops while Trakt is disconnected — the shared repo checks auth).
     private var traktScrobbleItem: TraktScrobbleItem?
     private var traktScrobbleRequested = false
@@ -530,6 +550,10 @@ final class MPVTVPlayerViewController: UIViewController {
         state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
         state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
         state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
+        state.setAudioBoost = { [weak self] db in self?.setAudioBoost(db) }
+        state.setAudioMode = { [weak self] mode in self?.setAudioMode(mode) }
+        state.setRememberSpeed = { [weak self] on in self?.setRememberSpeed(on) }
+        state.captureSyncPositionMs = { [weak self] in Int64(((self?.cachedProps().position) ?? 0) * 1000) }
         state.replay = { [weak self] in self?.replay() }
         state.reclaimFocus = { [weak self] in
             // Presses begun before the panel/cover took over never end here: drop them so the
@@ -919,6 +943,8 @@ final class MPVTVPlayerViewController: UIViewController {
             ("ao", "avfoundation,audiounit"),
             ("audio-channels", "auto"),
             ("audio-fallback-to-null", "yes"),
+            // P5 B20: Boost goes up to +10 dB = 316 % on the `volume` property.
+            ("volume-max", "\(PlayerAudioEffects.volumeMax)"),
             ("vulkan-swap-mode", "fifo"),
             ("vulkan-queue-count", "1"),
             ("vulkan-async-compute", "no"),
@@ -1128,6 +1154,7 @@ final class MPVTVPlayerViewController: UIViewController {
         var subs: [PlayerTrack] = [PlayerTrack(id: -1, label: String(localized: "Off"), isSelected: getString("sid") == "no")]
         var audioInfos: [TrackInfo] = []
         var subInfos: [TrackInfo] = []
+        var externalSource: String?
 
         for i in 0..<count {
             let type = getString("track-list/\(i)/type") ?? ""
@@ -1148,6 +1175,9 @@ final class MPVTVPlayerViewController: UIViewController {
             } else {
                 subs.append(PlayerTrack(id: id, label: label, isSelected: selected))
                 subInfos.append(info)
+                if selected, getFlag("track-list/\(i)/external") {
+                    externalSource = getString("track-list/\(i)/external-filename")
+                }
             }
         }
 
@@ -1160,6 +1190,9 @@ final class MPVTVPlayerViewController: UIViewController {
             // The panel diffs its rows by stable ids, so refreshing while it is open is safe.
             if self.state.audioTracks != audio { self.state.audioTracks = audio }
             if self.state.subtitleTracks != newSubs { self.state.subtitleTracks = newSubs }
+            if self.state.selectedExternalSubtitleSource != externalSource {
+                self.state.selectedExternalSubtitleSource = externalSource
+            }
             // Hand-offs still on their way, and an add-on subtitle search still running, count as
             // loading (review r1 P3-2): their files have not reached the queue yet.
             let arriving = self.subtitleHandoffsInFlight > 0 || self.state.subtitleSearchInFlight
@@ -1340,9 +1373,32 @@ final class MPVTVPlayerViewController: UIViewController {
         if let storedMs = PlayerTrackPreferenceStorage.shared.loadSubtitleDelayMs(videoId: context.videoId) {
             setSubtitleDelay(Double(storedMs.intValue) / 1000.0)
         }
-        // Audio delay persists the same way (per title/episode, per profile).
-        if let storedMs = PlayerTrackPreferenceStorage.shared.loadAudioDelayMs(videoId: context.videoId) {
-            setAudioDelay(Double(storedMs.intValue) / 1000.0)
+        // Audio delay persists the same way (per title/episode, per profile). P5 N1: a stream's
+        // `behaviorHints.audioDelayMs` becomes the base and is applied WITHOUT saving.
+        let storedAudioMs = PlayerTrackPreferenceStorage.shared.loadAudioDelayMs(videoId: context.videoId)
+        audioDelayParts = AudioDelayParts(
+            savedMs: Int32(storedAudioMs?.intValue ?? 0),
+            streamMs: context.streamAudioDelayMs.map { KotlinInt(int: Int32($0)) },
+            sessionAdjustMs: 0
+        )
+        if storedAudioMs != nil || context.streamAudioDelayMs != nil {
+            let totalMs = Int(StreamAudioDelay.shared.totalMs(parts: audioDelayParts))
+            print("[AudioDelay] base=\(context.streamAudioDelayMs != nil ? "stream" : "saved") total=\(totalMs)")
+            setMpvDouble("audio-delay", Double(totalMs) / 1000.0)
+            state.audioDelaySec = Double(totalMs) / 1000.0
+        }
+        state.audioDelayLimitSec = Double(StreamAudioDelay.shared.uiLimitMs(parts: audioDelayParts)) / 1000.0
+        // P5 B20: restore Boost (the Audio Mode filter is applied on MPV_EVENT_AUDIO_RECONFIG).
+        let fx = PlayerAudioEffects.storedState()
+        state.audioEffects = fx
+        if fx.boostDb > 0 { setMpvDouble("volume", PlayerAudioEffects.volumePercent(boostDb: fx.boostDb)) }
+        // P5 B23: a remembered speed for this show (series only; movies never load or show it).
+        if context.season != nil {
+            state.rememberSpeedAvailable = true
+            if let saved = PlayerTrackPreferenceStorage.shared.loadPlaybackSpeed(parentMetaId: context.parentMetaId)?.doubleValue {
+                state.rememberSpeed = true
+                setSpeed(saved)
+            }
         }
         for sub in context.externalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language, rank: 0)
@@ -1914,6 +1970,20 @@ final class MPVTVPlayerViewController: UIViewController {
         if case .scanning = transport.mode { return }
         setMpvDouble("speed", speed)
         state.playbackSpeed = speed
+        if state.rememberSpeed {
+            PlayerTrackPreferenceStorage.shared.savePlaybackSpeed(parentMetaId: context.parentMetaId, speed: speed)
+        }
+    }
+
+    /// P5 B23: toggles "Remember Speed for This Show". On saves the current speed; off forgets it.
+    private func setRememberSpeed(_ on: Bool) {
+        guard context.season != nil else { return }
+        state.rememberSpeed = on
+        if on {
+            PlayerTrackPreferenceStorage.shared.savePlaybackSpeed(parentMetaId: context.parentMetaId, speed: state.playbackSpeed)
+        } else {
+            PlayerTrackPreferenceStorage.shared.clearPlaybackSpeed(parentMetaId: context.parentMetaId)
+        }
     }
 
     /// Single source of truth for subtitle re-timing on the mpv path: applies to the running core,
@@ -1928,11 +1998,53 @@ final class MPVTVPlayerViewController: UIViewController {
         PlayerTrackPreferenceStorage.shared.saveSubtitleDelayMs(videoId: context.videoId, delayMs: delayMs)
     }
 
+    /// P5 N1: the user's new total delay. With a stream hint active the change is a session tweak
+    /// on top of the hint and is never saved; without one it persists per episode as before.
     private func setAudioDelay(_ seconds: Double) {
         guard mpv != nil else { return }
-        setMpvDouble("audio-delay", seconds)
-        state.audioDelaySec = seconds
-        PlayerTrackPreferenceStorage.shared.saveAudioDelayMs(videoId: context.videoId, delayMs: Int32((seconds * 1000).rounded()))
+        audioDelayParts = StreamAudioDelay.shared.applyUserTotal(parts: audioDelayParts, newTotalMs: Int32((seconds * 1000).rounded()))
+        let totalSec = Double(StreamAudioDelay.shared.totalMs(parts: audioDelayParts)) / 1000.0
+        setMpvDouble("audio-delay", totalSec)
+        state.audioDelaySec = totalSec
+        state.audioDelayLimitSec = Double(StreamAudioDelay.shared.uiLimitMs(parts: audioDelayParts)) / 1000.0
+        if let persist = StreamAudioDelay.shared.persistableMs(parts: audioDelayParts) {
+            PlayerTrackPreferenceStorage.shared.saveAudioDelayMs(videoId: context.videoId, delayMs: persist.int32Value)
+        }
+    }
+
+    // MARK: - Audio effects (P5 B20)
+
+    /// Main. Boost in dB on mpv's `volume` property (volume-max is 320). Persisted device-wide.
+    private func setAudioBoost(_ db: Int) {
+        guard mpv != nil else { return }
+        let boost = PlayerAudioEffects.clampBoost(db)
+        UserDefaults.standard.set(boost, forKey: PlayerTuning.boostDbKey)
+        setMpvDouble("volume", PlayerAudioEffects.volumePercent(boostDb: boost))
+        state.audioEffects.boostDb = boost
+    }
+
+    /// Main. Persists the mode, publishes it, and re-applies the `af` filter on `eventQueue`.
+    private func setAudioMode(_ mode: PlayerAudioMode) {
+        guard mpv != nil else { return }
+        UserDefaults.standard.set(mode.rawValue, forKey: PlayerTuning.audioModeKey)
+        state.audioEffects.mode = mode
+        eventQueue.async { [weak self] in self?.applyAudioFilter() }
+    }
+
+    /// `eventQueue` only. Builds the `af` value from the stored mode and the live output layout and
+    /// sets it when it differs from the last one applied (the gate also stops an AUDIO_RECONFIG loop).
+    private func applyAudioFilter() {
+        guard let mpv else { return }
+        let mode = PlayerAudioEffects.storedState().mode
+        let value = PlayerAudioEffects.afValue(
+            mode: mode,
+            channels: getString("audio-params/channels"),
+            channelCount: getInt("audio-params/channel-count")
+        )
+        guard value != lastAppliedAf else { return }
+        lastAppliedAf = value
+        let rc = mpv_set_property_string(mpv, "af", value)
+        print("[AudioFx] af=\(value) rc=\(rc)")
     }
 
     private func setMpvDouble(_ name: String, _ value: Double) {
@@ -4136,6 +4248,10 @@ final class MPVTVPlayerViewController: UIViewController {
             }
             if id == MPV_EVENT_COMMAND_REPLY, MPVSubtitleSideLoadQueue.isReply(ev.pointee.reply_userdata) {
                 self.finishSubtitleSideLoad(replyId: ev.pointee.reply_userdata, error: ev.pointee.error)
+            }
+            if id == MPV_EVENT_AUDIO_RECONFIG {
+                // P5 B20: the output layout is known (or changed): rebuild the Dialogue filter.
+                self.applyAudioFilter()
             }
             if id == MPV_EVENT_START_FILE {
                 // r1 P3: the ring is evidence about the file being loaded now (event order).

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.features.player.STREAM_AUDIO_DELAY_MAX_MS
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -61,6 +62,8 @@ object StreamParser {
                     videoSize = hintsObj?.long("videoSize"),
                     filename = hintsObj?.string("filename"),
                     proxyHeaders = proxyHeaders,
+                    audioDelayMs = hintsObj?.int("audioDelayMs")
+                        ?.coerceIn(-STREAM_AUDIO_DELAY_MAX_MS, STREAM_AUDIO_DELAY_MAX_MS),
                 ),
             )
         }

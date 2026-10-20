@@ -73,6 +73,7 @@
         }
       }
     },
+    "%@  %@": {},
     "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@": {
       "localizations": {
         "de": {
@@ -1740,6 +1741,7 @@
         }
       }
     },
+    "+%lld dB": {},
     "+0.1 s": {
       "localizations": {
         "de": {
@@ -6568,6 +6570,7 @@
         }
       }
     },
+    "Audio Mode": {},
     "Audio tracks": {
       "localizations": {
         "de": {
@@ -8200,6 +8203,7 @@
         }
       }
     },
+    "Boost": {},
     "Born %@": {
       "localizations": {
         "de": {
@@ -14729,6 +14733,8 @@
         }
       }
     },
+    "Dialogue": {},
+    "Dialogue raises voices. Boost can distort loud scenes.": {},
     "Died %@": {
       "localizations": {
         "de": {
@@ -22415,6 +22421,7 @@
         }
       }
     },
+    "Loading subtitle lines…": {},
     "Loading subtitle settings…": {
       "localizations": {
         "de": {
@@ -25371,6 +25378,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không tìm thấy luồng cho phim này."
+          }
+        }
+      }
+    },
+    "No subtitle lines found": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune ligne de sous-titres trouvée"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontraron líneas de subtítulos"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna linea di sottotitoli trovata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy phụ đề"
           }
         }
       }
@@ -31125,6 +31160,7 @@
         }
       }
     },
+    "Press while a line is spoken, then pick that line.": {},
     "Previous/Next Chapter": {
       "localizations": {
         "de": {
@@ -32757,6 +32793,7 @@
         }
       }
     },
+    "Remember Speed for This Show": {},
     "Remembers what you search for and shows it on the Search screen. Off hides past searches and stops saving new ones. On by default.": {
       "localizations": {
         "de": {
@@ -42278,6 +42315,7 @@
         }
       }
     },
+    "Sync Line": {},
     "Sync Now": {
       "localizations": {
         "de": {
@@ -47007,6 +47045,34 @@
         }
       }
     },
+    "Unable to load subtitle lines": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de charger les lignes de sous-titres"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pueden cargar líneas de subtítulos"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile caricare le righe dei sottotitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải phụ đề"
+          }
+        }
+      }
+    },
     "Under Search": {
       "localizations": {
         "de": {
@@ -51362,6 +51428,7 @@
         }
       }
     },
+    "on": {},
     "on %@": {
       "localizations": {
         "de": {

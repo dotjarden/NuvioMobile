@@ -217,6 +217,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     var subtitleDelayMs: Int { lock.lock(); defer { lock.unlock() }; return _subtitleDelayMs }
     var subtitleGeneration: Int { lock.lock(); defer { lock.unlock() }; return _subtitleGeneration }
 
+    /// Sync Line (P5 B19): the converted offset-zero WebVTT for a rendition, nil until AVPlayer has
+    /// fetched that rendition's body at least once.
+    func cachedBaseVTT(index: Int) -> String? { lock.lock(); defer { lock.unlock() }; return vttBase[index] }
+
     /// `sub-<index>-g<generation>.vtt` — the delay-stamped body name a media playlist points at.
     static func delayedVTTName(index: Int, generation: Int) -> String { "sub-\(index)-g\(generation).vtt" }
 

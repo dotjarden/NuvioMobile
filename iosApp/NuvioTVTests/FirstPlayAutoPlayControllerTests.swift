@@ -23,7 +23,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
             fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: addon, addonId: addon, addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
-                                               filename: nil, proxyHeaders: nil),
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
             clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
         )
     }
@@ -482,7 +482,7 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
     func testCachedDebridLinkNeedsPositiveCacheEvidenceOnTheActiveResolver() {
         typealias Policy = FirstPlayAutoPlayController.Policy
         let hints = StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
-                                        filename: nil, proxyHeaders: nil)
+                                        filename: nil, proxyHeaders: nil, audioDelayMs: nil)
         func item(url: String? = nil, infoHash: String? = nil, resolve: StreamClientResolve? = nil,
                   cache: StreamDebridCacheStatus? = nil) -> StreamItem {
             StreamItem(name: "S", title: nil, description: nil, url: url, infoHash: infoHash, fileIdx: nil,

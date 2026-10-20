@@ -53,12 +53,15 @@ struct MPVPlaybackTab: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 PlayerPanelSectionCaption(text: String(localized: "Playback Speed"))
                 PlayerSpeedRow(current: values.playbackSpeed) { state.setSpeed?($0) }
+                if values.rememberSpeedAvailable {
+                    PlayerRememberSpeedRow(isOn: values.rememberSpeed) { state.setRememberSpeed?(!values.rememberSpeed) }
+                }
 
                 // Subtitle delay moved to the Subtitles tab's "Timing" row (beta.15 §B1) — that's
                 // where a viewer actually looks when subs are out of sync, and it now persists
                 // per title/profile. Audio delay stays here and persists per title/profile, like the subtitle delay.
                 PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
-                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: 10) {
+                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: values.audioDelayLimitSec) {
                     state.setAudioDelay?($0)
                 }
                 Text("Positive values delay the track; negative values play it earlier.")
@@ -104,11 +107,20 @@ final class MPVPlaybackTabValues: ObservableObject {
     @Published private(set) var playbackSpeed: Double
     @Published private(set) var audioDelaySec: Double
     @Published private(set) var showStreamInfo: Bool
+    @Published private(set) var rememberSpeed: Bool
+    @Published private(set) var audioDelayLimitSec: Double
+    /// Read once at open: set when the file loaded, before the panel can be shown.
+    let rememberSpeedAvailable: Bool
 
     init(state: MPVPlaybackState) {
         playbackSpeed = state.playbackSpeed
         audioDelaySec = state.audioDelaySec
         showStreamInfo = state.showStreamInfo
+        rememberSpeed = state.rememberSpeed
+        audioDelayLimitSec = state.audioDelayLimitSec
+        rememberSpeedAvailable = state.rememberSpeedAvailable
+        state.$rememberSpeed.removeDuplicates().assign(to: &$rememberSpeed)
+        state.$audioDelayLimitSec.removeDuplicates().assign(to: &$audioDelayLimitSec)
         state.$playbackSpeed.removeDuplicates().assign(to: &$playbackSpeed)
         state.$audioDelaySec.removeDuplicates().assign(to: &$audioDelaySec)
         state.$showStreamInfo.removeDuplicates().assign(to: &$showStreamInfo)

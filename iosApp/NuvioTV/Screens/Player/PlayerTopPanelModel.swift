@@ -1,4 +1,5 @@
 import Combine
+import SharedCore
 import SwiftUI
 
 // Engine-agnostic backing model for the swipe-down top panel (Info · Subtitles · Audio). The native
@@ -57,6 +58,10 @@ final class PlayerTopPanelModel: ObservableObject {
     /// Whether the Audio tab offers the system route picker (AirPlay/Bluetooth). False on engines
     /// that don't drive AVAudioSession routing.
     @Published var canPickRoute = true
+    /// mpv audio effects (P5 B20). nil hides the rows (the native engine).
+    @Published var audioEffects: PlayerAudioEffectsState?
+    var onAudioBoostChange: ((Int) -> Void)?
+    var onAudioModeChange: ((PlayerAudioMode) -> Void)?
 
     /// Current subtitle delay in milliseconds (0 = none, positive = subtitles later). Meaningless
     /// while `supportsSubtitleDelay` is false.
@@ -65,6 +70,8 @@ final class PlayerTopPanelModel: ObservableObject {
     /// "Timing" row entirely. mpv sets this true (`MPVPlayerPanelAdapter`); the native AVPlayer
     /// adapter leaves it false until the delay mechanism lands (beta.15 §B3).
     @Published var supportsSubtitleDelay: Bool = false
+    /// Sync Line (P5 B19): an external subtitle is selected and its cues can be loaded.
+    @Published var syncLineAvailable = false
     /// Chapters tab rows; empty hides the tab. mpv fills it from `chapter-list`, the native engine
     /// from the remux's libavformat chapters (`NativePlayerPanelAdapter`, P4).
     @Published var chapters: [PlayerPanelChapter] = []
@@ -74,6 +81,10 @@ final class PlayerTopPanelModel: ObservableObject {
     var onSelectAudio: ((PlayerPanelOption) -> Void)?
     /// New delay in milliseconds, already clamped to ±`SUBTITLE_DELAY_MAX_MS`.
     var onSubtitleDelayChange: ((Int) -> Void)?
+    /// Sync Line: the playback position in ms, read when the viewer presses the row.
+    var syncLineCapturePositionMs: (() -> Int64)?
+    /// Sync Line: loads the selected external subtitle's cues; nil = unavailable (fetch or parse failed).
+    var syncLineCues: (() async -> [SubtitleSyncCue]?)?
     var onSelectChapter: ((PlayerPanelChapter) -> Void)?
     var onClose: (() -> Void)?
     /// BUG-180 (Steven rc7): the panel's selected tab, on open and on every switch. The mpv screen

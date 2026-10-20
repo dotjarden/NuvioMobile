@@ -35,6 +35,24 @@ struct PlayerSpeedRow: View {
     }
 }
 
+/// "Remember Speed for This Show" (P5 B23): one toggle under the speed row, series only.
+struct PlayerRememberSpeedRow: View {
+    let isOn: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                Text("Remember Speed for This Show")
+            }
+            .font(Theme.Font.meta)
+        }
+        .accessibilityIdentifier("player.panel.speed.remember")
+        .accessibilityValue(isOn ? "on" : "off")
+    }
+}
+
 // MARK: - Episodes (jump to any aired episode)
 
 struct PlayerEpisodesColumn: View {

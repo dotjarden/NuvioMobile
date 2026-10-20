@@ -113,6 +113,7 @@ struct NativePlayerScreen: View {
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
                         hasEpisodes: !context.episodes.isEmpty && context.season != nil,
+                        rememberSpeedShowId: context.season != nil ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") }
                     )
@@ -515,6 +516,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let canSwitchStreams: Bool
     /// A series with an episode list: the transport bar offers "Episodes".
     let hasEpisodes: Bool
+    /// P5 B23: the show id that "Remember Speed for This Show" saves under; nil (movies) hides the row.
+    let rememberSpeedShowId: String?
     /// System transport bar about to show / hide (host delegate, P4 B16).
     let onBarVisibility: (Bool) -> Void
     /// Any remote press (P4 B16: hides the pause card).
@@ -545,6 +548,25 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         speedModel.onSelect = { [weak host, weak speedModel] value in
             guard let host, let speedModel else { return }
             NativeSpeedModel.apply(value, on: host.playerVC, model: speedModel)
+            speedModel.saveIfRemembered(rate: speedModel.rate)
+        }
+        // P5 B23: Remember Speed for This Show (series only). A saved speed is applied before play.
+        if let showId = rememberSpeedShowId {
+            speedModel.showId = showId
+            speedModel.rememberAvailable = true
+            if let saved = PlayerTrackPreferenceStorage.shared.loadPlaybackSpeed(parentMetaId: showId)?.doubleValue {
+                speedModel.remember = true
+                NativeSpeedModel.apply(saved, on: host.playerVC, model: speedModel)
+            }
+            speedModel.onRememberChange = { [weak host, weak speedModel] on in
+                guard let host, let speedModel else { return }
+                speedModel.remember = on
+                if on {
+                    speedModel.saveIfRemembered(rate: Double(host.playerVC.selectedSpeed?.rate ?? 1))
+                } else {
+                    PlayerTrackPreferenceStorage.shared.clearPlaybackSpeed(parentMetaId: showId)
+                }
+            }
         }
 
         // D5: Episodes (series with episodes) and Sources, each opening the panel on Playback with
@@ -566,6 +588,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         host.onOpenPanel = { [weak host] tab, column in
             guard let host else { return }
             speedModel.rate = Double(host.playerVC.selectedSpeed?.rate ?? 1)
+            // Catches a change made with the system speed pill, which bypasses `select`.
+            speedModel.saveIfRemembered(rate: speedModel.rate)
             let extra = PlayerPanelExtraTab {
                 NativePlaybackTab(engine: engine, speed: speedModel, canSwitchStreams: canSwitchStreams,
                                   initialColumn: column, onClose: { model.onClose?() })
@@ -591,6 +615,13 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     }
 
     static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
+        // P5 B23: persist a speed changed with the system pill since the panel last opened.
+        MainActor.assumeIsolated {
+            let speedModel = coordinator.speedModel
+            let rate: Double
+            if let selected = host.playerVC.selectedSpeed { rate = Double(selected.rate) } else { rate = speedModel.rate }
+            speedModel.saveIfRemembered(rate: rate)
+        }
         host.closePanel(animated: false)
     }
 

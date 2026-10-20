@@ -70,7 +70,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             externalUrl: nil, ytId: ytId, sources: [], sourceName: nil, addonName: "Add-on", addonId: "addon:x",
             addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
-                                               filename: nil, proxyHeaders: nil),
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
             clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
         )
     }
@@ -436,7 +436,7 @@ final class NextEpisodeEngineTests: XCTestCase {
             infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: "Addon", addonId: "addon", addonLogo: nil, streamType: nil,
             behaviorHints: StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
-                                               filename: nil, proxyHeaders: nil),
+                                               filename: nil, proxyHeaders: nil, audioDelayMs: nil),
             clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: []
         )
     }

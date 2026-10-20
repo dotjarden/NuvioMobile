@@ -479,6 +479,7 @@ object AccountDataStores {
                 AppleKeySpec.DynamicPrefix("audio_track_id|"),
                 AppleKeySpec.DynamicPrefix("subtitle_delay_ms|"),
                 AppleKeySpec.DynamicPrefix("audio_delay_ms|"),
+                AppleKeySpec.DynamicPrefix("playback_speed|"),
             ),
         ),
         AccountDataStore(

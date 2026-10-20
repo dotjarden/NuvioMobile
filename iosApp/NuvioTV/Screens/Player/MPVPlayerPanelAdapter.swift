@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import SharedCore
 import SwiftUI
 
 /// Feeds the shared top panel from the mpv player: `MPVPlaybackState.audioTracks/subtitleTracks`
@@ -32,11 +33,18 @@ final class MPVPlayerPanelAdapter {
         model.onSubtitleDelayChange = { [weak state] ms in
             state?.setSubtitleDelay?(Double(ms) / 1000.0)
         }
+        // Sync Line (P5 B19): position captured at press time; cues from mpv's own external source.
+        model.syncLineCapturePositionMs = { [weak state] in state?.captureSyncPositionMs?() ?? 0 }
+        model.syncLineCues = { [weak state] in
+            let source = await MainActor.run { state?.selectedExternalSubtitleSource }
+            return await SyncLineCueLoader.load(source: source)
+        }
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             state.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
             state.$subtitleTracks.map { _ in () }.eraseToAnyPublisher(),
-            state.$subtitleSearchInFlight.map { _ in () }.eraseToAnyPublisher()
+            state.$subtitleSearchInFlight.map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedExternalSubtitleSource.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildSelections() }
@@ -78,6 +86,19 @@ final class MPVPlayerPanelAdapter {
         .sink { [weak self] in self?.rebuildChapters() }
         .store(in: &cancellables)
 
+        // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
+        // tab hides the rows.
+        model.audioEffects = state.audioEffects
+        state.$audioEffects
+            .receive(on: RunLoop.main)
+            .sink { [weak self] fx in
+                guard let self, self.model.audioEffects != fx else { return }
+                self.model.audioEffects = fx
+            }
+            .store(in: &cancellables)
+        model.onAudioBoostChange = { [weak state] db in state?.setAudioBoost?(db) }
+        model.onAudioModeChange = { [weak state] mode in state?.setAudioMode?(mode) }
+
         rebuildSelections()
         rebuildInfo()
         refreshRoute()
@@ -93,6 +114,8 @@ final class MPVPlayerPanelAdapter {
     }
 
     private func rebuildSelections() {
+        let hasExternal = state.selectedExternalSubtitleSource != nil
+        if model.syncLineAvailable != hasExternal { model.syncLineAvailable = hasExternal }
         // mpv's subtitle list already carries an "Off" entry (id -1) when there is anything to
         // pick; the panel puts Off first regardless of the engine's ordering.
         var subtitles: [PlayerPanelOption] = []

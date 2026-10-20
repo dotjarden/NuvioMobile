@@ -27,4 +27,8 @@ expect object PlayerTrackPreferenceStorage {
     fun saveSubtitleDelayMs(videoId: String, delayMs: Int)
     fun loadAudioDelayMs(videoId: String): Int?
     fun saveAudioDelayMs(videoId: String, delayMs: Int)
+    /// Per-show playback speed (P5 B23); null = not remembered for this show.
+    fun loadPlaybackSpeed(parentMetaId: String): Double?
+    fun savePlaybackSpeed(parentMetaId: String, speed: Double)
+    fun clearPlaybackSpeed(parentMetaId: String)
 }

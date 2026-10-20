@@ -80,6 +80,13 @@ final class PlayerEngineRouterTests: XCTestCase {
         short.withUnsafeBufferPointer { XCTAssertFalse(RemuxSession.hvccHasNoParameterSets($0)) }
     }
 
+    // P5 Wave 3: the native signaling retry only when there is a SUPPLEMENTAL-CODECS to drop.
+    func testSignalingRetryOnlyWhenSupplementalCodecsExist() {
+        XCTAssertTrue(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 0, supplementalCodecs: "dvh1.08.06/db1p"))
+        XCTAssertFalse(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 0, supplementalCodecs: nil))
+        XCTAssertFalse(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 1, supplementalCodecs: "dvh1.08.06/db1p"))
+    }
+
     func testFallbackRuleReadsTheProbe() {
         XCTAssertTrue(PlayerEngineRouter.mpvNeedsGpuNext(probe: sample(dv: p5)))
         XCTAssertFalse(PlayerEngineRouter.mpvNeedsGpuNext(probe: sample(dv: p81)))

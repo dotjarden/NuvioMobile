@@ -1,5 +1,6 @@
 import AVKit
 import Combine
+import SharedCore
 import SwiftUI
 
 /// A Playback-tab column the panel can open focused (the native transport bar's Episodes /
@@ -14,8 +15,19 @@ final class NativeSpeedModel: ObservableObject {
     @Published var rate: Double = 1
     /// Set by the container: selects the matching `AVPlaybackSpeed` on the player view controller.
     var onSelect: ((Double) -> Void)?
+    /// P5 B23: "Remember Speed for This Show". `rememberAvailable` is false for movies.
+    @Published var remember = false
+    var rememberAvailable = false
+    var showId: String?
+    var onRememberChange: ((Bool) -> Void)?
 
     func select(_ value: Double) { onSelect?(value) }
+
+    /// Saves `rate` under the show when Remember is on (no-op otherwise).
+    func saveIfRemembered(rate: Double) {
+        guard remember, let showId else { return }
+        PlayerTrackPreferenceStorage.shared.savePlaybackSpeed(parentMetaId: showId, speed: rate)
+    }
 
     /// Applies `value` through `AVPlayerViewController.selectSpeed(_:)` (so the system pill
     /// agrees) and makes the live rate follow while playing [C-16]: `selectedSpeed` mirrors
@@ -61,6 +73,9 @@ struct NativePlaybackTab: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 PlayerPanelSectionCaption(text: String(localized: "Playback Speed"))
                 PlayerSpeedRow(current: speed.rate) { speed.select($0) }
+                if speed.rememberAvailable {
+                    PlayerRememberSpeedRow(isOn: speed.remember) { speed.onRememberChange?(!speed.remember) }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .focusSection()

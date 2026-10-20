@@ -34,6 +34,9 @@ final class NativePlayerPanelAdapter {
             .receive(on: RunLoop.main)
             .sink { [weak model] ms in if model?.subtitleDelayMs != ms { model?.subtitleDelayMs = ms } }
             .store(in: &cancellables)
+        // Sync Line (P5 B19): position captured at press time; cues from the server's cached VTT.
+        model.syncLineCapturePositionMs = { [weak self] in self?.coordinator.currentPositionMs() ?? 0 }
+        model.syncLineCues = { [weak self] in await self?.coordinator.selectedAddonSubtitleCues() }
 
         Publishers.MergeMany([
             coordinator.$legibleGroup.map { _ in () }.eraseToAnyPublisher(),
@@ -163,6 +166,7 @@ final class NativePlayerPanelAdapter {
         let canRetime = subtitles.contains { $0.isSelected && $0.group == .addon }
             || (coordinator.isRefetchingSubtitles && model.supportsSubtitleDelay)
         if model.supportsSubtitleDelay != canRetime { model.supportsSubtitleDelay = canRetime }
+        if model.syncLineAvailable != canRetime { model.syncLineAvailable = canRetime }
         let searching = !coordinator.addonSubtitlesFetched
         if model.subtitlesSearching != searching { model.subtitlesSearching = searching }
     }
