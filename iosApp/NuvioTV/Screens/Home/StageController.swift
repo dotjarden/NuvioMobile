@@ -186,6 +186,13 @@ final class StageController: ObservableObject {
     private var uncoverRestoreGeneration = 0
     /// The pop (`restoreAfterUncover`) while its request still waits for the pager.
     private var uncoverRequestedAt: TimeInterval?
+    /// Batch N (BUG-188 follow-up): the row of that pending pop, the replay's anchor when a viewer
+    /// press stands the request down before the pager is back.
+    private var uncoverPendingRowKey: String?
+    /// Batch N (BUG-188 follow-up): the last strip row change, for `UncoverReplayPolicy`.
+    private var lastRowChangeAt: TimeInterval?
+    /// Stales a replay still waiting out its beat (a new pop, a newer replay).
+    private var uncoverReplayGeneration = 0
     /// The live restore once its request went to the pager. See `UncoverRestorePolicy`.
     ///
     /// BUG-156 (device pass 2026-10-15, Living Room ATV): on hardware the engine's OWN deferred
@@ -213,6 +220,7 @@ final class StageController: ObservableObject {
     /// The strip's row changed (the pager's `onRowChange`: Stage Home and, BUG-156 (b), the folder
     /// Rows page). See `uncoverRestoreTarget`.
     func noteStripRowChanged(key: String) {
+        lastRowChangeAt = ProcessInfo.processInfo.systemUptime
         #if DEBUG
         recentRowKeys.removeAll { $0 == key }
         recentRowKeys.append(key)
@@ -233,8 +241,10 @@ final class StageController: ObservableObject {
         installViewerInputObserver()
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
+        uncoverReplayGeneration &+= 1
         let requestedAt = ProcessInfo.processInfo.systemUptime
         uncoverRequestedAt = requestedAt
+        uncoverPendingRowKey = rowKey
         StageStripProbe.shared.log("restore pop row=\(rowKey) item=\(itemId ?? "memory") clock=\(ViewerInputClock.shared.isLive ? 1 : 0) source=\(uncoverSource)")
         attemptUncoverRestore(rowKey: rowKey, itemId: itemId, requestedAt: requestedAt,
                               generation: uncoverRestoreGeneration, attempt: 0)
@@ -260,6 +270,7 @@ final class StageController: ObservableObject {
         uncoverRestoreGeneration &+= 1
         uncoverRestoreTarget = nil
         uncoverRequestedAt = nil
+        uncoverPendingRowKey = nil
         uncoverGateRowKey = nil
         pagerHandle.setUncoverGate(nil)
     }
@@ -405,18 +416,40 @@ final class StageController: ObservableObject {
 
     /// BUG-176 (Steven rc7; device pass 2026-10-18): an Up or Down pressed while the landed
     /// restore's gate was closed went nowhere (every other row was disabled), so the viewer needed
-    /// a second press. The press reaches the window's recognizer after the engine's failed move:
-    /// if focus is still on the restored row, make the move it asked for.
-    private func replaySwallowedRowMove(_ target: UncoverRestorePolicy.Target) {
-        guard target.landedAt != nil, stripOwnsFocus, currentRowKey == target.rowKey,
-              let kind = ViewerInputClock.shared.lastKind, kind == .up || kind == .down else { return }
-        let keys = pagerHandle.rowKeys
-        guard let index = keys.firstIndex(of: target.rowKey) else { return }
-        let next = kind == .down ? index + 1 : index - 1
-        guard keys.indices.contains(next) else { return }
-        let key = keys[next]
-        StageStripProbe.shared.log("restore replay \(kind.rawValue) row=\(key) source=\(uncoverSource)")
-        requestFocus(rowKey: key, itemId: memory.itemId(for: key), reason: "uncover-replay")
+    /// a second press. Batch N (BUG-188 follow-up; Steven rc9): the same press lost before the
+    /// restore landed, or before the pager was back (`pending`), and the rig log showed the engine
+    /// sometimes making the move itself. After the retire, wait one `regrabDefer` beat (the press
+    /// reaches the window's recognizer after the engine's own move), then ask
+    /// `UncoverReplayPolicy` for the destination: nil when the engine moved or the strip ends there.
+    /// `waitsForPager`: the pending branch, whose pager may not be installed yet (the short poll
+    /// `attemptUncoverRestore` uses).
+    private func replayViewerMove(restoreRowKey: String, waitsForPager: Bool) {
+        let clock = ViewerInputClock.shared
+        guard let kind = clock.lastKind, kind == .up || kind == .down, let pressAt = clock.lastAt else { return }
+        uncoverReplayGeneration &+= 1
+        let generation = uncoverReplayGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(UncoverRestorePolicy.regrabDefer))
+            guard let self, generation == self.uncoverReplayGeneration else { return }
+            if waitsForPager {
+                var attempt = 0
+                while !self.pagerHandle.isInstalled, attempt < 10 {
+                    attempt += 1
+                    try? await Task.sleep(for: .seconds(0.1))
+                    guard generation == self.uncoverReplayGeneration else { return }
+                }
+                guard self.pagerHandle.isInstalled else { return }
+            }
+            guard let key = UncoverReplayPolicy.decide(kind: kind,
+                                                       stripOwnsFocus: self.stripOwnsFocus,
+                                                       currentRowKey: self.currentRowKey,
+                                                       restoreRowKey: restoreRowKey,
+                                                       rowKeys: self.pagerHandle.rowKeys,
+                                                       pressAt: pressAt,
+                                                       lastRowChangeAt: self.lastRowChangeAt) else { return }
+            StageStripProbe.shared.log("restore replay \(kind.rawValue) \u{2192} \(key) source=\(self.uncoverSource)")
+            self.requestFocus(rowKey: key, itemId: self.memory.itemId(for: key), reason: "uncover-replay")
+        }
     }
 
     /// The restore is over. `cancelsPager`: the viewer moved, so an in-flight request's later rungs
@@ -452,11 +485,14 @@ final class StageController: ObservableObject {
                 ?? (now - target.issuedAt >= UncoverRestorePolicy.unlandedWindow)
             retireUncover(why: windowOver ? "expired" : "viewer", rowKey: target.rowKey, from: nil,
                           cancelsPager: !windowOver)
-            if !windowOver { replaySwallowedRowMove(target) }
+            if !windowOver { replayViewerMove(restoreRowKey: target.rowKey, waitsForPager: false) }
         } else if let requestedAt = uncoverRequestedAt,
                   let input = ViewerInputClock.shared.lastAt, input >= requestedAt {
-            // Not issued yet (the pager is not back): just stand the attempt down.
+            // Not issued yet (the pager is not back): stand the attempt down, and replay an Up or
+            // Down once the pager is (Batch N, BUG-188 follow-up).
+            let pendingRow = uncoverPendingRowKey
             cancelUncoverRestore()
+            if let pendingRow { replayViewerMove(restoreRowKey: pendingRow, waitsForPager: true) }
             StageStripProbe.shared.log("restore retired row=- why=viewer from=- input=\(ViewerInputClock.shared.lastKindLabel) pending=1 source=\(uncoverSource)")
         }
     }

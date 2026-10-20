@@ -104,6 +104,45 @@ nonisolated enum UncoverRestorePolicy {
     }
 }
 
+/// Batch N (BUG-188 follow-up; Steven rc9: an Up pressed during the collection pop is lost). A
+/// viewer Up or Down that retires a live pop restore either went nowhere (the restore's gate left
+/// every other row disabled, or the pager was not back yet) or was made by the engine itself. This
+/// decides the move to replay: the neighbouring row of the anchor, or nil when there is nothing to
+/// replay. It folds BUG-176's landed-case replay in, so there is one rule for both retire branches.
+nonisolated enum UncoverReplayPolicy {
+    /// - Parameters:
+    ///   - kind: the viewer input; only `.up` and `.down` replay.
+    ///   - stripOwnsFocus: a strip row owns focus right now (checked after the wait).
+    ///   - currentRowKey: the strip row that owns focus (`StageController.currentRowKey`); used as
+    ///     the anchor only while the strip owns focus.
+    ///   - restoreRowKey: the restore target row, the anchor when the strip does not own focus (the
+    ///     engine had parked focus outside the strip, or the pager was not back yet).
+    ///   - rowKeys: the strip's rows in order (`pagerHandle.rowKeys`).
+    ///   - pressAt: `ProcessInfo.systemUptime` of the press (`ViewerInputClock.lastAt`).
+    ///   - lastRowChangeAt: the last strip row change; a change at or after the press, within
+    ///     `UncoverRestorePolicy.regrabDefer` of it, is the engine making the viewer's move itself,
+    ///     so replaying would move twice. A change before the press (the restore's own landing)
+    ///     does not count.
+    /// - Returns: the destination row key, nil at the strip's bounds, when the engine already moved,
+    ///   or when the anchor is unknown.
+    static func decide(kind: ViewerInputKind,
+                       stripOwnsFocus: Bool,
+                       currentRowKey: String?,
+                       restoreRowKey: String?,
+                       rowKeys: [String],
+                       pressAt: TimeInterval,
+                       lastRowChangeAt: TimeInterval?) -> String? {
+        guard kind == .up || kind == .down else { return nil }
+        if let lastRowChangeAt, lastRowChangeAt >= pressAt,
+           lastRowChangeAt - pressAt <= UncoverRestorePolicy.regrabDefer { return nil }
+        guard let anchor = stripOwnsFocus ? currentRowKey : restoreRowKey,
+              let index = rowKeys.firstIndex(of: anchor) else { return nil }
+        let next = kind == .down ? index + 1 : index - 1
+        guard rowKeys.indices.contains(next) else { return nil }
+        return rowKeys[next]
+    }
+}
+
 /// See the file header. The folder Rows page learns of a push over it only at its `onDisappear`,
 /// which runs at the END of the push transition; by then focus has gone to the pushed Detail and the
 /// strip has reported the loss (`onStripFocusLost`). So the loss records the row and card it left,
