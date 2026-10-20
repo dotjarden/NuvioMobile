@@ -176,6 +176,9 @@ struct RailItem: Identifiable, Equatable {
 
     var localizedTitle: String { String(localized: String.LocalizationValue(title)) }
 
+    /// Always the first item (the Corner rail's resting glyph, FEAT-80).
+    static let home = RailItem(id: 0, title: "Home", systemImage: "house")
+
     /// Search & Discover A6: the Discover tab, selection value 6, shown right after Search when
     /// Discover is placed on its own tab (`DiscoverPlacement.ownTab`).
     static let discover = RailItem(id: 6, title: "Discover", systemImage: "safari")
@@ -186,7 +189,7 @@ struct RailItem: Identifiable, Equatable {
     /// avatar is ≈ 552 pt), nothing assumes a count.
     static func tabs(showsDiscover: Bool) -> [RailItem] {
         var items: [RailItem] = [
-            RailItem(id: 0, title: "Home", systemImage: "house"),
+            home,
             RailItem(id: 1, title: "Search", systemImage: "magnifyingglass"),
         ]
         if showsDiscover { items.append(discover) }
@@ -238,23 +241,30 @@ private enum RailMetrics {
     /// How long a route restore gets to move focus out of the rail before the default hand-off.
     static let exitVerifyDelay: TimeInterval = 0.5
 
-    // FEAT-80 Corner (Batch N, Steven's 2026-10-19 mock): the glass runs flush to the top and left
-    // screen edges, and the Home cell's platter sits at the tvOS safe-area origin (80, 60). At rest
-    // only that cell shows: a 152 × 132 tab. Open, the same column runs on downward.
-    static let cornerLeading: CGFloat = NavigationChrome.cornerSafeLeading   // 80
-    static let cornerTop: CGFloat = NavigationChrome.cornerSafeTop           // 60
-    /// Below the Home cell at rest; the open column keeps `verticalPadding` below the avatar.
-    static let cornerTabBottom: CGFloat = innerPadding
-    /// 80 + 60 + 12 = 152.
-    static let cornerTabWidth: CGFloat = cornerLeading + itemPlatter + innerPadding
-    /// 60 + 60 + 12 = 132.
-    static let cornerTabHeight: CGFloat = cornerTop + itemPlatter + cornerTabBottom
-    /// The Centre pill's label row (300 − 2 × 12 = 276) after the corner's leading inset: 368.
-    static let cornerExpandedWidth: CGFloat = cornerLeading + (expandedWidth - 2 * innerPadding) + innerPadding
+    // FEAT-80 Corner (Batch O, Christian's 2026-10-20 mock; Batch N's flush corner tab retired):
+    // open, the Corner rail IS the Centre pill (every number above, the same widths, all four
+    // corners rounded), `bezelInset` from the left edge and anchored at the top so the Home cell
+    // lands on the top safe-area line. At rest only the Home glyph shows, bare, in that same cell
+    // (16 + 12, 38 + 22), so nothing jumps when the pill unrolls around it.
+    /// 60 − 22 = 38: the pill's top edge (`NavigationChrome.cornerPillTop`).
+    static let cornerTop: CGFloat = NavigationChrome.cornerPillTop
+    /// The glass's first frame when it fades in, and its last before it fades out: a pill around
+    /// the Home cell, `collapsedWidth` × (60 + 2 × 22) = 84 × 104.
+    static let cornerRestHeight: CGFloat = itemPlatter + 2 * verticalPadding
     /// The lower items' fade, staggered top to bottom while the column unrolls.
     static let cornerItemFade: Double = 0.18
     static let cornerItemStagger: Double = 0.035
-    /// The unroll: a spring on the glass height and the mask (never on the items).
+    /// The glass's own fade: in at the Home pill's size before it grows, out once it has shrunk.
+    static let cornerGlassFade: Double = 0.12
+    /// Opening: the Home pill holds this long before it grows.
+    static let cornerGrowDelay: Double = 0.08
+    /// Closing: the shrink's spring is about 90 % of the way back to the Home pill by now.
+    static let cornerGlassFadeOutDelay: Double = 0.22
+    /// The resting Home glyph's shadow (on the glyph alone), so the bare icon reads on bright art.
+    static let cornerGlyphShadowRadius: CGFloat = 4
+    static let cornerGlyphShadowY: CGFloat = 2
+    static let cornerGlyphShadowOpacity: Double = 0.55
+    /// The unroll: a spring on the glass frame and the mask (never on the items).
     static var cornerUnroll: Animation { .spring(response: 0.36, dampingFraction: 0.86) }
 }
 
@@ -346,28 +356,38 @@ struct NavigationRail: View {
     /// is a plain label then, the hidden ones included.
     private var cornerOpen: Bool { armed || expanded }
 
+    /// FEAT-80 Corner (Batch O): at rest, the Home glyph alone, bare: no glass, no selection fill,
+    /// no label, a shadow of its own. Never true in Centre.
+    private var cornerResting: Bool { isCorner && !cornerOpen }
+
     /// What the labels, the width and (Corner) the unroll follow: `expanded` in Centre, unchanged;
     /// `cornerOpen` in Corner.
     private var railOpen: Bool { isCorner ? cornerOpen : expanded }
+
+    /// FEAT-80 Corner (Batch O): the unroll's second phase, the grow (see `cornerPanel`). Follows
+    /// `cornerOpen` through `updateCornerGrowth`, a turn or more behind it.
+    @State private var cornerGrown = false
+    @State private var cornerGrowthGeneration = 0
 
     /// FEAT-80 Corner: the column's full laid-out height, measured once per layout change. 0 until
     /// the first layout, when `cornerOpenHeight` falls back to `cornerDerivedHeight`.
     @State private var cornerColumnHeight: CGFloat = 0
 
-    /// FEAT-80 Corner (Batch N review r1): the open column's height from the metrics, before the
+    /// FEAT-80 Corner (Batch N review r1): the open pill's height from the metrics, before the
     /// first measurement. With Hidden the first arm MOUNTS the panel already open; floored at the
-    /// tab's height, the glass and the mask sat at the tab and then snapped open on the measurement,
+    /// resting size, the glass and the mask sat there and then snapped open on the measurement,
     /// with no spring. The rows are one platter tall (the label's line is shorter), so this matches
-    /// the measurement and the first unroll animates like every later one.
+    /// the measurement and the first unroll animates like every later one. Batch O: the Centre
+    /// pill's height, 22 pt of padding above Home and below the avatar.
     private var cornerDerivedHeight: CGFloat {
         let count = CGFloat(railItems.count + 1)  // the tabs + the profile avatar
-        return RailMetrics.cornerTop + count * RailMetrics.itemPlatter
+        return count * RailMetrics.itemPlatter
             + max(count - 1, 0) * RailMetrics.itemSpacing
-            + RailMetrics.avatarGap + RailMetrics.verticalPadding
+            + RailMetrics.avatarGap + 2 * RailMetrics.verticalPadding
     }
 
     private var cornerOpenHeight: CGFloat {
-        max(cornerColumnHeight > 0 ? cornerColumnHeight : cornerDerivedHeight, RailMetrics.cornerTabHeight)
+        max(cornerColumnHeight > 0 ? cornerColumnHeight : cornerDerivedHeight, RailMetrics.cornerRestHeight)
     }
 
     private var visibility: NavigationChrome.RailVisibility {
@@ -416,7 +436,7 @@ struct NavigationRail: View {
         .easeOut(duration: RailMetrics.slideDuration)
     }
 
-    /// FEAT-80: Corner pins the panel to the top-left; Centre centres the pill on the left edge.
+    /// FEAT-80: Corner pins the pill to the top-left; Centre centres the pill on the left edge.
     private var pillAlignment: Alignment {
         isCorner ? .topLeading : .leading
     }
@@ -426,19 +446,15 @@ struct NavigationRail: View {
         NavigationChrome.railLabels(raw: railLabelsRaw) == .shown
     }
 
-    /// The pill's width: grows only while open AND labels are shown. FEAT-80 Corner: the tab's 152,
-    /// or 368 with labels once unrolled.
+    /// The pill's width: grows only while open AND labels are shown. FEAT-80 Corner (Batch O): the
+    /// same 84 / 300 as Centre, following `railOpen` (the unroll).
     private var pillWidth: CGFloat {
-        if isCorner {
-            return railOpen && showsLabels ? RailMetrics.cornerExpandedWidth : RailMetrics.cornerTabWidth
-        }
-        return railOpen && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
+        railOpen && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
     }
 
     /// One item row's width inside the pill (the glyph, the gap, the label).
     private var itemRowWidth: CGFloat {
-        isCorner ? pillWidth - RailMetrics.cornerLeading - RailMetrics.innerPadding
-                 : pillWidth - 2 * RailMetrics.innerPadding
+        pillWidth - 2 * RailMetrics.innerPadding
     }
 
     var body: some View {
@@ -453,10 +469,12 @@ struct NavigationRail: View {
                 .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
             if shown {
                 if isCorner {
-                    // FEAT-80: flush to both edges, no bezel inset. A fade in and out (Hidden's
-                    // reveal, Hide While Browsing's hide): a slide from the leading edge would drag
-                    // the corner tab across the screen.
+                    // FEAT-80 (Batch O): Centre's bezel inset, anchored at the top. A fade in and
+                    // out (Hidden's reveal, Hide While Browsing's hide): a slide from the leading
+                    // edge would drag the resting Home icon across the screen.
                     cornerPanel
+                        .padding(.leading, RailMetrics.bezelInset)
+                        .padding(.top, RailMetrics.cornerTop)
                         .transition(.opacity)
                 } else {
                     pill
@@ -523,141 +541,221 @@ struct NavigationRail: View {
         .onChange(of: focusedItem) { old, new in
             focusChanged(old: old, new: new)
         }
+        .onChange(of: cornerOpen) { _, open in
+            updateCornerGrowth(open: open)
+        }
     }
 
     // MARK: Layout
 
-    /// The glass is a BACKGROUND behind the buttons, never a `glassEffect` around them: wrapping
-    /// focusable content in glass hid it from the focus engine in another tvOS app (the Orivio
-    /// trap, `docs/research/orivio-tv-handoff.md`).
-    private var pill: some View {
+    /// The pill's column, shared by Centre and Corner (Batch O): the tabs, the profile avatar under
+    /// its gap, the padding and the width. `row` draws one item from its order (0 = Home, the
+    /// profile last).
+    private func railColumn<Row: View>(@ViewBuilder row: @escaping (RailItem, Int) -> Row) -> some View {
         VStack(alignment: .leading, spacing: RailMetrics.itemSpacing) {
-            ForEach(railItems) { item in
-                itemView(item)
+            ForEach(Array(railItems.enumerated()), id: \.element.id) { order, item in
+                row(item, order)
             }
-            itemView(RailItem.profile)
+            row(RailItem.profile, railItems.count)
                 .padding(.top, RailMetrics.avatarGap)
         }
         .padding(.vertical, RailMetrics.verticalPadding)
         .padding(.horizontal, RailMetrics.innerPadding)
         .frame(width: pillWidth, alignment: .leading)
-        .background(alignment: .leading) {
-            RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous)
-                .fill(Color.clear)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous))
-            #if DEBUG
-            // Rail08's oracle: the pill's own frame. `navigation_rail` is a `.contain` container,
-            // whose accessibility frame is the union of its children, and the collapsed pill's
-            // labels (laid out, faded) overflow its 84 pt width.
-            Color.white.opacity(0.001)
-                .accessibilityElement()
-                .accessibilityLabel("rail bounds")
-                .accessibilityIdentifier("navigation_rail_bounds")
-            #endif
-        }
-        // #20: Reduce Motion drops the width animation; the labels and the dim still cross-fade
-        // (their own animations).
-        .animation(reduceMotion ? nil : .easeOut(duration: RailMetrics.expandDuration), value: expanded)
-        // One focus section: moves inside stay inside, and with content gated a move out fails,
-        // which is what the rail's app-handled exits listen for.
-        .focusSection()
-        // R4: a handler only when Left opened the rail; otherwise nil, the system default.
-        .onExitCommand(perform: menuHandler)
-        // `.contain`, so the pill has its own element without clobbering the per-item identifiers.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("navigation_rail")
     }
 
-    /// FEAT-80 Corner (Batch N): ONE column, laid out at its final geometry from the first frame,
-    /// that unrolls downward out of the Home tab. Only two things animate, both from `cornerOpen` in
-    /// one transaction: the glass background's frame height and a top-aligned mask of the same
-    /// height. The items never move: no `offset`, no `scaleEffect`, no per-item frame change, so a
-    /// focus frame is where it is drawn from the first turn (the Orivio trap above, the same reason
-    /// the glass is a background). Collapsed, the items below Home are plain labels (not armed),
-    /// masked off and `accessibilityHidden`; they fade in top to bottom as the mask passes them.
-    /// Reduce Motion: no height or mask animation, the lower items fade.
+    private static var pillShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous)
+    }
+
+    /// The glass is a BACKGROUND behind the buttons, never a `glassEffect` around them: wrapping
+    /// focusable content in glass hid it from the focus engine in another tvOS app (the Orivio
+    /// trap, `docs/research/orivio-tv-handoff.md`).
+    private var pillGlass: some View {
+        Self.pillShape
+            .fill(Color.clear)
+            .glassEffect(.regular, in: Self.pillShape)
+    }
+
+    #if DEBUG
+    /// Rail08's and Rail12's oracle: the glass's own frame. `navigation_rail` is a `.contain`
+    /// container, whose accessibility frame is the union of its children, and the collapsed pill's
+    /// labels (laid out, faded) overflow its 84 pt width.
+    private var railBoundsOracle: some View {
+        Color.white.opacity(0.001)
+            .accessibilityElement()
+            .accessibilityLabel("rail bounds")
+            .accessibilityIdentifier("navigation_rail_bounds")
+    }
+    #endif
+
+    /// What both pills end with.
+    private func railPillChrome<Content: View>(_ content: Content) -> some View {
+        content
+            // One focus section: moves inside stay inside, and with content gated a move out fails,
+            // which is what the rail's app-handled exits listen for.
+            .focusSection()
+            // R4: a handler only when Left opened the rail; otherwise nil, the system default.
+            .onExitCommand(perform: menuHandler)
+            // `.contain`, so the pill has its own element without clobbering the per-item identifiers.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("navigation_rail")
+    }
+
+    private var pill: some View {
+        railPillChrome(
+            railColumn { item, _ in
+                itemView(item)
+            }
+            .background(alignment: .leading) {
+                pillGlass
+                #if DEBUG
+                railBoundsOracle
+                #endif
+            }
+            // #20: Reduce Motion drops the width animation; the labels and the dim still cross-fade
+            // (their own animations).
+            .animation(reduceMotion ? nil : .easeOut(duration: RailMetrics.expandDuration), value: expanded)
+        )
+    }
+
+    /// FEAT-80 Corner (Batch O; Batch N's unroll, now around Centre's pill): the same column as
+    /// `pill`, laid out at its final geometry from the first frame, behind a top-aligned mask. At
+    /// rest the glass is invisible (opacity 0) and the mask shows only the Home cell, where the
+    /// Home glyph sits bare. Opening runs in two phases, two transactions:
+    ///  1. `cornerOpen` (the arm): the Buttons replace the labels, and the glass fades in as a pill
+    ///     around Home (84 × 104), Home's selection fill with it.
+    ///  2. `cornerGrown`, `cornerGrowDelay` later (`updateCornerGrowth`): the glass's frame and the
+    ///     mask grow down to the column's height, and widen to 300 with labels, as Centre's pill
+    ///     widens.
+    /// Closing reverses it: the pill shrinks back around Home at once, then the glass fades out
+    /// and Home's row turns back into the bare glyph. Only the glass's frame and opacity and the
+    /// mask animate. The items never move: no `offset`, no `scaleEffect`, so a focus frame is where
+    /// it is drawn from the first turn (the Orivio trap above, the same reason the glass is a
+    /// background). Collapsed, the items below Home are plain labels (not armed), masked off and
+    /// out of the accessibility tree; they fade in top to bottom as the mask passes them. Reduce
+    /// Motion: a fade, no grow (the size is full at once opening, and snaps back after the fade).
+    ///
+    /// Why two transactions: an insertion's transition (a label swapping for its Button) takes its
+    /// container's transaction, not the row's own `.animation`, so a delay on one shared grow also
+    /// delayed every Button's fade-in, the selected item's included (rail12's recording).
     private var cornerPanel: some View {
         let open = cornerOpen
-        let visibleHeight = open ? cornerOpenHeight : RailMetrics.cornerTabHeight
-        // Only the bottom-trailing corner is rounded: the glass meets the screen edges square.
-        let shape = UnevenRoundedRectangle(bottomTrailingRadius: RailMetrics.cornerRadius, style: .continuous)
-        return VStack(alignment: .leading, spacing: RailMetrics.itemSpacing) {
-            ForEach(Array(railItems.enumerated()), id: \.element.id) { order, item in
+        let grown = cornerGrown
+        let glassWidth = grown && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
+        let glassHeight = grown ? cornerOpenHeight : RailMetrics.cornerRestHeight
+        return railPillChrome(
+            railColumn { item, order in
                 cornerItem(item, order: order)
             }
-            cornerItem(RailItem.profile, order: railItems.count)
-                .padding(.top, RailMetrics.avatarGap)
-        }
-        .padding(.leading, RailMetrics.cornerLeading)
-        .padding(.top, RailMetrics.cornerTop)
-        .padding(.trailing, RailMetrics.innerPadding)
-        .padding(.bottom, RailMetrics.verticalPadding)
-        .frame(width: pillWidth, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
-            cornerColumnHeight = height
-        })
-        // Before the background, so the glass itself is never masked (it carries its own height).
-        .mask(alignment: .top) {
-            Rectangle().frame(height: visibleHeight)
-        }
-        .background(alignment: .top) {
-            shape
-                .fill(Color.clear)
-                .glassEffect(.regular, in: shape)
-                .frame(height: visibleHeight)
-            #if DEBUG
-            // Rail12's oracle: the glass's own frame (the tab at rest, the column open). The
-            // container's accessibility frame is the union of its children, the masked ones too.
-            Color.white.opacity(0.001)
-                .frame(height: visibleHeight)
-                .accessibilityElement()
-                .accessibilityLabel("rail bounds")
-                .accessibilityIdentifier("navigation_rail_bounds")
-            #endif
-        }
-        .animation(reduceMotion ? nil : RailMetrics.cornerUnroll, value: open)
-        .focusSection()
-        .onExitCommand(perform: menuHandler)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("navigation_rail")
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { measured in
+                cornerColumnHeight = measured
+            })
+            // Before the background, so the glass itself is never masked (it carries its own
+            // frame). The glass's own shape and size, so a label or a focus capsule never shows
+            // outside it while it grows (a plain Rectangle cut the capsule square beside the
+            // glass's rounded corner). Every row, capsule and avatar sits inside it at rest and open.
+            .mask(alignment: .topLeading) {
+                Self.pillShape.frame(width: glassWidth, height: glassHeight)
+            }
+            .background(alignment: .topLeading) {
+                pillGlass
+                    .opacity(open ? 1 : 0)
+                    .frame(width: glassWidth, height: glassHeight)
+                #if DEBUG
+                // Rail12: the glass's frame, only while it shows (out of the tree at rest).
+                if open {
+                    railBoundsOracle
+                        .frame(width: glassWidth, height: glassHeight)
+                }
+                #endif
+            }
+            // Phase 2: the glass's frame and the mask.
+            .animation(reduceMotion ? nil : RailMetrics.cornerUnroll, value: grown)
+            // Phase 1: the glass's opacity and Home's swap (and every row's swap transition).
+            .animation(cornerFadeAnimation(opening: open), value: open)
+            // Centre's focus capsule fade (`pill`'s animation on `expanded`), for the turn focus
+            // lands after the arm and the turn it leaves before the disarm.
+            .animation(reduceMotion ? nil : .easeOut(duration: RailMetrics.expandDuration), value: expanded)
+        )
     }
 
-    /// FEAT-80 Corner: Home (order 0) is the tab and always shows. Every later item fades with the
-    /// unroll, staggered by its order so the column fills top to bottom, and leaves the
-    /// accessibility tree while collapsed. It closes in one fade, no stagger.
+    /// FEAT-80 Corner: Home (order 0) always shows: bare at rest, a row of the pill open. Its swap
+    /// between the resting label and the armed Button cross-fades with the glass (in with it,
+    /// out after the shrink), so its selection fill arrives with the glass and the glyph's shadow
+    /// returns as it leaves. Every later item fades with the unroll, staggered by its order so the
+    /// column fills top to bottom, and leaves the accessibility tree while collapsed. It closes in
+    /// one fade, no stagger.
     ///
-    /// Batch N review r1: the selected tab's item is never faded. `takeFocusAfterReveal` writes
+    /// Batch N review r1: the selected tab's item is never faded in. `takeFocusAfterReveal` writes
     /// focus to it the next turn and again at +0.15 s; staggered (Settings, Profile: up to
     /// order × 0.035 s + 0.18 s), both writes landed while it was near opacity 0, which the hardware
     /// focus engine refuses (Batch B: opacity-0 controls are unfocusable), so the rail failed to open
-    /// on those tabs. Collapsed, the mask hides it; open, it shows as the mask passes it.
+    /// on those tabs. Collapsed, the mask hides it; open, it shows as the mask passes it. Batch O:
+    /// its label swaps for its Button with no transition at all (`.identity`), so the Button is at
+    /// full opacity on the first write; the two look the same (only Home goes bare at rest).
+    /// Closing, the shrinking mask covers it; under Reduce Motion, where the size holds until the
+    /// fade ends, it fades out with the rest.
     @ViewBuilder
     private func cornerItem(_ item: RailItem, order: Int) -> some View {
+        let open = cornerOpen
         if order == 0 {
             itemView(item)
         } else if item.id == selectedTab {
-            itemView(item, collapsedHidden: !cornerOpen)
+            itemView(item, collapsedHidden: !open, swap: .identity)
+                .opacity(open || !reduceMotion ? 1 : 0)
+                .animation(open ? nil : cornerItemAnimation(order: order, opening: false), value: open)
         } else {
-            let open = cornerOpen
             itemView(item, collapsedHidden: !open)
                 .opacity(open ? 1 : 0)
                 .animation(cornerItemAnimation(order: order, opening: open), value: open)
         }
     }
 
+    /// The lower items' fade: opening, from the grow's start, staggered top to bottom.
     private func cornerItemAnimation(order: Int, opening: Bool) -> Animation {
         let fade = Animation.easeOut(duration: RailMetrics.cornerItemFade)
         guard opening, !reduceMotion else { return fade }
-        return fade.delay(Double(order) * RailMetrics.cornerItemStagger)
+        return fade.delay(RailMetrics.cornerGrowDelay + Double(order) * RailMetrics.cornerItemStagger)
     }
 
-    /// `collapsedHidden` (FEAT-80 Corner): a masked item below the collapsed tab. It drops its
+    /// Phase 1's animation: the glass fades in at once, and out once the shrink has nearly settled.
+    /// Reduce Motion: one fade each way, as long as the items'.
+    private func cornerFadeAnimation(opening: Bool) -> Animation {
+        if reduceMotion { return .easeOut(duration: RailMetrics.cornerItemFade) }
+        let fade = Animation.easeOut(duration: RailMetrics.cornerGlassFade)
+        return opening ? fade : fade.delay(RailMetrics.cornerGlassFadeOutDelay)
+    }
+
+    /// Phase 2's driver: `cornerGrown` follows `cornerOpen`, always a turn or more later, so the
+    /// grow never shares phase 1's transaction. Opening: `cornerGrowDelay` later (Reduce Motion:
+    /// the next turn, unanimated). Closing: the next turn (Reduce Motion: once the fade has
+    /// finished, unanimated).
+    private func updateCornerGrowth(open: Bool) {
+        guard isCorner else { return }
+        cornerGrowthGeneration &+= 1
+        let generation = cornerGrowthGeneration
+        let delay: TimeInterval = open
+            ? (reduceMotion ? 0 : RailMetrics.cornerGrowDelay)
+            : (reduceMotion ? RailMetrics.cornerItemFade : 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard generation == cornerGrowthGeneration, cornerOpen == open else { return }
+            cornerGrown = open
+        }
+    }
+
+    /// `collapsedHidden` (FEAT-80 Corner): a masked item below the resting Home cell. It drops its
     /// identifier and its children: an `.accessibilityHidden` outside the `.combine` element left
     /// every masked item in the tree, hittable, and a bare one still exposed its glyph and title
     /// (rail12 at rest, tvOS 27 simulator).
+    ///
+    /// `swap` is the transition between the label and the Button when the rail arms or disarms:
+    /// `.opacity`, SwiftUI's default (Centre, and every Corner row but the selected one), or
+    /// `.identity` (Corner's selected row, see `cornerItem`).
     @ViewBuilder
-    private func itemView(_ item: RailItem, collapsedHidden: Bool = false) -> some View {
+    private func itemView(_ item: RailItem, collapsedHidden: Bool = false,
+                          swap: AnyTransition = .opacity) -> some View {
         if armed {
             // `RailItemButtonStyle`: the FEAT-30 focus carve-out, carried over (see its doc).
             let focused = focusedItem == item.id
@@ -669,16 +767,19 @@ struct NavigationRail: View {
             .buttonStyle(RailItemButtonStyle(isFocused: focused))
             .focused($focusedItem, equals: item.id)
             .accessibilityIdentifier("rail_item_\(item.title)")
+            .transition(swap)
         } else if collapsedHidden {
-            // Masked under the Corner tab: the same look and geometry, out of the tree.
+            // Masked under the resting Corner rail: the same look and geometry, out of the tree.
             itemLabel(item, focused: false)
                 .accessibilityElement(children: .ignore)
                 .accessibilityHidden(true)
+                .transition(swap)
         } else {
             // Not armed: the same look and geometry, but nothing the engine can land on.
             itemLabel(item, focused: false)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("rail_item_\(item.title)")
+                .transition(swap)
         }
     }
 
@@ -705,8 +806,15 @@ struct NavigationRail: View {
         .accessibilityLabel(itemTitle(item))
     }
 
+    /// FEAT-80 Corner (Batch O): at rest (`cornerResting`) the Home glyph is bare, with no selection
+    /// fill (the accent text colour is meant for that fill, so the glyph takes the primary colour),
+    /// and carries a soft shadow of its own. Only Home: the masked rows keep their look, so the
+    /// selected row's swap stays invisible (`cornerItem`). Centre never rests bare and never gets
+    /// the shadow.
     @ViewBuilder
     private func itemGlyph(_ item: RailItem, selected: Bool, focused: Bool) -> some View {
+        let bare = cornerResting && item.id == RailItem.home.id
+        let filled = selected && !bare
         if item.id == RailItem.profile.id, let profile = activeProfile {
             // Contract: profile avatars ring. The ring marks the selected Profile tab.
             ProfileAvatar(profile: profile, size: RailMetrics.itemPlatter)
@@ -718,13 +826,14 @@ struct NavigationRail: View {
         } else {
             ZStack {
                 // Selection state, so the brand colour is allowed here.
-                Circle().fill(selected ? Theme.Palette.accent : Color.clear)
+                Circle().fill(filled ? Theme.Palette.accent : Color.clear)
                 Image(systemName: item.systemImage)
                     .resizable()
                     .scaledToFit()
                     .frame(width: RailMetrics.iconSize, height: RailMetrics.iconSize)
-                    .foregroundStyle(selected ? Theme.Palette.accentText
+                    .foregroundStyle(filled ? Theme.Palette.accentText
                                      : (focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary))
+                    .modifier(RailRestingGlyphShadow(enabled: isCorner, visible: bare))
             }
         }
     }
@@ -1293,4 +1402,24 @@ struct RailItemButtonStyle: ButtonStyle {
     /// The capsule reaches a little past the row so the glyph is not flush with its rounded end.
     static let platterOutsetH: CGFloat = 4
     static let platterOutsetV: CGFloat = 2
+}
+
+/// FEAT-80 Corner (Batch O): the resting Home glyph's soft shadow, on the glyph alone, so the bare
+/// icon reads on bright artwork. `enabled` is the position (launch-constant: it joins
+/// `ContentView`'s remount key), so Centre's glyphs carry no shadow modifier at all; `visible` is
+/// `cornerResting`, false on every armed Button.
+private struct RailRestingGlyphShadow: ViewModifier {
+    let enabled: Bool
+    let visible: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.shadow(color: Color.black.opacity(visible ? RailMetrics.cornerGlyphShadowOpacity : 0),
+                           radius: RailMetrics.cornerGlyphShadowRadius,
+                           x: 0, y: RailMetrics.cornerGlyphShadowY)
+        } else {
+            content
+        }
+    }
 }

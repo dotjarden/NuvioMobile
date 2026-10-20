@@ -48,9 +48,10 @@ nonisolated enum NavigationChrome {
     }
 
     /// FEAT-80: Centre (the default, the pill vertically centred on the left edge) or Corner
-    /// (Steven's 2026-10-19 mock, Batch N): a Home tab flush in the top-left corner that unrolls
-    /// into the full column when the rail opens. Corner replaced rc8's Top, which still reads as
-    /// Corner (`railPosition(raw:)`), so no stored value needs a write.
+    /// (Batch N; redesigned in Batch O, Christian's 2026-10-20 mock): a bare Home icon at the
+    /// top-left that unrolls into the Centre pill, anchored at the top, when the rail opens.
+    /// Corner replaced rc8's Top, which still reads as Corner (`railPosition(raw:)`), so no stored
+    /// value needs a write.
     enum RailPosition: String, Equatable, Sendable, CaseIterable {
         case centre
         case corner
@@ -84,10 +85,14 @@ nonisolated enum NavigationChrome {
         raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailLabels.iconsOnly.rawValue ? .iconsOnly : .shown
     }
 
-    /// FEAT-80 Corner: the tvOS safe-area origin on a 1920 × 1080 canvas. The Home cell's platter
-    /// sits exactly there, while the glass behind it runs out to both screen edges.
-    static let cornerSafeLeading: CGFloat = 80
+    /// FEAT-80 Corner (Batch O): the tvOS top safe-area line on a 1920 × 1080 canvas. The Home
+    /// cell lands on it, at rest (the bare glyph) and open (the pill's first row).
     static let cornerSafeTop: CGFloat = 60
+    /// The open pill's top edge: `cornerSafeTop` less the pill's vertical padding (22,
+    /// `RailMetrics.verticalPadding`), so the Home cell sits on the safe-area line. The glass's top
+    /// edge sits above the vertical safe area, as Centre's pill already sits outside the horizontal
+    /// one. Leading, the pill keeps Centre's `bezelInset`.
+    static let cornerPillTop: CGFloat = 38
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
 
@@ -143,8 +148,8 @@ nonisolated enum NavigationChrome {
     }
 
     /// Rail mode with the rail Always Visible in Centre: the only configuration that moves content.
-    /// FEAT-80: Corner reserves nothing, as its tab covers only the corner (the device pass checks
-    /// that no page's top-left header sits under it).
+    /// FEAT-80: Corner reserves nothing, as at rest it is only the Home icon in the corner (the
+    /// device pass checks that no page's top-left header sits under it).
     static func reservesWidth(_ defaults: UserDefaults = .standard) -> Bool {
         isRail(defaults) && reservesWidth(visibility: railVisibility(defaults), position: railPosition(defaults))
     }

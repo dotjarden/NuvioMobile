@@ -293,10 +293,16 @@ final class NavigationChromeTests: XCTestCase {
         }
     }
 
-    /// The corner tab's icon sits at the tvOS safe-area origin; the glass runs to the edges.
-    func testCornerSafeAreaOrigin() {
-        XCTAssertEqual(NavigationChrome.cornerSafeLeading, 80)
+    /// Batch O: the Corner rail is Centre's pill anchored at the top. Its Home cell lands on the
+    /// tvOS top safe-area line, 22 pt (the pill's vertical padding) below the pill's top edge, and
+    /// the pill keeps Centre's bezel inset and widths.
+    func testCornerPillGeometry() {
         XCTAssertEqual(NavigationChrome.cornerSafeTop, 60)
+        XCTAssertEqual(NavigationChrome.cornerPillTop, 38)
+        XCTAssertEqual(NavigationChrome.cornerSafeTop - NavigationChrome.cornerPillTop, 22,
+                       "the Home cell sits one vertical padding below the pill's top")
+        XCTAssertEqual(NavigationChrome.bezelInset, 16, "Corner keeps Centre's bezel inset")
+        XCTAssertEqual(NavigationChrome.collapsedWidth, 84, "Corner's Icons Only width is Centre's")
     }
 
     func testRailLabelsResolution() {
