@@ -748,6 +748,10 @@ final class NavigationRailUITests: XCTestCase {
         let homeAtRest = home.frame
         XCTAssertGreaterThanOrEqual(homeAtRest.minX, 79, "Home's cell sits inside the safe area: \(homeAtRest)")
         XCTAssertGreaterThanOrEqual(homeAtRest.minY, 59, "Home's cell sits inside the safe area: \(homeAtRest)")
+        // The masked items drop their identifiers while collapsed. Their glyph and title still show
+        // in this snapshot: the tvOS 27 simulator's XCUITest tree lists children even under
+        // `.combine` / `.ignore` elements (Home's own cell shows both), so it cannot see
+        // `accessibilityHidden`; the identifier is the oracle.
         for title in itemTitles.dropFirst() {
             XCTAssertFalse(item(corner, title).exists, "rail_item_\(title) must be hidden while the tab is collapsed")
         }
@@ -765,8 +769,13 @@ final class NavigationRailUITests: XCTestCase {
         XCTAssertEqual(column.minX, 0, accuracy: 1, "the open column stays flush left: \(column)")
         XCTAssertEqual(column.minY, 0, accuracy: 1, "the open column stays flush top: \(column)")
         XCTAssertGreaterThan(column.height, 400, "the column unrolls downward: \(column)")
-        XCTAssertEqual(home.frame.minX, homeAtRest.minX, accuracy: 1, "Home's cell never moves: \(home.frame) vs \(homeAtRest)")
-        XCTAssertEqual(home.frame.minY, homeAtRest.minY, accuracy: 1, "Home's cell never moves: \(home.frame) vs \(homeAtRest)")
+        // Open, Home is a Button whose frame carries the focus capsule (RailItemButtonStyle's
+        // 4 × 2 pt outset) and the unrolled label width, so compare the row's centre line and
+        // its leading edge less that outset, not the whole cell.
+        let homeOpen = home.frame
+        XCTAssertEqual(homeOpen.midY, homeAtRest.midY, accuracy: 1, "Home's row never moves: \(homeOpen) vs \(homeAtRest)")
+        XCTAssertGreaterThanOrEqual(homeOpen.minX, homeAtRest.minX - 5, "Home's glyph never moves: \(homeOpen) vs \(homeAtRest)")
+        XCTAssertLessThanOrEqual(homeOpen.minX, homeAtRest.minX + 1, "Home's glyph never moves: \(homeOpen) vs \(homeAtRest)")
         let settings = item(corner, "Settings")
         if settings.exists {
             XCTAssertLessThanOrEqual(settings.frame.maxY, column.maxY, "the glass reaches past the last tab: \(settings.frame) vs \(column)")
@@ -775,7 +784,7 @@ final class NavigationRailUITests: XCTestCase {
         remote.press(.right)
         XCTAssertTrue(poll(2.0) { rail(corner, "expanded") == "0" }, "Right must close the rail: \(railState(corner))")
         XCTAssertTrue(poll(2.0) { !item(corner, "Search").exists }, "the column rolls back up to the tab")
-        XCTAssertEqual(glass.frame.height, 132, accuracy: 2, "back to the tab: \(glass.frame)")
+        XCTAssertTrue(poll(2.0) { abs(glass.frame.height - 132) <= 2 }, "back to the tab: \(glass.frame)")
 
         // rc8's stored Top reads as Corner.
         let legacy = launch(Self.railArguments() + ["-rail_position", "top"])

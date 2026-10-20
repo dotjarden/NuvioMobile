@@ -637,14 +637,12 @@ struct NavigationRail: View {
         if order == 0 {
             itemView(item)
         } else if item.id == selectedTab {
-            itemView(item)
-                .accessibilityHidden(!cornerOpen)
+            itemView(item, collapsedHidden: !cornerOpen)
         } else {
             let open = cornerOpen
-            itemView(item)
+            itemView(item, collapsedHidden: !open)
                 .opacity(open ? 1 : 0)
                 .animation(cornerItemAnimation(order: order, opening: open), value: open)
-                .accessibilityHidden(!open)
         }
     }
 
@@ -654,8 +652,12 @@ struct NavigationRail: View {
         return fade.delay(Double(order) * RailMetrics.cornerItemStagger)
     }
 
+    /// `collapsedHidden` (FEAT-80 Corner): a masked item below the collapsed tab. It drops its
+    /// identifier and its children: an `.accessibilityHidden` outside the `.combine` element left
+    /// every masked item in the tree, hittable, and a bare one still exposed its glyph and title
+    /// (rail12 at rest, tvOS 27 simulator).
     @ViewBuilder
-    private func itemView(_ item: RailItem) -> some View {
+    private func itemView(_ item: RailItem, collapsedHidden: Bool = false) -> some View {
         if armed {
             // `RailItemButtonStyle`: the FEAT-30 focus carve-out, carried over (see its doc).
             let focused = focusedItem == item.id
@@ -667,6 +669,11 @@ struct NavigationRail: View {
             .buttonStyle(RailItemButtonStyle(isFocused: focused))
             .focused($focusedItem, equals: item.id)
             .accessibilityIdentifier("rail_item_\(item.title)")
+        } else if collapsedHidden {
+            // Masked under the Corner tab: the same look and geometry, out of the tree.
+            itemLabel(item, focused: false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityHidden(true)
         } else {
             // Not armed: the same look and geometry, but nothing the engine can land on.
             itemLabel(item, focused: false)
