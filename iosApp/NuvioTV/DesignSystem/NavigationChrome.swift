@@ -29,6 +29,10 @@ nonisolated enum NavigationChrome {
     /// Device-local like the two keys above.
     static let railPositionKey = "rail_position"
     static let railLabelsKey = "rail_labels"
+    /// Batch P (P2, Steven rc10 photo 1): Floating (the default pill, `bezelInset` off the edge) or
+    /// Edge (flat against the left screen edge, square outer corners). Device-local like the keys
+    /// above. Never changes the reserved width, so it needs no remount.
+    static let railStyleKey = "rail_style"
     /// FEAT-30's stored value. Reads as Rail, and `migrateLegacy` rewrites it once.
     static let legacySidebarValue = "sidebar"
 
@@ -65,6 +69,23 @@ nonisolated enum NavigationChrome {
     enum RailLabels: String, Equatable, Sendable, CaseIterable {
         case shown
         case iconsOnly = "icons"
+    }
+
+    /// Batch P (P2): Floating (the default) or Edge (flush with the screen's left edge).
+    enum RailStyle: String, Equatable, Sendable, CaseIterable {
+        case floating
+        case edge
+    }
+
+    /// Only "edge" is Edge (trimmed, case-insensitive); anything else keeps today's Floating pill.
+    static func railStyle(raw: String?) -> RailStyle {
+        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailStyle.edge.rawValue ? .edge : .floating
+    }
+
+    /// The pill's leading edge from the screen edge: `bezelInset` Floating, 0 Edge. `reservedEdge`
+    /// and `pillTrailingEdge` deliberately do NOT derive from it (Edge must not move content).
+    static func pillLeading(_ style: RailStyle) -> CGFloat {
+        style == .edge ? 0 : bezelInset
     }
 
     /// "corner", and rc8's "top", read as Corner (FEAT-80, Batch N); anything else (missing,
@@ -372,6 +393,30 @@ nonisolated enum RailVisibilityRule {
 nonisolated enum RailSearchInsetHold {
     static let defaultsKey = "debug.railSearchInsetHold"
     static let current: Bool = UserDefaults.standard.bool(forKey: defaultsKey)
+}
+
+/// Batch P (P3/P10): the Icons Only pill's glass material, chosen on the rig. Launch-latched
+/// `-debug.railGlass regular|clear|tinted|material` (a `-all` suffix applies it to Labels Shown
+/// too); unknown or missing is `regular` (today). Read in DEBUG and Release.
+nonisolated enum RailGlassVariant: String, Equatable, Sendable, CaseIterable {
+    case regular, clear, tinted, material
+
+    static let defaultsKey = "debug.railGlass"
+
+    /// The variant for a raw value; a trailing `-all` is ignored here (see `appliesToShown`).
+    static func resolve(_ raw: String?) -> RailGlassVariant {
+        var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if value.hasSuffix("-all") { value = String(value.dropLast(4)) }
+        return RailGlassVariant(rawValue: value) ?? .regular
+    }
+
+    /// True when the raw value ends in `-all`: the variant also applies with Labels Shown.
+    static func appliesToShown(_ raw: String?) -> Bool {
+        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasSuffix("-all") ?? false
+    }
+
+    static let current: RailGlassVariant = resolve(UserDefaults.standard.string(forKey: defaultsKey))
+    static let currentAppliesToShown: Bool = appliesToShown(UserDefaults.standard.string(forKey: defaultsKey))
 }
 
 /// How a scrolled-down write should move the rail (P4 §1.3, #8). Recorded per tab with the write.

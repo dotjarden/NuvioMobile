@@ -131,4 +131,52 @@ final class DetailFocusReturnTests: XCTestCase {
         XCTAssertEqual(DetailFocusRestore.rungs.map(\.force), [true, true, false, false])
         XCTAssertGreaterThan(DetailFocusRestore.retireDelay, DetailFocusRestore.rungs.map(\.delay).max() ?? 0)
     }
+
+    // MARK: DetailPopGate (Batch P, P7 / BUG-194)
+
+    /// Focus on the hero holds, the target row AND card lands, viewer input releases.
+    func testPopGateHoldsUntilTheCardLands() {
+        let target: (row: DetailRowID, key: String) = (.cast, "3")
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: false), .hold)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "1", target: target, viewerInput: false), .hold,
+                       "right row, wrong card is not a landing")
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .moreLikeThis, focusedKey: "3", target: target, viewerInput: false), .hold,
+                       "right key, wrong row is not a landing")
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: false), .landed)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: true), .release)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: true), .release)
+    }
+
+    /// The decision is a pure function of row, card and input: call order changes nothing.
+    func testPopGateIgnoresTimestamps() {
+        let target: (row: DetailRowID, key: String) = (.cast, "3")
+        let inputs: [(DetailRowID?, String?, Bool)] = [(nil, nil, false), (.cast, "3", false), (.cast, "2", false), (.cast, "3", true)]
+        let forward = inputs.map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2) }
+        let backward = inputs.reversed().map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2) }
+        XCTAssertEqual(forward, backward.reversed())
+    }
+
+    func testDefaultTargetOnlyWhileLive() {
+        let target: (row: DetailRowID, key: String) = (.cast, "3")
+        XCTAssertEqual(DetailPopGate.defaultTarget(restoreLive: true, target: target), .cast)
+        XCTAssertNil(DetailPopGate.defaultTarget(restoreLive: false, target: target))
+        XCTAssertNil(DetailPopGate.defaultTarget(restoreLive: true, target: nil))
+    }
+
+    func testLandedHoldUsesTheHomeWindow() {
+        XCTAssertEqual(DetailPopGate.landedWindow, UncoverRestorePolicy.landedWindow)
+        XCTAssertTrue(DetailPopGate.landedHoldActive(age: 1.4))
+        XCTAssertFalse(DetailPopGate.landedHoldActive(age: 1.5))
+    }
+
+    func testMemoryLiveStateFollowsGoLiveAndEnd() {
+        let memory = DetailFocusMemory()
+        XCTAssertFalse(memory.restoreLive)
+        memory.goLive((.cast, "3"))
+        XCTAssertTrue(memory.restoreLive)
+        XCTAssertEqual(memory.liveTarget?.key, "3")
+        memory.endRestore()
+        XCTAssertFalse(memory.restoreLive)
+        XCTAssertNil(memory.liveTarget)
+    }
 }

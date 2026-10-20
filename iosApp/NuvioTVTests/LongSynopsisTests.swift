@@ -129,7 +129,8 @@ final class LongSynopsisTests: XCTestCase {
                             let longContent = standardContent + g.synopsisGrowth - g.logoGive
                             XCTAssertLessThanOrEqual(longContent, frame + 0.001, label)
                             let logo = Theme.Size.heroLogoSlotHeightPinned - split.logo - g.logoGive
-                            XCTAssertGreaterThanOrEqual(logo, Long.pinnedLogoFloor - 0.001, label)
+                            XCTAssertGreaterThanOrEqual(logo, Long.pinnedFloor(forLines: g.lines) - 0.001, label)
+                            XCTAssertGreaterThanOrEqual(logo, 48, label)
                             let slot = (showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
                                                  : Theme.Size.heroSynopsisSlotHeightPinnedPanel) - split.synopsis
                             XCTAssertGreaterThanOrEqual(g.lines, Long.lines(slot: slot, lineHeight: lh), label)
@@ -197,12 +198,12 @@ final class LongSynopsisTests: XCTestCase {
     /// `heroCarouselHeightPinned − compression`, minus the paddings, the gaps, the meta line, the
     /// CTA (carousel only) and `pinnedLogoFloor`. Independent of `LongSynopsis`'s slack/logo
     /// bookkeeping, so the table below checks that bookkeeping against the frame it must fit.
-    private static func pinnedRoom(compression: CGFloat, showsCTA: Bool) -> CGFloat {
+    private static func pinnedRoom(compression: CGFloat, showsCTA: Bool, logoFloor: CGFloat) -> CGFloat {
         let fixed: CGFloat = 2 * Theme.Size.heroPinnedVerticalPad
             + (showsCTA ? 3 : 2) * Theme.Size.heroPinnedSlotGap
             + Theme.Size.heroMetaSlotHeight
             + (showsCTA ? Theme.Size.heroButtonSlotHeight : 0)
-        return Theme.Size.heroCarouselHeightPinned - max(compression, 0) - fixed - Long.pinnedLogoFloor
+        return Theme.Size.heroCarouselHeightPinned - max(compression, 0) - fixed - logoFloor
     }
 
     /// The in-scroll Classic hero's room: its synopsis slot, its unused frame slack and its logo
@@ -214,9 +215,9 @@ final class LongSynopsisTests: XCTestCase {
 
     /// D8's rule on a room: 4 lines where they fit, else the most that do, never fewer than the
     /// count the hero draws without growing (`standard`).
-    private static func expectedLines(room: CGFloat, standard: Int, lineHeight: CGFloat) -> Int {
+    private static func expectedLines(room: (Int) -> CGFloat, standard: Int, lineHeight: CGFloat) -> Int {
         for target in stride(from: Long.maxLines, through: standard + 1, by: -1)
-        where CGFloat(target) * lineHeight - Long.lineTolerance + Long.roundingMargin <= room + 0.001 {
+        where CGFloat(target) * lineHeight - Long.lineTolerance + Long.roundingMargin <= room(target) + 0.001 {
             return target
         }
         return standard
@@ -249,8 +250,9 @@ final class LongSynopsisTests: XCTestCase {
                                                  : Theme.Size.heroSynopsisSlotHeightPinnedPanel) - split.synopsis
                             let standard = Long.lines(slot: slot, lineHeight: lh)
                             let g = Long.pinned(compression: plan.compression, showsCTA: showsCTA, lineHeight: lh)
-                            let expected = Self.expectedLines(room: Self.pinnedRoom(compression: plan.compression,
-                                                                                    showsCTA: showsCTA),
+                            let expected = Self.expectedLines(room: { Self.pinnedRoom(compression: plan.compression,
+                                                                                      showsCTA: showsCTA,
+                                                                                      logoFloor: Long.pinnedFloor(forLines: $0)) },
                                                               standard: standard, lineHeight: lh)
                             let form = showsCTA ? "carousel" : "panel"
                             let label = "\(names[index]) \(font) \(form) noZoom \(noZoom) cap \(caption)"
@@ -269,7 +271,7 @@ final class LongSynopsisTests: XCTestCase {
         for lh in Self.lineHeights {
             let font = lh == Self.systemLine ? "system" : "Open Sans"
             let g = Long.classic(showsCTA: true, lineHeight: lh)
-            XCTAssertEqual(g.lines, Self.expectedLines(room: Self.classicRoom(showsCTA: true),
+            XCTAssertEqual(g.lines, Self.expectedLines(room: { _ in Self.classicRoom(showsCTA: true) },
                                                        standard: 2, lineHeight: lh), "in-scroll \(font)")
             XCTAssertEqual(g.lines, Long.maxLines, "the in-scroll hero has room for 4: \(font)")
             table.append("any size \(font) in-scroll → \(g.lines)")
@@ -278,17 +280,63 @@ final class LongSynopsisTests: XCTestCase {
     }
 
     /// The anchors behind the table, worked by hand from the frame (system 30, Open Sans 31.32):
-    /// the carousel's room is 140 − compression, so 4 lines need compression ≤ 20.75 (system) or
-    /// ≤ 15.47 (Open Sans), 3 lines ≤ 50.75 / 46.79, and Large's 68.33 leaves 2.
+    /// the carousel's room is 140 − compression, so 3 lines need compression ≤ 50.75 (system) or
+    /// ≤ 46.79 (Open Sans), and Large's 68.33 leaves 2. The fourth line may take the logo to 56
+    /// (FEAT-61, +8 room): 4 lines need compression ≤ 28.75 (system) or ≤ 23.47 (Open Sans).
     func testD8CarouselAnchors() {
         XCTAssertEqual(Long.pinned(compression: 0, showsCTA: true, lineHeight: Self.systemLine).lines, 4)
         XCTAssertEqual(Long.pinned(compression: 0, showsCTA: true, lineHeight: Self.openSansLine).lines, 4)
         XCTAssertEqual(Long.pinned(compression: 16, showsCTA: true, lineHeight: Self.systemLine).lines, 4)
-        XCTAssertEqual(Long.pinned(compression: 16, showsCTA: true, lineHeight: Self.openSansLine).lines, 3)
+        XCTAssertEqual(Long.pinned(compression: 16, showsCTA: true, lineHeight: Self.openSansLine).lines, 4)
+        XCTAssertEqual(Long.pinned(compression: 23, showsCTA: true, lineHeight: Self.openSansLine).lines, 4)
+        XCTAssertEqual(Long.pinned(compression: 24, showsCTA: true, lineHeight: Self.openSansLine).lines, 3)
+        XCTAssertEqual(Long.pinned(compression: 28, showsCTA: true, lineHeight: Self.systemLine).lines, 4)
+        XCTAssertEqual(Long.pinned(compression: 29, showsCTA: true, lineHeight: Self.systemLine).lines, 3)
         XCTAssertEqual(Long.pinned(compression: 68.33, showsCTA: true, lineHeight: Self.systemLine).lines, 2)
         XCTAssertEqual(Long.pinned(compression: 68.33, showsCTA: true, lineHeight: Self.openSansLine).lines, 2)
         XCTAssertEqual(Long.pinned(compression: 0, showsCTA: false, lineHeight: Self.systemLine).lines, 4)
         XCTAssertEqual(Long.pinned(compression: 0, showsCTA: false, lineHeight: Self.openSansLine).lines, 4)
+    }
+
+    // MARK: - FEAT-61: Medium+
+
+    private static var mediumPlus: CGFloat { posterHeight(dp: 134) }
+
+    /// Steven's Medium+ carousel (Hide Titles ON, zoom on, compression ≈ 15.95): 4 lines in both
+    /// fonts; Open Sans used to stop at 3.
+    func testMediumPlusCarouselGetsFourLines() {
+        for lh in Self.lineHeights {
+            let plan = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false, showsCTA: true,
+                                              landscapeRows: false, mode: Self.mode(noZoom: false),
+                                              titleHeight: PinnedRowGeometry.measuredTitleHeight)
+            let g = Long.pinned(compression: plan.compression, showsCTA: true, lineHeight: lh)
+            XCTAssertEqual(g.lines, 4, "lh \(lh) compression \(plan.compression)")
+            let logo = Theme.Size.heroLogoSlotHeightPinned
+                - PinnedRowGeometry.HeroSlotGive.split(compression: plan.compression, showsCTA: true, folderHero: false).logo
+                - g.logoGive
+            XCTAssertGreaterThanOrEqual(logo, 48)
+        }
+    }
+
+    /// Only the fourth line reaches the lower floor; three lines keep 64.
+    func testOnlyTheFourthLineUsesTheLowerFloor() {
+        XCTAssertEqual(Long.pinnedFloor(forLines: 4), Long.fourLineLogoFloor)
+        XCTAssertEqual(Long.pinnedFloor(forLines: 3), Long.pinnedLogoFloor)
+        XCTAssertEqual(Long.pinnedFloor(forLines: 2), Long.pinnedLogoFloor)
+        XCTAssertGreaterThanOrEqual(Long.fourLineLogoFloor, 48)
+    }
+
+    /// Large is scoped out: its compression (62 to 68) needs a floor near 16 for a fourth line, so
+    /// it keeps 2 in both fonts.
+    func testLargeIsUnchanged() {
+        for lh in Self.lineHeights {
+            for caption in [true, false] {
+                let plan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: caption, showsCTA: true,
+                                                  landscapeRows: false, mode: Self.mode(noZoom: false),
+                                                  titleHeight: PinnedRowGeometry.measuredTitleHeight)
+                XCTAssertEqual(Long.pinned(compression: plan.compression, showsCTA: true, lineHeight: lh).lines, 2)
+            }
+        }
     }
 
     // MARK: - The in-scroll Classic hero

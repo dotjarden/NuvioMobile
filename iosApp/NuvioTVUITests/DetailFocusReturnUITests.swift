@@ -133,4 +133,32 @@ final class DetailFocusReturnUITests: XCTestCase {
         XCTAssertEqual(after.row, "moreLikeThis", "Back from the pushed title left More Like This (Play is row=-)")
         XCTAssertEqual(after.idx, before.idx, "Back from the pushed title landed on another card")
     }
+
+    /// BUG-194 (Batch P, P7): Back from a biography lands on the cast card in ONE move. The probe's
+    /// `moves=` token (focus-row changes between the pop's appear and the release) arrives with the
+    /// DetailView hunks; until they are applied it is absent and only the landing is asserted. The
+    /// simulator never shows the engine's late restoration, so the device pass is the real check.
+    func testBackFromCastMemberLandsInOneMove() throws {
+        let app = launchToDetail()
+        guard walkDown(to: "cast", in: app) else {
+            shot("194_no_cast")
+            throw XCTSkip("no tappable cast row on this title (TMDB enrichment off?)")
+        }
+        press(.right, times: 2)
+        let before = probe(app, "194 cast before push")
+        XCTAssertEqual(before.row, "cast")
+        remote.press(.select)
+        pause(5)
+        remote.press(.menu)
+        pause(3)
+        let label = app.staticTexts["debug_detail_focus"]
+        let text = label.waitForExistence(timeout: 4) ? label.label : ""
+        let after = probe(app, "194 cast after back")
+        XCTAssertEqual(after.row, "cast")
+        XCTAssertEqual(after.idx, before.idx)
+        if let range = text.range(of: "moves=") {
+            let digits = text[range.upperBound...].prefix { $0.isNumber }
+            XCTAssertLessThanOrEqual(Int(digits) ?? 99, 1, "Back from the biography moved focus more than once: \(text)")
+        }
+    }
 }

@@ -79,8 +79,48 @@ struct SearchView: View {
                 owner.model.recordSearch(query)
             }
         }
-        .onAppear { owner.model.start() }
+        .onAppear {
+            SearchOpenProbe.appear()
+            owner.model.start()
+        }
         .onDisappear { owner.model.stop() }
+    }
+}
+
+/// Batch P (P9, BUG-195, probe only): `-debug.searchOpenProbe YES` (launch-latched, readable in
+/// Release) logs `[SearchOpen] appear|firstBody|keyboard t=<systemUptime>` once per tab visit. The
+/// rail's `[NavRail] select tab=1` line is t0; the main session measures the gap on the rig (first
+/// and second visit) and then picks the fix. No behaviour change.
+@MainActor
+enum SearchOpenProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.searchOpenProbe")
+    private static var firstBodyLogged = false
+    private static var keyboardLogged = false
+
+    /// The tab appeared: a new visit, so both once-per-visit marks re-arm.
+    static func appear() {
+        guard enabled else { return }
+        firstBodyLogged = false
+        keyboardLogged = false
+        log("appear")
+    }
+
+    /// First `SearchContent.body` of the visit.
+    static func firstBody() {
+        guard enabled, !firstBodyLogged else { return }
+        firstBodyLogged = true
+        log("firstBody")
+    }
+
+    /// First time the search keyboard reports focus in the visit.
+    static func keyboard() {
+        guard enabled, !keyboardLogged else { return }
+        keyboardLogged = true
+        log("keyboard")
+    }
+
+    private static func log(_ mark: String) {
+        NSLog("[SearchOpen] %@ t=%.3f", mark, ProcessInfo.processInfo.systemUptime)
     }
 }
 
@@ -173,6 +213,7 @@ private struct SearchContent: View {
         #if DEBUG
         let _ = SearchPerfProbe.bodyEvaluated()
         #endif
+        let _ = SearchOpenProbe.firstBody()
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 if queryIsEmpty {
@@ -199,7 +240,10 @@ private struct SearchContent: View {
             owner.wash.topResultChanged(model.topResult)
         }
         .onReceive(navigationChrome.$searchKeyboardFocused) { focused in
-            if focused { owner.wash.keyboardFocused(topResult: model.topResult) }
+            if focused {
+                SearchOpenProbe.keyboard()
+                owner.wash.keyboardFocused(topResult: model.topResult)
+            }
         }
         #if DEBUG
         .overlay(alignment: .topLeading) { searchStateProbe }

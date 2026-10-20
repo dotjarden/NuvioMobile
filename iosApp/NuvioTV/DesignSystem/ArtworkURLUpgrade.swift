@@ -52,6 +52,22 @@ nonisolated enum ArtworkURLUpgrade {
     /// The cache treats these as one family. For `…/t/p/w500/x.png`: `[…/original/x.png,
     /// …/w780/x.png, …/w500/x.png]`. A URL on any other host, or an `.svg`, is its own family.
     static func family(_ url: URL) -> [URL] {
+        // Batch P (P1-3): memoised; the four rewrites below are string scans run per cache lookup.
+        if let hit = familyMemo.object(forKey: url as NSURL) as? [URL] { return hit }
+        let computed = computeFamily(url)
+        familyMemo.setObject(computed as NSArray, forKey: url as NSURL)
+        return computed
+    }
+
+    /// Process-wide, thread-safe (NSCache locks internally).
+    private static let familyMemo: NSCache<NSURL, NSArray> = {
+        let cache = NSCache<NSURL, NSArray>()
+        cache.countLimit = 2048
+        return cache
+    }()
+
+    /// The uncached body of `family(_:)`; internal so tests can compare the memo against it.
+    static func computeFamily(_ url: URL) -> [URL] {
         guard let host = url.host?.lowercased(), host == tmdbHost || host == metahubHost,
               !isSVG(url.absoluteString) else { return [url] }
         var out: [URL] = []

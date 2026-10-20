@@ -48,6 +48,8 @@ struct AppearanceSettingsPane: View {
     @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = NavigationChrome.RailVisibility.always.rawValue
     @AppStorage(NavigationChrome.railPositionKey) private var railPosition = NavigationChrome.RailPosition.centre.rawValue
     @AppStorage(NavigationChrome.railLabelsKey) private var railLabels = NavigationChrome.RailLabels.shown.rawValue
+    /// Batch P (P2): Floating / Edge. Device-local; changes no layout inset, so no remount.
+    @AppStorage(NavigationChrome.railStyleKey) private var railStyle = NavigationChrome.RailStyle.floating.rawValue
     /// Home Stage & Strip (P3 #22): Hide Hero Artwork While Browsing only means something in
     /// Classic, so the row hides in Stage. Live, like every Home Layout reader.
     @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
@@ -98,6 +100,10 @@ struct AppearanceSettingsPane: View {
     private static let railPositionOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailPosition.centre.rawValue, String(localized: "Centre")),
         (NavigationChrome.RailPosition.corner.rawValue, String(localized: "Corner")),
+    ]
+    private static let railStyleOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailStyle.floating.rawValue, String(localized: "Floating")),
+        (NavigationChrome.RailStyle.edge.rawValue, String(localized: "Edge")),
     ]
     private static let railLabelsOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailLabels.shown.rawValue, String(localized: "Shown")),
@@ -374,6 +380,18 @@ struct AppearanceSettingsPane: View {
                     )
                     .accessibilityIdentifier("appearance_row_rail_position")
                     .focused($appearanceRowFocus, equals: "railPosition")
+
+                    // Batch P (P2): Floating / Edge. Padding and shape only, no remount.
+                    SettingsPickerRow(
+                        title: String(localized: "Rail Style"),
+                        selection: Binding(
+                            get: { NavigationChrome.railStyle(raw: railStyle).rawValue },
+                            set: { railStyle = $0 }),
+                        options: Self.railStyleOptions.map(\.value),
+                        descriptionID: .appearanceRailStyle,
+                        label: { value in Self.railStyleOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail_style")
 
                     SettingsPickerRow(
                         title: String(localized: "Rail Labels"),

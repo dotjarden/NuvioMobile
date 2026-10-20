@@ -169,6 +169,34 @@ final class BatchAFolderUITests: XCTestCase {
         XCTAssertTrue(walkToTopUntilBar(app), "the tab bar did not return on Home after the folder popped (Up to the top)")
     }
 
+    // MARK: - BUG-190: Stage folder title block
+
+    /// Steven rc10 (BUG-190): on the Stage folder page the title logo is top-aligned in its fixed
+    /// slot once the folder logo has risen, so the block reads top-down from the stage block's top
+    /// (120 pt) instead of floating ~100 pt below it. After one move the stage info's first element
+    /// (the logo) starts within 4 pt of the block top, and the folder logo layer is on screen.
+    func testStageFolderTitleLogoSitsAtTheBlockTop() throws {
+        let seed = Data(Self.oneRowSeedJson.utf8).base64EncodedString()
+        defer { clearSeed() }
+        let app = launch(["-home_layout", "stage", "-sidebar_style", "tabs",
+                          "-debug.collectionsSeedJsonB64", seed])
+        pause(16)
+        XCTAssertTrue(walk(app, .down, untilFocusContains: "ZZBatchA", max: 3), "the pinned folder tile never took focus")
+        remote.press(.select)
+        pause(10)
+        // One move so the folder logo rises out of the stage's logo slot.
+        remote.press(.right)
+        pause(3)
+        shot("bug190-folder-after-move")
+        let folderLogo = app.descendants(matching: .any)["folder_stage_logo"]
+        XCTAssertTrue(folderLogo.waitForExistence(timeout: 5), "folder_stage_logo is missing on the Stage folder page")
+        XCTAssertGreaterThan(folderLogo.frame.height, 0, "the folder logo layer has no height")
+        let info = app.descendants(matching: .any)["stage_info"]
+        guard info.waitForExistence(timeout: 5) else { throw XCTSkip("no stage_info on this folder page") }
+        note("bug190", "stage_info \(info.frame) folder_stage_logo \(folderLogo.frame)")
+        XCTAssertEqual(info.frame.minY, 120, accuracy: 4, "the title logo is not at the stage block's top")
+    }
+
     // MARK: - BUG-144: Classic grid → Detail → Back
 
     func testClassicGridKeepsTabBarHiddenAfterDetail() {

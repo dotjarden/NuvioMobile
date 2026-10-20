@@ -68,6 +68,9 @@ nonisolated enum DetailLatePlayFocus {
 struct DetailCinematicHero<Actions: View>: View {
     let title: String
     let logoURL: String?
+    /// BUG-193: the page's own backdrop (upgraded URL) and its fallback, for the full-synopsis cover.
+    var backdropURL: String? = nil
+    var backdropFallbackURL: String? = nil
     let meta: DetailMetaLineModel
     let ratings: [DetailRatingEntry]
     /// The ratings strip's slot is laid out (reserved, possibly still empty) only while this is on:
@@ -154,7 +157,8 @@ struct DetailCinematicHero<Actions: View>: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail_hero")
         .fullScreenCover(isPresented: $showSynopsisSheet) {
-            DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "")
+            DetailSynopsisSheet(title: title, logoURL: logoURL, overview: overview ?? "",
+                                backdropURL: backdropURL, backdropFallbackURL: backdropFallbackURL)
         }
     }
 

@@ -1123,7 +1123,7 @@ final class TrailerLetterboxProbe {
     /// Ceiling on the measured zoom. DERIVED, not tuned: the widest format anyone bakes into a 16:9
     /// container is ~2.55:1, and 2.55 / (16/9) = 1.435. (The 2.39:1 scope trailers UX-9 was filed
     /// over land at 1.344.) Anything past this is a measurement gone wrong, not a real bar.
-    static let maxZoom: CGFloat = 1.45
+    nonisolated static let maxZoom: CGFloat = 1.45
     /// Every trailer surface is 16:9: the inline tile by construction (UX-4a sizes it
     /// `posterHeight * 16/9`), the Detail hero and full-screen surfaces because they are the screen.
     private static let cardAspect: Double = 16.0 / 9.0
@@ -1150,12 +1150,12 @@ final class TrailerLetterboxProbe {
     /// true black bar, well below any real picture content. Internal (not private) so
     /// `ArtworkLetterbox` scans static key art with the exact same thresholds — one definition of
     /// "black bar" for the whole trailer tile.
-    static let blackLuma: Double = 16
+    nonisolated static let blackLuma: Double = 16
     /// No plausible baked bar eats more than a quarter of the frame per edge (the 2.55:1 worst case
     /// is ~15%), so the scan stops there rather than walking into the picture on a dark shot.
-    static let maxBarFraction: Double = 0.25
+    nonisolated static let maxBarFraction: Double = 0.25
     /// Bars thinner than this are encoder rounding, not letterboxing.
-    static let minBarFraction: Double = 0.01
+    nonisolated static let minBarFraction: Double = 0.01
     /// BUG-59 (reveal gate): a concealed surface is force-revealed after this many FRAME-BEARING
     /// ticks (≈3 s of delivered video) with no measurement — content whose decoded frames keep
     /// getting rejected as samples is dark (a black opening, a long fade), and dark frames have no

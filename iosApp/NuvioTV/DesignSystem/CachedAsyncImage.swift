@@ -155,6 +155,16 @@ struct CachedAsyncImage<Failure: View>: View {
     }
 
     var body: some View {
+        // Batch P (P1-2): most cards set neither `onLoaded` nor `cropsBakedLetterboxBars`, so they
+        // skip the per-image `.task` entirely (both are fixed at init, so the branch never flips).
+        if onLoaded != nil || cropsBakedLetterboxBars {
+            baseBody.task(id: loader.image) { await measureLoadedImage() }
+        } else {
+            baseBody
+        }
+    }
+
+    private var baseBody: some View {
         ZStack {
             if let image = loader.image {
                 Image(uiImage: image)
@@ -198,26 +208,27 @@ struct CachedAsyncImage<Failure: View>: View {
         .onChange(of: chain) { _, newChain in
             loader.load(newChain)
         }
-        // BUG-59: measure the loaded image's baked bars off-main, once per URL (memoized in
-        // `ArtworkLetterbox`). Keyed on the image (NSObject identity) so a URL change that swaps
-        // the image re-runs, and a re-render that doesn't, doesn't.
-        .task(id: loader.image) {
-            if let loaded = loader.image { onLoaded?(loaded) }
-            guard cropsBakedLetterboxBars else { return }
-            guard let image = loader.image, let key = url?.absoluteString else {
-                barCropZoom = 1
-                return
-            }
-            if let hit = ArtworkLetterbox.cachedZoom(forKey: key) {
-                barCropZoom = hit
-                return
-            }
-            let measured = await Task.detached(priority: .utility) {
-                ArtworkLetterbox.zoom(for: image, cacheKey: key)
-            }.value
-            guard !Task.isCancelled, loader.image === image else { return }
-            withAnimation(.easeOut(duration: 0.25)) { barCropZoom = measured }
+    }
+
+    /// BUG-59: measure the loaded image's baked bars off-main, once per URL (memoized in
+    /// `ArtworkLetterbox`). Run from `.task(id: loader.image)` so a URL change that swaps the image
+    /// re-runs, and a re-render that doesn't, doesn't.
+    private func measureLoadedImage() async {
+        if let loaded = loader.image { onLoaded?(loaded) }
+        guard cropsBakedLetterboxBars else { return }
+        guard let image = loader.image, let key = url?.absoluteString else {
+            barCropZoom = 1
+            return
         }
+        if let hit = ArtworkLetterbox.cachedZoom(forKey: key) {
+            barCropZoom = hit
+            return
+        }
+        let measured = await Task.detached(priority: .utility) {
+            ArtworkLetterbox.zoom(for: image, cacheKey: key)
+        }.value
+        guard !Task.isCancelled, loader.image === image else { return }
+        withAnimation(.easeOut(duration: 0.25)) { barCropZoom = measured }
     }
 }
 
@@ -1372,12 +1383,13 @@ private final class CachedImageLoader: ObservableObject {
         let keepsCurrent = image != nil && chain.sharesURLFamily(with: currentChain)
         currentChain = chain
         task?.cancel()
-        failed = false
-        if !keepsCurrent { image = nil }
+        // Batch P (P1-2): `@Published` emits on every assignment, equal or not; publish on change only.
+        if failed { failed = false }
+        if !keepsCurrent, image != nil { image = nil }
 
         let candidates = chain.urls
         guard !candidates.isEmpty else {
-            image = nil
+            if image != nil { image = nil }
             return
         }
         let request = chain.request
@@ -1398,13 +1410,14 @@ private final class CachedImageLoader: ObservableObject {
             hasFallback: hasFallback
         ) {
         case .showHead:
-            image = headHit
+            if image !== headHit { image = headHit }
             return
         case .showFallback:
-            image = lastHit ?? placeholder
+            let shown = lastHit ?? placeholder
+            if image !== shown { image = shown }
             return
         case .showPlaceholderThenFetch:
-            image = placeholder   // placeholder only; the walk below still fetches the head
+            if image !== placeholder { image = placeholder }   // placeholder only; the walk below still fetches the head
         case .fetch:
             break
         }
@@ -1414,11 +1427,16 @@ private final class CachedImageLoader: ObservableObject {
             if Task.isCancelled { return }
             guard let self, self.currentChain == chain else { return }
             if let fetched {
-                withAnimation(.easeIn(duration: 0.25)) { self.image = fetched }
+                if self.image == nil {
+                    withAnimation(.easeIn(duration: 0.25)) { self.image = fetched }
+                } else if self.image !== fetched {
+                    // A placeholder-to-head swap of the same picture needs no fade.
+                    self.image = fetched
+                }
             } else {
                 // A kept image (same family, see `load`) stays on screen, exactly as a seeded
                 // placeholder always has: the body draws `image` ahead of the failure surface.
-                self.failed = true
+                if !self.failed { self.failed = true }
             }
         }
     }

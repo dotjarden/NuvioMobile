@@ -485,6 +485,9 @@ struct DetailView: View {
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
+    /// FEAT-82 (Batch P): Play's measured height, the side of the equal square icon buttons when
+    /// Poster > Corners = Square. Rounded to whole points and written only on change (BUG-41).
+    @State private var playButtonHeight: CGFloat = 0
 
     /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
     /// fades the background player back out to the still backdrop without ever touching
@@ -567,6 +570,16 @@ struct DetailView: View {
     /// BUG-187: the last card focus held in Cast / Studios / Collection / More Like This, for the
     /// fallback restore after a pop (`DetailFocusMemory`). A reference box: writes never invalidate.
     @State private var focusMemory = DetailFocusMemory()
+    /// BUG-194 (Batch P): the row and card of a live pop restore (Back from a biography, a More Like
+    /// This title or a collection). While set, the remembered card is the default focus target and
+    /// the focus engine's stray first landing (Play, the hero) does not move the page: the page lands
+    /// on the card in one move. Ended on the landing, on viewer input, or when the request retires.
+    @State private var popRestoreRow: DetailRowID?
+    @State private var popRestoreKey: String?
+    @State private var popRestoreStartedAt: TimeInterval = 0
+    @State private var popRestoreLandedAt: TimeInterval?
+    /// Probe: focus-row changes between the pop and the release (`debug_detail_focus moves=`).
+    @State private var popFocusMoves = 0
     /// BUG-187: the restore rung handed to the rows that own their `FocusState` (Collection, More
     /// Like This). Changes only during a restore.
     @State private var detailFocusRestore = DetailFocusRestoreRequest.none
@@ -824,6 +837,29 @@ struct DetailView: View {
             // up to `screenRest` when it would otherwise leave the header straddling the top scrim
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             .onChange(of: focusedRow) { old, row in
+                // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
+                // not move the page (the "up, then down onto the card" Steven filmed). Decided by
+                // row and card, never by timestamps (Batch N's lesson): a landing on the remembered
+                // row is the one move; anything else holds until the rung lands it or the viewer
+                // presses, and the request's own retire ends it regardless.
+                if let liveRow = popRestoreRow, let liveKey = popRestoreKey {
+                    popFocusMoves += 1
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if let landedAt = popRestoreLandedAt, !DetailPopGate.landedHoldActive(age: now - landedAt) {
+                        endPopRestore()
+                    } else {
+                        let key = row == liveRow ? liveKey : focusMemory.key
+                        switch DetailPopGate.decide(focusedRow: row, focusedKey: key, target: (liveRow, liveKey),
+                                                    viewerInput: ViewerInputClock.shared.hasInput(since: popRestoreStartedAt)) {
+                        case .release:
+                            endPopRestore()
+                        case .landed:
+                            if popRestoreLandedAt == nil { popRestoreLandedAt = now }
+                        case .hold:
+                            return
+                        }
+                    }
+                }
                 // BUG-187: focus settled on a row with no remembered card; forget the last one.
                 if let row, !DetailFocusRestore.tracks(row) { focusMemory.clear() }
                 // Batch G device pass: leaving the hero for a row is interacting (see
@@ -1130,7 +1166,7 @@ struct DetailView: View {
             // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
             // last remembered card key, read by the cast/More Like This Back UI leg.
             if DetailFocusProbe.enabled {
-                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey)")
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(popFocusMoves)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")
@@ -1144,6 +1180,13 @@ struct DetailView: View {
         // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
         // above Play, so this names the target the engine already picked there.
         .defaultFocus($heroFocus, .play)
+        // BUG-194: while a pop restore is live, the remembered cast / studio card outranks Play as
+        // the default, so the engine's own restoration lands there instead of detouring via Play.
+        // An index that matches no card leaves Play's default in charge.
+        .defaultFocus($focusedCastIndex, popRestoreRow == .cast ? popRestoreKey.flatMap(Int.init) : -1,
+                      priority: .userInitiated)
+        .defaultFocus($focusedCompanyIndex, popRestoreRow == .logos ? popRestoreKey.flatMap(Int.init) : -1,
+                      priority: .userInitiated)
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
@@ -1800,6 +1843,8 @@ struct DetailView: View {
         return DetailCinematicHero(
             title: title,
             logoURL: logoUrl,
+            backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
+            backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
             meta: DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
                                       ageRating: ageRating, imdbRating: imdbRating),
             ratings: ratings,
@@ -2160,6 +2205,8 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { playButtonHeight = $0 })
+                .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
                 .disabled(!model.isPlayEnabled)
@@ -2196,6 +2243,8 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { playButtonHeight = $0 })
+                .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
                 .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
@@ -2241,7 +2290,9 @@ struct DetailView: View {
                         )
                     }
                 )
+                .modifier(DetailActionSquareFrame(side: squareSide))
                 .focused($heroFocus, equals: .trailer)
+                .accessibilityIdentifier("detail_action_trailer")
             }
 
             compactActionButtonStyle(
@@ -2259,8 +2310,10 @@ struct DetailView: View {
                 }
             )
             .tint(model.isWatched ? Theme.Palette.accent : nil)
+            .modifier(DetailActionSquareFrame(side: squareSide))
             // Review r1 #2: identity only (a move between hero buttons is user input).
             .focused($heroFocus, equals: .watched)
+            .accessibilityIdentifier("detail_action_watched")
 
             compactActionButtonStyle(
                 Button {
@@ -2277,7 +2330,9 @@ struct DetailView: View {
                 }
             )
             .tint(model.isSaved ? Theme.Palette.accent : nil)
+            .modifier(DetailActionSquareFrame(side: squareSide))
             .focused($heroFocus, equals: .library)
+            .accessibilityIdentifier("detail_action_library")
 
             // Episode shuffle: series only, and only while the global switch is on. Last in the
             // row so the existing buttons keep their positions. Accent tint = on for this show,
@@ -2302,7 +2357,9 @@ struct DetailView: View {
                     }
                 )
                 .tint(model.shuffleSettings.enabled ? Theme.Palette.accent : nil)
+                .modifier(DetailActionSquareFrame(side: squareSide))
                 .focused($heroFocus, equals: .shuffle)
+                .accessibilityIdentifier("detail_action_shuffle")
             }
         }
     }
@@ -2368,6 +2425,12 @@ struct DetailView: View {
         guard let target = memory.takeArmedTarget() else { return }
         let generation = memory.beginRestore()
         let started = ProcessInfo.processInfo.systemUptime
+        memory.goLive((target.row, target.key))
+        popRestoreRow = target.row
+        popRestoreKey = target.key
+        popRestoreStartedAt = started
+        popRestoreLandedAt = nil
+        popFocusMoves = 0
         for rung in DetailFocusRestore.rungs {
             DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
                 guard memory.isCurrent(generation),
@@ -2378,7 +2441,16 @@ struct DetailView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + DetailFocusRestore.retireDelay) {
             guard memory.isCurrent(generation) else { return }
             detailFocusRestore = .none
+            endPopRestore()
         }
+    }
+
+    /// BUG-194: the live pop restore is over; the page anchors normally again.
+    private func endPopRestore() {
+        focusMemory.endRestore()
+        popRestoreRow = nil
+        popRestoreKey = nil
+        popRestoreLandedAt = nil
     }
 
     /// BUG-187: one rung. Cast and Studios focus states live here; Collection and More Like This
@@ -2430,6 +2502,7 @@ struct DetailView: View {
                 )
             }
         )
+        .modifier(DetailActionSquareFrame(side: squareSide))
         .disabled(!model.isPlayEnabled)
         .focused($heroFocus, equals: .startOver)
         .accessibilityIdentifier("detail_start_over")
@@ -2470,10 +2543,19 @@ struct DetailView: View {
 
     /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
     /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
+
+    /// FEAT-82: the fixed square side for an icon-only button (Corners = Square and Play measured),
+    /// else nil (Rounded and Round, and Classic text labels, keep today's layout).
+    private var squareSide: CGFloat? {
+        let side = DetailActionSquare.side(playHeight: playButtonHeight)
+        return DetailActionSquare.applies(isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
+                                          iconOnly: true, side: side) ? side : nil
+    }
     @ViewBuilder
     private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
         if usesIconOnlyLabel(primary: primary) {
             content.padding(Theme.Spacing.md)
+                .modifier(DetailActionSquareLabel(side: squareSide))
         } else {
             content
                 .padding(.horizontal, horizontal)

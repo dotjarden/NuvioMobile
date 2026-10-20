@@ -29,17 +29,24 @@ struct StageView: View {
     /// S7: the DEBUG readout's identifier. The folder page passes `debug_stage_folder`, so a folder
     /// pushed over Home never yields two `debug_stage` elements.
     let probeID: String
+    /// BUG-190 (Steven rc10): where the title logo sits inside its fixed slot. Home and Discover keep
+    /// `.bottomLeading` (their layout is untouched); the folder page passes `.topLeading` once its
+    /// own folder logo has risen, so the title block reads top-down from the stage block's top
+    /// instead of floating ~100 pt below it when the wordmark is short. The slot's height never changes.
+    let logoAlignment: Alignment
 
     init(controller: StageController,
          geometry: StripGeometry,
          hidesLogoWhenDisplaying: String? = nil,
          hidesLogo: Bool = false,
-         probeID: String = "debug_stage") {
+         probeID: String = "debug_stage",
+         logoAlignment: Alignment = .bottomLeading) {
         self.controller = controller
         self.geometry = geometry
         self.hidesLogoWhenDisplaying = hidesLogoWhenDisplaying
         self.hidesLogo = hidesLogo
         self.probeID = probeID
+        self.logoAlignment = logoAlignment
     }
 
     var body: some View {
@@ -51,6 +58,7 @@ struct StageView: View {
                            geometry: geometry,
                            hidesLogoWhenDisplaying: hidesLogoWhenDisplaying,
                            hidesLogo: hidesLogo,
+                           logoAlignment: logoAlignment,
                            copySource: controller.copySource)
             #if DEBUG
             StageDebugLabel(debug: controller.swap.debug, geometry: geometry, probeID: probeID)
@@ -201,6 +209,8 @@ struct StageTextBlock: View {
     let hidesLogoWhenDisplaying: String?
     /// FEAT-70: see `StageView.hidesLogo`.
     let hidesLogo: Bool
+    /// BUG-190: see `StageView.logoAlignment`.
+    let logoAlignment: Alignment
     /// W2-A's Continue Watching copy input (`StageController.copySource`); a nil lookup = Classic copy.
     @ObservedObject var copySource: StageCopySource
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -209,11 +219,13 @@ struct StageTextBlock: View {
          geometry: StripGeometry,
          hidesLogoWhenDisplaying: String?,
          hidesLogo: Bool = false,
+         logoAlignment: Alignment = .bottomLeading,
          copySource: StageCopySource) {
         _swap = ObservedObject(wrappedValue: swap)
         self.geometry = geometry
         self.hidesLogoWhenDisplaying = hidesLogoWhenDisplaying
         self.hidesLogo = hidesLogo
+        self.logoAlignment = logoAlignment
         _copySource = ObservedObject(wrappedValue: copySource)
     }
 
@@ -237,7 +249,10 @@ struct StageTextBlock: View {
                                           rowHeading: copySource.rowHeading(for: shown.item))
                 VStack(alignment: .leading, spacing: StripGeometry.slotGap) {
                     HeroLogo(item: shown.item, image: shown.logo, maxHeight: geometry.logoSlot, ink: shown.logoInk)
-                        .frame(height: geometry.logoSlot, alignment: .bottomLeading)
+                        .frame(height: geometry.logoSlot, alignment: logoAlignment)
+                        // The alignment flips while the logo is still hidden (the folder logo's
+                        // rise); it must not glide.
+                        .transaction(value: logoAlignment) { $0.animation = nil }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         // S3; FEAT-70: also hidden while the folder page's logo is docked here.
                         // Shown on the folder logo's rise with the strip's page curve.

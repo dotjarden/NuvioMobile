@@ -505,6 +505,21 @@ enum PinnedRowGeometry {
         /// is 2 pt away. 64 still draws a 2:1 wordmark 128 pt wide. Only Long reaches it.
         static let pinnedLogoFloor: CGFloat = 64
 
+        /// FEAT-61 (Steven rc10, Medium+): the logo floor that only the FOURTH line may reach in the
+        /// pinned hero. Measured at Medium+ with Hide Titles ON and zoom on (his config), the
+        /// carousel's compression is 15.95: system font already gets 4 lines, Open Sans (31.32 pt
+        /// lines) is 0.48 pt short with the logo at 64. 56 clears that with margin and still draws
+        /// a 2:1 wordmark 112 pt wide; never below 48 (a 2:1 wordmark 96 pt wide). Lines two and
+        /// three keep `pinnedLogoFloor`. The frame never changes, so rows never pay (BUG-87/89).
+        /// Medium+ WITH captions (compression 53 to 59) would need a floor near 31, below 48, so
+        /// those cells keep 2 lines; that is reported, not guessed.
+        static let fourLineLogoFloor: CGFloat = 56
+
+        /// The logo floor `grant` uses for a `lines` target in the pinned hero.
+        static func pinnedFloor(forLines lines: Int) -> CGFloat {
+            lines >= maxLines ? fourLineLogoFloor : pinnedLogoFloor
+        }
+
         /// Long's logo floor in the in-scroll Classic hero (150 pt slot): the pinned hero's full slot.
         static let classicLogoFloor: CGFloat = Theme.Size.heroLogoSlotHeightPinned
 
@@ -535,19 +550,22 @@ enum PinnedRowGeometry {
         ///   - standardLines: the line limit Standard draws (2 fixed in the in-scroll hero).
         ///   - logoSlot: the logo slot Standard draws.
         ///   - logoFloor: how far Long may shrink the logo slot.
+        ///   - fourLineLogoFloor: a lower floor used only for the `maxLines` target (nil = `logoFloor`).
         ///   - unusedSlack: frame height the content does not fill today.
         ///   - lineHeight: `Theme.Font.synopsisLineHeight` for the active font.
         static func grant(slot: CGFloat,
                           standardLines: Int,
                           logoSlot: CGFloat,
                           logoFloor: CGFloat,
+                          fourLineLogoFloor: CGFloat? = nil,
                           unusedSlack: CGFloat,
                           lineHeight: CGFloat) -> Grant {
             let unchanged = Grant(synopsisGrowth: 0, logoGive: 0, lines: standardLines)
             guard lineHeight > 0, standardLines < maxLines else { return unchanged }
             let slack = max(unusedSlack, 0)
-            let available = slack + max(logoSlot - logoFloor, 0)
             for target in stride(from: maxLines, through: standardLines + 1, by: -1) {
+                let floor = target == maxLines ? min(logoFloor, fourLineLogoFloor ?? logoFloor) : logoFloor
+                let available = slack + max(logoSlot - floor, 0)
                 let need = max(CGFloat(target) * lineHeight - lineTolerance - slot + roundingMargin, 0)
                 guard need <= available else { continue }
                 let fromSlack = min(need, slack)
@@ -570,6 +588,7 @@ enum PinnedRowGeometry {
                          standardLines: lines(slot: slot, lineHeight: lineHeight),
                          logoSlot: Theme.Size.heroLogoSlotHeightPinned - split.logo,
                          logoFloor: pinnedLogoFloor,
+                         fourLineLogoFloor: fourLineLogoFloor,
                          unusedSlack: unusedSlack,
                          lineHeight: lineHeight)
         }

@@ -143,4 +143,33 @@ final class ArtworkURLUpgradeTests: XCTestCase {
         XCTAssertEqual(ArtworkURLUpgrade.sizeSegment(URL(string: metahub("background", "medium"))!), "background/medium")
         XCTAssertEqual(ArtworkURLUpgrade.sizeSegment(URL(string: "https://example.com/a.jpg")!), "-")
     }
+
+    // MARK: Family memo (Batch P, P1-3)
+
+    private var memoSamples: [URL] {
+        [tmdb("w500", "p.jpg"), tmdb("w1280", "b.jpg"), tmdb("original", "o.png"), tmdb("w185", "logo.svg"),
+         metahub("poster", "medium"), metahub("poster", "large"), "https://example.com/a.jpg"].map { URL(string: $0)! }
+    }
+
+    func testFamilyMemoMatchesComputed() {
+        for url in memoSamples {
+            XCTAssertEqual(ArtworkURLUpgrade.family(url), ArtworkURLUpgrade.computeFamily(url), "\(url)")
+            // Second call is the memo hit and must agree element-wise.
+            XCTAssertEqual(ArtworkURLUpgrade.family(url), ArtworkURLUpgrade.computeFamily(url), "\(url) (hit)")
+        }
+    }
+
+    func testFamilyMemoIsThreadSafe() {
+        let urls = (0..<20).map { URL(string: tmdb("w500", "f\($0).jpg"))! }
+        let expected = urls.map { ArtworkURLUpgrade.computeFamily($0) }
+        let lock = NSLock()
+        var mismatches = 0
+        DispatchQueue.concurrentPerform(iterations: 1000) { i in
+            let n = i % urls.count
+            if ArtworkURLUpgrade.family(urls[n]) != expected[n] {
+                lock.lock(); mismatches += 1; lock.unlock()
+            }
+        }
+        XCTAssertEqual(mismatches, 0)
+    }
 }

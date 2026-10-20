@@ -309,6 +309,7 @@ struct NavigationRail: View {
     @AppStorage(NavigationChrome.railVisibilityKey) private var visibilityRaw = NavigationChrome.RailVisibility.always.rawValue
     @AppStorage(NavigationChrome.railPositionKey) private var railPositionRaw = NavigationChrome.RailPosition.centre.rawValue
     @AppStorage(NavigationChrome.railLabelsKey) private var railLabelsRaw = NavigationChrome.RailLabels.shown.rawValue
+    @AppStorage(NavigationChrome.railStyleKey) private var railStyleRaw = NavigationChrome.RailStyle.floating.rawValue
     /// A6: whether the Discover item is listed. Handed down from `MainTabView.showsDiscoverTab`,
     /// the same once-per-tree value that decides whether `Tab(value: 6)` exists, so the rail never
     /// lists an item without a tab or the reverse (review r1 P2-1). The rail never reads
@@ -487,6 +488,11 @@ struct NavigationRail: View {
         NavigationChrome.railLabels(raw: railLabelsRaw) == .shown
     }
 
+    /// Batch P (P2): Floating pill or Edge (flush left).
+    private var style: NavigationChrome.RailStyle {
+        NavigationChrome.railStyle(raw: railStyleRaw)
+    }
+
     /// The pill's width: grows only while open AND labels are shown. FEAT-80 Corner (Batch O): the
     /// same 84 / 300 as Centre, following `railOpen` (the unroll).
     private var pillWidth: CGFloat {
@@ -514,12 +520,12 @@ struct NavigationRail: View {
                     // out (Hidden's reveal, Hide While Browsing's hide): a slide from the leading
                     // edge would drag the resting Home icon across the screen.
                     cornerPanel
-                        .padding(.leading, RailMetrics.bezelInset)
+                        .padding(.leading, NavigationChrome.pillLeading(style))
                         .padding(.top, RailMetrics.cornerTop)
                         .transition(.opacity)
                 } else {
                     pill
-                        .padding(.leading, RailMetrics.bezelInset)
+                        .padding(.leading, NavigationChrome.pillLeading(style))
                         .transition(reduceMotion ? AnyTransition.opacity
                                     : AnyTransition.move(edge: .leading).combined(with: .opacity))
                 }
@@ -605,17 +611,39 @@ struct NavigationRail: View {
         .frame(width: pillWidth, alignment: .leading)
     }
 
-    private static var pillShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous)
+    /// Floating: the rounded pill. Edge (Batch P): square on the screen-edge side, rounded on the
+    /// trailing side. Used by the glass AND the Corner panel's mask, so the two never disagree.
+    private var pillShape: AnyShape {
+        switch style {
+        case .floating:
+            AnyShape(RoundedRectangle(cornerRadius: RailMetrics.cornerRadius, style: .continuous))
+        case .edge:
+            AnyShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0,
+                                            bottomTrailingRadius: RailMetrics.cornerRadius,
+                                            topTrailingRadius: RailMetrics.cornerRadius, style: .continuous))
+        }
     }
 
     /// The glass is a BACKGROUND behind the buttons, never a `glassEffect` around them: wrapping
     /// focusable content in glass hid it from the focus engine in another tvOS app (the Orivio
     /// trap, `docs/research/orivio-tv-handoff.md`).
+    @ViewBuilder
     private var pillGlass: some View {
-        Self.pillShape
-            .fill(Color.clear)
-            .glassEffect(.regular, in: Self.pillShape)
+        let shape = pillShape
+        // Batch P (P3/P10): the Icons Only glass variant, behind `-debug.railGlass`. Shown stays
+        // byte-identical unless the value ends in `-all`.
+        let variant: RailGlassVariant = (!showsLabels || RailGlassVariant.currentAppliesToShown)
+            ? RailGlassVariant.current : .regular
+        switch variant {
+        case .regular:
+            shape.fill(Color.clear).glassEffect(.regular, in: shape)
+        case .clear:
+            shape.fill(Color.clear).glassEffect(.clear, in: shape)
+        case .tinted:
+            shape.fill(Color.clear).glassEffect(.regular.tint(Color.black.opacity(0.35)), in: shape)
+        case .material:
+            shape.fill(.ultraThinMaterial)
+        }
     }
 
     #if DEBUG
@@ -704,7 +732,7 @@ struct NavigationRail: View {
             // outside it while it grows (a plain Rectangle cut the capsule square beside the
             // glass's rounded corner). Every row, capsule and avatar sits inside it at rest and open.
             .mask(alignment: .topLeading) {
-                Self.pillShape
+                pillShape
                     .frame(width: glassWidth, height: glassHeight)
                     .animation(grow, value: frameOpen)
             }

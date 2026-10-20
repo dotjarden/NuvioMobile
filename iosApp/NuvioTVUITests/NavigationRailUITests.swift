@@ -591,6 +591,16 @@ final class NavigationRailUITests: XCTestCase {
         XCTAssertNotNil(classicCard0, "no card frames in the focused Classic row")
         if let classicCard0 { XCTAssertEqual(classicCard0.minX, 176, accuracy: 2, "Classic: card 0 at 140 + 36: \(classicCard0)") }
 
+        // Batch P: Edge moves the pill, never the content.
+        let edge = launch(Self.railArguments() + ["-rail_style", "edge"])
+        try requireRail(edge)
+        XCTAssertEqual(rail(edge, "inset"), "36", "Edge keeps the reserved inset: \(railState(edge))")
+        remote.press(.right)
+        pause(1.2)
+        let edgeCard0 = leftmostCardInFocusedRow(edge)
+        XCTAssertNotNil(edgeCard0, "no card frames in the focused row (Edge)")
+        if let edgeCard0 { XCTAssertEqual(edgeCard0.minX, 176, accuracy: 2, "Edge: card 0 still at 176: \(edgeCard0)") }
+
         let tabs = launch(["-sidebar_style", "tabs", "-home_layout", "stage",
                            "-home_upcoming_row_enabled", "NO", "-inline_trailers_enabled", "NO", "-discover_placement", "off"])
         XCTAssertTrue(railState(tabs).isEmpty, "Tabs mode must not mount the rail")
@@ -940,5 +950,62 @@ final class NavigationRailUITests: XCTestCase {
         pause(0.4)   // the rows' fade and the shrink
         note("rail12b_search_rest_state", railState(app))
         shot("rail12b_corner_rest_on_search")
+    }
+
+    // MARK: - testRail13 (Batch P, P2 Rail Style)
+
+    /// Edge, Centre: the pill is flush against the left screen edge (minX 0), still clear of the top,
+    /// and as tall as Floating's.
+    func testRail13_EdgePillIsFlushInCentre() throws {
+        let floating = launch(Self.railArguments())
+        try requireRail(floating)
+        XCTAssertTrue(menuIsSafe(floating), "precondition: rail closed — \(railState(floating))")
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(floating) }, "Menu must open the rail: \(railState(floating))")
+        pause(0.8)
+        let floatingHeight = railGlass(floating).frame.height
+
+        let app = launch(Self.railArguments() + ["-rail_style", "edge"])
+        try requireRail(app)
+        XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu must open the Edge rail: \(railState(app))")
+        pause(0.8)
+        let pill = railGlass(app).frame
+        XCTAssertEqual(pill.minX, 0, accuracy: 1, "Edge pill flush with the left edge: \(pill)")
+        XCTAssertGreaterThan(pill.minY, 0, "Edge pill keeps clear of the top: \(pill)")
+        XCTAssertEqual(pill.height, floatingHeight, accuracy: 2, "Edge keeps Floating's height: \(pill) vs \(floatingHeight)")
+        shot("rail13_edge_centre_open")
+    }
+
+    /// Edge, Corner: the open pill is flush at (0, 38); at rest the Home cell sits at x 12 + 30.
+    func testRail13b_EdgeCornerUnrollsFlush() throws {
+        let app = launch(Self.railArguments() + ["-rail_position", "corner", "-rail_style", "edge"])
+        try requireRail(app)
+        let home = railItem(app, "Home")
+        XCTAssertTrue(home.waitForExistence(timeout: 4), "the Home glyph shows at rest")
+        let rest = Self.homeCellCentre(home.frame, open: false)
+        XCTAssertEqual(rest.x, 42, accuracy: 2, "Edge Corner rest glyph sits at 12 + 30: \(home.frame)")
+        XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu must open the Corner rail: \(railState(app))")
+        pause(0.8)
+        let glass = railGlass(app).frame
+        XCTAssertEqual(glass.minX, 0, accuracy: 1, "Edge Corner pill flush: \(glass)")
+        XCTAssertEqual(glass.minY, Self.cornerPillOrigin.y, accuracy: 1, "anchored at the top: \(glass)")
+        shot("rail13b_edge_corner_open")
+    }
+
+    /// No `-rail_style`: Floating, Rail12's origin (16, 38) still holds.
+    func testRail13c_FloatingUnchanged() throws {
+        let app = launch(Self.railArguments() + ["-rail_position", "corner"])
+        try requireRail(app)
+        XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu must open the Corner rail: \(railState(app))")
+        pause(0.8)
+        let glass = railGlass(app).frame
+        XCTAssertEqual(glass.minX, Self.cornerPillOrigin.x, accuracy: 1, "Floating keeps the bezel inset: \(glass)")
+        XCTAssertEqual(glass.minY, Self.cornerPillOrigin.y, accuracy: 1, "\(glass)")
     }
 }

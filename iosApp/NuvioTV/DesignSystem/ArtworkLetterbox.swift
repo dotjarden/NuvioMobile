@@ -21,7 +21,9 @@ import UIKit
 ///
 /// Mirrored by `ArtworkLetterboxTests` in `NuvioTVUITests` (a UI-test bundle can't link app code —
 /// see `StreamBadgeColorTests`' type doc for the precedent). Keep the two in sync by hand.
-enum ArtworkLetterbox {
+/// `nonisolated`: the target defaults to MainActor isolation, which would pull this scan back onto the
+/// main thread even from `Task.detached` (Batch P, P1-1).
+nonisolated enum ArtworkLetterbox {
     /// Width of the scan bitmap. The height is derived from the image's own aspect, so the
     /// downscale can never introduce the bars it is looking for (the same trap
     /// `TrailerLetterboxProbe.bars(in:)` documents for `AVPlayerItemVideoOutput`).

@@ -89,7 +89,9 @@ struct FolderRowsPage: View {
                       geometry: geo,
                       hidesLogoWhenDisplaying: folderIdentity,
                       hidesLogo: FolderStageLogo.docked(followsFocus: followsFocus),
-                      probeID: "debug_stage_folder")
+                      probeID: "debug_stage_folder",
+                      // BUG-190: top-aligned once the folder logo has risen out of the slot.
+                      logoAlignment: FolderStageLogo.docked(followsFocus: followsFocus) ? .bottomLeading : .topLeading)
             FolderStageLogoLayer(title: model.folderTitle,
                                  logoUrl: model.titleLogoUrl,
                                  geometry: geo,

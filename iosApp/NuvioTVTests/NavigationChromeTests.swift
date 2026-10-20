@@ -315,4 +315,39 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(NavigationChrome.railLabels(raw: "ICONS"), .iconsOnly)
         XCTAssertEqual(NavigationChrome.railLabels(raw: "none"), .shown)
     }
+
+    // MARK: Batch P (P2 Rail Style, P3/P10 glass variant)
+
+    func testRailStyleResolution() {
+        XCTAssertEqual(NavigationChrome.railStyle(raw: nil), .floating)
+        XCTAssertEqual(NavigationChrome.railStyle(raw: ""), .floating)
+        XCTAssertEqual(NavigationChrome.railStyle(raw: "floating"), .floating)
+        XCTAssertEqual(NavigationChrome.railStyle(raw: "edge"), .edge)
+        XCTAssertEqual(NavigationChrome.railStyle(raw: " EDGE "), .edge)
+        XCTAssertEqual(NavigationChrome.railStyle(raw: "flush"), .floating)
+    }
+
+    func testPillLeadingByStyle() {
+        XCTAssertEqual(NavigationChrome.pillLeading(.floating), 16)
+        XCTAssertEqual(NavigationChrome.pillLeading(.edge), 0)
+    }
+
+    /// Edge must not move content: the reserved width never derives from `pillLeading`.
+    func testReservedEdgeIgnoresStyle() {
+        XCTAssertEqual(NavigationChrome.reservedEdge, 116)
+        XCTAssertEqual(NavigationChrome.pillTrailingEdge, 100)
+    }
+
+    func testRailGlassVariantResolution() {
+        XCTAssertEqual(RailGlassVariant.resolve(nil), .regular)
+        XCTAssertEqual(RailGlassVariant.resolve("regular"), .regular)
+        XCTAssertEqual(RailGlassVariant.resolve("clear"), .clear)
+        XCTAssertEqual(RailGlassVariant.resolve("tinted"), .tinted)
+        XCTAssertEqual(RailGlassVariant.resolve("material"), .material)
+        XCTAssertEqual(RailGlassVariant.resolve("clear-all"), .clear)
+        XCTAssertEqual(RailGlassVariant.resolve("junk"), .regular)
+        XCTAssertTrue(RailGlassVariant.appliesToShown("tinted-all"))
+        XCTAssertFalse(RailGlassVariant.appliesToShown("tinted"))
+        XCTAssertFalse(RailGlassVariant.appliesToShown(nil))
+    }
 }

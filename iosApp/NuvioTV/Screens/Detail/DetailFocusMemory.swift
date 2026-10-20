@@ -61,6 +61,57 @@ final class DetailFocusMemory {
     }
 
     func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
+
+    // MARK: Pop gate (Batch P, P7 / BUG-194)
+
+    /// The card a live restore is steering focus to; nil when no restore is live.
+    private(set) var liveTarget: (row: DetailRowID, key: String)?
+
+    /// True from `goLive` until `endRestore`: the remembered card is the only default candidate.
+    var restoreLive: Bool { liveTarget != nil }
+
+    /// The pop's restore began; the card becomes the default focus target.
+    func goLive(_ target: (row: DetailRowID, key: String)) { liveTarget = target }
+
+    /// The restore ended (released, landed window over, or retired): back to Play as the default.
+    func endRestore() { liveTarget = nil }
+}
+
+/// BUG-194 (Steven rc10: back from a biography went up to Play, then down to the card). The same
+/// shape as BUG-156's Home pop and Batch N's fix: while a restore is live the remembered card is
+/// the ONLY default candidate (so the engine's late restoration lands on it, not Play), and the
+/// hold is decided by the row and card focus reports, never by timestamps. Pure; `DetailView` owns
+/// the state (hunks in `agentC-pending-hunks.md`).
+nonisolated enum DetailPopGate {
+    nonisolated enum Decision: Equatable, Sendable {
+        /// Focus is not on the target yet; keep steering and keep the page still.
+        case hold
+        /// Focus is on the target row and card; start the landed hold window.
+        case landed
+        /// The viewer moved focus: stand down at once.
+        case release
+    }
+
+    /// Same constant as the Home uncover: counted from the landing.
+    static let landedWindow: TimeInterval = UncoverRestorePolicy.landedWindow
+
+    /// The default focus target while a restore is live (the remembered card's row), else nil, which
+    /// leaves today's `.defaultFocus($heroFocus, .play)` in charge.
+    static func defaultTarget(restoreLive: Bool, target: (row: DetailRowID, key: String)?) -> DetailRowID? {
+        restoreLive ? target?.row : nil
+    }
+
+    /// Row and card only: viewer input wins, then a focus report on the target row AND card lands;
+    /// anything else (the hero, another row, another card) holds.
+    static func decide(focusedRow: DetailRowID?, focusedKey: String?,
+                       target: (row: DetailRowID, key: String), viewerInput: Bool) -> Decision {
+        if viewerInput { return .release }
+        if focusedRow == target.row, focusedKey == target.key { return .landed }
+        return .hold
+    }
+
+    /// Whether the landed hold is still running, `age` seconds after the landing.
+    static func landedHoldActive(age: TimeInterval) -> Bool { age < landedWindow }
 }
 
 /// BUG-187: a restore rung for a row that owns its own `FocusState` (Collection, More Like This).

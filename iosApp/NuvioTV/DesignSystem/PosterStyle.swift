@@ -104,6 +104,11 @@ struct PosterStyle: Equatable {
         if let hide = PosterStyleDebugOverride.hideTitles {
             showTitle = !hide
         }
+        // FEAT-82 (Batch P): Corners is a synced setting too, so the Detail square-button leg needs a
+        // launch override to reach Square on the fixture.
+        if let radius = PosterStyleDebugOverride.cornerRadius {
+            cornerRadius = radius
+        }
         #endif
     }
 
@@ -178,6 +183,7 @@ extension PosterStyle {
 ///
 ///     -debug.posterSizeOverride small|medium|mediumPlus|large   (105 / 126 / 134 / 154 dp)
 ///     -debug.posterHideTitles YES|NO
+///     -debug.posterCornersOverride square|rounded|round         (0 / 12 / 28 pt)
 ///
 /// Launch-latched (read once). No Zoom needs no knob: `-no_zoom_on_focus YES` already lands in the
 /// `@AppStorage` key.
@@ -189,6 +195,16 @@ nonisolated enum PosterStyleDebugOverride {
         case "medium": return 126
         case "mediumplus", "medium+", "medium_plus": return 134
         case "large": return 154
+        default: return nil
+        }
+    }()
+
+    static let cornerRadius: CGFloat? = {
+        switch UserDefaults.standard.string(forKey: "debug.posterCornersOverride")?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "square": return 0
+        case "rounded": return 12
+        case "round": return 28
         default: return nil
         }
     }()

@@ -17624,6 +17624,8 @@
         }
       }
     },
+    "Floating": {},
+    "Floating keeps the rail a pill just inside the left edge. Edge sets it flat against the left edge of the screen. Default: Floating.": {},
     "Focus Mode": {
       "localizations": {
         "de": {
@@ -31125,6 +31127,7 @@
         }
       }
     },
+    "Press Sync Line while a line is spoken, then pick that line.": {},
     "Press to disconnect": {
       "localizations": {
         "de": {
@@ -31738,6 +31741,7 @@
         }
       }
     },
+    "Rail Style": {},
     "Rail swaps the top tab bar for a column of icons on the left.": {
       "localizations": {
         "de": {
