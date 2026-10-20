@@ -237,6 +237,25 @@ private enum RailMetrics {
     static let restingShowSettle: TimeInterval = 0.35
     /// How long a route restore gets to move focus out of the rail before the default hand-off.
     static let exitVerifyDelay: TimeInterval = 0.5
+
+    // FEAT-80 Corner (Batch N, Steven's 2026-10-19 mock): the glass runs flush to the top and left
+    // screen edges, and the Home cell's platter sits at the tvOS safe-area origin (80, 60). At rest
+    // only that cell shows: a 152 × 132 tab. Open, the same column runs on downward.
+    static let cornerLeading: CGFloat = NavigationChrome.cornerSafeLeading   // 80
+    static let cornerTop: CGFloat = NavigationChrome.cornerSafeTop           // 60
+    /// Below the Home cell at rest; the open column keeps `verticalPadding` below the avatar.
+    static let cornerTabBottom: CGFloat = innerPadding
+    /// 80 + 60 + 12 = 152.
+    static let cornerTabWidth: CGFloat = cornerLeading + itemPlatter + innerPadding
+    /// 60 + 60 + 12 = 132.
+    static let cornerTabHeight: CGFloat = cornerTop + itemPlatter + cornerTabBottom
+    /// The Centre pill's label row (300 − 2 × 12 = 276) after the corner's leading inset: 368.
+    static let cornerExpandedWidth: CGFloat = cornerLeading + (expandedWidth - 2 * innerPadding) + innerPadding
+    /// The lower items' fade, staggered top to bottom while the column unrolls.
+    static let cornerItemFade: Double = 0.18
+    static let cornerItemStagger: Double = 0.035
+    /// The unroll: a spring on the glass height and the mask (never on the items).
+    static var cornerUnroll: Animation { .spring(response: 0.36, dampingFraction: 0.86) }
 }
 
 // MARK: - Content gate (P4 §2.3)
@@ -314,6 +333,27 @@ struct NavigationRail: View {
 
     private var expanded: Bool { focusedItem != nil }
 
+    /// FEAT-80: the resolved position (rc8's stored "top" reads as Corner).
+    private var position: NavigationChrome.RailPosition {
+        NavigationChrome.railPosition(raw: railPositionRaw)
+    }
+
+    private var isCorner: Bool { position == .corner }
+
+    /// FEAT-80 Corner: the column is unrolled from the moment the rail ARMS, one turn before
+    /// `takeFocusAfterReveal` lands focus, so the item it focuses (the selected tab's, which may be
+    /// any of them) is already inside the growing mask. Collapsed means not armed, so every item
+    /// is a plain label then, the hidden ones included.
+    private var cornerOpen: Bool { armed || expanded }
+
+    /// What the labels, the width and (Corner) the unroll follow: `expanded` in Centre, unchanged;
+    /// `cornerOpen` in Corner.
+    private var railOpen: Bool { isCorner ? cornerOpen : expanded }
+
+    /// FEAT-80 Corner: the column's full laid-out height, measured once per layout change. 0 until
+    /// the first layout, which the visible height floors at the tab's.
+    @State private var cornerColumnHeight: CGFloat = 0
+
     private var visibility: NavigationChrome.RailVisibility {
         NavigationChrome.railVisibility(raw: visibilityRaw)
     }
@@ -337,15 +377,18 @@ struct NavigationRail: View {
     private var shellInset: CGFloat {
         RailVisibilityRule.reservedLeadingInset(sideSafeArea: PinnedRowGeometry.sideSafeArea,
                                                 visibility: visibility,
+                                                position: position,
                                                 selectedTab: selectedTab,
                                                 keyboardFocused: chrome.searchKeyboardFocused,
                                                 holdInset: RailSearchInsetHold.current)
     }
 
-    /// R3: what Always Visible adds to every tab root's leading safe area (36), for the probe.
+    /// R3: what Always Visible adds to every tab root's leading safe area (36; 0 in Corner,
+    /// FEAT-80), for the probe.
     private var contentInset: CGFloat {
         NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea,
-                                              reservesWidth: visibility == .always)
+                                              reservesWidth: visibility == .always,
+                                              position: position)
     }
 
     /// A6: the item list for this tree's tabs.
@@ -357,9 +400,9 @@ struct NavigationRail: View {
         .easeOut(duration: RailMetrics.slideDuration)
     }
 
-    /// FEAT-80 (Steven rc7): Top position puts the pill at the top-left instead of centred.
+    /// FEAT-80: Corner pins the panel to the top-left; Centre centres the pill on the left edge.
     private var pillAlignment: Alignment {
-        NavigationChrome.railPosition(raw: railPositionRaw) == .top ? .topLeading : .leading
+        isCorner ? .topLeading : .leading
     }
 
     /// FEAT-80: Icons Only keeps the pill at its collapsed width and never draws labels.
@@ -367,9 +410,19 @@ struct NavigationRail: View {
         NavigationChrome.railLabels(raw: railLabelsRaw) == .shown
     }
 
-    /// The pill's width: grows only while expanded AND labels are shown.
+    /// The pill's width: grows only while open AND labels are shown. FEAT-80 Corner: the tab's 152,
+    /// or 368 with labels once unrolled.
     private var pillWidth: CGFloat {
-        expanded && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
+        if isCorner {
+            return railOpen && showsLabels ? RailMetrics.cornerExpandedWidth : RailMetrics.cornerTabWidth
+        }
+        return railOpen && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
+    }
+
+    /// One item row's width inside the pill (the glyph, the gap, the label).
+    private var itemRowWidth: CGFloat {
+        isCorner ? pillWidth - RailMetrics.cornerLeading - RailMetrics.innerPadding
+                 : pillWidth - 2 * RailMetrics.innerPadding
     }
 
     var body: some View {
@@ -383,11 +436,18 @@ struct NavigationRail: View {
                 .accessibilityHidden(true)
                 .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
             if shown {
-                pill
-                    .padding(.leading, RailMetrics.bezelInset)
-                    .padding(.top, pillAlignment == .topLeading ? NavigationChrome.topInset : 0)
-                    .transition(reduceMotion ? AnyTransition.opacity
-                                : AnyTransition.move(edge: .leading).combined(with: .opacity))
+                if isCorner {
+                    // FEAT-80: flush to both edges, no bezel inset. A fade in and out (Hidden's
+                    // reveal, Hide While Browsing's hide): a slide from the leading edge would drag
+                    // the corner tab across the screen.
+                    cornerPanel
+                        .transition(.opacity)
+                } else {
+                    pill
+                        .padding(.leading, RailMetrics.bezelInset)
+                        .transition(reduceMotion ? AnyTransition.opacity
+                                    : AnyTransition.move(edge: .leading).combined(with: .opacity))
+                }
             }
         }
         .animation(slideAnimation, value: shown)
@@ -408,6 +468,11 @@ struct NavigationRail: View {
         // (B4) collapses to 0 while Search's keyboard holds focus unless `-debug.railSearchInsetHold`.
         // Only the keyboard's collapse and restore animate (0.25 s); a visibility change is instant.
         .onChange(of: visibility, initial: true) { _, _ in
+            HiddenTabBarFocusBlocker.setReservedLeadingInset(shellInset)
+        }
+        // FEAT-80: Corner reserves nothing. The position joins `ContentView`'s remount key, so this
+        // is belt and braces for the shell half.
+        .onChange(of: position) { _, _ in
             HiddenTabBarFocusBlocker.setReservedLeadingInset(shellInset)
         }
         .onChange(of: RailVisibilityRule.keyboardHidesRail(selectedTab: selectedTab,
@@ -487,6 +552,83 @@ struct NavigationRail: View {
         .accessibilityIdentifier("navigation_rail")
     }
 
+    /// FEAT-80 Corner (Batch N): ONE column, laid out at its final geometry from the first frame,
+    /// that unrolls downward out of the Home tab. Only two things animate, both from `cornerOpen` in
+    /// one transaction: the glass background's frame height and a top-aligned mask of the same
+    /// height. The items never move: no `offset`, no `scaleEffect`, no per-item frame change, so a
+    /// focus frame is where it is drawn from the first turn (the Orivio trap above, the same reason
+    /// the glass is a background). Collapsed, the items below Home are plain labels (not armed),
+    /// masked off and `accessibilityHidden`; they fade in top to bottom as the mask passes them.
+    /// Reduce Motion: no height or mask animation, the lower items fade.
+    private var cornerPanel: some View {
+        let open = cornerOpen
+        let visibleHeight = open ? max(cornerColumnHeight, RailMetrics.cornerTabHeight) : RailMetrics.cornerTabHeight
+        // Only the bottom-trailing corner is rounded: the glass meets the screen edges square.
+        let shape = UnevenRoundedRectangle(bottomTrailingRadius: RailMetrics.cornerRadius, style: .continuous)
+        return VStack(alignment: .leading, spacing: RailMetrics.itemSpacing) {
+            ForEach(Array(railItems.enumerated()), id: \.element.id) { order, item in
+                cornerItem(item, order: order)
+            }
+            cornerItem(RailItem.profile, order: railItems.count)
+                .padding(.top, RailMetrics.avatarGap)
+        }
+        .padding(.leading, RailMetrics.cornerLeading)
+        .padding(.top, RailMetrics.cornerTop)
+        .padding(.trailing, RailMetrics.innerPadding)
+        .padding(.bottom, RailMetrics.verticalPadding)
+        .frame(width: pillWidth, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
+            cornerColumnHeight = height
+        })
+        // Before the background, so the glass itself is never masked (it carries its own height).
+        .mask(alignment: .top) {
+            Rectangle().frame(height: visibleHeight)
+        }
+        .background(alignment: .top) {
+            shape
+                .fill(Color.clear)
+                .glassEffect(.regular, in: shape)
+                .frame(height: visibleHeight)
+            #if DEBUG
+            // Rail12's oracle: the glass's own frame (the tab at rest, the column open). The
+            // container's accessibility frame is the union of its children, the masked ones too.
+            Color.white.opacity(0.001)
+                .frame(height: visibleHeight)
+                .accessibilityElement()
+                .accessibilityLabel("rail bounds")
+                .accessibilityIdentifier("navigation_rail_bounds")
+            #endif
+        }
+        .animation(reduceMotion ? nil : RailMetrics.cornerUnroll, value: open)
+        .focusSection()
+        .onExitCommand(perform: menuHandler)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("navigation_rail")
+    }
+
+    /// FEAT-80 Corner: Home (order 0) is the tab and always shows. Every later item fades with the
+    /// unroll, staggered by its order so the column fills top to bottom, and leaves the
+    /// accessibility tree while collapsed. It closes in one fade, no stagger.
+    @ViewBuilder
+    private func cornerItem(_ item: RailItem, order: Int) -> some View {
+        if order == 0 {
+            itemView(item)
+        } else {
+            let open = cornerOpen
+            itemView(item)
+                .opacity(open ? 1 : 0)
+                .animation(cornerItemAnimation(order: order, opening: open), value: open)
+                .accessibilityHidden(!open)
+        }
+    }
+
+    private func cornerItemAnimation(order: Int, opening: Bool) -> Animation {
+        let fade = Animation.easeOut(duration: RailMetrics.cornerItemFade)
+        guard opening, !reduceMotion else { return fade }
+        return fade.delay(Double(order) * RailMetrics.cornerItemStagger)
+    }
+
     @ViewBuilder
     private func itemView(_ item: RailItem) -> some View {
         if armed {
@@ -510,7 +652,7 @@ struct NavigationRail: View {
 
     private func itemLabel(_ item: RailItem, focused: Bool) -> some View {
         let selected = item.id == selectedTab
-        let width = pillWidth - 2 * RailMetrics.innerPadding
+        let width = itemRowWidth
         return HStack(spacing: RailMetrics.labelGap) {
             itemGlyph(item, selected: selected, focused: focused)
                 .frame(width: RailMetrics.itemPlatter, height: RailMetrics.itemPlatter)
@@ -522,8 +664,8 @@ struct NavigationRail: View {
                     .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
                     .lineLimit(1)
                     .fixedSize()
-                    .opacity(expanded ? 1 : 0)
-                    .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
+                    .opacity(railOpen ? 1 : 0)
+                    .animation(.easeOut(duration: RailMetrics.expandDuration), value: railOpen)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -568,7 +710,7 @@ struct NavigationRail: View {
     @ViewBuilder
     private var stateProbe: some View {
         #if DEBUG
-        Text(verbatim: "rail_state armed=\(armed ? 1 : 0) expanded=\(expanded ? 1 : 0) focused=\(focusedItem ?? -1) reason=\(openedBy?.rawValue ?? "-") gated=\(chrome.contentGated ? 1 : 0) vis=\(visibility.rawValue) shown=\(shown ? 1 : 0) tab=\(selectedTab) route=\(lastExitRoute) inset=\(Int(contentInset.rounded())) gmode=\(RailGateMode.current.rawValue) kb=\(chrome.searchKeyboardFocused ? 1 : 0)")
+        Text(verbatim: "rail_state armed=\(armed ? 1 : 0) expanded=\(expanded ? 1 : 0) focused=\(focusedItem ?? -1) reason=\(openedBy?.rawValue ?? "-") gated=\(chrome.contentGated ? 1 : 0) vis=\(visibility.rawValue) shown=\(shown ? 1 : 0) tab=\(selectedTab) route=\(lastExitRoute) inset=\(Int(contentInset.rounded())) gmode=\(RailGateMode.current.rawValue) kb=\(chrome.searchKeyboardFocused ? 1 : 0) pos=\(position.rawValue)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("rail_state")
@@ -929,9 +1071,14 @@ private struct RailReservedWidthValues: ViewModifier {
 
     func body(content: Content) -> some View {
         let side = PinnedRowGeometry.sideSafeArea
+        // FEAT-80: only ever applied in Centre (`reservesWidth()` is false in Corner); the position
+        // is passed through anyway, so the two halves cannot disagree.
+        let position = NavigationChrome.railPosition()
         content
-            .environment(\.railLeadingInset, NavigationChrome.contentSafeAreaExtra(sideSafeArea: side, reservesWidth: reserves))
-            .environment(\.rowEdgeMargins, NavigationChrome.rowEdgeMargins(sideSafeArea: side, reservesWidth: reserves))
+            .environment(\.railLeadingInset, NavigationChrome.contentSafeAreaExtra(sideSafeArea: side, reservesWidth: reserves,
+                                                                                   position: position))
+            .environment(\.rowEdgeMargins, NavigationChrome.rowEdgeMargins(sideSafeArea: side, reservesWidth: reserves,
+                                                                           position: position))
     }
 }
 

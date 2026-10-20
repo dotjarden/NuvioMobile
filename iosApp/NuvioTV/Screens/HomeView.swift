@@ -893,7 +893,7 @@ struct HomeView: View {
                 // is what a device bisect of `debug.sidebarTopCompensation` reads back to confirm the
                 // launch argument actually landed — the rail's own state lives in its always-mounted
                 // `rail_state` probe. Replaces FEAT-30's `debug_sidebar`.
-                Text(verbatim: "debug_navchrome mode=\(NavigationChrome.isRail() ? "rail" : "tabs") vis=\(NavigationChrome.railVisibility().rawValue) inset=\(Int(NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: NavigationChrome.reservesWidth()).rounded())) comp=\(Int(NavigationChrome.topCompensation))")
+                Text(verbatim: "debug_navchrome mode=\(NavigationChrome.isRail() ? "rail" : "tabs") vis=\(NavigationChrome.railVisibility().rawValue) inset=\(Int(NavigationChrome.contentSafeAreaExtra(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: NavigationChrome.reservesWidth(), position: NavigationChrome.railPosition()).rounded())) comp=\(Int(NavigationChrome.topCompensation))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_navchrome")

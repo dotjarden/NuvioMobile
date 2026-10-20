@@ -69,6 +69,10 @@ struct ContentView: View {
     /// It changes the `Tab` closures structurally (Always Visible's inset), so it may only switch
     /// across a remount (T3 / BUG-66, the same reasoning as the style).
     @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = "always"
+    /// FEAT-80 (Batch N): the rail's position, a rebuild-key input for the same reason as the
+    /// visibility: Corner reserves no leading width, Centre's Always Visible does. Joined RESOLVED
+    /// (rc8's stored "top" and "corner" are the same key), so no remount when nothing changed.
+    @AppStorage(NavigationChrome.railPositionKey) private var railPosition = NavigationChrome.RailPosition.centre.rawValue
     /// FEAT-31: the UI font family (`"system"` default / `"openSans"`). Also purely a rebuild-key
     /// input — `Theme.Font` resolves the family itself, and its tokens are static reads that only
     /// re-evaluate when the tree is re-identified, exactly like `Theme.Palette.accent`.
@@ -197,11 +201,12 @@ struct ContentView: View {
         //  * `railVisibility` decides whether the shell reserves the rail's leading width (the tab
         //    controller's UIKit safe area, set by the rail) and what `.railTabRoot` hands down as
         //    `\.railLeadingInset` / `\.rowEdgeMargins` (H9, P4 §4.3).
+        //  * `railPosition` (FEAT-80): Corner reserves nothing, so it moves the same inset.
         //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(uiFont)|\(discoverPlacementRaw)|\(discoverPlacementRevision)")
+        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(NavigationChrome.railPosition(raw: railPosition).rawValue)|\(uiFont)|\(discoverPlacementRaw)|\(discoverPlacementRevision)")
         .onAppear {
             auth.start()
             posterStyle.start()

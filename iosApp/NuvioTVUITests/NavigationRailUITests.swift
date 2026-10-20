@@ -713,4 +713,95 @@ final class NavigationRailUITests: XCTestCase {
         pause(2)
         shot("rail11_discover_tab")
     }
+
+    // MARK: - testRail12 (FEAT-80 Corner, Batch N)
+
+    /// FEAT-80 Corner (Steven's 2026-10-19 mock): `-rail_position corner`.
+    ///  - Always Visible, at rest: only the Home tab, its glass (`navigation_rail_bounds`) flush to
+    ///    the top and left edges at about 152 × 132; Home's cell exists and is hittable, the other
+    ///    items are out of the accessibility tree (masked, `accessibilityHidden`); no reserved width
+    ///    (`inset=0`, `pos=corner`).
+    ///  - Menu at Home row 0: the column unrolls; every item exists, the glass is taller than the
+    ///    tab and still flush; Home's cell has not moved. Right closes it back to the tab.
+    ///  - rc8's stored Top reads as Corner (`pos=corner`).
+    ///  - Hidden: nothing at rest; Menu opens the full column.
+    /// Frames and existence only: the tvOS 27 simulator never reports `hasFocus`.
+    func testRail12_CornerTabUnrolls() throws {
+        let itemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        let item = { (app: XCUIApplication, title: String) in
+            app.descendants(matching: .any)["rail_item_\(title)"].firstMatch
+        }
+        let corner = launch(Self.railArguments() + ["-rail_position", "corner"])
+        try requireRail(corner)
+        XCTAssertEqual(rail(corner, "pos"), "corner", "\(railState(corner))")
+        XCTAssertEqual(rail(corner, "inset"), "0", "Corner reserves no width: \(railState(corner))")
+        let glass = corner.descendants(matching: .any)["navigation_rail_bounds"].firstMatch
+        XCTAssertTrue(glass.waitForExistence(timeout: 4), "the Corner tab must show in Always Visible")
+        let tab = glass.frame
+        XCTAssertEqual(tab.minX, 0, accuracy: 1, "the tab's glass touches the left edge: \(tab)")
+        XCTAssertEqual(tab.minY, 0, accuracy: 1, "the tab's glass touches the top edge: \(tab)")
+        XCTAssertEqual(tab.width, 152, accuracy: 2, "\(tab)")
+        XCTAssertEqual(tab.height, 132, accuracy: 2, "\(tab)")
+        let home = item(corner, "Home")
+        XCTAssertTrue(home.exists, "the Home cell is the tab")
+        XCTAssertTrue(home.isHittable, "the Home cell is the tab's one visible item")
+        let homeAtRest = home.frame
+        XCTAssertGreaterThanOrEqual(homeAtRest.minX, 79, "Home's cell sits inside the safe area: \(homeAtRest)")
+        XCTAssertGreaterThanOrEqual(homeAtRest.minY, 59, "Home's cell sits inside the safe area: \(homeAtRest)")
+        for title in itemTitles.dropFirst() {
+            XCTAssertFalse(item(corner, title).exists, "rail_item_\(title) must be hidden while the tab is collapsed")
+        }
+        shot("rail12_corner_rest")
+
+        // Menu at Home row 0 unrolls the column.
+        XCTAssertTrue(menuIsSafe(corner), "precondition: rail closed — \(railState(corner))")
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(corner) }, "Menu must open the Corner rail: \(railState(corner))")
+        pause(0.8)   // the spring settles
+        for title in itemTitles {
+            XCTAssertTrue(item(corner, title).exists, "rail_item_\(title) must exist once the column unrolls")
+        }
+        let column = glass.frame
+        XCTAssertEqual(column.minX, 0, accuracy: 1, "the open column stays flush left: \(column)")
+        XCTAssertEqual(column.minY, 0, accuracy: 1, "the open column stays flush top: \(column)")
+        XCTAssertGreaterThan(column.height, 400, "the column unrolls downward: \(column)")
+        XCTAssertEqual(home.frame.minX, homeAtRest.minX, accuracy: 1, "Home's cell never moves: \(home.frame) vs \(homeAtRest)")
+        XCTAssertEqual(home.frame.minY, homeAtRest.minY, accuracy: 1, "Home's cell never moves: \(home.frame) vs \(homeAtRest)")
+        let settings = item(corner, "Settings")
+        if settings.exists {
+            XCTAssertLessThanOrEqual(settings.frame.maxY, column.maxY, "the glass reaches past the last tab: \(settings.frame) vs \(column)")
+        }
+        shot("rail12_corner_open")
+        remote.press(.right)
+        XCTAssertTrue(poll(2.0) { rail(corner, "expanded") == "0" }, "Right must close the rail: \(railState(corner))")
+        XCTAssertTrue(poll(2.0) { !item(corner, "Search").exists }, "the column rolls back up to the tab")
+        XCTAssertEqual(glass.frame.height, 132, accuracy: 2, "back to the tab: \(glass.frame)")
+
+        // rc8's stored Top reads as Corner.
+        let legacy = launch(Self.railArguments() + ["-rail_position", "top"])
+        try requireRail(legacy)
+        XCTAssertEqual(rail(legacy, "pos"), "corner", "a stored Top reads as Corner: \(railState(legacy))")
+
+        // Hidden: nothing at rest; Menu opens the full column.
+        let hidden = launch(Self.railArguments(visibility: "hidden") + ["-rail_position", "corner"])
+        try requireRail(hidden)
+        XCTAssertEqual(rail(hidden, "shown"), "0", "\(railState(hidden))")
+        XCTAssertFalse(hidden.descendants(matching: .any)["navigation_rail"].exists, "Corner + Hidden shows nothing at rest")
+        XCTAssertFalse(item(hidden, "Home").exists, "Corner + Hidden shows nothing at rest")
+        guard menuIsSafe(hidden) else { return }
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(hidden) }, "Menu must open the hidden Corner rail: \(railState(hidden))")
+        pause(0.8)
+        for title in itemTitles {
+            XCTAssertTrue(item(hidden, title).exists, "rail_item_\(title) must exist once the hidden rail opens")
+        }
+        let hiddenGlass = hidden.descendants(matching: .any)["navigation_rail_bounds"].firstMatch
+        if hiddenGlass.exists {
+            XCTAssertEqual(hiddenGlass.frame.minX, 0, accuracy: 1, "\(hiddenGlass.frame)")
+            XCTAssertEqual(hiddenGlass.frame.minY, 0, accuracy: 1, "\(hiddenGlass.frame)")
+        }
+        shot("rail12_corner_hidden_open")
+        remote.press(.right)
+        XCTAssertTrue(poll(2.0) { rail(hidden, "shown") == "0" }, "Right must close the hidden rail: \(railState(hidden))")
+    }
 }

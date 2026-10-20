@@ -16,7 +16,7 @@ struct AppearanceSettingsPane: View {
     @ObservedObject var badges: BadgeSettingsViewModel
     /// Swatch to refocus after a theme-change remount; consumed by [ThemePickerRow].
     @Binding var pendingThemeSwatchFocus: String?
-    /// FEAT-30/31, H9: which row ("navigation" / "railVisibility" / "typeface") should reclaim
+    /// FEAT-30/31, H9: which row ("navigation" / "railVisibility" / "railPosition" / "typeface") should reclaim
     /// focus after a theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below,
     /// same contract as `pendingThemeSwatchFocus`/`ThemePickerRow`.
     @Binding var pendingAppearanceRowFocus: String?
@@ -94,9 +94,10 @@ struct AppearanceSettingsPane: View {
     /// beta.19-rc3 follow-up 2026-10-08: "hide it on the first line, show it on Left/Back") adds
     /// Hidden: off screen at rest, revealed by Left from the first card or Menu.
     /// FEAT-80 (Steven rc7) options. Values are the raw `rail_position` / `rail_labels` strings.
+    /// Batch N: Corner (Steven's 2026-10-19 mock) replaced rc8's Top; a stored "top" reads as Corner.
     private static let railPositionOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailPosition.centre.rawValue, String(localized: "Centre")),
-        (NavigationChrome.RailPosition.top.rawValue, String(localized: "Top")),
+        (NavigationChrome.RailPosition.corner.rawValue, String(localized: "Corner")),
     ]
     private static let railLabelsOptions: [(value: String, label: String)] = [
         (NavigationChrome.RailLabels.shown.rawValue, String(localized: "Shown")),
@@ -140,6 +141,21 @@ struct AppearanceSettingsPane: View {
                 guard newValue != NavigationChrome.railVisibility(raw: railVisibility).rawValue else { return }
                 pendingAppearanceRowFocus = "railVisibility"
                 railVisibility = newValue
+            }
+        )
+    }
+
+    /// FEAT-80 (Batch N): the Rail Position row. Corner reserves no leading width, so the position
+    /// joined `ContentView`'s remount key and this write remounts the tree too: same wrapper. The
+    /// getter normalises (rc8's "top" shows as Corner), and re-picking Corner over a stored "top"
+    /// writes nothing, as it changes no resolved value.
+    private var railPositionBinding: Binding<String> {
+        Binding(
+            get: { NavigationChrome.railPosition(raw: railPosition).rawValue },
+            set: { newValue in
+                guard newValue != NavigationChrome.railPosition(raw: railPosition).rawValue else { return }
+                pendingAppearanceRowFocus = "railPosition"
+                railPosition = newValue
             }
         )
     }
@@ -347,18 +363,17 @@ struct AppearanceSettingsPane: View {
                     .accessibilityIdentifier("appearance_row_rail")
                     .focused($appearanceRowFocus, equals: "railVisibility")
 
-                    // FEAT-80: live (`@AppStorage` in `NavigationRail`), so no remount and no focus
-                    // reclaim needed.
+                    // FEAT-80 (Batch N): Centre / Corner. Remounts the tree (Corner reserves no
+                    // width), so the row reclaims focus like the Rail row above.
                     SettingsPickerRow(
                         title: String(localized: "Rail Position"),
-                        selection: Binding(
-                            get: { NavigationChrome.railPosition(raw: railPosition).rawValue },
-                            set: { railPosition = $0 }),
+                        selection: railPositionBinding,
                         options: Self.railPositionOptions.map(\.value),
                         descriptionID: .appearanceRailPosition,
                         label: { value in Self.railPositionOptions.first { $0.value == value }?.label ?? value }
                     )
                     .accessibilityIdentifier("appearance_row_rail_position")
+                    .focused($appearanceRowFocus, equals: "railPosition")
 
                     SettingsPickerRow(
                         title: String(localized: "Rail Labels"),

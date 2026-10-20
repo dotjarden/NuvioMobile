@@ -157,24 +157,24 @@ final class NavigationChromeTests: XCTestCase {
     }
 
     func testContentSafeAreaExtra() {
-        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: true), 36)
-        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: false), 0)
-        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 116, reservesWidth: true), 0)
-        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 130, reservesWidth: true), 0, "never negative")
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: true, position: .centre), 36)
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: false, position: .centre), 0)
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 116, reservesWidth: true, position: .centre), 0)
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 130, reservesWidth: true, position: .centre), 0, "never negative")
     }
 
     func testContentLeading() {
-        XCTAssertEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: true), 176)
-        XCTAssertEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: false), 140)
+        XCTAssertEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: true, position: .centre), 176)
+        XCTAssertEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: false, position: .centre), 140)
     }
 
     func testRowEdgeMargins() {
-        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: 80, reservesWidth: true),
+        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: 80, reservesWidth: true, position: .centre),
                        RowEdgeMargins(leading: 176, trailing: 140))
-        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: 80, reservesWidth: false),
+        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: 80, reservesWidth: false, position: .centre),
                        RowEdgeMargins(leading: 140, trailing: 140))
         // Production passes the session's side safe area: no reserved width is exactly `.standard`.
-        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: false),
+        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: false, position: .centre),
                        RowEdgeMargins.standard)
     }
 
@@ -183,9 +183,9 @@ final class NavigationChromeTests: XCTestCase {
     func testFirstCardLiftClearsThePill() {
         let lift = NavigationChrome.widestRowLiftOverhang
         XCTAssertEqual(lift, 30, accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: true) - lift,
+        XCTAssertGreaterThanOrEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: true, position: .centre) - lift,
                                     NavigationChrome.reservedEdge)
-        XCTAssertGreaterThan(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: false) - lift,
+        XCTAssertGreaterThan(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: false, position: .centre) - lift,
                              NavigationChrome.pillTrailingEdge)
     }
 
@@ -193,7 +193,7 @@ final class NavigationChromeTests: XCTestCase {
 
     func testReservedLeadingInsetCollapsesOnlyForTheSearchKeyboard() {
         func inset(_ visibility: NavigationChrome.RailVisibility, tab: Int, kb: Bool, hold: Bool = false) -> CGFloat {
-            RailVisibilityRule.reservedLeadingInset(sideSafeArea: 80, visibility: visibility,
+            RailVisibilityRule.reservedLeadingInset(sideSafeArea: 80, visibility: visibility, position: .centre,
                                                     selectedTab: tab, keyboardFocused: kb, holdInset: hold)
         }
         XCTAssertEqual(inset(.always, tab: 1, kb: false), 36)
@@ -232,8 +232,71 @@ final class NavigationChromeTests: XCTestCase {
     func testRailPositionResolution() {
         XCTAssertEqual(NavigationChrome.railPosition(raw: nil), .centre)
         XCTAssertEqual(NavigationChrome.railPosition(raw: "centre"), .centre)
-        XCTAssertEqual(NavigationChrome.railPosition(raw: " Top "), .top)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: " Top "), .corner, "FEAT-80 Batch N: rc8's Top reads as Corner")
+        XCTAssertEqual(NavigationChrome.railPosition(raw: "top"), .corner)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: "corner"), .corner)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: " Corner "), .corner, "a hand-typed launch argument")
         XCTAssertEqual(NavigationChrome.railPosition(raw: "bottom"), .centre)
+        XCTAssertEqual(NavigationChrome.railPosition(raw: ""), .centre)
+        XCTAssertEqual(NavigationChrome.RailPosition.corner.rawValue, "corner")
+        XCTAssertEqual(NavigationChrome.RailPosition.allCases, [.centre, .corner], "Settings lists exactly these two")
+    }
+
+    // MARK: Corner reserves nothing (FEAT-80, Batch N)
+
+    func testRailPositionReadsTheKeyWithoutWriting() {
+        withDefaults { defaults, suite in
+            XCTAssertEqual(NavigationChrome.railPosition(defaults), .centre, "an untouched install is Centre")
+            defaults.set("top", forKey: NavigationChrome.railPositionKey)
+            XCTAssertEqual(NavigationChrome.railPosition(defaults), .corner)
+            XCTAssertEqual(defaults.persistentDomain(forName: suite)?[NavigationChrome.railPositionKey] as? String, "top",
+                           "the stored rc8 value is left alone: no migration write")
+        }
+    }
+
+    func testCornerReservesNoWidth() {
+        withDefaults { defaults, _ in
+            defaults.set("rail", forKey: NavigationChrome.styleKey)
+            XCTAssertTrue(NavigationChrome.reservesWidth(defaults), "Centre + Always Visible reserves")
+            defaults.set("corner", forKey: NavigationChrome.railPositionKey)
+            XCTAssertFalse(NavigationChrome.reservesWidth(defaults), "Corner + Always Visible reserves nothing")
+            defaults.set("top", forKey: NavigationChrome.railPositionKey)
+            XCTAssertFalse(NavigationChrome.reservesWidth(defaults), "a stored Top is Corner")
+            defaults.set("browsing", forKey: NavigationChrome.railVisibilityKey)
+            XCTAssertFalse(NavigationChrome.reservesWidth(defaults))
+        }
+        XCTAssertTrue(NavigationChrome.reservesWidth(visibility: .always, position: .centre))
+        XCTAssertFalse(NavigationChrome.reservesWidth(visibility: .always, position: .corner))
+        XCTAssertFalse(NavigationChrome.reservesWidth(visibility: .whileBrowsing, position: .centre))
+        XCTAssertFalse(NavigationChrome.reservesWidth(visibility: .hidden, position: .corner))
+    }
+
+    func testCornerInsetMathIsZero() {
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: true, position: .corner), 0)
+        XCTAssertEqual(NavigationChrome.contentSafeAreaExtra(sideSafeArea: 80, reservesWidth: false, position: .corner), 0)
+        XCTAssertEqual(NavigationChrome.contentLeading(sideSafeArea: 80, reservesWidth: true, position: .corner), 140)
+        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: 80, reservesWidth: true, position: .corner),
+                       RowEdgeMargins(leading: 140, trailing: 140))
+        XCTAssertEqual(NavigationChrome.rowEdgeMargins(sideSafeArea: PinnedRowGeometry.sideSafeArea, reservesWidth: true,
+                                                       position: .corner),
+                       RowEdgeMargins.standard, "Corner rows keep the standard margins")
+    }
+
+    func testCornerShellInsetIsZeroInEveryVisibility() {
+        for visibility in [NavigationChrome.RailVisibility.always, .whileBrowsing, .hidden] {
+            for (tab, kb, hold) in [(0, false, false), (1, false, false), (1, true, false), (1, true, true)] {
+                XCTAssertEqual(RailVisibilityRule.reservedLeadingInset(sideSafeArea: 80, visibility: visibility,
+                                                                       position: .corner, selectedTab: tab,
+                                                                       keyboardFocused: kb, holdInset: hold), 0,
+                               "Corner \(visibility) tab=\(tab) kb=\(kb) hold=\(hold)")
+            }
+        }
+    }
+
+    /// The corner tab's icon sits at the tvOS safe-area origin; the glass runs to the edges.
+    func testCornerSafeAreaOrigin() {
+        XCTAssertEqual(NavigationChrome.cornerSafeLeading, 80)
+        XCTAssertEqual(NavigationChrome.cornerSafeTop, 60)
     }
 
     func testRailLabelsResolution() {

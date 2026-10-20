@@ -47,11 +47,17 @@ nonisolated enum NavigationChrome {
         case hidden
     }
 
-    /// FEAT-80: Centre (the default, vertically centred) or Top (top-left).
+    /// FEAT-80: Centre (the default, the pill vertically centred on the left edge) or Corner
+    /// (Steven's 2026-10-19 mock, Batch N): a Home tab flush in the top-left corner that unrolls
+    /// into the full column when the rail opens. Corner replaced rc8's Top, which still reads as
+    /// Corner (`railPosition(raw:)`), so no stored value needs a write.
     enum RailPosition: String, Equatable, Sendable, CaseIterable {
         case centre
-        case top
+        case corner
     }
+
+    /// rc8's stored Top value. Resolves to Corner.
+    static let legacyTopPositionValue = "top"
 
     /// FEAT-80: Shown (the default; the pill grows to show labels when it opens) or Icons Only (the
     /// pill keeps its collapsed width and never draws labels).
@@ -60,9 +66,17 @@ nonisolated enum NavigationChrome {
         case iconsOnly = "icons"
     }
 
-    /// Anything but "top" is Centre, so a missing or unknown value keeps today's rail.
+    /// "corner", and rc8's "top", read as Corner (FEAT-80, Batch N); anything else (missing,
+    /// "centre", unknown) is Centre, so an untouched install keeps today's rail.
     static func railPosition(raw: String?) -> RailPosition {
-        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailPosition.top.rawValue ? .top : .centre
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case RailPosition.corner.rawValue?, legacyTopPositionValue?: return .corner
+        default: return .centre
+        }
+    }
+
+    static func railPosition(_ defaults: UserDefaults = .standard) -> RailPosition {
+        railPosition(raw: defaults.string(forKey: railPositionKey))
     }
 
     /// Anything but "icons" is Shown, so a missing or unknown value keeps today's rail.
@@ -70,8 +84,10 @@ nonisolated enum NavigationChrome {
         raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == RailLabels.iconsOnly.rawValue ? .iconsOnly : .shown
     }
 
-    /// FEAT-80: the pill's distance from the top edge in Top position, inside the TV's safe area.
-    static let topInset: CGFloat = 60
+    /// FEAT-80 Corner: the tvOS safe-area origin on a 1920 × 1080 canvas. The Home cell's platter
+    /// sits exactly there, while the glass behind it runs out to both screen edges.
+    static let cornerSafeLeading: CGFloat = 80
+    static let cornerSafeTop: CGFloat = 60
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
 
@@ -126,9 +142,16 @@ nonisolated enum NavigationChrome {
         railVisibility(raw: defaults.string(forKey: railVisibilityKey))
     }
 
-    /// Rail mode with the rail Always Visible: the only configuration that moves content.
+    /// Rail mode with the rail Always Visible in Centre: the only configuration that moves content.
+    /// FEAT-80: Corner reserves nothing, as its tab covers only the corner (the device pass checks
+    /// that no page's top-left header sits under it).
     static func reservesWidth(_ defaults: UserDefaults = .standard) -> Bool {
-        isRail(defaults) && railVisibility(defaults) == .always
+        isRail(defaults) && reservesWidth(visibility: railVisibility(defaults), position: railPosition(defaults))
+    }
+
+    /// The pure half of `reservesWidth(_:)`, Rail mode assumed.
+    static func reservesWidth(visibility: RailVisibility, position: RailPosition) -> Bool {
+        visibility == .always && position == .centre
     }
 
     // MARK: Migration (P4 R6, §4.2)
@@ -160,27 +183,29 @@ nonisolated enum NavigationChrome {
 
     /// How much leading safe area an Always Visible rail adds to every tab root: the reserved edge
     /// beyond the side safe area the content already keeps (116 − 80 = 36 on a 1080p canvas). Never
-    /// negative, and 0 when the rail does not reserve width.
-    static func contentSafeAreaExtra(sideSafeArea: CGFloat, reservesWidth: Bool) -> CGFloat {
-        guard reservesWidth else { return 0 }
+    /// negative, and 0 when the rail does not reserve width or (FEAT-80) sits in the Corner.
+    static func contentSafeAreaExtra(sideSafeArea: CGFloat, reservesWidth: Bool, position: RailPosition) -> CGFloat {
+        guard reservesWidth, position == .centre else { return 0 }
         return max(0, reservedEdge - sideSafeArea)
     }
 
     /// Where a tab root's content starts from the bezel: the side safe area, the rail's extra, then
-    /// the 60 pt content margin (`Theme.Spacing.screen`). 176 Always Visible, 140 otherwise.
-    static func contentLeading(sideSafeArea: CGFloat, reservesWidth: Bool) -> CGFloat {
-        sideSafeArea + contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: reservesWidth)
+    /// the 60 pt content margin (`Theme.Spacing.screen`). 176 Always Visible in Centre, 140 otherwise.
+    static func contentLeading(sideSafeArea: CGFloat, reservesWidth: Bool, position: RailPosition) -> CGFloat {
+        sideSafeArea + contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: reservesWidth, position: position)
             + Theme.Spacing.screen
     }
 
     /// The rows' distance to the visible screen edges (`\.rowEdgeMargins`), the rail's edge counting
-    /// as the leading one: (176, 140) Always Visible, (140, 140) otherwise. Computed from the passed
-    /// side safe area, so production (which passes `PinnedRowGeometry.sideSafeArea`) gets exactly
-    /// `RowEdgeMargins.standard` when the rail reserves nothing.
-    static func rowEdgeMargins(sideSafeArea: CGFloat, reservesWidth: Bool) -> RowEdgeMargins {
+    /// as the leading one: (176, 140) Always Visible in Centre, (140, 140) otherwise (Corner included,
+    /// FEAT-80). Computed from the passed side safe area, so production (which passes
+    /// `PinnedRowGeometry.sideSafeArea`) gets exactly `RowEdgeMargins.standard` when the rail
+    /// reserves nothing.
+    static func rowEdgeMargins(sideSafeArea: CGFloat, reservesWidth: Bool, position: RailPosition) -> RowEdgeMargins {
         let margin = Theme.Spacing.screen + sideSafeArea
         return RowEdgeMargins(
-            leading: margin + contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: reservesWidth),
+            leading: margin + contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: reservesWidth,
+                                                   position: position),
             trailing: margin
         )
     }
@@ -319,15 +344,17 @@ nonisolated enum RailVisibilityRule {
 
     /// B4: the shell's reserved leading safe area. Always Visible's extra (36 pt on a standard
     /// screen), 0 while Search's keyboard holds focus unless `holdInset` (the A/B knob). Hide While
-    /// Browsing and Hidden (FEAT-62) never reserve width: 0.
+    /// Browsing and Hidden (FEAT-62) never reserve width: 0. Neither does Corner (FEAT-80), in any
+    /// visibility.
     static func reservedLeadingInset(sideSafeArea: CGFloat,
                                      visibility: NavigationChrome.RailVisibility,
+                                     position: NavigationChrome.RailPosition,
                                      selectedTab: Int,
                                      keyboardFocused: Bool,
                                      holdInset: Bool) -> CGFloat {
-        guard visibility == .always else { return 0 }
+        guard NavigationChrome.reservesWidth(visibility: visibility, position: position) else { return 0 }
         if !holdInset, keyboardHidesRail(selectedTab: selectedTab, keyboardFocused: keyboardFocused) { return 0 }
-        return NavigationChrome.contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: true)
+        return NavigationChrome.contentSafeAreaExtra(sideSafeArea: sideSafeArea, reservesWidth: true, position: position)
     }
 }
 

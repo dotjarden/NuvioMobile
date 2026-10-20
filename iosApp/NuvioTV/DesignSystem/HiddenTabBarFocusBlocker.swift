@@ -73,7 +73,9 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     /// while `\.rowEdgeMargins` said 176. UIKit propagates this inset to every hosted page and to the
     /// search container. Full-bleed backgrounds still reach x = 0 (they ignore the safe area), and
     /// Stage and the folder Rows page ignore it by design and read `\.railLeadingInset` instead.
-    /// 0 outside Always Visible. Applied whenever the blocker finds the tab controller.
+    /// 0 outside Always Visible, and in the Corner position (FEAT-80: the caller computes the inset
+    /// through `RailVisibilityRule.reservedLeadingInset`, which takes the position). Applied
+    /// whenever the blocker finds the tab controller.
     /// `animated` (B4): the search keyboard's collapse and restore slide the content with
     /// `UIView.animate(withDuration: 0.25)`; mode and visibility changes stay instant.
     static func setReservedLeadingInset(_ inset: CGFloat, animated: Bool = false) {
