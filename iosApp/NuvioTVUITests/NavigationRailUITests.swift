@@ -804,4 +804,70 @@ final class NavigationRailUITests: XCTestCase {
         remote.press(.right)
         XCTAssertTrue(poll(2.0) { rail(hidden, "shown") == "0" }, "Right must close the hidden rail: \(railState(hidden))")
     }
+
+    /// FEAT-80 Corner, Batch N review r1: the rail opens on a LOWER tab. The items below Home fade in
+    /// staggered with the unroll, and `takeFocusAfterReveal` writes focus to the selected tab's item
+    /// the next turn and at +0.15 s; on hardware an item still near opacity 0 refuses focus, so the
+    /// selected tab's item is drawn at full opacity from the arm. Here: switch to Settings through the
+    /// Corner rail, then Menu at the Settings root opens the column with focus on Settings (4), every
+    /// item laid out inside the glass. Frames and the probe only: the tvOS 27 simulator never reports
+    /// `hasFocus`.
+    func testRail12b_CornerOpensOnTheSettingsTab() throws {
+        let itemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        let item = { (app: XCUIApplication, title: String) in
+            app.descendants(matching: .any)["rail_item_\(title)"].firstMatch
+        }
+        let app = launch(Self.railArguments() + ["-rail_position", "corner"])
+        try requireRail(app)
+        XCTAssertEqual(rail(app, "pos"), "corner", "\(railState(app))")
+
+        // Home row 0: Menu opens the column; move to Settings and select it.
+        XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
+        remote.press(.menu)
+        guard poll(2.5, { railExpanded(app) }) else {
+            XCTFail("Menu must open the Corner rail on Home: \(railState(app))")
+            return
+        }
+        XCTAssertTrue(moveRailFocus(app, to: 4), "could not move the rail's focus to Settings: \(railState(app))")
+        remote.press(.select)
+        XCTAssertTrue(poll(3.0) { rail(app, "tab") == "4" && menuIsSafe(app) },
+                      "Select must switch to Settings and hand focus to its content: \(railState(app))")
+        guard poll(6.0, { settingsRootPresent(app) }) else {
+            XCTFail("the Settings root never appeared after selecting rail_item_Settings — \(railState(app))")
+            return
+        }
+        XCTAssertTrue(poll(3.0) { !item(app, "Search").exists }, "the column rolls back up to the tab on the Settings tab")
+        pause(1.0)
+
+        // Menu at the Settings root: the column unrolls with focus on Settings.
+        guard menuIsSafe(app) else {
+            XCTFail("precondition: rail closed on the Settings root — \(railState(app))")
+            return
+        }
+        remote.press(.menu)
+        XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu at the Settings root must open the Corner rail: \(railState(app))")
+        XCTAssertTrue(poll(1.5) { railFocused(app) == 4 }, "focus must land on the Settings item: \(railState(app))")
+        pause(0.8)   // the spring and the staggered fades settle
+        for title in itemTitles {
+            XCTAssertTrue(item(app, title).exists, "rail_item_\(title) must exist once the column unrolls on Settings")
+        }
+        let glass = app.descendants(matching: .any)["navigation_rail_bounds"].firstMatch
+        XCTAssertTrue(glass.exists, "the Corner glass must show while the rail is open")
+        let column = glass.frame
+        XCTAssertEqual(column.minX, 0, accuracy: 1, "the open column stays flush left: \(column)")
+        XCTAssertEqual(column.minY, 0, accuracy: 1, "the open column stays flush top: \(column)")
+        XCTAssertGreaterThan(column.height, 400, "the column unrolls downward: \(column)")
+        let settings = item(app, "Settings")
+        if settings.exists {
+            let frame = settings.frame
+            XCTAssertFalse(frame.isEmpty, "the Settings item is laid out: \(frame)")
+            XCTAssertGreaterThan(frame.minY, item(app, "Add-ons").frame.minY, "Settings sits below Add-ons: \(frame)")
+            XCTAssertLessThanOrEqual(frame.maxY, column.maxY, "the glass reaches past the Settings item: \(frame) vs \(column)")
+        }
+        shot("rail12b_corner_open_on_settings")
+        XCTAssertEqual(rail(app, "expanded"), "1", "the rail is still open with focus on Settings: \(railState(app))")
+        remote.press(.right)
+        XCTAssertTrue(poll(3.0) { rail(app, "expanded") == "0" }, "Right must close the rail: \(railState(app))")
+        XCTAssertTrue(poll(3.0) { focusedSettingsRootTitle(app) != nil }, "the rail exit must land on a Settings root row")
+    }
 }

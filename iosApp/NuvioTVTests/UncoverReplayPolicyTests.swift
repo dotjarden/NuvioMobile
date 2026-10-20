@@ -74,8 +74,12 @@ final class UncoverReplayPolicyTests: XCTestCase {
         XCTAssertEqual(decide(.up, changedAt: nil), "a")
     }
 
-    func testARowChangeLongAfterThePressIsNotTheEnginesAnswerToIt() {
-        XCTAssertEqual(decide(.up, changedAt: press + UncoverRestorePolicy.regrabDefer + 0.5), "a")
+    /// Batch N review r1: `decide` runs at the retire + `regrabDefer` (+ the pager poll), later than
+    /// press + `regrabDefer`, so an engine move landing in between is still its answer to the press.
+    func testARowChangeLongAfterThePressIsStillTheEnginesMove() {
+        XCTAssertNil(decide(.up, changedAt: press + UncoverRestorePolicy.regrabDefer + 0.001))
+        XCTAssertNil(decide(.down, changedAt: press + UncoverRestorePolicy.regrabDefer + 0.5))
+        XCTAssertNil(decide(.up, owns: false, current: nil, restore: "c", changedAt: press + 1.1))
     }
 
     // Not owning focus, and pending.

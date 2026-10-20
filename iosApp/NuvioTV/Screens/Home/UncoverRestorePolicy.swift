@@ -119,10 +119,12 @@ nonisolated enum UncoverReplayPolicy {
     ///     engine had parked focus outside the strip, or the pager was not back yet).
     ///   - rowKeys: the strip's rows in order (`pagerHandle.rowKeys`).
     ///   - pressAt: `ProcessInfo.systemUptime` of the press (`ViewerInputClock.lastAt`).
-    ///   - lastRowChangeAt: the last strip row change; a change at or after the press, within
-    ///     `UncoverRestorePolicy.regrabDefer` of it, is the engine making the viewer's move itself,
-    ///     so replaying would move twice. A change before the press (the restore's own landing)
-    ///     does not count.
+    ///   - lastRowChangeAt: the last strip row change; any change at or after the press is the
+    ///     engine making the viewer's move itself, so replaying would move twice. No upper bound
+    ///     (Batch N review r1): this is asked at the retire + `UncoverRestorePolicy.regrabDefer`
+    ///     (+ the pager poll), later than press + `regrabDefer`, and a newer press stands the replay
+    ///     down before it gets here, so a change in between is still the engine's answer to this
+    ///     press. A change before the press (the restore's own landing) does not count.
     /// - Returns: the destination row key, nil at the strip's bounds, when the engine already moved,
     ///   or when the anchor is unknown.
     static func decide(kind: ViewerInputKind,
@@ -133,8 +135,7 @@ nonisolated enum UncoverReplayPolicy {
                        pressAt: TimeInterval,
                        lastRowChangeAt: TimeInterval?) -> String? {
         guard kind == .up || kind == .down else { return nil }
-        if let lastRowChangeAt, lastRowChangeAt >= pressAt,
-           lastRowChangeAt <= pressAt + UncoverRestorePolicy.regrabDefer { return nil }
+        if let lastRowChangeAt, lastRowChangeAt >= pressAt { return nil }
         guard let anchor = stripOwnsFocus ? currentRowKey : restoreRowKey,
               let index = rowKeys.firstIndex(of: anchor) else { return nil }
         let next = kind == .down ? index + 1 : index - 1

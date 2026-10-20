@@ -191,7 +191,8 @@ final class StageController: ObservableObject {
     private var uncoverPendingRowKey: String?
     /// Batch N (BUG-188 follow-up): the last strip row change, for `UncoverReplayPolicy`.
     private var lastRowChangeAt: TimeInterval?
-    /// Stales a replay still waiting out its beat (a new pop, a newer replay).
+    /// Stales a replay still waiting out its beat (a new pop, a newer replay, a cancel: a push, a
+    /// retire).
     private var uncoverReplayGeneration = 0
     /// The live restore once its request went to the pager. See `UncoverRestorePolicy`.
     ///
@@ -266,8 +267,14 @@ final class StageController: ObservableObject {
     }
 
     /// A new push: a pop restore still waiting for the pager must not fire under it.
+    ///
+    /// Batch N review r1 (BUG-188 follow-up): stales a pending replay too, so one still waiting out
+    /// its beat (up to ~1.15 s in the pager poll) cannot fire `requestFocus` on a strip row under a
+    /// push. Both retire branches of `noteViewerInput` call this BEFORE `replayViewerMove`, whose own
+    /// bump then wins for the replay they start.
     func cancelUncoverRestore() {
         uncoverRestoreGeneration &+= 1
+        uncoverReplayGeneration &+= 1
         uncoverRestoreTarget = nil
         uncoverRequestedAt = nil
         uncoverPendingRowKey = nil
@@ -440,13 +447,20 @@ final class StageController: ObservableObject {
                 }
                 guard self.pagerHandle.isInstalled else { return }
             }
+            // Batch N review r1: a newer press since this one is the viewer's own (a second Up must
+            // not move twice, a Select may be pushing Detail), and a push over the page freezes the
+            // strip's memory (`setCovered`): either way the replay stands down.
+            guard ViewerInputClock.shared.lastAt == pressAt, !self.memory.isFrozen else { return }
+            // Batch N review r1: the pending branch anchors on the restore row unconditionally. No
+            // engine move inside the strip is possible before the pager exists, so neither the
+            // strip's ownership nor a row change (a stale one from before the push) may count.
             guard let key = UncoverReplayPolicy.decide(kind: kind,
-                                                       stripOwnsFocus: self.stripOwnsFocus,
+                                                       stripOwnsFocus: waitsForPager ? false : self.stripOwnsFocus,
                                                        currentRowKey: self.currentRowKey,
                                                        restoreRowKey: restoreRowKey,
                                                        rowKeys: self.pagerHandle.rowKeys,
                                                        pressAt: pressAt,
-                                                       lastRowChangeAt: self.lastRowChangeAt) else { return }
+                                                       lastRowChangeAt: waitsForPager ? nil : self.lastRowChangeAt) else { return }
             StageStripProbe.shared.log("restore replay \(kind.rawValue) \u{2192} \(key) source=\(self.uncoverSource)")
             self.requestFocus(rowKey: key, itemId: self.memory.itemId(for: key), reason: "uncover-replay")
         }

@@ -351,8 +351,24 @@ struct NavigationRail: View {
     private var railOpen: Bool { isCorner ? cornerOpen : expanded }
 
     /// FEAT-80 Corner: the column's full laid-out height, measured once per layout change. 0 until
-    /// the first layout, which the visible height floors at the tab's.
+    /// the first layout, when `cornerOpenHeight` falls back to `cornerDerivedHeight`.
     @State private var cornerColumnHeight: CGFloat = 0
+
+    /// FEAT-80 Corner (Batch N review r1): the open column's height from the metrics, before the
+    /// first measurement. With Hidden the first arm MOUNTS the panel already open; floored at the
+    /// tab's height, the glass and the mask sat at the tab and then snapped open on the measurement,
+    /// with no spring. The rows are one platter tall (the label's line is shorter), so this matches
+    /// the measurement and the first unroll animates like every later one.
+    private var cornerDerivedHeight: CGFloat {
+        let count = CGFloat(railItems.count + 1)  // the tabs + the profile avatar
+        return RailMetrics.cornerTop + count * RailMetrics.itemPlatter
+            + max(count - 1, 0) * RailMetrics.itemSpacing
+            + RailMetrics.avatarGap + RailMetrics.verticalPadding
+    }
+
+    private var cornerOpenHeight: CGFloat {
+        max(cornerColumnHeight > 0 ? cornerColumnHeight : cornerDerivedHeight, RailMetrics.cornerTabHeight)
+    }
 
     private var visibility: NavigationChrome.RailVisibility {
         NavigationChrome.railVisibility(raw: visibilityRaw)
@@ -562,7 +578,7 @@ struct NavigationRail: View {
     /// Reduce Motion: no height or mask animation, the lower items fade.
     private var cornerPanel: some View {
         let open = cornerOpen
-        let visibleHeight = open ? max(cornerColumnHeight, RailMetrics.cornerTabHeight) : RailMetrics.cornerTabHeight
+        let visibleHeight = open ? cornerOpenHeight : RailMetrics.cornerTabHeight
         // Only the bottom-trailing corner is rounded: the glass meets the screen edges square.
         let shape = UnevenRoundedRectangle(bottomTrailingRadius: RailMetrics.cornerRadius, style: .continuous)
         return VStack(alignment: .leading, spacing: RailMetrics.itemSpacing) {
@@ -610,10 +626,19 @@ struct NavigationRail: View {
     /// FEAT-80 Corner: Home (order 0) is the tab and always shows. Every later item fades with the
     /// unroll, staggered by its order so the column fills top to bottom, and leaves the
     /// accessibility tree while collapsed. It closes in one fade, no stagger.
+    ///
+    /// Batch N review r1: the selected tab's item is never faded. `takeFocusAfterReveal` writes
+    /// focus to it the next turn and again at +0.15 s; staggered (Settings, Profile: up to
+    /// order × 0.035 s + 0.18 s), both writes landed while it was near opacity 0, which the hardware
+    /// focus engine refuses (Batch B: opacity-0 controls are unfocusable), so the rail failed to open
+    /// on those tabs. Collapsed, the mask hides it; open, it shows as the mask passes it.
     @ViewBuilder
     private func cornerItem(_ item: RailItem, order: Int) -> some View {
         if order == 0 {
             itemView(item)
+        } else if item.id == selectedTab {
+            itemView(item)
+                .accessibilityHidden(!cornerOpen)
         } else {
             let open = cornerOpen
             itemView(item)
