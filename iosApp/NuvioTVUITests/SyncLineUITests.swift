@@ -97,10 +97,12 @@ final class SyncLineUITests: XCTestCase {
         pause(2)
         let row = element(app, "player.panel.syncLine")
         XCTAssertTrue(row.waitForExistence(timeout: 10), "no Sync Line row with an external subtitle selected")
-        // Down through Timing caption -> delay chips -> Sync Line.
-        for _ in 0..<3 where !row.hasFocus {
-            remote.press(.down)
-            pause(0.8)
+        // Down to the Timing row, then Right along the delay chips to Sync Line (last control).
+        remote.press(.down)
+        pause(0.8)
+        for _ in 0..<7 where !row.hasFocus {
+            remote.press(.right)
+            pause(0.6)
         }
     }
 

@@ -15,8 +15,14 @@ nonisolated enum SyncLineCueLoader {
             let path = source.hasPrefix("file://") ? (URL(string: source)?.path ?? source) : source
             data = FileManager.default.contents(atPath: path)
         }
-        guard let data, !data.isEmpty, let text = normalized(data, stripSdh: stripSdh) else { return nil }
-        return parse(text, sourceUrl: source)
+        let byteCount = data?.count ?? -1
+        guard let data, !data.isEmpty, let text = normalized(data, stripSdh: stripSdh) else {
+            print("[SyncLine] load failed source=\(Self.describe(source)) bytes=\(byteCount)")
+            return nil
+        }
+        let cues = parse(text, sourceUrl: source)
+        print("[SyncLine] loaded source=\(Self.describe(source)) bytes=\(byteCount) chars=\(text.count) cues=\(cues.count) first=\(cues.first?.startTimeMs ?? -1)ms last=\(cues.last?.startTimeMs ?? -1)ms head=\(String(text.prefix(40)).replacingOperators())")
+        return cues
     }
 
     /// Native: the server's cached offset-zero VTT, else a download of the rendition's URL.
@@ -37,6 +43,12 @@ nonisolated enum SyncLineCueLoader {
 
     /// The text the screen renders: decoded, converted to WebVTT and SDH-stripped exactly as the
     /// native path does, so the list never shows a line the screen does not.
+    /// Host + extension only: subtitle URLs carry add-on tokens.
+    static func describe(_ source: String) -> String {
+        if let u = URL(string: source), let host = u.host { return "\(host)/…\(u.pathExtension.isEmpty ? "" : "." + u.pathExtension)" }
+        return "file…\(source.hasSuffix(".srt") || source.hasSuffix(".vtt") || source.hasSuffix(".ass") ? String(source.suffix(4)) : "")"
+    }
+
     private static func normalized(_ data: Data, stripSdh: Bool) -> String? {
         SubtitleVTT.webVTT(from: data, stripSdh: stripSdh) ?? decode(data)
     }
@@ -51,5 +63,12 @@ nonisolated enum SyncLineCueLoader {
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
         return data
+    }
+}
+
+private extension String {
+    /// One line, no control characters, for the console.
+    func replacingOperators() -> String {
+        unicodeScalars.map { $0.value < 32 ? "·" : String($0) }.joined()
     }
 }

@@ -91,7 +91,7 @@ struct PlayerSubtitlesTab: View {
             Text(String(localized: "Subtitle Delay"))
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .frame(width: 260, alignment: .leading)
+                .frame(width: 200, alignment: .leading)
             delayButton(String(localized: "−1 s")) { applyDelay(delayMs - 1000) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.minus1")
             delayButton(String(localized: "−0.1 s")) { applyDelay(delayMs - 100) }
@@ -99,7 +99,9 @@ struct PlayerSubtitlesTab: View {
             Text(String(format: "%+.2f s", delaySec))
                 .font(Theme.Font.body.monospacedDigit())
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .frame(width: 120)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 100)
                 .accessibilityIdentifier("player.panel.subtitleDelay.value")
             delayButton(String(localized: "+0.1 s")) { applyDelay(delayMs + 100) }
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus")
@@ -107,14 +109,21 @@ struct PlayerSubtitlesTab: View {
                 .accessibilityIdentifier("player.panel.subtitleDelay.plus1")
             // Always mounted: removing Reset when it reached 0 took the focused control away and
             // the engine dropped focus somewhere else in the panel. At 0 it is a no-op.
-            Button(String(localized: "Reset")) { if delayMs != 0 { applyDelay(0) } }
-                .font(Theme.Font.meta)
+            Button { if delayMs != 0 { applyDelay(0) } } label: { Text(String(localized: "Reset")).font(Theme.Font.meta).lineLimit(1).fixedSize() }
                 .accessibilityIdentifier("player.panel.subtitleDelay.reset")
+            // P5 device pass (2026-10-20): a Sync Line button on its own row below the chips was
+            // unreachable on hardware (Down from any chip went nowhere; the focus engine never
+            // crossed into it). In the same HStack it is one Right past Reset.
+            if model.syncLineAvailable {
+                Button(action: startSyncLine) { Text(String(localized: "Sync Line")).font(Theme.Font.meta).lineLimit(1).fixedSize() }
+                    .focused($syncFocus, equals: .row)
+                    .accessibilityIdentifier("player.panel.syncLine")
+            }
         }
     }
 
     private func delayButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Text(label).font(Theme.Font.meta) }
+        Button(action: action) { Text(label).font(Theme.Font.meta).lineLimit(1).fixedSize() }
     }
 
     private func applyDelay(_ ms: Int) {
@@ -125,18 +134,12 @@ struct PlayerSubtitlesTab: View {
 
     // MARK: - Sync Line (P5 B19)
 
+    /// The caption under the Timing row; the button itself lives in `subtitleDelayRow`.
     private var syncLineRow: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-            Button(action: startSyncLine) {
-                Text(String(localized: "Sync Line")).font(Theme.Font.body)
-            }
-            .focused($syncFocus, equals: .row)
-            .accessibilityIdentifier("player.panel.syncLine")
-            Text(String(localized: "Press while a line is spoken, then pick that line."))
-                .font(Theme.Font.meta)
-                .foregroundStyle(Theme.Palette.textSecondary)
-        }
-        .padding(.top, Theme.Spacing.xs)
+        Text(String(localized: "Press Sync Line while a line is spoken, then pick that line."))
+            .font(Theme.Font.meta)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .padding(.top, Theme.Spacing.xxs)
     }
 
     private func startSyncLine() {
@@ -157,6 +160,7 @@ struct PlayerSubtitlesTab: View {
                                                               currentDelayMs: Int32(delayAtCapture))
                 let anchor = SubtitleSyncLine.shared.anchorIndex(windowed: windowed, capturedPositionMs: captured,
                                                                  currentDelayMs: Int32(delayAtCapture))
+                print("[SyncLine] captured=\(captured)ms delay=\(delayAtCapture)ms cues=\(loaded.count) window=\(windowed.count) anchor=\(anchor.map { "\($0)" } ?? "-")")
                 focusAfterDelay(anchor.map { .cue(Int(truncating: $0)) } ?? .cancel)
             } else {
                 syncSession?.failed = true
