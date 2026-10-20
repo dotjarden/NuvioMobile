@@ -134,7 +134,7 @@ nonisolated enum UncoverReplayPolicy {
                        lastRowChangeAt: TimeInterval?) -> String? {
         guard kind == .up || kind == .down else { return nil }
         if let lastRowChangeAt, lastRowChangeAt >= pressAt,
-           lastRowChangeAt - pressAt <= UncoverRestorePolicy.regrabDefer { return nil }
+           lastRowChangeAt <= pressAt + UncoverRestorePolicy.regrabDefer { return nil }
         guard let anchor = stripOwnsFocus ? currentRowKey : restoreRowKey,
               let index = rowKeys.firstIndex(of: anchor) else { return nil }
         let next = kind == .down ? index + 1 : index - 1
