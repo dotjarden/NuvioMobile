@@ -424,6 +424,10 @@ struct DetailView: View {
     /// the list. Reset when the cover goes away. Series carry the same flag on `SeriesPlayRoute`.
     @State private var forceManualPlay = false
     @State private var seriesPlay: SeriesPlayRoute?
+    /// P5 B22: the post-play More Like This pick, stored while the player covers close and pushed
+    /// from the cover's `onDismiss` (never while a cover is still up: the empty-pushed-view EJECT).
+    @State private var postPlayPending: MetaPreview?
+    @State private var postPlayRoute: TitleRoute?
     /// Episode shuffle sheet (upstream `23b048c3`), opened from the action row's Shuffle button.
     @State private var showShuffleSheet = false
     /// The shuffle pick the sheet asked to play; presented as `seriesPlay` once the sheet is gone
@@ -650,6 +654,13 @@ struct DetailView: View {
         }
     }
 
+    /// P5 B22: runs from the player covers' `onDismiss`, so the push happens after the cover is gone.
+    private func openPostPlayPick() {
+        guard let pick = postPlayPending else { return }
+        postPlayPending = nil
+        postPlayRoute = TitleRoute(preview: pick)
+    }
+
     var body: some View {
         // BUG-41 measurement probe, gated at runtime by `DetailScrollProbe.enabled` (see above).
         let _ = Self.logBodyEval()
@@ -721,7 +732,8 @@ struct DetailView: View {
                             meta: meta,
                             episodeRatings: model.episodeRatings,
                             episodeRatingsVisibility: model.episodeRatingsVisibility,
-                            watchedEpisodeKeys: model.watchedEpisodeKeys
+                            watchedEpisodeKeys: model.watchedEpisodeKeys,
+                            onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
                         )
                         // A discrete focus region: vertical D-pad moves must land here instead of
                         // geometrically skipping from the info/network chips down to the cast row.
@@ -1223,13 +1235,18 @@ struct DetailView: View {
         .fullScreenCover(isPresented: $showStreams, onDismiss: {
             forceManualPlay = false
             startOverMovie = false
+            openPostPlayPick()
         }) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, synopsis: overview, meta: playbackMeta,
                              logoUrl: logoUrl, forceManual: forceManualPlay,
-                             startFromBeginning: startOverMovie)
+                             startFromBeginning: startOverMovie,
+                             onOpenTitle: { postPlayPending = $0 })
         }
-        .fullScreenCover(item: $seriesPlay) { route in
+        .navigationDestination(item: $postPlayRoute) { route in
+            DetailView(preview: route.preview)
+        }
+        .fullScreenCover(item: $seriesPlay, onDismiss: openPostPlayPick) { route in
             StreamPickerView(
                 type: route.meta.type,
                 videoId: route.action.videoId,
@@ -1244,7 +1261,8 @@ struct DetailView: View {
                 meta: playbackMeta,
                 logoUrl: logoUrl,
                 forceManual: route.forceManual,
-                startFromBeginning: route.startFromBeginning
+                startFromBeginning: route.startFromBeginning,
+                onOpenTitle: { postPlayPending = $0 }
             )
         }
         // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the

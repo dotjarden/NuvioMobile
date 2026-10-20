@@ -1,3 +1,4 @@
+import SharedCore
 import AVKit
 import SwiftUI
 
@@ -22,6 +23,9 @@ struct MPVSmokeModifier: ViewModifier {
     /// reference HLS stream) — a control for what the SIMULATOR's system panel shows (Subtitles /
     /// Audio tabs) independent of our synthesized master.
     @State private var bareURL: URL?
+    /// `debug.mpvSmokePostPlay` YES (P5 B22 legs): the id of the post-play More Like This title
+    /// the player handed back, shown by the 1 pt `debug_postPlayOpened` label.
+    @State private var smokeOpened = ""
 
     func body(content: Content) -> some View {
         content
@@ -72,13 +76,31 @@ struct MPVSmokeModifier: ViewModifier {
                     case "mpv": ctx.forcedEngine = .mpv
                     default: break
                     }
+                    // `debug.mpvSmokeResumeSec` <sec> (P5 B22 legs): start near the end of a short fixture.
+                    if UserDefaults.standard.object(forKey: "debug.mpvSmokeResumeSec") != nil {
+                        ctx.resumeAtSec = UserDefaults.standard.double(forKey: "debug.mpvSmokeResumeSec")
+                    }
                     if let forced = ctx.forcedEngine { print("[MPVSmoke] forced engine: \(forced)") }
                     context = ctx
                 }
             }
             .fullScreenCover(item: $context) { ctx in
-                PlayerScreen(context: ctx, onPlayNext: { _ in })
-                    .ignoresSafeArea()
+                PlayerScreen(
+                    context: ctx, onPlayNext: { _ in },
+                    // `debug.mpvSmokePostPlay` YES: enable the More Like This row; a pick is
+                    // recorded in `smokeOpened` instead of pushing a page.
+                    onOpenTitle: UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay")
+                        ? { smokeOpened = $0.id } : nil
+                )
+                .ignoresSafeArea()
+            }
+            .overlay(alignment: .topLeading) {
+                if UserDefaults.standard.bool(forKey: "debug.mpvSmokePostPlay") {
+                    Text(smokeOpened.isEmpty ? "none" : smokeOpened)
+                        .font(.system(size: 1))
+                        .opacity(0.01)
+                        .accessibilityIdentifier("debug_postPlayOpened")
+                }
             }
             .fullScreenCover(item: $bareURL) { url in
                 BareAVPlayerView(url: url).ignoresSafeArea()

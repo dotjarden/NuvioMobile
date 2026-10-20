@@ -1,3 +1,4 @@
+import SharedCore
 import SwiftUI
 
 /// Engine dispatcher for all video playback in NuvioTV. Call sites present `PlayerScreen`; it probes
@@ -21,6 +22,9 @@ struct PlayerScreen: View {
     var onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil
     /// Fired once per engine session when the link has played `PlaybackFailoverPolicy.healthySeconds`.
     var onPlaybackHealthy: ((Double) -> Void)? = nil
+    /// P5 B22: a post-play More Like This poster was chosen. The host stores it and navigates
+    /// after its player cover dismisses; nil = no row.
+    var onOpenTitle: ((MetaPreview) -> Void)? = nil
 
     @State private var decision: EngineDecision?
     /// The probe behind `decision` (nil with the native flag off or no probe): decides whether the
@@ -62,7 +66,8 @@ struct PlayerScreen: View {
                                    },
                                    routingNote: decision?.displayNote,
                                    onPlaybackFailed: annotated(.native),
-                                   onPlaybackHealthy: onPlaybackHealthy)
+                                   onPlaybackHealthy: onPlaybackHealthy,
+                                   onOpenTitle: onOpenTitle)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: mpvRoutingNote,
@@ -70,7 +75,8 @@ struct PlayerScreen: View {
                                 onPlaybackHealthy: onPlaybackHealthy,
                                 startWatchdogShortened: forcedMPV && nativeFailedBeforeStart,
                                 nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0,
-                                forcesGpuNext: mpvForcesGpuNext)
+                                forcesGpuNext: mpvForcesGpuNext,
+                                onOpenTitle: onOpenTitle)
             case .deciding:
                 // B24: the probe is the first startup phase; the loading screen draws it from the
                 // first frame (`.checking`, the only stage MediaProbe has). Off: the old spinner.

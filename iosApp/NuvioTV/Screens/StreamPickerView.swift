@@ -63,6 +63,9 @@ struct StreamPickerView: View {
     let startFromBeginning: Bool
     /// A toast shown when the picker opens on its list (the Up Next failover picker's explanation).
     let notice: String?
+    /// P5 B22: set by presenters that push a Detail page once the picker closes; forwarded to the
+    /// player's post-play More Like This row.
+    let onOpenTitle: ((MetaPreview) -> Void)?
 
     @StateObject private var model: StreamsViewModel
     @StateObject private var autoPlay: FirstPlayAutoPlayController
@@ -176,8 +179,10 @@ struct StreamPickerView: View {
         logoUrl: String? = nil,
         forceManual: Bool = false,
         startFromBeginning: Bool = false,
-        notice: String? = nil
+        notice: String? = nil,
+        onOpenTitle: ((MetaPreview) -> Void)? = nil
     ) {
+        self.onOpenTitle = onOpenTitle
         self.meta = meta
         self.logoUrl = logoUrl
         self.forceManual = forceManual
@@ -503,7 +508,8 @@ struct StreamPickerView: View {
                     context: ctx,
                     onPlayNext: { next in selected = next },
                     onPlaybackFailed: { failure in handlePlaybackFailure(failure, context: ctx) },
-                    onPlaybackHealthy: { seconds in handlePlaybackHealthy(seconds, context: ctx) }
+                    onPlaybackHealthy: { seconds in handlePlaybackHealthy(seconds, context: ctx) },
+                    onOpenTitle: onOpenTitle
                 )
                 .ignoresSafeArea()
                 .id(ctx.id)

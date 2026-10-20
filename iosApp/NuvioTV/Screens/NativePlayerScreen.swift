@@ -34,8 +34,12 @@ struct NativePlayerScreen: View {
     var onPlaybackHealthy: ((Double) -> Void)?
     /// Router decision label (e.g. "Native · DV P7 FEL → 8.1") for the Info tab.
     var routingNote: String?
+    /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
+    /// post-play More Like This row.
+    var onOpenTitle: ((MetaPreview) -> Void)? = nil
 
     @StateObject private var coordinator: NativePlaybackCoordinator
+    @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
     @StateObject private var upNext: NextEpisodeEngine
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: NativePlayerPanelAdapter?
@@ -67,8 +71,10 @@ struct NativePlayerScreen: View {
          onFallback: ((Double, Double, Bool) -> Void)? = nil,
          routingNote: String? = nil,
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
-         onPlaybackHealthy: ((Double) -> Void)? = nil) {
+         onPlaybackHealthy: ((Double) -> Void)? = nil,
+         onOpenTitle: ((MetaPreview) -> Void)? = nil) {
         self.context = context
+        self.onOpenTitle = onOpenTitle
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
@@ -206,6 +212,22 @@ struct NativePlayerScreen: View {
             PlayerLoadingHistory.shared.note(stage, contextID: context.id)
         }
         #endif
+        // P5 B22: the item played to its end with no Up Next hand-off pending (same gate as mpv).
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { coordinator.didPlayToEnd && upNext.phase == .hidden },
+                set: { if !$0 { coordinator.clearEnded() } }
+            )
+        ) {
+            PostPlayView(
+                title: context.title,
+                poster: context.poster,
+                onReplay: { coordinator.replayFromStart() },
+                onExit: { dismiss() },
+                moreLikeThis: moreLikeThisLoader.items,
+                onOpenTitle: onOpenTitle
+            )
+        }
         .onChange(of: coordinator.phase) { _, phase in
             if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
             evaluatePauseCard()
@@ -226,6 +248,9 @@ struct NativePlayerScreen: View {
             if open { hidePauseCard(reason: "panel") } else { evaluatePauseCard() }
         }
         .onAppear {
+            if onOpenTitle != nil {
+                moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
+            }
             pauseCardEnabled = (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?
                 .pauseOverlayEnabled != false
             let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,

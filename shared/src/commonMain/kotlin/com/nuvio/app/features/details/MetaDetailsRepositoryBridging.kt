@@ -16,3 +16,10 @@ suspend fun MetaDetailsRepository.fetchChecked(
     id: String,
     cacheResult: Boolean,
 ): MetaDetails? = fetch(type = type, id = id, cacheResult = cacheResult)
+
+/** [MetaDetailsRepository.moreLikeThis] (P5 B22 post-play row), callable from Swift with `try await`. */
+@Throws(Throwable::class)
+suspend fun MetaDetailsRepository.moreLikeThisChecked(
+    type: String,
+    id: String,
+): List<com.nuvio.app.features.home.MetaPreview> = moreLikeThis(type = type, id = id)

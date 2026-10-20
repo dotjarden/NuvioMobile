@@ -4586,9 +4586,13 @@ struct MPVPlayerScreen: View {
     /// B10 (BUG-166): a Dolby Vision profile 5 stream routed to mpv renders with `gpu-next`
     /// (`EngineDecision.prefersGpuNext`). Read once, when the controller is made.
     var forcesGpuNext = false
+    /// P5 B22: set by presenters that can push a Detail page after the player closes; enables the
+    /// post-play More Like This row.
+    var onOpenTitle: ((MetaPreview) -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
+    @StateObject private var moreLikeThisLoader = PostPlayMoreLikeThisLoader()
     @Environment(\.dismiss) private var dismiss
     /// `pauseOverlayEnabled` (the shared Pause Info Card setting), read once in `onAppear`.
     @State private var pauseCardEnabled = true
@@ -4611,8 +4615,10 @@ struct MPVPlayerScreen: View {
          onPlaybackHealthy: ((Double) -> Void)? = nil,
          startWatchdogShortened: Bool = false,
          nativeSecondsPlayedBeforeFallback: Double = 0,
-         forcesGpuNext: Bool = false) {
+         forcesGpuNext: Bool = false,
+         onOpenTitle: ((MetaPreview) -> Void)? = nil) {
         self.context = context
+        self.onOpenTitle = onOpenTitle
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
         self.forcesGpuNext = forcesGpuNext
@@ -4779,10 +4785,15 @@ struct MPVPlayerScreen: View {
                 title: context.title,
                 poster: context.poster,
                 onReplay: { state.replay?() },
-                onExit: { dismiss() }
+                onExit: { dismiss() },
+                moreLikeThis: moreLikeThisLoader.items,
+                onOpenTitle: onOpenTitle
             )
         }
         .onAppear {
+            if onOpenTitle != nil {
+                moreLikeThisLoader.load(type: context.contentType, id: context.parentMetaId)
+            }
             if let routingNote { state.routingNote = routingNote }
             // Transport bar feeds (P1): lockup text, pill row, clock, pause-card setting.
             let header = NativeInfoHeader(context: context)
@@ -4824,61 +4835,6 @@ struct MPVPlayerScreen: View {
             // Paused → let the idle timer run again (a long-paused frame should be allowed to
             // hand off to the screensaver, same as the native player); playing → hold it.
             UIApplication.shared.isIdleTimerDisabled = !paused
-        }
-    }
-}
-
-/// Post-play screen shown when playback reaches the end without an autoplay hand-off
-/// (Android TV `PostPlayOverlay` parity, simplified): replay or exit.
-private struct PostPlayView: View {
-    let title: String
-    let poster: String?
-    let onReplay: () -> Void
-    let onExit: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            HStack(alignment: .center, spacing: 48) {
-                if let poster, !poster.isEmpty {
-                    CachedAsyncImage(string: poster)
-                        .frame(width: 260, height: 390)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                VStack(alignment: .leading, spacing: 24) {
-                    Text("That's the end of")
-                        .font(Theme.Font.screenTitle.weight(.regular))
-                        .foregroundStyle(.white.opacity(0.7))
-                    Text(title)
-                        .font(Theme.Font.hero)
-                        .foregroundStyle(.white)
-                        .lineLimit(3)
-                        .frame(maxWidth: 800, alignment: .leading)
-
-                    Button {
-                        dismiss()
-                        onReplay()
-                    } label: {
-                        Label("Play Again", systemImage: "arrow.counterclockwise")
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        // Dismissing the player screen tears the cover down with it —
-                        // don't also dismiss the cover (competing transitions).
-                        onExit()
-                    } label: {
-                        Label("Back to Details", systemImage: "chevron.backward")
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(80)
         }
     }
 }

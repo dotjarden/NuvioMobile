@@ -16,10 +16,14 @@ struct EpisodesSection: View {
     var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
     /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
     var watchedEpisodeKeys: Set<String> = []
+    /// P5 B22: a post-play More Like This pick from an episode's player; called from the picker
+    /// cover's `onDismiss` so the host pushes only after the cover is gone.
+    var onPostPlayTitle: ((MetaPreview) -> Void)? = nil
 
     @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideSpoilers = false
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
+    @State private var postPlayPending: MetaPreview?
     @FocusState private var focusedEpisodeId: String?
     /// BUG-153 (Batch M): gates the episode row's `zIndex` (`DetailTileFocus.raisedZIndex`).
     @Environment(\.focusAppearance) private var focusAppearance
@@ -200,7 +204,11 @@ struct EpisodesSection: View {
 
             focusedOverviewPanel(episodes: episodes)
         }
-        .fullScreenCover(item: $episodeForStreams) { route in
+        .fullScreenCover(item: $episodeForStreams, onDismiss: {
+            guard let pick = postPlayPending else { return }
+            postPlayPending = nil
+            onPostPlayTitle?(pick)
+        }) { route in
             StreamPickerView(
                 type: route.meta.type,
                 videoId: Self.episodeVideoId(metaId: route.meta.id, episode: route.episode),
@@ -213,7 +221,8 @@ struct EpisodesSection: View {
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
                 meta: PlaybackMeta(details: route.meta),
-                logoUrl: route.meta.logo
+                logoUrl: route.meta.logo,
+                onOpenTitle: onPostPlayTitle == nil ? nil : { postPlayPending = $0 }
             )
         }
     }

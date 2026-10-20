@@ -9,6 +9,7 @@ import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.home.HomeUnreleasedContentPolicyProvider
 import com.nuvio.app.features.home.filterReleasedItems
+import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.mdblist.MdbListMetadataService
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbMetadataService
@@ -299,6 +300,16 @@ object MetaDetailsRepository {
             }
         }
     }
+
+    /**
+     * P5 B22: Detail's More Like This for [type]/[id] (same source setting: Simkl, Trakt or TMDB),
+     * without touching [uiState]. Used by the post-play screen.
+     */
+    suspend fun moreLikeThis(type: String, id: String): List<MetaPreview> =
+        resolveMoreLikeThis(
+            meta = peek(type, id) ?: fetch(type, id),
+            apply = { meta -> applyMoreLikeThisSource(meta, fallbackItemId = id, fallbackItemType = type) },
+        )
 
     private const val FETCH_TIMEOUT_MS = 5_000L
     private const val METADATA_PROVIDER_READY_TIMEOUT_MS = 10_000L
@@ -692,4 +703,17 @@ object MetaDetailsRepository {
 
         return emptyList()
     }
+}
+
+/**
+ * Pure core of [MetaDetailsRepository.moreLikeThis]: a meta that already carries a resolved
+ * source keeps its list; otherwise [apply] (the Detail source chain) decides. No meta, no list.
+ */
+internal suspend fun resolveMoreLikeThis(
+    meta: MetaDetails?,
+    apply: suspend (MetaDetails) -> MetaDetails,
+): List<MetaPreview> {
+    if (meta == null) return emptyList()
+    if (meta.moreLikeThisSource != null) return meta.moreLikeThis
+    return apply(meta).moreLikeThis
 }

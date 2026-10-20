@@ -16,6 +16,9 @@ struct HomeView: View {
     /// retains/releases it (see `HomeViewModel.acquire()` for the ordering that forces refcounting).
     @ObservedObject var model: HomeViewModel
     @State private var resume: ResumeTarget?
+    /// P5 B22: the post-play More Like This pick from a Continue Watching player; pushed onto
+    /// `homePath` from the picker cover's `onDismiss` (after the cover is gone).
+    @State private var homePostPlayPending: MetaPreview?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The Poster Style Home renders with. Read in RELEASE as well as debug builds as of Wave 10:
     /// `pinnedHeroCompression` sizes the pinned hero from `height`, so this is now production
@@ -1288,7 +1291,11 @@ struct HomeView: View {
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderDetailView(route: route)
             }
-            .fullScreenCover(item: $resume) { target in
+            .fullScreenCover(item: $resume, onDismiss: {
+                guard let pick = homePostPlayPending else { return }
+                homePostPlayPending = nil
+                homePath.append(TitleRoute(preview: pick))
+            }) { target in
                 StreamPickerView(
                     type: target.entry.parentMetaType,
                     videoId: target.entry.videoId,
@@ -1302,7 +1309,8 @@ struct HomeView: View {
                     episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
                     synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
                     forceManual: target.forceManual,
-                    startFromBeginning: target.startFromBeginning
+                    startFromBeginning: target.startFromBeginning,
+                    onOpenTitle: { homePostPlayPending = $0 }
                 )
             }
         }

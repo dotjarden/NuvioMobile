@@ -101,6 +101,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// True once a resume seek has been issued (mpv's `didResumeSeek` equivalent).
     private(set) var didResumeSeek = false
 
+    /// P5 B22: the current item played to its end (`AVPlayerItemDidPlayToEndTime`). The screen
+    /// shows the post-play cover while this is true and no Up Next hand-off is pending.
+    @Published private(set) var didPlayToEnd = false
+    private var endObserver: NSObjectProtocol?
+
     /// Last observed position/duration, used when falling back to mpv.
     private(set) var lastPositionSec: Double = 0
     private var lastDurationSec: Double = 0 {
@@ -515,6 +520,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
         subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
         if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
+        removeEndObserver()
         timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
@@ -874,6 +880,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Every app-issued user seek reports its target here (chapter pick, the screen's skip seeks).
     /// Outside a B17 rebuild it does nothing.
     func noteUserSeek(to sec: Double) {
+        if didPlayToEnd { didPlayToEnd = false }
         guard isRebuildingItem, sec.isFinite else { return }
         rebuildUserSeekSec = sec
     }
@@ -1104,9 +1111,47 @@ final class NativePlaybackCoordinator: ObservableObject {
         observePlayback(player: player, item: item)
     }
 
+    // MARK: - End of item (P5 B22)
+
+    /// Observes `AVPlayerItemDidPlayToEndTime` for the CURRENT item only: every item swap calls
+    /// `observePlayback`, which replaces the observer. The served playlist carries
+    /// `EXT-X-ENDLIST`, so the notification fires at the real end.
+    private func installEndObserver(for item: AVPlayerItem) {
+        removeEndObserver()
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.playerItem === item else { return }
+                print("[NativePlayer] item played to end")
+                self.didPlayToEnd = true
+            }
+        }
+    }
+
+    private func removeEndObserver() {
+        if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+    }
+
+    /// Post-play "Play Again": back to the start, playing.
+    func replayFromStart() {
+        didPlayToEnd = false
+        guard let player else { return }
+        noteUserSeek(to: 0)
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            Task { @MainActor in player.play() }
+        }
+    }
+
+    /// The post-play cover went away without a replay.
+    func clearEnded() {
+        didPlayToEnd = false
+    }
+
     // MARK: - AVPlayer observation (resume + progress + Trakt)
 
     private func observePlayback(player: AVPlayer, item: AVPlayerItem, rebuild: RebuildTarget? = nil) {
+        installEndObserver(for: item)
         observeTask = Task { @MainActor [weak self] in
             var readied = false
             var waitingTicks = 0
@@ -1241,6 +1286,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         let paused = player.timeControlStatus != .playing
                         self.lastPositionSec = pos
                         self.lastDurationSec = dur
+                        if self.didPlayToEnd, pos < dur - 2 { self.didPlayToEnd = false }
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false)
                         self.refreshActiveAudioTrack()
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
