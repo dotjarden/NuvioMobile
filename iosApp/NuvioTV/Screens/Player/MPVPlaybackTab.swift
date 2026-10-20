@@ -61,9 +61,8 @@ struct MPVPlaybackTab: View {
                 // where a viewer actually looks when subs are out of sync, and it now persists
                 // per title/profile. Audio delay stays here and persists per title/profile, like the subtitle delay.
                 PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
-                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: values.audioDelayLimitSec) {
-                    state.setAudioDelay?($0)
-                }
+                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: values.audioDelayLimitSec,
+                         apply: { state.setAudioDelay?($0) }, reset: { state.resetAudioDelay?() })
                 Text("Positive values delay the track; negative values play it earlier.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
@@ -82,7 +81,7 @@ struct MPVPlaybackTab: View {
     }
 
     private func delayRow(title: String, value: Double, step: Double, limit: Double,
-                          apply: @escaping (Double) -> Void) -> some View {
+                          apply: @escaping (Double) -> Void, reset: @escaping () -> Void) -> some View {
         HStack(spacing: Theme.Spacing.sm) {
             Text(title)
                 .font(Theme.Font.body)
@@ -95,7 +94,7 @@ struct MPVPlaybackTab: View {
                 .frame(width: 150)
             Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
             // Always mounted (see PlayerSubtitlesTab): a Reset that vanished on press dropped focus.
-            Button(String(localized: "Reset")) { if value != 0 { apply(0) } }.font(Theme.Font.meta)
+            Button(String(localized: "Reset")) { reset() }.font(Theme.Font.meta)
         }
     }
 }
@@ -109,8 +108,8 @@ final class MPVPlaybackTabValues: ObservableObject {
     @Published private(set) var showStreamInfo: Bool
     @Published private(set) var rememberSpeed: Bool
     @Published private(set) var audioDelayLimitSec: Double
-    /// Read once at open: set when the file loaded, before the panel can be shown.
-    let rememberSpeedAvailable: Bool
+    /// Mirrored: the panel can open before FILE_LOADED, and the row appears when it lands.
+    @Published private(set) var rememberSpeedAvailable: Bool
 
     init(state: MPVPlaybackState) {
         playbackSpeed = state.playbackSpeed
@@ -119,6 +118,7 @@ final class MPVPlaybackTabValues: ObservableObject {
         rememberSpeed = state.rememberSpeed
         audioDelayLimitSec = state.audioDelayLimitSec
         rememberSpeedAvailable = state.rememberSpeedAvailable
+        state.$rememberSpeedAvailable.removeDuplicates().assign(to: &$rememberSpeedAvailable)
         state.$rememberSpeed.removeDuplicates().assign(to: &$rememberSpeed)
         state.$audioDelayLimitSec.removeDuplicates().assign(to: &$audioDelayLimitSec)
         state.$playbackSpeed.removeDuplicates().assign(to: &$playbackSpeed)

@@ -10,6 +10,7 @@ struct PlayerSubtitlesTab: View {
     /// Sync Line (P5 B19) session: the position is captured when the row is pressed, never when a
     /// cue is picked (the panel does not pause playback).
     private struct SyncSession {
+        let id = UUID()
         let capturedMs: Int64
         let delayAtCaptureMs: Int
         var cues: [SubtitleSyncCue]?
@@ -141,10 +142,15 @@ struct PlayerSubtitlesTab: View {
     private func startSyncLine() {
         let captured = model.syncLineCapturePositionMs?() ?? 0
         let delayAtCapture = model.subtitleDelayMs
-        syncSession = SyncSession(capturedMs: captured, delayAtCaptureMs: delayAtCapture, cues: nil, failed: false)
+        let session = SyncSession(capturedMs: captured, delayAtCaptureMs: delayAtCapture, cues: nil, failed: false)
+        let sessionID = session.id
+        syncSession = session
+        // Cancel exists as soon as the list does; park focus there so the engine never falls back
+        // to the tab row (which selects on focus) while the cues load.
+        focusAfterDelay(.cancel)
         Task { @MainActor in
             let loaded = await withTimeoutOrNil(seconds: 12) { await model.syncLineCues?() }
-            guard syncSession != nil else { return }
+            guard syncSession?.id == sessionID else { return }
             if let loaded {
                 syncSession?.cues = loaded
                 let windowed = SubtitleSyncLine.shared.window(cues: loaded, capturedPositionMs: captured,
@@ -160,8 +166,9 @@ struct PlayerSubtitlesTab: View {
     }
 
     /// A cue fetch that hangs or fails must not hang the panel: nil after `seconds`.
-    private func withTimeoutOrNil<T>(seconds: Double, _ work: @escaping () async -> [T]?) async -> [T]? {
-        await withTaskGroup(of: [T]?.self) { group in
+    private func withTimeoutOrNil(seconds: Double,
+                                  _ work: @escaping @Sendable () async -> [SubtitleSyncCue]?) async -> [SubtitleSyncCue]? {
+        await withTaskGroup(of: [SubtitleSyncCue]?.self) { group in
             group.addTask { await work() }
             group.addTask {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -213,7 +220,7 @@ struct PlayerSubtitlesTab: View {
                             model.onSubtitleDelayChange?(delay)
                             endSyncSession()
                         } label: {
-                            Text("\(Self.clock(cue.startTimeMs))  \(Self.firstLine(cue.text))")
+                            Text(verbatim: "\(Self.clock(cue.startTimeMs))  \(Self.firstLine(cue.text))")
                                 .font(Theme.Font.body)
                                 .lineLimit(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,6 +234,7 @@ struct PlayerSubtitlesTab: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: 520, alignment: .top)
+        .defaultFocus($syncFocus, .cancel)
     }
 
     private func syncMessage(_ text: String, id: String) -> some View {

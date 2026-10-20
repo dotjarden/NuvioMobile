@@ -1,6 +1,7 @@
 import XCTest
 
-/// Sync Line (P5 B19) legs. Skipped unless `PLAYER_BAR_PROBE=1`. `PLAYER_SMOKE_URL` is the smoke
+/// Sync Line (P5 B19) legs. The mpv legs skip unless `PLAYER_BAR_PROBE=1`, the native leg unless
+/// `PLAYER_NATIVE_PROBE=1`. `PLAYER_SMOKE_URL` is the smoke
 /// video; `PLAYER_SMOKE_SUB_URL` an SRT beside it (cues every 2 s over the first 10 minutes, kept in
 /// the gitignored `iosApp/build/smoke`). Pass both as `TEST_RUNNER_*`. The tvOS 27 sim never reports
 /// `hasFocus`, so legs assert existence and values, and drive focus with fixed press counts.
@@ -19,7 +20,8 @@ final class SyncLineUITests: XCTestCase {
 
     private func launch(native: Bool, withSubtitle: Bool) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
-        try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
+        try XCTSkipUnless(env[native ? "PLAYER_NATIVE_PROBE" : "PLAYER_BAR_PROBE"] == "1",
+                          native ? "PLAYER_NATIVE_PROBE not set" : "PLAYER_BAR_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
         let app = XCUIApplication()
         var args = ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", native ? "YES" : "NO",
@@ -33,8 +35,35 @@ final class SyncLineUITests: XCTestCase {
         app.launch()
         let playerId = native ? "player.native" : "player.mpv"
         XCTAssertTrue(app.otherElements[playerId].waitForExistence(timeout: 40), "player did not appear")
-        pause(8)   // playback running; the panel's recogniser attached
+        awaitPlaybackStarted(app, native: native)
         return app
+    }
+
+    /// Same start gates as `NativePlayerParityUITests`: mpv waits for `debug_seekProbe` pos > 1 and
+    /// the transport bar hidden (`debug_transportProbe` vis=0); native waits for `debug_nativeProbe`
+    /// pos > 1 and bar=0. A Down press before that does not open the panel.
+    private func awaitPlaybackStarted(_ app: XCUIApplication, native: Bool) {
+        let parse = NativePlayerParityUITests.parse
+        if native {
+            let probe = app.descendants(matching: .any)["debug_nativeProbe"]
+            XCTAssertTrue(probe.waitForExistence(timeout: 30), "no native probe")
+            var end = Date().addingTimeInterval(40)
+            while Date() < end, (Double(parse(probe.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.3) }
+            XCTAssertGreaterThan(Double(parse(probe.label)["pos"] ?? "") ?? 0, 1, "native playback never started: \(probe.label)")
+            end = Date().addingTimeInterval(10)
+            while Date() < end, parse(probe.label)["bar"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
+            return
+        }
+        let seek = app.descendants(matching: .any)["debug_seekProbe"]
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
+        var end = Date().addingTimeInterval(30)
+        while Date() < end, (Double(parse(seek.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertGreaterThan(Double(parse(seek.label)["pos"] ?? "") ?? 0, 1, "playback never started: \(seek.label)")
+        let bar = app.descendants(matching: .any)["debug_transportProbe"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 30), "no transport probe")
+        end = Date().addingTimeInterval(20)
+        while Date() < end, parse(bar.label)["vis"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertEqual(parse(bar.label)["vis"], "0", "bar never hid: \(bar.label)")
     }
 
     /// Down opens the panel; Right walks to the Subtitles tab.
@@ -82,6 +111,7 @@ final class SyncLineUITests: XCTestCase {
         remote.press(.select)
         let cue0 = element(app, "player.panel.syncLine.cue.0")
         XCTAssertTrue(cue0.waitForExistence(timeout: 12), "cue list never appeared")
+        pause(1)   // focus moves to the anchor cue 0.35 s after the list fills
         remote.press(.select)   // the anchor cue holds focus after 0.35 s
         pause(2)
         let value = element(app, "player.panel.subtitleDelay.value")

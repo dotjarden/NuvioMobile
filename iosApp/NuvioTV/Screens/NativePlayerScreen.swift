@@ -113,7 +113,7 @@ struct NativePlayerScreen: View {
                         engine: upNext,
                         canSwitchStreams: onPlayNext != nil,
                         hasEpisodes: !context.episodes.isEmpty && context.season != nil,
-                        rememberSpeedShowId: context.season != nil ? context.parentMetaId : nil,
+                        rememberSpeedShowId: (context.season != nil || context.episode != nil) ? context.parentMetaId : nil,
                         onBarVisibility: { visible in barVisibilityChanged(visible) },
                         onAnyPress: { hidePauseCard(reason: "press") }
                     )
@@ -562,7 +562,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
                 guard let host, let speedModel else { return }
                 speedModel.remember = on
                 if on {
-                    speedModel.saveIfRemembered(rate: Double(host.playerVC.selectedSpeed?.rate ?? 1))
+                    speedModel.saveIfRemembered(rate: Double(host.playerVC.selectedSpeed?.rate ?? Float(speedModel.rate)))
                 } else {
                     PlayerTrackPreferenceStorage.shared.clearPlaybackSpeed(parentMetaId: showId)
                 }
@@ -587,9 +587,14 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
 
         host.onOpenPanel = { [weak host] tab, column in
             guard let host else { return }
-            speedModel.rate = Double(host.playerVC.selectedSpeed?.rate ?? 1)
-            // Catches a change made with the system speed pill, which bypasses `select`.
-            speedModel.saveIfRemembered(rate: speedModel.rate)
+            // Catches a change made with the system speed pill, which bypasses `select`. Only when
+            // the player reports a selection: a nil one must not overwrite the saved speed with 1.0.
+            if let selected = host.playerVC.selectedSpeed {
+                speedModel.rate = Double(selected.rate)
+                speedModel.saveIfRemembered(rate: speedModel.rate)
+            } else {
+                speedModel.rate = 1
+            }
             let extra = PlayerPanelExtraTab {
                 NativePlaybackTab(engine: engine, speed: speedModel, canSwitchStreams: canSwitchStreams,
                                   initialColumn: column, onClose: { model.onClose?() })
@@ -617,10 +622,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
         // P5 B23: persist a speed changed with the system pill since the panel last opened.
         MainActor.assumeIsolated {
-            let speedModel = coordinator.speedModel
-            let rate: Double
-            if let selected = host.playerVC.selectedSpeed { rate = Double(selected.rate) } else { rate = speedModel.rate }
-            speedModel.saveIfRemembered(rate: rate)
+            // Review r2: only a speed AVKit actually reports is saved; a nil selectedSpeed (the
+            // player never exposed its pill) must not overwrite the remembered speed with 1.0.
+            if let selected = host.playerVC.selectedSpeed {
+                coordinator.speedModel.saveIfRemembered(rate: Double(selected.rate))
+            }
         }
         host.closePanel(animated: false)
     }

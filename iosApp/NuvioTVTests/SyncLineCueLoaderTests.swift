@@ -12,6 +12,19 @@ final class SyncLineCueLoaderTests: XCTestCase {
         XCTAssertEqual(SyncLineCueLoader.decode(Data([0xE9])), "é")
     }
 
+    func testDecodeUTF16LEWithBOM() async throws {
+        let srt = "1\n00:00:01,000 --> 00:00:03,000\nHello\n\n"
+        var data = Data([0xFF, 0xFE])
+        data.append(try XCTUnwrap(srt.data(using: .utf16LittleEndian)))
+        XCTAssertEqual(SyncLineCueLoader.decode(data)?.hasPrefix("1\n00:00:01"), true)
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("sync-line-\(UUID().uuidString).srt")
+        try data.write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let cues = await SyncLineCueLoader.load(source: path)
+        XCTAssertEqual(cues?.count, 1)
+        XCTAssertEqual(cues?.first?.startTimeMs, 1000)
+    }
+
     func testLoadParsesLocalSRTFile() async throws {
         let srt = """
         1

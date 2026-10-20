@@ -3,9 +3,9 @@ import SharedCore
 
 /// Sync Line (P5 B19): loads the cues of the selected external subtitle. Never sends stream headers
 /// (the mpv credential guard exists for the same reason): add-on subtitle URLs are fetched bare.
-enum SyncLineCueLoader {
+nonisolated enum SyncLineCueLoader {
     /// `source`: an http(s) URL or an absolute file path (mpv's credential-case temp copy).
-    static func load(source: String?) async -> [SubtitleSyncCue]? {
+    static func load(source: String?, stripSdh: Bool = false) async -> [SubtitleSyncCue]? {
         guard let source, !source.isEmpty else { return nil }
         let data: Data?
         if source.hasPrefix("http://") || source.hasPrefix("https://") {
@@ -15,24 +15,30 @@ enum SyncLineCueLoader {
             let path = source.hasPrefix("file://") ? (URL(string: source)?.path ?? source) : source
             data = FileManager.default.contents(atPath: path)
         }
-        guard let data, !data.isEmpty, let text = decode(data) else { return nil }
+        guard let data, !data.isEmpty, let text = normalized(data, stripSdh: stripSdh) else { return nil }
         return parse(text, sourceUrl: source)
     }
 
     /// Native: the server's cached offset-zero VTT, else a download of the rendition's URL.
-    static func load(vtt: String?, fallbackURL: URL?) async -> [SubtitleSyncCue]? {
+    static func load(vtt: String?, fallbackURL: URL?, stripSdh: Bool = false) async -> [SubtitleSyncCue]? {
         if let vtt, !vtt.isEmpty {
             return parse(vtt, sourceUrl: "sub.vtt")
         }
         guard let fallbackURL else { return nil }
-        guard let data = await download(fallbackURL), !data.isEmpty, let text = decode(data) else { return nil }
+        guard let data = await download(fallbackURL), !data.isEmpty,
+              let text = normalized(data, stripSdh: stripSdh) else { return nil }
         return parse(text, sourceUrl: fallbackURL.absoluteString)
     }
 
-    /// UTF-8, then ISO Latin-1; nil when neither decodes.
+    /// Same decoder as the native subtitle path: UTF-16 BOM, UTF-8, Windows-1252, then Latin-1.
     static func decode(_ data: Data) -> String? {
-        if let s = String(data: data, encoding: .utf8) { return s }
-        return String(data: data, encoding: .isoLatin1)
+        SubtitleVTT.decode(data)
+    }
+
+    /// The text the screen renders: decoded, converted to WebVTT and SDH-stripped exactly as the
+    /// native path does, so the list never shows a line the screen does not.
+    private static func normalized(_ data: Data, stripSdh: Bool) -> String? {
+        SubtitleVTT.webVTT(from: data, stripSdh: stripSdh) ?? decode(data)
     }
 
     private static func parse(_ text: String, sourceUrl: String) -> [SubtitleSyncCue] {

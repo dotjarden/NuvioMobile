@@ -70,11 +70,11 @@ extension PlayerAudioTab {
     @ViewBuilder
     fileprivate func effectsRows(_ fx: PlayerAudioEffectsState) -> some View {
         PlayerPanelSectionCaption(text: String(localized: "Sound")).padding(.top, Theme.Spacing.sm)
-        HStack(spacing: Theme.Spacing.sm) {
+        HStack(spacing: Theme.Spacing.xs) {
             Text(String(localized: "Boost"))
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: 110, alignment: .leading)
             Button { model.onAudioBoostChange?(PlayerAudioEffects.clampBoost(fx.boostDb - 2)) } label: {
                 Image(systemName: "minus")
             }
@@ -82,7 +82,9 @@ extension PlayerAudioTab {
             Text(fx.boostDb == 0 ? String(localized: "Off") : String(localized: "+\(fx.boostDb) dB"))
                 .font(Theme.Font.body.monospacedDigit())
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .frame(width: 100)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 90)
                 .accessibilityIdentifier("player.panel.audioFx.boost.value")
             Button { model.onAudioBoostChange?(PlayerAudioEffects.clampBoost(fx.boostDb + 2)) } label: {
                 Image(systemName: "plus")
@@ -91,6 +93,8 @@ extension PlayerAudioTab {
             // Always mounted (see PlayerSubtitlesTab): a Reset that vanished on press dropped focus.
             Button(String(localized: "Reset")) { if fx.boostDb != 0 { model.onAudioBoostChange?(0) } }
                 .font(Theme.Font.meta)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .accessibilityIdentifier("player.panel.audioFx.boost.reset")
         }
         PlayerPanelSectionCaption(text: String(localized: "Audio Mode")).padding(.top, Theme.Spacing.xs)

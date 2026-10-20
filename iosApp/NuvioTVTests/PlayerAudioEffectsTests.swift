@@ -20,6 +20,18 @@ final class PlayerAudioEffectsTests: XCTestCase {
         XCTAssertEqual(PlayerAudioEffects.afValue(mode: .off, channels: "5.1", channelCount: 6), "")
     }
 
+    func testAfDialogueOnPlainFiveOneUsesPan() {
+        let af = PlayerAudioEffects.afValue(mode: .dialogue, channels: "5.1", channelCount: 6)
+        XCTAssertTrue(af.hasPrefix("@nuvio-dialogue:lavfi=[pan=5.1|"))
+        XCTAssertTrue(af.contains("c2=1.5*c2"))
+    }
+
+    func testAfDialogueOnCentreLayoutWithTooFewChannelsFallsBack() {
+        let af = PlayerAudioEffects.afValue(mode: .dialogue, channels: "5.1", channelCount: 2)
+        XCTAssertFalse(af.contains("pan="))
+        XCTAssertTrue(af.contains("equalizer"))
+    }
+
     func testAfDialogueOnFiveOneSideUsesPan() {
         let af = PlayerAudioEffects.afValue(mode: .dialogue, channels: "5.1(side)", channelCount: 6)
         XCTAssertTrue(af.hasPrefix("@nuvio-dialogue:lavfi=[pan=5.1(side)|"))

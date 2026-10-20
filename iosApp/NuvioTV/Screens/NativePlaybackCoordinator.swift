@@ -1044,7 +1044,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// master never carried one (P5, HDR10, SDR, H.264) the retry replays the same playlist and
     /// costs a second ~20 s item failure before the mpv failover (console-s1b: ~50 s in all).
     nonisolated static func signalingRetryAllowed(attempt: Int, supplementalCodecs: String?) -> Bool {
-        attempt == 0 && supplementalCodecs != nil
+        attempt == 0 && !(supplementalCodecs ?? "").isEmpty
     }
 
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
@@ -1449,7 +1449,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Cues of the selected add-on subtitle; nil when none is selected, it is embedded, or loading failed.
     func selectedAddonSubtitleCues() async -> [SubtitleSyncCue]? {
         guard let name = currentLegibleName, let r = subtitleRenditionsByName[name], !r.isEmbedded else { return nil }
-        return await SyncLineCueLoader.load(vtt: server?.cachedBaseVTT(index: r.index), fallbackURL: r.sourceURL)
+        return await SyncLineCueLoader.load(vtt: server?.cachedBaseVTT(index: r.index), fallbackURL: r.sourceURL,
+                                           stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false)
     }
 
     /// Make AVPlayer re-read the selected subtitle rendition's body at the current delay.

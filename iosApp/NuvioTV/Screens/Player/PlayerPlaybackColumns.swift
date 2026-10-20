@@ -49,7 +49,7 @@ struct PlayerRememberSpeedRow: View {
             .font(Theme.Font.meta)
         }
         .accessibilityIdentifier("player.panel.speed.remember")
-        .accessibilityValue(isOn ? "on" : "off")
+        .accessibilityValue(Text(verbatim: isOn ? "on" : "off"))
     }
 }
 

@@ -1,7 +1,8 @@
 import XCTest
 
-/// P5 Wave 1 (B20 audio effects, B23 per-show speed) panel legs. Gated on `PLAYER_BAR_PROBE=1`
-/// and `PLAYER_SMOKE_URL` (pass as `TEST_RUNNER_*`), like the P1/P4 harness legs.
+/// P5 Wave 1 (B20 audio effects, B23 per-show speed) panel legs. The mpv legs are gated on
+/// `PLAYER_BAR_PROBE=1`, the native leg on `PLAYER_NATIVE_PROBE=1`, plus `PLAYER_SMOKE_URL`
+/// (pass as `TEST_RUNNER_*`), like the P1/P4 harness legs.
 class PlayerAudioSpeedUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -9,18 +10,48 @@ class PlayerAudioSpeedUITests: XCTestCase {
 
     private func launch(engine: String = "mpv", extra: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
-        try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
+        let native = engine == "native"
+        try XCTSkipUnless(env[native ? "PLAYER_NATIVE_PROBE" : "PLAYER_BAR_PROBE"] == "1",
+                          native ? "PLAYER_NATIVE_PROBE not set" : "PLAYER_BAR_PROBE not set")
         let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
         let app = XCUIApplication()
-        app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "NO",
-                                "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
-        if engine == "native" { app.launchArguments += ["-player.nativeDolbyVision", "YES", "-debug.mpvSmokeEngine", "native"] }
+        var args = ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", native ? "YES" : "NO",
+                    "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
+        if native { args += ["-debug.mpvSmokeEngine", "native"] }
+        app.launchArguments += args
         app.launchArguments += extra
         app.launch()
         let player = engine == "native" ? "player.native" : "player.mpv"
         XCTAssertTrue(app.otherElements[player].waitForExistence(timeout: 40), "player did not appear")
-        Thread.sleep(forTimeInterval: 6)   // let playback start and the bar settle
+        awaitPlaybackStarted(app, native: native)
         return app
+    }
+
+    /// Same start gates as `NativePlayerParityUITests`: mpv waits for `debug_seekProbe` pos > 1 and
+    /// the transport bar hidden (`debug_transportProbe` vis=0); native waits for `debug_nativeProbe`
+    /// pos > 1 and bar=0. A Down press before that does not open the panel.
+    private func awaitPlaybackStarted(_ app: XCUIApplication, native: Bool) {
+        let parse = NativePlayerParityUITests.parse
+        if native {
+            let probe = app.descendants(matching: .any)["debug_nativeProbe"]
+            XCTAssertTrue(probe.waitForExistence(timeout: 30), "no native probe")
+            var end = Date().addingTimeInterval(40)
+            while Date() < end, (Double(parse(probe.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.3) }
+            XCTAssertGreaterThan(Double(parse(probe.label)["pos"] ?? "") ?? 0, 1, "native playback never started: \(probe.label)")
+            end = Date().addingTimeInterval(10)
+            while Date() < end, parse(probe.label)["bar"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
+            return
+        }
+        let seek = app.descendants(matching: .any)["debug_seekProbe"]
+        XCTAssertTrue(seek.waitForExistence(timeout: 30), "no seek probe")
+        var end = Date().addingTimeInterval(30)
+        while Date() < end, (Double(parse(seek.label)["pos"] ?? "") ?? 0) <= 1 { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertGreaterThan(Double(parse(seek.label)["pos"] ?? "") ?? 0, 1, "playback never started: \(seek.label)")
+        let bar = app.descendants(matching: .any)["debug_transportProbe"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 30), "no transport probe")
+        end = Date().addingTimeInterval(20)
+        while Date() < end, parse(bar.label)["vis"] != "0" { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertEqual(parse(bar.label)["vis"], "0", "bar never hid: \(bar.label)")
     }
 
     private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {

@@ -51,6 +51,7 @@ final class MPVPlaybackState: ObservableObject {
     @Published var selectedExternalSubtitleSource: String?
     /// Playback position in ms for Sync Line, read when the row is pressed.
     var captureSyncPositionMs: (() -> Int64)?
+    var syncLineStripSdh: (() -> Bool)?
     /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
     @Published var panelOpen: Bool = false
     /// BUG-180: the panel's selected tab while it is open (nil = closed). Read on ticks, not published.
@@ -108,7 +109,9 @@ final class MPVPlaybackState: ObservableObject {
     /// P5 B23: "Remember Speed for This Show" (series only). `rememberSpeedAvailable` is set once
     /// the file has loaded, before the panel can open.
     @Published var rememberSpeed = false
-    var rememberSpeedAvailable = false
+    @Published var rememberSpeedAvailable = false
+    /// P5 N1: Reset on the Audio Delay row (returns to the stream hint when one is active).
+    var resetAudioDelay: (() -> Void)?
     var setRememberSpeed: ((Bool) -> Void)?
     /// P5 N1: the Audio Delay row's limit in seconds: 60 while a stream delay hint is active, else 10.
     @Published var audioDelayLimitSec: Double = 10
@@ -550,9 +553,11 @@ final class MPVTVPlayerViewController: UIViewController {
         state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
         state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
         state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
+        state.resetAudioDelay = { [weak self] in self?.resetAudioDelay() }
         state.setAudioBoost = { [weak self] db in self?.setAudioBoost(db) }
         state.setAudioMode = { [weak self] mode in self?.setAudioMode(mode) }
         state.setRememberSpeed = { [weak self] on in self?.setRememberSpeed(on) }
+        state.syncLineStripSdh = { [weak self] in self?.playerSettings?.subtitleStyle.stripSdh ?? false }
         state.captureSyncPositionMs = { [weak self] in Int64(((self?.cachedProps().position) ?? 0) * 1000) }
         state.replay = { [weak self] in self?.replay() }
         state.reclaimFocus = { [weak self] in
@@ -1393,7 +1398,7 @@ final class MPVTVPlayerViewController: UIViewController {
         state.audioEffects = fx
         if fx.boostDb > 0 { setMpvDouble("volume", PlayerAudioEffects.volumePercent(boostDb: fx.boostDb)) }
         // P5 B23: a remembered speed for this show (series only; movies never load or show it).
-        if context.season != nil {
+        if context.season != nil || context.episode != nil {
             state.rememberSpeedAvailable = true
             if let saved = PlayerTrackPreferenceStorage.shared.loadPlaybackSpeed(parentMetaId: context.parentMetaId)?.doubleValue {
                 state.rememberSpeed = true
@@ -1977,7 +1982,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// P5 B23: toggles "Remember Speed for This Show". On saves the current speed; off forgets it.
     private func setRememberSpeed(_ on: Bool) {
-        guard context.season != nil else { return }
+        guard context.season != nil || context.episode != nil else { return }
         state.rememberSpeed = on
         if on {
             PlayerTrackPreferenceStorage.shared.savePlaybackSpeed(parentMetaId: context.parentMetaId, speed: state.playbackSpeed)
@@ -2012,6 +2017,20 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    /// P5 N1 (product call): with a stream hint active, Reset returns to the hint (drops only the
+    /// session tweak), not to 0 s. Without a hint it is the old "set 0" and persists as before.
+    private func resetAudioDelay() {
+        guard mpv != nil else { return }
+        guard let hint = audioDelayParts.streamMs else {
+            if StreamAudioDelay.shared.totalMs(parts: audioDelayParts) != 0 { setAudioDelay(0) }
+            return
+        }
+        audioDelayParts = AudioDelayParts(savedMs: audioDelayParts.savedMs, streamMs: hint, sessionAdjustMs: 0)
+        let totalSec = Double(StreamAudioDelay.shared.totalMs(parts: audioDelayParts)) / 1000.0
+        setMpvDouble("audio-delay", totalSec)
+        state.audioDelaySec = totalSec
+    }
+
     // MARK: - Audio effects (P5 B20)
 
     /// Main. Boost in dB on mpv's `volume` property (volume-max is 320). Persisted device-wide.
@@ -2042,8 +2061,8 @@ final class MPVTVPlayerViewController: UIViewController {
             channelCount: getInt("audio-params/channel-count")
         )
         guard value != lastAppliedAf else { return }
-        lastAppliedAf = value
         let rc = mpv_set_property_string(mpv, "af", value)
+        if rc >= 0 { lastAppliedAf = value }
         print("[AudioFx] af=\(value) rc=\(rc)")
     }
 

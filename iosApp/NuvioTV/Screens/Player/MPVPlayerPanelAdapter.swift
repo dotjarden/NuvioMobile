@@ -36,8 +36,8 @@ final class MPVPlayerPanelAdapter {
         // Sync Line (P5 B19): position captured at press time; cues from mpv's own external source.
         model.syncLineCapturePositionMs = { [weak state] in state?.captureSyncPositionMs?() ?? 0 }
         model.syncLineCues = { [weak state] in
-            let source = await MainActor.run { state?.selectedExternalSubtitleSource }
-            return await SyncLineCueLoader.load(source: source)
+            let (source, strip) = await MainActor.run { (state?.selectedExternalSubtitleSource, state?.syncLineStripSdh?() ?? false) }
+            return await SyncLineCueLoader.load(source: source, stripSdh: strip)
         }
 
         Publishers.Merge4(

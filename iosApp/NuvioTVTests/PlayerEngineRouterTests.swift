@@ -84,6 +84,7 @@ final class PlayerEngineRouterTests: XCTestCase {
     func testSignalingRetryOnlyWhenSupplementalCodecsExist() {
         XCTAssertTrue(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 0, supplementalCodecs: "dvh1.08.06/db1p"))
         XCTAssertFalse(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 0, supplementalCodecs: nil))
+        XCTAssertFalse(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 0, supplementalCodecs: ""))
         XCTAssertFalse(NativePlaybackCoordinator.signalingRetryAllowed(attempt: 1, supplementalCodecs: "dvh1.08.06/db1p"))
     }
 

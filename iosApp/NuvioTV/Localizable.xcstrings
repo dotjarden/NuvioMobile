@@ -73,7 +73,6 @@
         }
       }
     },
-    "%@  %@": {},
     "%@ %@ maxLive=%lld stageH=%@ stripH=%@ P=%@ fits=%lld rest=%@ row=%lld fitem=%@ disp=%@": {
       "localizations": {
         "de": {
@@ -51428,7 +51427,6 @@
         }
       }
     },
-    "on": {},
     "on %@": {
       "localizations": {
         "de": {
