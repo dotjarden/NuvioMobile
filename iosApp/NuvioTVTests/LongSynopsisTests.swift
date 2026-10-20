@@ -318,6 +318,21 @@ final class LongSynopsisTests: XCTestCase {
         }
     }
 
+    /// Review r1 P3-8: FEAT-61 depends on the typeface. At Medium+'s compression the SYSTEM font
+    /// already holds four lines with the logo at 64, so only Open Sans (31.32 pt lines) needed the
+    /// 56 floor. If Steven runs the system font this change does nothing for him; record his
+    /// Appearance > Typeface before the notes call FEAT-61 fixed. The band also covers every pinned
+    /// cell whose compression sits in 15.47...23.47 (Open Sans) or 20.75...28.75 (system), not
+    /// Medium+ alone; `testD8LineTable`'s printed table names the cells that gained a line.
+    func testFeat61OnlyMattersForOpenSans() {
+        let c: CGFloat = 15.95
+        let room64 = Self.pinnedRoom(compression: c, showsCTA: true, logoFloor: Long.pinnedLogoFloor)
+        let room56 = Self.pinnedRoom(compression: c, showsCTA: true, logoFloor: Long.fourLineLogoFloor)
+        XCTAssertGreaterThanOrEqual(room64, 4 * Self.systemLine, "system font: four lines already fit at floor 64")
+        XCTAssertLessThan(room64, 4 * Self.openSansLine, "Open Sans: four lines do not fit at floor 64")
+        XCTAssertGreaterThanOrEqual(room56, 4 * Self.openSansLine, "Open Sans: four lines fit at the 56 floor")
+    }
+
     /// Only the fourth line reaches the lower floor; three lines keep 64.
     func testOnlyTheFourthLineUsesTheLowerFloor() {
         XCTAssertEqual(Long.pinnedFloor(forLines: 4), Long.fourLineLogoFloor)

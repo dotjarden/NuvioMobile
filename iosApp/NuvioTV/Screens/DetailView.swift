@@ -574,12 +574,10 @@ struct DetailView: View {
     /// This title or a collection). While set, the remembered card is the default focus target and
     /// the focus engine's stray first landing (Play, the hero) does not move the page: the page lands
     /// on the card in one move. Ended on the landing, on viewer input, or when the request retires.
+    /// Only the row and key are view state (the default-focus modifiers read them); the counters,
+    /// the clock stamps and the held change live in `focusMemory` so they never re-evaluate the body.
     @State private var popRestoreRow: DetailRowID?
     @State private var popRestoreKey: String?
-    @State private var popRestoreStartedAt: TimeInterval = 0
-    @State private var popRestoreLandedAt: TimeInterval?
-    /// Probe: focus-row changes between the pop and the release (`debug_detail_focus moves=`).
-    @State private var popFocusMoves = 0
     /// BUG-187: the restore rung handed to the rows that own their `FocusState` (Collection, More
     /// Like This). Changes only during a restore.
     @State private var detailFocusRestore = DetailFocusRestoreRequest.none
@@ -839,130 +837,29 @@ struct DetailView: View {
             .onChange(of: focusedRow) { old, row in
                 // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
                 // not move the page (the "up, then down onto the card" Steven filmed). Decided by
-                // row and card, never by timestamps (Batch N's lesson): a landing on the remembered
+                // the ROW the engine lands on, never by timestamps (Batch N's lesson): a landing on the remembered
                 // row is the one move; anything else holds until the rung lands it or the viewer
                 // presses, and the request's own retire ends it regardless.
                 if let liveRow = popRestoreRow, let liveKey = popRestoreKey {
-                    popFocusMoves += 1
-                    let now = ProcessInfo.processInfo.systemUptime
-                    if let landedAt = popRestoreLandedAt, !DetailPopGate.landedHoldActive(age: now - landedAt) {
+                    focusMemory.popMoves += 1
+                    // Row only (review r1 P3-1): the rung puts the right card on the row; a landing
+                    // on the remembered row is the one move whatever card it hit. The restore ends
+                    // on viewer input or at the request's retire (1.3 s), never on a landed window
+                    // (review r1 P3-2: that window could not elapse before the retire).
+                    switch DetailPopGate.decide(focusedRow: row, focusedKey: row == liveRow ? liveKey : nil,
+                                                target: (liveRow, liveKey),
+                                                viewerInput: ViewerInputClock.shared.hasInput(since: focusMemory.popStartedAt)) {
+                    case .release:
                         endPopRestore()
-                    } else {
-                        let key = row == liveRow ? liveKey : focusMemory.key
-                        switch DetailPopGate.decide(focusedRow: row, focusedKey: key, target: (liveRow, liveKey),
-                                                    viewerInput: ViewerInputClock.shared.hasInput(since: popRestoreStartedAt)) {
-                        case .release:
-                            endPopRestore()
-                        case .landed:
-                            if popRestoreLandedAt == nil { popRestoreLandedAt = now }
-                        case .hold:
-                            return
-                        }
-                    }
-                }
-                // BUG-187: focus settled on a row with no remembered card; forget the last one.
-                if let row, !DetailFocusRestore.tracks(row) { focusMemory.clear() }
-                // Batch G device pass: leaving the hero for a row is interacting (see
-                // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
-                if row != nil, !userInteracted { userInteracted = true }
-                dimModel.motionSamples.removeAll(keepingCapacity: true)
-                // FEAT-35: a pending hero return belongs to the focus visit that armed it.
-                dimModel.awaitingHeroReturn = false
-                // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
-                // cleared on EVERY focus change, whichever direction it turns out to be — a stale
-                // `lastAnchored` from the row that just lost focus must never let the relayout pass
-                // below anchor the newly-focused row on its behalf.
-                lastAnchored = nil
-                guard let row else {
-                    detailAnchorTask?.cancel()
-                    detailAnchorTask = nil
-                    dimModel.awaitingRevealRow = nil
-                    dimModel.awaitingRevealNote = nil
-                    // FEAT-35 (P1 §F): any row → Cinematic hero scrolls back to y = 0 (dim → 0).
-                    // A focus loss to a push or a cover also lands here; `heroTopPass` refuses it
-                    // unless focus is genuinely inside the hero (`heroHasFocus`).
-                    if detailLayout == .cinematic, DetailRowAnchor.heroReturn(old: old, new: nil) {
-                        armHeroReturn()
+                    case .landed:
+                        if focusMemory.popLandedAt == nil { focusMemory.popLandedAt = ProcessInfo.processInfo.systemUptime }
+                        focusMemory.dropHeldFocusChange()
+                    case .hold:
+                        focusMemory.holdFocusChange(old: old, new: row)
                         return
                     }
-                    if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
-                    return
                 }
-                detailAnchorTask?.cancel()
-                // Codex P2 review finding (BUG-99 follow-up, round 2): Comments is now a TRACKED
-                // row (`commentsSection` carries `.detailRowAnchored(.comments, …)` above) but must
-                // still never anchor or straddle-check — bail out here, before `DetailRowAnchor
-                // .direction` runs at all, exactly like the `guard let row else` branch above does
-                // for the top block.
-                guard row != .comments else {
-                    dimModel.awaitingRevealRow = nil
-                    dimModel.awaitingRevealNote = nil
-                    if DetailScrollProbe.enabled { dimModel.anchorNote = "comments free" }
-                    return
-                }
-                // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
-                // row at `screenRest` in ONE blended motion, replacing the BUG-99 Down settle for
-                // this transition only. Only when the page is at its top: focus restored to a deep
-                // row after a push or cover also reads nil → row and must take the ordinary path.
-                if detailLayout == .cinematic,
-                   DetailRowAnchor.heroExit(old: old, new: row,
-                                            pageAtTop: DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset,
-                                                                               contentInsetTop: dimModel.contentInsetTop)) {
-                    startBlendAnchor(row, fallbackNote: "blend-fallback+hero-exit", revealNote: "hero-exit")
-                    return
-                }
-                // `focusedRow` now reports `.comments` (never nil) while focus is inside it, so
-                // `old == nil` unambiguously means "first entry from the top block" — see
-                // `DetailRowAnchor.direction`'s doc comment for why the old
-                // `contentOffset`/`lastKnownTop` heuristic this replaced was wrong.
-                let direction = DetailRowAnchor.direction(
-                    old: old,
-                    oldTop: old.flatMap { detailRowOffsets[$0] },
-                    newTop: detailRowOffsets[row] ?? 0
-                )
-                switch direction {
-                case .up:
-                    startBlendAnchor(row, fallbackNote: "blend-fallback")
-                case .down:
-                    // BUG-99: no blend arm, no fallback pass, no verify pass — leave the engine's
-                    // own reveal running unmodified. One task waits for it to settle, then
-                    // straddle-checks the result and anchors only if the header needs rescuing.
-                    dimModel.awaitingRevealRow = nil
-                    dimModel.awaitingRevealNote = nil
-                    detailAnchorTask = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
-                        guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
-                              let rowTop = detailRowOffsets[row] else { return }
-                        // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
-                        // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
-                        // i.e. `contentOffset == rowTop − rest` at rest, which is also the
-                        // `(top − off) − 108` residual the UI test reads. No inset term here — with
-                        // it the check would overshoot by the inset (157 pt on the fixture) and a
-                        // header sitting under the scrim would read as free.
-                        let screenTop = rowTop - dimModel.lastContentOffset
-                        switch DetailRowAnchor.decision(direction: .down, screenTop: screenTop) {
-                        case .anchor:
-                            _ = anchorPass(row, note: "down-straddle")
-                        case .free:
-                            // A free row is not this pass's rest — a later layout change under it
-                            // must not pull it up to the anchor either. `lastAnchored` is already
-                            // nil (cleared at the top of this handler and never set by this branch,
-                            // since `anchorPass` was not called), so the relayout pass below's
-                            // `lastAnchored?.row == focusedRow` guard already excludes this row (see
-                            // `.onChange(of: detailRowOffsets)` below).
-                            if DetailScrollProbe.enabled {
-                                // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
-                                // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
-                                dimModel.anchorNote = String(format: "%@ top=%.0f screen=%.0f free", String(describing: row), rowTop, screenTop)
-                            }
-                        }
-                        // Publish the geometry sample once, AT REST, for the probe (never per
-                        // frame) — same as the Up path, so the UI test still gets a sample per
-                        // step regardless of direction.
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
-                    }
-                }
+                handleFocusRowChange(old: old, new: row)
             }
             // Codex BUG-96 r1 (P2): a correction must not land on a page that is leaving or
             // under the trailer cover's 0.6 s leave transition.
@@ -1166,7 +1063,7 @@ struct DetailView: View {
             // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
             // last remembered card key, read by the cast/More Like This Back UI leg.
             if DetailFocusProbe.enabled {
-                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(popFocusMoves)")
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_detail_focus")
@@ -1176,6 +1073,11 @@ struct DetailView: View {
         // BUG-187: the fallback restore stands down on a viewer press (`ViewerInputClock`); the
         // clock is installed once per window, so this is a no-op once Home has mounted it.
         .background { ViewerInputClockInstaller().frame(width: 0, height: 0) }
+        // BUG-194 (review r1 P2-1): a press that stays inside the held row never changes
+        // `focusedRow`, so the live restore also ends on any recorded viewer input.
+        .onReceive(NotificationCenter.default.publisher(for: ViewerInputClock.didRecord)) { _ in
+            if popRestoreRow != nil { endPopRestore() }
+        }
         // FEAT-35 (correction F18): land on Play/Resume, not on the Cinematic synopsis teaser above
         // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
         // above Play, so this names the target the engine already picked there.
@@ -1183,6 +1085,11 @@ struct DetailView: View {
         // BUG-194: while a pop restore is live, the remembered cast / studio card outranks Play as
         // the default, so the engine's own restoration lands there instead of detouring via Play.
         // An index that matches no card leaves Play's default in charge.
+        // Review r1 P3-7 / DEVICE-PASS ITEM: whether the engine RE-READS `.defaultFocus` on a pop's
+        // restoration is unproven (the page's own note below says it "runs once"). If it does not,
+        // this default has no effect and the gate alone does the work (it removes the app's
+        // `armHeroReturn` for the stray landing, not the engine's reveal scroll). The device pass
+        // (Test 2) logs `moves=` on cast → biography → Back and says which half did it.
         .defaultFocus($focusedCastIndex, popRestoreRow == .cast ? popRestoreKey.flatMap(Int.init) : -1,
                       priority: .userInitiated)
         .defaultFocus($focusedCompanyIndex, popRestoreRow == .logos ? popRestoreKey.flatMap(Int.init) : -1,
@@ -2407,6 +2314,113 @@ struct DetailView: View {
         }
     }
 
+    /// `.onChange(of: focusedRow)`'s body (everything the BUG-194 gate may hold and replay).
+    private func handleFocusRowChange(old: DetailRowID?, new row: DetailRowID?) {
+        // BUG-187: focus settled on a row with no remembered card; forget the last one.
+        if let row, !DetailFocusRestore.tracks(row) { focusMemory.clear() }
+        // Batch G device pass: leaving the hero for a row is interacting (see
+        // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
+        if row != nil, !userInteracted { userInteracted = true }
+        dimModel.motionSamples.removeAll(keepingCapacity: true)
+        // FEAT-35: a pending hero return belongs to the focus visit that armed it.
+        dimModel.awaitingHeroReturn = false
+        // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
+        // cleared on EVERY focus change, whichever direction it turns out to be — a stale
+        // `lastAnchored` from the row that just lost focus must never let the relayout pass
+        // below anchor the newly-focused row on its behalf.
+        lastAnchored = nil
+        guard let row else {
+            detailAnchorTask?.cancel()
+            detailAnchorTask = nil
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            // FEAT-35 (P1 §F): any row → Cinematic hero scrolls back to y = 0 (dim → 0).
+            // A focus loss to a push or a cover also lands here; `heroTopPass` refuses it
+            // unless focus is genuinely inside the hero (`heroHasFocus`).
+            if detailLayout == .cinematic, DetailRowAnchor.heroReturn(old: old, new: nil) {
+                armHeroReturn()
+                return
+            }
+            if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
+            return
+        }
+        detailAnchorTask?.cancel()
+        // Codex P2 review finding (BUG-99 follow-up, round 2): Comments is now a TRACKED
+        // row (`commentsSection` carries `.detailRowAnchored(.comments, …)` above) but must
+        // still never anchor or straddle-check — bail out here, before `DetailRowAnchor
+        // .direction` runs at all, exactly like the `guard let row else` branch above does
+        // for the top block.
+        guard row != .comments else {
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            if DetailScrollProbe.enabled { dimModel.anchorNote = "comments free" }
+            return
+        }
+        // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
+        // row at `screenRest` in ONE blended motion, replacing the BUG-99 Down settle for
+        // this transition only. Only when the page is at its top: focus restored to a deep
+        // row after a push or cover also reads nil → row and must take the ordinary path.
+        if detailLayout == .cinematic,
+           DetailRowAnchor.heroExit(old: old, new: row,
+                                    pageAtTop: DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset,
+                                                                       contentInsetTop: dimModel.contentInsetTop)) {
+            startBlendAnchor(row, fallbackNote: "blend-fallback+hero-exit", revealNote: "hero-exit")
+            return
+        }
+        // `focusedRow` now reports `.comments` (never nil) while focus is inside it, so
+        // `old == nil` unambiguously means "first entry from the top block" — see
+        // `DetailRowAnchor.direction`'s doc comment for why the old
+        // `contentOffset`/`lastKnownTop` heuristic this replaced was wrong.
+        let direction = DetailRowAnchor.direction(
+            old: old,
+            oldTop: old.flatMap { detailRowOffsets[$0] },
+            newTop: detailRowOffsets[row] ?? 0
+        )
+        switch direction {
+        case .up:
+            startBlendAnchor(row, fallbackNote: "blend-fallback")
+        case .down:
+            // BUG-99: no blend arm, no fallback pass, no verify pass — leave the engine's
+            // own reveal running unmodified. One task waits for it to settle, then
+            // straddle-checks the result and anchors only if the header needs rescuing.
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            detailAnchorTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
+                guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
+                      let rowTop = detailRowOffsets[row] else { return }
+                // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
+                // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
+                // i.e. `contentOffset == rowTop − rest` at rest, which is also the
+                // `(top − off) − 108` residual the UI test reads. No inset term here — with
+                // it the check would overshoot by the inset (157 pt on the fixture) and a
+                // header sitting under the scrim would read as free.
+                let screenTop = rowTop - dimModel.lastContentOffset
+                switch DetailRowAnchor.decision(direction: .down, screenTop: screenTop) {
+                case .anchor:
+                    _ = anchorPass(row, note: "down-straddle")
+                case .free:
+                    // A free row is not this pass's rest — a later layout change under it
+                    // must not pull it up to the anchor either. `lastAnchored` is already
+                    // nil (cleared at the top of this handler and never set by this branch,
+                    // since `anchorPass` was not called), so the relayout pass below's
+                    // `lastAnchored?.row == focusedRow` guard already excludes this row (see
+                    // `.onChange(of: detailRowOffsets)` below).
+                    if DetailScrollProbe.enabled {
+                        // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
+                        // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
+                        dimModel.anchorNote = String(format: "%@ top=%.0f screen=%.0f free", String(describing: row), rowTop, screenTop)
+                    }
+                }
+                // Publish the geometry sample once, AT REST, for the probe (never per
+                // frame) — same as the Up path, so the UI test still gets a sample per
+                // step regardless of direction.
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+            }
+        }
+    }
+
     /// BUG-187: a tracked row's card took (or left) focus. Writes the box, never view state —
     /// except the probe's key, and only under `DetailFocusProbe`.
     private func noteDetailFocus(_ row: DetailRowID, _ key: String?) {
@@ -2425,12 +2439,9 @@ struct DetailView: View {
         guard let target = memory.takeArmedTarget() else { return }
         let generation = memory.beginRestore()
         let started = ProcessInfo.processInfo.systemUptime
-        memory.goLive((target.row, target.key))
+        memory.goLive((target.row, target.key), startedAt: started)
         popRestoreRow = target.row
         popRestoreKey = target.key
-        popRestoreStartedAt = started
-        popRestoreLandedAt = nil
-        popFocusMoves = 0
         for rung in DetailFocusRestore.rungs {
             DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
                 guard memory.isCurrent(generation),
@@ -2445,12 +2456,15 @@ struct DetailView: View {
         }
     }
 
-    /// BUG-194: the live pop restore is over; the page anchors normally again.
+    /// BUG-194: the live pop restore is over; the page anchors normally again. A focus change the
+    /// gate held is replayed now, but only when focus is still where that change left it (a later
+    /// change has already run the handler for itself).
     private func endPopRestore() {
-        focusMemory.endRestore()
+        guard popRestoreRow != nil || focusMemory.restoreLive else { return }
+        let held = focusMemory.endRestore()
         popRestoreRow = nil
         popRestoreKey = nil
-        popRestoreLandedAt = nil
+        if let held, focusedRow == held.new { handleFocusRowChange(old: held.old, new: held.new) }
     }
 
     /// BUG-187: one rung. Cast and Studios focus states live here; Collection and More Like This
@@ -2544,18 +2558,19 @@ struct DetailView: View {
     /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
     /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
 
-    /// FEAT-82: the fixed square side for an icon-only button (Corners = Square and Play measured),
-    /// else nil (Rounded and Round, and Classic text labels, keep today's layout).
+    /// FEAT-82: the fixed square side for a SECONDARY icon-only button (Corners = Square and Play
+    /// measured), else nil. Play never takes it (it is the measure), and Classic's text labels never
+    /// do (review r1 P1: a square frame on "Watch Trailer" squashed it).
     private var squareSide: CGFloat? {
         let side = DetailActionSquare.side(playHeight: playButtonHeight)
         return DetailActionSquare.applies(isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
-                                          iconOnly: true, side: side) ? side : nil
+                                          iconOnly: usesIconOnlyLabel(primary: false), side: side) ? side : nil
     }
     @ViewBuilder
     private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
         if usesIconOnlyLabel(primary: primary) {
             content.padding(Theme.Spacing.md)
-                .modifier(DetailActionSquareLabel(side: squareSide))
+                .modifier(DetailActionSquareLabel(side: primary ? nil : squareSide))
         } else {
             content
                 .padding(.horizontal, horizontal)
@@ -2621,6 +2636,7 @@ struct DetailView: View {
             // `DetailView` no new focus state (and no body re-run per Left/Right).
             DetailPosterLinkRow(row: .moreLikeThis, title: String(localized: "More Like This"),
                                 items: items, restore: detailFocusRestore,
+                                livePopKey: popRestoreRow == .moreLikeThis ? popRestoreKey : nil,
                                 onFocus: { noteDetailFocus(.moreLikeThis, $0) })
         }
     }
@@ -2733,6 +2749,7 @@ struct DetailView: View {
             // BUG-187: a child view owning its `FocusState` — see `moreLikeThisRow`.
             DetailPosterLinkRow(row: .collection, title: collectionTitle,
                                 items: items, restore: detailFocusRestore,
+                                livePopKey: popRestoreRow == .collection ? popRestoreKey : nil,
                                 onFocus: { noteDetailFocus(.collection, $0) })
         }
     }
@@ -3060,6 +3077,9 @@ private struct DetailPosterLinkRow: View {
     let title: String
     let items: [MetaPreview]
     let restore: DetailFocusRestoreRequest
+    /// BUG-194: the live pop restore's card key when it names this row, else nil (review r2: the
+    /// request above arrives one runloop late and outlives viewer input; this is the live state).
+    var livePopKey: String? = nil
     let onFocus: (String?) -> Void
 
     @FocusState private var focusedId: String?
@@ -3100,6 +3120,9 @@ private struct DetailPosterLinkRow: View {
         }
         .focusSection()
         .onChange(of: focusedId) { _, id in onFocus(id) }
+        // BUG-194 (review r1 P2-2): while a restore request names this row, its card is the row's
+        // default so the engine's own restoration lands on it; "" matches no card otherwise.
+        .defaultFocus($focusedId, livePopKey ?? "", priority: .userInitiated)
         .onChange(of: restore) { _, request in
             guard request.row == row, let key = request.key,
                   DetailFocusRestore.shouldApply(force: request.force, current: focusedId, target: key) else { return }

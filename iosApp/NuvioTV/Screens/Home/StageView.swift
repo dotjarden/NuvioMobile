@@ -210,6 +210,10 @@ struct StageTextBlock: View {
     /// FEAT-70: see `StageView.hidesLogo`.
     let hidesLogo: Bool
     /// BUG-190: see `StageView.logoAlignment`.
+    /// Review r1 P3-9: this fixes the title/logo flip only. Steven's photo ALSO shows the folder
+    /// logo missing above the title; the repro (spec B, P8 step 1) was not run and that second
+    /// defect is unexplained. The device pass opens the Netflix folder in his config and looks at
+    /// row 2; do not call BUG-190 closed before that.
     let logoAlignment: Alignment
     /// W2-A's Continue Watching copy input (`StageController.copySource`); a nil lookup = Classic copy.
     @ObservedObject var copySource: StageCopySource

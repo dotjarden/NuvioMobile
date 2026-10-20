@@ -19,14 +19,18 @@ final class ArtworkLetterboxIsolationTests: XCTestCase {
         }
     }
 
-    func testZoomRunsOffTheMainThread() async {
+    /// Review r1 P3-5: a runtime `Thread.isMainThread` read after the call cannot detect a hop (the
+    /// task is back on its own executor by then), and in Swift 5 mode a MainActor call from a
+    /// detached task only warns. The assertion that holds is static: `zoom` is called from a
+    /// synchronous `@Sendable` closure, which is a compile error ("call to main actor-isolated ...
+    /// in a synchronous nonisolated context") if `ArtworkLetterbox` regains main-actor isolation. The on-device check is the rig's
+    /// `ArtworkLetterbox.measuredZoom` main-thread profile list (`timeprofile.py`).
+    func testZoomIsUsableFromANonisolatedSendableContext() async {
+        let scan: @Sendable (UIImage, String) -> CGFloat = { ArtworkLetterbox.zoom(for: $0, cacheKey: $1) }
         let image = barredImage()
         let key = UUID().uuidString
-        let onMain = await Task.detached { () -> Bool in
-            _ = ArtworkLetterbox.zoom(for: image, cacheKey: key)
-            return Thread.isMainThread
-        }.value
-        XCTAssertFalse(onMain)
+        let zoom = await Task.detached { scan(image, key) }.value
+        XCTAssertGreaterThan(zoom, 1)
     }
 
     func testZoomStillMeasuresBars() async {

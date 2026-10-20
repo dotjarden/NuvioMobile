@@ -33,9 +33,9 @@ final class DetailActionSquareUITests: XCTestCase {
     }
 
     /// Classic Home -> the hero CTA route into Detail, Cinematic layout (icon-only secondaries).
-    private func launchToDetail(extraArguments: [String]) -> XCUIApplication {
+    private func launchToDetail(extraArguments: [String], detailLayout: String = "cinematic") -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments += ["-home_layout", "classic", "-detail_layout", "cinematic"] + extraArguments
+        app.launchArguments += ["-home_layout", "classic", "-detail_layout", detailLayout] + extraArguments
         app.launch()
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
@@ -94,5 +94,38 @@ final class DetailActionSquareUITests: XCTestCase {
             throw XCTSkip("this title has no trailer button")
         }
         XCTAssertNotEqual(trailer.1.width, trailer.1.height, accuracy: 1)
+    }
+
+    /// Review r1 P1-1 / P3-11: Classic Detail with Icons Only off draws text labels, so the
+    /// secondaries keep their natural (wider than tall) width in Square and Play is unchanged
+    /// from a Rounded launch.
+    func testClassicTextButtonsKeepNaturalWidthInSquare() throws {
+        // Review r2 P3-3: pin Icons Only OFF (a local AppStorage value the fixture may carry).
+        let rounded = launchToDetail(extraArguments: ["-debug.posterCornersOverride", "rounded", "-detail_action_icons_only", "NO"],
+                                     detailLayout: "classic")
+        let roundedPlay = try XCTUnwrap(frames(rounded).play, "Play never appeared (Rounded, Classic)")
+        rounded.terminate()
+        let app = launchToDetail(extraArguments: ["-debug.posterCornersOverride", "square", "-detail_action_icons_only", "NO"],
+                                 detailLayout: "classic")
+        let (play, _) = frames(app)
+        shot("fe82_classic_square_text")
+        // Same-launch check that needs no second title: Play itself is never squared.
+        if let play { XCTAssertGreaterThan(play.width, play.height + 20, "Play was squared on Classic") }
+        let playFrame = try XCTUnwrap(play, "Play never appeared (Square, Classic)")
+        let watched = app.buttons["detail_action_watched"]
+        XCTAssertTrue(watched.waitForExistence(timeout: 20), "Mark Watched button never appeared")
+        XCTAssertGreaterThan(watched.frame.width, watched.frame.height + 20,
+                             "a text button must keep its natural width, not be squared")
+        XCTAssertEqual(playFrame.width, roundedPlay.width, accuracy: 2, "Play's width changed under Square")
+    }
+
+    /// Classic + Icons Only on: Play is icon-only too and must keep its own width, not stretch to fill the row.
+    func testClassicIconsOnlyKeepsPlayWidthInSquare() throws {
+        let app = launchToDetail(extraArguments: ["-debug.posterCornersOverride", "square", "-detail_action_icons_only", "YES"],
+                                 detailLayout: "classic")
+        let (play, _) = frames(app)
+        shot("fe82_classic_square_icons")
+        let playFrame = try XCTUnwrap(play, "Play never appeared (Square, Classic, Icons Only)")
+        XCTAssertLessThan(playFrame.width, app.frame.width / 2, "Play stretched across the action row")
     }
 }

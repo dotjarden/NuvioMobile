@@ -1061,6 +1061,21 @@ struct PosterCard: View {
         return ArtworkColorStore.shared.cachedColor(for: ringTintSources, use: .rail) ?? depthRailTint
     }
 
+    /// Review r1 P3-4: `.onImageLoaded` makes `CachedAsyncImage` spawn a per-image `.task`, so the
+    /// colour sampling is attached only when this card samples a depth colour. Same type either
+    /// way. The beta.18 rule stands: sample the rail colour once per URL when the image lands, no
+    /// animation, a store hit writes no state.
+    private func depthSampled<F: View>(_ image: CachedAsyncImage<F>) -> CachedAsyncImage<F> {
+        guard samplesDepthColor else { return image }
+        return image.onImageLoaded { _ in
+            let sources = ringTintSources
+            if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+            ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                if depthRailTint != color { depthRailTint = color }
+            }
+        }
+    }
+
     var body: some View {
         #if DEBUG
         let _ = HomeBodyCounter.tick("PosterCard")
@@ -1072,19 +1087,10 @@ struct PosterCard: View {
             // for as the larger rendition of the same picture (TMDB w780, metahub `large`) with the
             // original URL as the automatic fallback. The ring and rail colour lookups below still pass
             // the ORIGINAL urls: the store's lookup covers the whole family of renditions.
-            CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
-                             decodeSize: .points(width: resolvedWidth, height: resolvedHeight), upgrade: .poster)
-                // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
-                // the image lands. No animation (the image's own fade is running); a store hit is already on the
-                // rail via `depthRailTintResolved`, so it writes no state.
-                .onImageLoaded { _ in
-                    guard samplesDepthColor else { return }
-                    let sources = ringTintSources
-                    if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
-                    ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
-                        if depthRailTint != color { depthRailTint = color }
-                    }
-                }
+            // Review r1 P3-4: the colour sampling (and with it CachedAsyncImage's per-image `.task`) is
+            // attached only when Card Depth's colour option is on; the call site's type is unchanged.
+            depthSampled(CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
+                             decodeSize: .points(width: resolvedWidth, height: resolvedHeight), upgrade: .poster))
                 .frame(width: resolvedWidth - 2 * inset, height: resolvedHeight - 2 * inset)
                 // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
                 // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
@@ -1338,6 +1344,21 @@ struct LandscapeCard: View {
         return ArtworkColorStore.shared.cachedColor(for: ringTintSources, use: .rail) ?? depthRailTint
     }
 
+    /// Review r1 P3-4: `.onImageLoaded` makes `CachedAsyncImage` spawn a per-image `.task`, so the
+    /// colour sampling is attached only when this card samples a depth colour. Same type either
+    /// way. The beta.18 rule stands: sample the rail colour once per URL when the image lands, no
+    /// animation, a store hit writes no state.
+    private func depthSampled<F: View>(_ image: CachedAsyncImage<F>) -> CachedAsyncImage<F> {
+        guard samplesDepthColor else { return image }
+        return image.onImageLoaded { _ in
+            let sources = ringTintSources
+            if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+            ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                if depthRailTint != color { depthRailTint = color }
+            }
+        }
+    }
+
     var body: some View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
@@ -1345,19 +1366,10 @@ struct LandscapeCard: View {
                 // beta.19-rc1 verdict (I1, BUG-134): decoded for the size the card is drawn at (no URL
                 // upgrade: landscape art is a backdrop or a still, whose larger renditions are not
                 // known to be sharper).
-                CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
-                                 decodeSize: .points(width: width, height: height))
-                    // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
-                    // the image lands. No animation (the image's own fade is running); a store hit is already on the
-                    // rail via `depthRailTintResolved`, so it writes no state.
-                    .onImageLoaded { _ in
-                        guard samplesDepthColor else { return }
-                        let sources = ringTintSources
-                        if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
-                        ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
-                            if depthRailTint != color { depthRailTint = color }
-                        }
-                    }
+                // Review r1 P3-4: the colour sampling (and with it CachedAsyncImage's per-image `.task`) is
+                // attached only when Card Depth's colour option is on; the call site's type is unchanged.
+                depthSampled(CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
+                                 decodeSize: .points(width: width, height: height)))
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
                     // ratio isn't 16:9 spills out of this fixed frame unless clipped here.

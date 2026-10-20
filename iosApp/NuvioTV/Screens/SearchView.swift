@@ -83,7 +83,10 @@ struct SearchView: View {
             SearchOpenProbe.appear()
             owner.model.start()
         }
-        .onDisappear { owner.model.stop() }
+        .onDisappear {
+            SearchOpenProbe.disappear()
+            owner.model.stop()
+        }
     }
 }
 
@@ -97,12 +100,18 @@ enum SearchOpenProbe {
     private static var firstBodyLogged = false
     private static var keyboardLogged = false
 
-    /// The tab appeared: a new visit, so both once-per-visit marks re-arm.
+    /// The tab appeared. Log only: `onAppear` runs AFTER the first `SearchContent.body`, so re-arming
+    /// here would log `firstBody` twice on a first visit and miss it on later ones (review r1 P3-6).
     static func appear() {
+        guard enabled else { return }
+        log("appear")
+    }
+
+    /// The tab left: re-arm both once-per-visit marks for the next visit's first body and keyboard.
+    static func disappear() {
         guard enabled else { return }
         firstBodyLogged = false
         keyboardLogged = false
-        log("appear")
     }
 
     /// First `SearchContent.body` of the visit.

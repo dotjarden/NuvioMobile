@@ -169,6 +169,34 @@ final class DetailFocusReturnTests: XCTestCase {
         XCTAssertFalse(DetailPopGate.landedHoldActive(age: 1.5))
     }
 
+    // Review r2 P3-1: the held change keeps the first `old` and the latest `new`; a landing drops it;
+    // `endRestore` hands it over exactly once.
+    func testHeldFocusChangeKeepsFirstOldAndLatestNew() {
+        let memory = DetailFocusMemory()
+        memory.goLive((.cast, "3"), startedAt: 10)
+        memory.holdFocusChange(old: .about, new: nil)
+        memory.holdFocusChange(old: nil, new: .logos)
+        XCTAssertEqual(memory.heldFocusChange?.old, .about)
+        XCTAssertEqual(memory.heldFocusChange?.new, .logos)
+        let held = memory.endRestore()
+        XCTAssertEqual(held?.old, .about)
+        XCTAssertEqual(held?.new, .logos)
+        XCTAssertNil(memory.heldFocusChange)
+        XCTAssertNil(memory.endRestore())
+    }
+
+    func testLandingDropsTheHeldChangeSoALaterHoldStartsFresh() {
+        let memory = DetailFocusMemory()
+        memory.goLive((.cast, "3"), startedAt: 10)
+        memory.holdFocusChange(old: .about, new: nil)
+        memory.dropHeldFocusChange()
+        XCTAssertNil(memory.heldFocusChange)
+        memory.holdFocusChange(old: .cast, new: .logos)
+        XCTAssertEqual(memory.heldFocusChange?.old, .cast)
+        XCTAssertEqual(memory.popStartedAt, 10)
+        XCTAssertEqual(memory.popMoves, 0)
+    }
+
     func testMemoryLiveStateFollowsGoLiveAndEnd() {
         let memory = DetailFocusMemory()
         XCTAssertFalse(memory.restoreLive)

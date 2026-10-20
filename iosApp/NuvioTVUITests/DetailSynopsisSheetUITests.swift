@@ -31,15 +31,22 @@ final class DetailSynopsisSheetUITests: XCTestCase {
         if chris.waitForExistence(timeout: 90) {
             remote.press(.left); pause(0.5); remote.press(.left); pause(0.5); remote.press(.select)
         }
-        let teaser = app.descendants(matching: .any)["detail_synopsis_teaser"]
-        guard teaser.waitForExistence(timeout: 30) else { throw XCTSkip("no synopsis teaser on this title") }
-        for _ in 0..<4 where !teaser.hasFocus {
+        // Review r2 P3-4: the teaser id sits on both the truncated BUTTON and the plain text; only
+        // the button proves the synopsis is truncated (Select on plain text would land on Play).
+        let teaser = app.buttons["detail_synopsis_teaser"]
+        // Review r1 P3-10: no skips. The tvOS 27 simulator never reports `hasFocus`, so the climb is a
+        // fixed four Ups from the hero; the assertions below are on existence, so a wrong landing
+        // (Select on Play, which opens the player instead of the sheet) FAILS instead of skipping.
+        // Breaking Bad's synopsis is long enough to be truncated, so the teaser must exist.
+        XCTAssertTrue(teaser.waitForExistence(timeout: 30), "no synopsis teaser on the Breaking Bad fixture")
+        for _ in 0..<4 {
             remote.press(.up)
             pause(0.8)
         }
         remote.press(.select)
         let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
-        guard sheet.waitForExistence(timeout: 5) else { throw XCTSkip("the synopsis fits four lines: no sheet to open") }
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5),
+                      "Select on the teaser must open the synopsis sheet (a miss means focus never reached the teaser)")
         pause(1.5)
         shot("bug193-sheet")
         XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_backdrop"].exists,
