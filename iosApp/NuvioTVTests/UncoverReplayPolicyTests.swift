@@ -54,4 +54,17 @@ final class UncoverReplayPolicyTests: XCTestCase {
             XCTAssertNil(decide(kind, current: "b", restore: "b"))
         }
     }
+
+    func testDownOnRowZeroAndUpOnTheLastRowStillMove() {
+        XCTAssertEqual(decide(.down, current: "a", restore: "a"), "b")
+        XCTAssertEqual(decide(.up, current: "d", restore: "d"), "c")
+    }
+
+    func testDownWithFocusParkedAboveStillReplaysBelowTheRestoreRow() {
+        XCTAssertEqual(decide(.down, current: "a", restore: "b"), "c")
+    }
+
+    func testEmptyRowsReplayNothing() {
+        XCTAssertNil(UncoverReplayPolicy.decide(kind: .up, currentRowKey: nil, restoreRowKey: "b", rowKeys: []))
+    }
 }

@@ -116,6 +116,8 @@ nonisolated enum UncoverReplayPolicy {
     /// can't tell the engine answering the viewer from the engine ignoring them. The viewer's
     /// target is the restore row's neighbour in the pressed direction; if focus is already there
     /// the engine made the move and nothing replays, otherwise the replay goes there.
+    /// The target is relative to the row the viewer pressed from (the restore row), not to a row the
+    /// engine may have parked focus on before the press.
     /// - Parameters:
     ///   - kind: the viewer input; only `.up` and `.down` replay.
     ///   - currentRowKey: the strip row that owns focus now, nil when the strip owns none.

@@ -189,7 +189,6 @@ final class StageController: ObservableObject {
     /// Batch N (BUG-188 follow-up): the row of that pending pop, the replay's anchor when a viewer
     /// press stands the request down before the pager is back.
     private var uncoverPendingRowKey: String?
-    /// Batch N (BUG-188 follow-up): the last strip row change, for `UncoverReplayPolicy`.
     /// Stales a replay still waiting out its beat (a new pop, a newer replay, a cancel: a push, a
     /// retire).
     private var uncoverReplayGeneration = 0
