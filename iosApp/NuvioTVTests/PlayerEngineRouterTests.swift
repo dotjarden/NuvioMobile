@@ -22,11 +22,12 @@ final class PlayerEngineRouterTests: XCTestCase {
     private let p7 = DolbyVisionInfo(profile: 7, level: 6, blPresent: true, elPresent: true, rpuPresent: true,
                                      compatId: 0, elKind: .mel)
 
-    func testP5InMP4GoesToMpvOnGpuNext() {
+    /// P5 spike (2026-10-20): the P3-F7 rule is gone; P5 in MP4 routes native like P5 in Matroska.
+    func testP5InMP4RoutesNative() {
         let decision = PlayerEngineRouter.route(probe: sample(dv: p5, container: mp4), nativeDVEnabled: true)
-        XCTAssertEqual(decision.engine, .mpv)
-        XCTAssertTrue(decision.prefersGpuNext)
-        XCTAssertTrue(decision.displayNote.hasSuffix("\u{00B7} gpu-next"), decision.displayNote)
+        XCTAssertEqual(decision.engine, .native)
+        XCTAssertFalse(decision.prefersGpuNext)
+        XCTAssertFalse(decision.displayNote.contains("gpu-next"), decision.displayNote)
     }
 
     func testP5OnMpvForAnotherReasonStillGetsGpuNext() {
@@ -49,6 +50,34 @@ final class PlayerEngineRouterTests: XCTestCase {
         XCTAssertEqual(twoTrack.engine, .mpv)
         XCTAssertFalse(twoTrack.prefersGpuNext)
         XCTAssertFalse(twoTrack.displayNote.contains("gpu-next"))
+    }
+
+    // P5 spike (2026-10-20): the remux treats an hvcC with no parameter-set arrays like missing
+    // extradata (the in-band `dvhe` layout of DV P5 WEB-DL MP4s: init.mp4 shipped a 31-byte hvcC,
+    // numArrays=0, and AVPlayer failed the item with CoreMediaErrorDomain -4).
+    func testHvccWithNoArraysLacksParameterSets() {
+        var hvcc = [UInt8](repeating: 0, count: 23); hvcc[0] = 1; hvcc[21] = 0x0F; hvcc[22] = 0
+        hvcc.withUnsafeBufferPointer { XCTAssertTrue(RemuxSession.hvccHasNoParameterSets($0)) }
+    }
+
+    func testHvccWithEmptyArraysLacksParameterSets() {
+        var hvcc = [UInt8](repeating: 0, count: 23); hvcc[0] = 1; hvcc[22] = 2
+        hvcc += [0xA0, 0, 0]            // VPS array, numNalus = 0
+        hvcc += [0xA1, 0, 0]            // SPS array, numNalus = 0
+        hvcc.withUnsafeBufferPointer { XCTAssertTrue(RemuxSession.hvccHasNoParameterSets($0)) }
+    }
+
+    func testHvccWithParameterSetsIsComplete() {
+        var hvcc = [UInt8](repeating: 0, count: 23); hvcc[0] = 1; hvcc[22] = 1
+        hvcc += [0xA1, 0, 1, 0, 2, 0x42, 0x01]   // one SPS NAL of 2 bytes
+        hvcc.withUnsafeBufferPointer { XCTAssertFalse(RemuxSession.hvccHasNoParameterSets($0)) }
+    }
+
+    func testAnnexBAndShortExtradataAreNotTreatedAsEmptyHvcc() {
+        let annexB: [UInt8] = [0, 0, 0, 1, 0x40, 0x01, 0x0C] + [UInt8](repeating: 0, count: 20)
+        annexB.withUnsafeBufferPointer { XCTAssertFalse(RemuxSession.hvccHasNoParameterSets($0)) }
+        let short: [UInt8] = [1, 2, 3]
+        short.withUnsafeBufferPointer { XCTAssertFalse(RemuxSession.hvccHasNoParameterSets($0)) }
     }
 
     func testFallbackRuleReadsTheProbe() {

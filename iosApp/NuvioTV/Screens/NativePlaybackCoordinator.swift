@@ -1053,6 +1053,17 @@ final class NativePlaybackCoordinator: ObservableObject {
             let listing = names.sorted().prefix(24).map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
             print("[NativePlayer] output dir: \(listing)")
         }
+        // P5 spike (2026-10-20): the CoreMedia code alone told the story (-12927 admission, -4 no
+        // parameter sets, -16041 mangled samples); print the chain so the next one does too.
+        if let err = player.currentItem?.error as NSError? {
+            var chain: [String] = []
+            var cur: NSError? = err
+            while let e = cur {
+                chain.append("\(e.domain) \(e.code) \(e.userInfo.filter { $0.key != NSUnderlyingErrorKey })")
+                cur = e.userInfo[NSUnderlyingErrorKey] as? NSError
+            }
+            print("[NativePlayer] item error chain: " + chain.joined(separator: " ← "))
+        }
         guard signalingAttempt == 0, let servedURL else {
             print("[NativePlayer] failing over to mpv (item failed before playback started)")
             // C-7: AVPlayer's errors here are about our loopback origin.

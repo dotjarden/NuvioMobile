@@ -66,12 +66,13 @@ nonisolated enum PlayerEngineRouter {
             switch dv.profile {
             case 5:
                 // P3-F7 (2026-10-15): a DV profile 5 MP4 (Rutracker "Dolby Vision TV" WEB-DL, dvh1.05.06)
-                // remuxed to fMP4 failed AVPlayer twice with CoreMediaErrorDomain -12927, with and without
-                // SUPPLEMENTAL-CODECS, before the failover to mpv played it. Until the MP4 input path is
-                // fixed, P5 in an MP4/MOV container goes straight to mpv; P5 in Matroska stays native.
-                if isMP4Container(p.container) {
-                    return EngineDecision(engine: .mpv, reason: "DV P5 in MP4 (remux unsupported)")
-                }
+                // remuxed to fMP4 failed AVPlayer twice with CoreMediaErrorDomain -12927, and P5 in an
+                // MP4/MOV container was routed to mpv from Batch B until the cause was found. The P5
+                // spike (2026-10-20) traced it to the master playlist carrying no VIDEO-RANGE (the P5
+                // VUI is unspecified); `RemuxSession.videoSignaling` now takes the range from the DOVI
+                // record, so P5 routes native in every container. A native failure still falls over
+                // to mpv on gpu-next (`mpvNeedsGpuNext`).
+                break
             case 8: break
             case 7:
                 guard p.videoStreamCount == 1 else {
@@ -174,7 +175,7 @@ extension PlayerEngineRouter {
         }
 
         expect(route(probe: sample(dv: p5), nativeDVEnabled: true).engine, .native, "DV P5 MKV → native")
-        expect(route(probe: sample(dv: p5, container: "mov,mp4,m4a,3gp,3g2,mj2"), nativeDVEnabled: true).engine, .mpv, "DV P5 MP4 → mpv (P3-F7)")
+        expect(route(probe: sample(dv: p5, container: "mov,mp4,m4a,3gp,3g2,mj2"), nativeDVEnabled: true).engine, .native, "DV P5 MP4 → native (P5 spike, VIDEO-RANGE from the DOVI record)")
         expect(route(probe: sample(dv: p81, container: "mov,mp4,m4a,3gp,3g2,mj2"), nativeDVEnabled: true).engine, .native, "DV P8.1 MP4 unaffected by the P5 rule")
         expect(route(probe: sample(dv: p81), nativeDVEnabled: true).engine, .native, "DV P8.1 MKV → native")
         expect(route(probe: sample(dv: p7(.mel)), nativeDVEnabled: true).engine, .native, "DV P7 MEL → native (8.1 conversion)")

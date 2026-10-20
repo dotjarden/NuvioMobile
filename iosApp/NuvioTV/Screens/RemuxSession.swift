@@ -422,8 +422,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // segment then has no valid hvcC/avcC decoder configuration and AVPlayer rejects the stream
         // with CoreMediaErrorDomain -12927. Recover the parameter sets from the bitstream, then
         // rewind so the copy loop starts from the beginning.
-        if videoPar.pointee.extradata_size == 0 {
-            print("[Remux] video extradata missing — extracting parameter sets from bitstream")
+        // P5 spike (2026-10-20, BUG-166): the same rejection (now CoreMediaErrorDomain -4, after
+        // VIDEO-RANGE fixed the -12927 admission) when the source DOES carry extradata but it is an
+        // hvcC header with ZERO parameter-set arrays — the in-band `dvhe`/`hev1` layout that DV P5
+        // WEB-DL MP4s ship. The copied record went out as a `dvh1` sample entry with no VPS/SPS/PPS
+        // (init.mp4 848 b, hvcC 31 b, numArrays=0), which AVPlayer cannot configure a decoder from.
+        // Treat that like missing extradata: extract the parameter sets from the bitstream, and
+        // let movenc rebuild a complete hvcC from the Annex B NALs.
+        let extradataLacksParameterSets = videoPar.pointee.extradata_size == 0 || Self.hvccHasNoParameterSets(videoPar)
+        if extradataLacksParameterSets {
+            print("[Remux] video extradata \(videoPar.pointee.extradata_size == 0 ? "missing" : "has no parameter sets (in-band layout)") — extracting parameter sets from bitstream")
             guard extractVideoExtradata(input: input, videoIndex: videoIn) else {
                 return fail("extract extradata")
             }
@@ -494,6 +502,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
               + (signaling.supplementalCodecs.map { " SUPPLEMENTAL=\($0)" } ?? "")
+              + " VIDEO-RANGE=\(signaling.videoRange ?? "-")"
               + (audioToken.map { " AUDIO=\($0)" } ?? "")
               + (audioTranscodes ? " (transcode)" : ""))
         if foundAudio.count > 1 {
@@ -1207,9 +1216,45 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// Run the video stream's first packets through FFmpeg's `extract_extradata` bitstream filter
     /// and install the recovered parameter sets on the stream's codecpar. Returns false if none were
     /// found within a bounded scan.
+    /// True when the HEVC extradata is an hvcC record whose NAL arrays carry no parameter sets at
+    /// all (ISO 14496-15 8.3.3.1: `numOfArrays` at byte 22, then per array one type byte, a
+    /// 16-bit NAL count and the NALs). An in-band stream remuxed into an out-of-band sample entry
+    /// (`hvc1` / `dvh1`) must have them extracted first.
+    static func hvccHasNoParameterSets(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
+        guard par.pointee.codec_id == AV_CODEC_ID_HEVC,
+              par.pointee.extradata_size >= 23, let ed = par.pointee.extradata else { return false }
+        return hvccHasNoParameterSets(UnsafeBufferPointer(start: ed, count: Int(par.pointee.extradata_size)))
+    }
+
+    /// Byte-level half of the check above (unit-tested): false for anything that is not an hvcC
+    /// record (Annex B, avcC, too short), true for an hvcC whose arrays hold no NAL at all.
+    static func hvccHasNoParameterSets(_ ed: UnsafeBufferPointer<UInt8>) -> Bool {
+        let size = ed.count
+        guard size >= 23, ed[0] == 1 else { return false }
+        let numArrays = Int(ed[22])
+        if numArrays == 0 { return true }
+        var off = 23
+        for _ in 0..<numArrays {
+            guard off + 3 <= size else { return true }
+            let numNalus = (Int(ed[off + 1]) << 8) | Int(ed[off + 2])
+            if numNalus > 0 { return false }
+            off += 3
+        }
+        return true
+    }
+
     private func extractVideoExtradata(input: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int) -> Bool {
-        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar,
-              let filter = av_bsf_get_by_name("extract_extradata") else { return false }
+        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar else { return false }
+        // P5 spike (2026-10-20): `extract_extradata` splits packets on Annex B start codes, so on a
+        // length-prefixed (hvcC / avcC) source it finds no NALs, reads its 200 packets and fails —
+        // the first device round of the fix died at "extract extradata". Walk the length-prefixed
+        // NALs directly instead and hand movenc Annex B parameter sets.
+        if par.pointee.codec_id == AV_CODEC_ID_HEVC, par.pointee.extradata_size >= 23,
+           let ed = par.pointee.extradata, ed[0] == 1 {
+            return extractLengthPrefixedHEVCParameterSets(input: input, videoIndex: videoIndex,
+                                                          nalLengthSize: Int(ed[21] & 0x03) + 1)
+        }
+        guard let filter = av_bsf_get_by_name("extract_extradata") else { return false }
         var bsfOpt: UnsafeMutablePointer<AVBSFContext>?
         guard av_bsf_alloc(filter, &bsfOpt) >= 0, let bsf = bsfOpt else { return false }
         defer { var b: UnsafeMutablePointer<AVBSFContext>? = bsf; av_bsf_free(&b) }
@@ -1236,6 +1281,65 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     return true
                 }
                 av_packet_unref(pkt)
+            }
+        }
+        return false
+    }
+
+    /// Collect VPS (32), SPS (33) and PPS (34) from the leading length-prefixed HEVC packets and
+    /// install them as Annex B extradata (`00 00 00 01` + NAL), which `ff_isom_write_hvcc` turns
+    /// into a complete hvcC for the `hvc1` / `dvh1` sample entry. Reads at most 200 packets; the
+    /// caller rewinds the demuxer afterwards. The DOVI record on the codecpar is untouched.
+    private func extractLengthPrefixedHEVCParameterSets(input: UnsafeMutablePointer<AVFormatContext>,
+                                                        videoIndex: Int, nalLengthSize: Int) -> Bool {
+        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar,
+              let pkt = av_packet_alloc() else { return false }
+        defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+        var vps: [UInt8]?, sps: [UInt8]?, pps: [UInt8]?
+        for _ in 0..<200 {
+            guard av_read_frame(input, pkt) >= 0 else { return false }
+            defer { av_packet_unref(pkt) }
+            guard Int(pkt.pointee.stream_index) == videoIndex, let data = pkt.pointee.data else { continue }
+            let size = Int(pkt.pointee.size)
+            var off = 0
+            while off + nalLengthSize <= size {
+                var len = 0
+                for i in 0..<nalLengthSize { len = (len << 8) | Int(data[off + i]) }
+                off += nalLengthSize
+                guard len > 0, off + len <= size else { break }
+                let type = Int((data[off] >> 1) & 0x3F)
+                let nal = Array(UnsafeBufferPointer(start: data + off, count: len))
+                switch type {
+                case 32: vps = vps ?? nal
+                case 33: sps = sps ?? nal
+                case 34: pps = pps ?? nal
+                default: break
+                }
+                off += len
+            }
+            if let sps, let pps {
+                // Rebuild a COMPLETE hvcC (ISO 14496-15 8.3.3.1): the source's own 23-byte header
+                // (general profile/tier/level, chroma, bit depths, lengthSizeMinusOne) followed by one
+                // array per parameter-set type. It must stay hvcC-shaped: Annex B extradata makes
+                // movenc assume the PACKETS are Annex B too and "reformat" the length-prefixed
+                // samples (device round 5: 192 samples shrank from 158 KB to 28 KB, item error -16041).
+                guard let header = par.pointee.extradata, par.pointee.extradata_size >= 23 else { return false }
+                var hvcc = Array(UnsafeBufferPointer(start: header, count: 23))
+                let arrays: [(UInt8, [UInt8])] = [vps.map { (32, $0) }, (33, sps), (34, pps)].compactMap { $0 }
+                hvcc[22] = UInt8(arrays.count)
+                for (type, nal) in arrays {
+                    hvcc.append(0x80 | type)                          // array_completeness=1, NAL type
+                    hvcc += [0, 1]                                    // numNalus = 1
+                    hvcc += [UInt8(nal.count >> 8), UInt8(nal.count & 0xFF)]
+                    hvcc += nal
+                }
+                guard let buf = av_mallocz(hvcc.count + Int(AV_INPUT_BUFFER_PADDING_SIZE)) else { return false }
+                hvcc.withUnsafeBytes { memcpy(buf, $0.baseAddress!, hvcc.count) }
+                av_freep(&par.pointee.extradata)
+                par.pointee.extradata = buf.assumingMemoryBound(to: UInt8.self)
+                par.pointee.extradata_size = Int32(hvcc.count)
+                print("[Remux] rebuilt hvcC \(hvcc.count)b from in-band parameter sets (vps=\(vps != nil ? 1 : 0) sps=1 pps=1, nal length \(nalLengthSize))")
+                return true
             }
         }
         return false
@@ -1294,13 +1398,32 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// pipeline shows PQ media is REJECTED at media admission (-12927) when the master does NOT
     /// declare it, and ACCEPTED when declared alongside full CODECS + SUPPLEMENTAL-CODECS.)
     private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>) -> VideoSignaling {
-        let range: String?
+        let dovi = doviRecord(par)
+        var range: String?
         switch par.pointee.color_trc {
         case AVCOL_TRC_SMPTE2084: range = "PQ"
         case AVCOL_TRC_ARIB_STD_B67: range = "HLG"
         default: range = nil
         }
-        let dovi = doviRecord(par)
+        // P5 spike (2026-10-20, BUG-166 / finding P3-F7): a Dolby Vision stream usually carries an
+        // UNSPECIFIED transfer in its VUI and container colour metadata — profile 5 is IPT-PQ-C2 and
+        // has no VUI code at all, and single-layer profile 8 WEB-DLs often omit the `colr` box. The
+        // master then went out with no VIDEO-RANGE (rig-b log: `RANGE=-`) and tvOS rejected the PQ
+        // media at admission with -12927 (the same failure SegmentMap documents for undeclared PQ).
+        // The DOVI record fixes the range when the VUI does not: P5 and P7 are PQ by definition, and
+        // P8 follows its base-layer compatibility id (1 = HDR10/PQ, 4 = HLG, 2 = SDR → none).
+        if range == nil, let dovi {
+            switch Int(dovi.dv_profile) {
+            case 5, 7: range = "PQ"
+            case 8:
+                switch Int(dovi.dv_bl_signal_compatibility_id) {
+                case 1: range = "PQ"
+                case 4: range = "HLG"
+                default: break
+                }
+            default: break
+            }
+        }
 
         switch par.pointee.codec_id {
         case AV_CODEC_ID_HEVC:

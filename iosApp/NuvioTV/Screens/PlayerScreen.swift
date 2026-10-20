@@ -148,10 +148,16 @@ struct PlayerScreen: View {
         let url = context.url
         let requestHeaders = context.requestHeaders
         let felToMpv = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
-        let (result, probeResult) = await Task.detached(priority: .utility) {
-            let probe = MediaProbe.probe(url: url, timeoutSec: 4, requestHeaders: requestHeaders)
-            return (PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: felToMpv), probe)
+        let probeTimeoutSec = 4.0
+        let (result, probeResult, probeMs) = await Task.detached(priority: .utility) {
+            let t0 = ProcessInfo.processInfo.systemUptime
+            let probe = MediaProbe.probe(url: url, timeoutSec: probeTimeoutSec, requestHeaders: requestHeaders)
+            let ms = Int((ProcessInfo.processInfo.systemUptime - t0) * 1000)
+            return (PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: felToMpv), probe, ms)
         }.value
+        // P5 spike S2 (BUG-167): the probe is the first startup stage; a nil probe at the cap means a
+        // timeout, which routes to mpv without `prefersGpuNext`.
+        print("[PlayerRouter] probe took \(probeMs)ms cap=\(Int(probeTimeoutSec * 1000))ms result=\(probeResult == nil ? "nil" : "ok")")
         print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
         probe = probeResult
         decision = result
