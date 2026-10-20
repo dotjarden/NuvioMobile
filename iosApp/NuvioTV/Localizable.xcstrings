@@ -48911,6 +48911,40 @@
         }
       }
     },
+    "Where the rail sits: centred on the left edge, or at the top-left as a Home icon that opens into the rail. Default: Centre.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wo die Seitenleiste sitzt: mittig am linken Rand oder oben links als Start-Symbol, das sich zur Seitenleiste öffnet. Standard: Mitte."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dónde se coloca la barra lateral: centrada en el borde izquierdo, o arriba a la izquierda como un icono de Inicio que se abre en la barra lateral. Predeterminado: Centro."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Où se place la barre latérale : centrée sur le bord gauche, ou en haut à gauche sous forme d’une icône Accueil qui s’ouvre en barre latérale. Par défaut : Centré."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dove si trova la barra laterale: al centro del bordo sinistro, oppure in alto a sinistra come un’icona Home che si apre nella barra laterale. Predefinito: Al centro."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vị trí của thanh bên: ở giữa cạnh trái, hoặc ở góc trên bên trái dưới dạng biểu tượng Trang chủ mở ra thành thanh bên. Mặc định: Giữa."
+          }
+        }
+      }
+    },
     "Where the source code for this app is published.": {
       "localizations": {
         "de": {
