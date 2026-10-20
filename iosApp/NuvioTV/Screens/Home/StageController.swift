@@ -190,7 +190,6 @@ final class StageController: ObservableObject {
     /// press stands the request down before the pager is back.
     private var uncoverPendingRowKey: String?
     /// Batch N (BUG-188 follow-up): the last strip row change, for `UncoverReplayPolicy`.
-    private var lastRowChangeAt: TimeInterval?
     /// Stales a replay still waiting out its beat (a new pop, a newer replay, a cancel: a push, a
     /// retire).
     private var uncoverReplayGeneration = 0
@@ -221,7 +220,6 @@ final class StageController: ObservableObject {
     /// The strip's row changed (the pager's `onRowChange`: Stage Home and, BUG-156 (b), the folder
     /// Rows page). See `uncoverRestoreTarget`.
     func noteStripRowChanged(key: String) {
-        lastRowChangeAt = ProcessInfo.processInfo.systemUptime
         #if DEBUG
         recentRowKeys.removeAll { $0 == key }
         recentRowKeys.append(key)
@@ -455,16 +453,13 @@ final class StageController: ObservableObject {
             let clock = ViewerInputClock.shared
             let newerPress = clock.lastAt != pressAt && clock.lastKind != .swipe
             guard !newerPress, !self.memory.isFrozen else { return }
-            // Batch N review r1: the pending branch anchors on the restore row unconditionally. No
-            // engine move inside the strip is possible before the pager exists, so neither the
-            // strip's ownership nor a row change (a stale one from before the push) may count.
+            // Batch N device pass: the restore row is the row the viewer pressed from, in both
+            // branches; `decide` compares positions, so the engine's own late (often wrong-way)
+            // landing can't masquerade as the viewer's move.
             guard let key = UncoverReplayPolicy.decide(kind: kind,
-                                                       stripOwnsFocus: waitsForPager ? false : self.stripOwnsFocus,
-                                                       currentRowKey: self.currentRowKey,
+                                                       currentRowKey: self.stripOwnsFocus ? self.currentRowKey : nil,
                                                        restoreRowKey: restoreRowKey,
-                                                       rowKeys: self.pagerHandle.rowKeys,
-                                                       pressAt: pressAt,
-                                                       lastRowChangeAt: waitsForPager ? nil : self.lastRowChangeAt) else { return }
+                                                       rowKeys: self.pagerHandle.rowKeys) else { return }
             StageStripProbe.shared.log("restore replay \(kind.rawValue) \u{2192} \(key) source=\(self.uncoverSource)")
             self.requestFocus(rowKey: key, itemId: self.memory.itemId(for: key), reason: "uncover-replay")
         }

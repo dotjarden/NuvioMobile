@@ -110,37 +110,30 @@ nonisolated enum UncoverRestorePolicy {
 /// decides the move to replay: the neighbouring row of the anchor, or nil when there is nothing to
 /// replay. It folds BUG-176's landed-case replay in, so there is one rule for both retire branches.
 nonisolated enum UncoverReplayPolicy {
+    /// Batch N device pass (2026-10-20): positions, not timestamps. On hardware the engine's late
+    /// pop restoration moves focus a row the WRONG way 100–150 ms after the viewer's Up (log:
+    /// `PRESS 2→3 vfocus-down` right after `retired … input=up`), so "a row change after the press"
+    /// can't tell the engine answering the viewer from the engine ignoring them. The viewer's
+    /// target is the restore row's neighbour in the pressed direction; if focus is already there
+    /// the engine made the move and nothing replays, otherwise the replay goes there.
     /// - Parameters:
     ///   - kind: the viewer input; only `.up` and `.down` replay.
-    ///   - stripOwnsFocus: a strip row owns focus right now (checked after the wait).
-    ///   - currentRowKey: the strip row that owns focus (`StageController.currentRowKey`); used as
-    ///     the anchor only while the strip owns focus.
-    ///   - restoreRowKey: the restore target row, the anchor when the strip does not own focus (the
-    ///     engine had parked focus outside the strip, or the pager was not back yet).
+    ///   - currentRowKey: the strip row that owns focus now, nil when the strip owns none.
+    ///   - restoreRowKey: the row the pop restore was taking focus back to, the row the viewer
+    ///     pressed from.
     ///   - rowKeys: the strip's rows in order (`pagerHandle.rowKeys`).
-    ///   - pressAt: `ProcessInfo.systemUptime` of the press (`ViewerInputClock.lastAt`).
-    ///   - lastRowChangeAt: the last strip row change; any change at or after the press is the
-    ///     engine making the viewer's move itself, so replaying would move twice. No upper bound
-    ///     (Batch N review r1): this is asked at the retire + `UncoverRestorePolicy.regrabDefer`
-    ///     (+ the pager poll), later than press + `regrabDefer`, and a newer press stands the replay
-    ///     down before it gets here, so a change in between is still the engine's answer to this
-    ///     press. A change before the press (the restore's own landing) does not count.
-    /// - Returns: the destination row key, nil at the strip's bounds, when the engine already moved,
-    ///   or when the anchor is unknown.
+    /// - Returns: the destination row key; nil at the strip's bounds, when focus is already on it,
+    ///   or when the restore row is unknown.
     static func decide(kind: ViewerInputKind,
-                       stripOwnsFocus: Bool,
                        currentRowKey: String?,
                        restoreRowKey: String?,
-                       rowKeys: [String],
-                       pressAt: TimeInterval,
-                       lastRowChangeAt: TimeInterval?) -> String? {
-        guard kind == .up || kind == .down else { return nil }
-        if let lastRowChangeAt, lastRowChangeAt >= pressAt { return nil }
-        guard let anchor = stripOwnsFocus ? currentRowKey : restoreRowKey,
-              let index = rowKeys.firstIndex(of: anchor) else { return nil }
+                       rowKeys: [String]) -> String? {
+        guard kind == .up || kind == .down,
+              let restoreRowKey, let index = rowKeys.firstIndex(of: restoreRowKey) else { return nil }
         let next = kind == .down ? index + 1 : index - 1
         guard rowKeys.indices.contains(next) else { return nil }
-        return rowKeys[next]
+        let destination = rowKeys[next]
+        return currentRowKey == destination ? nil : destination
     }
 }
 
