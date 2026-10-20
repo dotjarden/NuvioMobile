@@ -5038,6 +5038,40 @@
         }
       }
     },
+    "Always Visible keeps the rail on screen and, with the rail centred, moves pages a little to the right to make room for it. Hide While Browsing slides it away while you scroll or open a title, and brings it back at the top of a page. Hidden keeps it off screen until you press Left from the first card or Menu. Default: Always Visible.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Immer sichtbar lässt die Seitenleiste auf dem Bildschirm und rückt die Seiten, wenn sie mittig sitzt, etwas nach rechts, um Platz für sie zu schaffen. Beim Stöbern ausblenden schiebt sie weg, während du scrollst oder einen Titel öffnest, und holt sie oben auf einer Seite zurück. Ausgeblendet lässt sie verborgen, bis du von der ersten Karte aus nach links oder Menü drückst. Standard: Immer sichtbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siempre visible mantiene la barra lateral en pantalla y, cuando está centrada, desplaza un poco las páginas a la derecha para dejarle espacio. Ocultar al navegar la retira mientras te desplazas o abres un título, y la vuelve a mostrar en la parte superior de una página. Oculta la mantiene fuera de la pantalla hasta que pulsas Izquierda desde la primera tarjeta o Menú. Por defecto: Siempre visible."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toujours visible garde la barre latérale à l’écran et, quand elle est centrée, décale un peu les pages vers la droite pour lui faire de la place. Masquer pendant la navigation l’escamote quand vous faites défiler ou ouvrez un titre, et la fait revenir en haut d’une page. Masquée la garde hors de l’écran jusqu’à ce que vous appuyiez sur Gauche depuis la première carte ou sur Menu. Par défaut : Toujours visible."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sempre visibile tiene la barra laterale sullo schermo e, quando è al centro, sposta un po’ le pagine a destra per farle spazio. Nascondi durante la navigazione la fa scorrere via mentre scorri o apri un titolo e la riporta in cima a una pagina. Nascosta la tiene fuori dallo schermo finché non premi Sinistra dalla prima scheda o Menu. Predefinito: Sempre visibile."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Luôn hiển thị giữ thanh bên trên màn hình và, khi thanh bên ở giữa, dịch các trang sang phải một chút để chừa chỗ cho nó. Ẩn khi duyệt sẽ trượt thanh bên đi khi bạn cuộn hoặc mở một tựa, và đưa nó trở lại ở đầu trang. Ẩn sẽ giữ thanh bên ngoài màn hình cho đến khi bạn nhấn Trái từ thẻ đầu tiên hoặc nhấn Menu. Mặc định: Luôn hiển thị."
+          }
+        }
+      }
+    },
     "Amber": {
       "localizations": {
         "de": {
@@ -12073,6 +12107,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Điều khiển cách phát bắt đầu và hoạt động: trình phát mặc định, bỏ qua phần mở đầu, khớp tốc độ khung hình, xử lý Dolby Vision và đệm."
+          }
+        }
+      }
+    },
+    "Corner": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ecke"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coin"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angolo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Góc"
           }
         }
       }
@@ -48805,6 +48873,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vị trí của thanh bên ở cạnh trái: ở giữa hoặc ở góc trên bên trái. Mặc định: Giữa."
+          }
+        }
+      }
+    },
+    "Where the rail sits: centred on the left edge, or as a small Home tab in the top-left corner that unrolls into the full rail when you open it. Default: Centre.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wo die Seitenleiste sitzt: mittig am linken Rand oder als kleiner Start-Reiter in der oberen linken Ecke, der sich beim Öffnen zur ganzen Leiste ausrollt. Standard: Mitte."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dónde se coloca la barra lateral: centrada en el borde izquierdo, o como una pequeña pestaña de Inicio en la esquina superior izquierda que se despliega en la barra completa al abrirla. Predeterminado: Centro."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Où se place la barre latérale : centrée sur le bord gauche, ou sous forme d’un petit onglet Accueil dans le coin supérieur gauche qui se déroule en barre complète quand vous l’ouvrez. Par défaut : Centré."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dove si trova la barra laterale: al centro del bordo sinistro, oppure come una piccola linguetta Home nell’angolo in alto a sinistra che si srotola nella barra completa quando la apri. Predefinito: Al centro."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vị trí của thanh bên: ở giữa cạnh trái, hoặc là một thẻ Trang chủ nhỏ ở góc trên bên trái, mở rộng thành thanh bên đầy đủ khi bạn mở nó. Mặc định: Giữa."
           }
         }
       }
