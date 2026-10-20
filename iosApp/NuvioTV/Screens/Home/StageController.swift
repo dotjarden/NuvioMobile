@@ -450,7 +450,11 @@ final class StageController: ObservableObject {
             // Batch N review r1: a newer press since this one is the viewer's own (a second Up must
             // not move twice, a Select may be pushing Detail), and a push over the page freezes the
             // strip's memory (`setCovered`): either way the replay stands down.
-            guard ViewerInputClock.shared.lastAt == pressAt, !self.memory.isFrozen else { return }
+            // Review r2: a clickpad thumb roll after the arrow click records a `.swipe` (the
+            // "clickpad roll = fake swipe" rule); only a newer real press stands the replay down.
+            let clock = ViewerInputClock.shared
+            let newerPress = clock.lastAt != pressAt && clock.lastKind != .swipe
+            guard !newerPress, !self.memory.isFrozen else { return }
             // Batch N review r1: the pending branch anchors on the restore row unconditionally. No
             // engine move inside the strip is possible before the pager exists, so neither the
             // strip's ownership nor a row change (a stale one from before the push) may count.
