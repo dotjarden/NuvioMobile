@@ -164,6 +164,15 @@ struct PlayerScreen: View {
         // P5 spike S2 (BUG-167): the probe is the first startup stage; a nil probe at the cap means a
         // timeout, which routes to mpv without `prefersGpuNext`.
         print("[PlayerRouter] probe took \(probeMs)ms cap=\(Int(probeTimeoutSec * 1000))ms result=\(probeResult == nil ? "nil" : "ok")")
+        if probeResult == nil {
+            // W3-19 (BUG-166 / BUG-167, 2026-10-21): on a debrid link the 4 s cap is a coin flip, and a
+            // timeout sends the film to mpv with no visible sign. One dedicated line tells a cap hit
+            // (the probe ran out the clock) from a probe that failed early (unreachable, unreadable), so a
+            // tester's "every HDR film opens in mpv" can be read off the log. Routing is unchanged.
+            let capMs = Int(probeTimeoutSec * 1000)
+            let kind = probeMs >= capMs - 50 ? "probe cap hit" : "probe failed early"
+            print("[PlayerRouter] \(kind) after \(probeMs)ms (cap \(capMs)ms) host=\(url.host ?? "-") → mpv — \(context.title)")
+        }
         print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
         probe = probeResult
         decision = result
