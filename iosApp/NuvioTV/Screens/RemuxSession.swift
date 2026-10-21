@@ -592,6 +592,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         let reorderSlack: Int64 = 6                              // frames of pts>=dts headroom
         let boundaries = map.boundaryTicks
         let originTicks = boundaries[0]                          // playlist time zero, video time_base
+        // BUG-199b: boundaries are INDEX timestamps — the keyframe's DTS for mov/mp4, its PTS for
+        // matroska (see RemuxSeekLanding). The scan and the cut compare packets in that same domain.
+        let indexIsDTS = RemuxSeekLanding.indexIsDTS(
+            formatName: input.pointee.iformat.flatMap { $0.pointee.name.map { String(cString: $0) } })
         let videoTag = videoOutputTag(videoPar)
         guard let videoStream = input.pointee.streams[videoIn] else { return fail("video stream") }
         let videoTB = videoStream.pointee.time_base
@@ -780,15 +784,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 // Subtitle pre-roll: cues read between the seek point and the boundary keyframe may
                 // still be active inside the target segment — feed them, don't drop them.
                 if let sink = subSinks[Int(pkt.pointee.stream_index)] { sink.ingest(pkt) }
-                if Int(pkt.pointee.stream_index) == videoIn,
-                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
-                   pkt.pointee.pts != noTS, pkt.pointee.pts + tolerance > targetTicks {
-                    if abs(pkt.pointee.pts - targetTicks) >= tolerance {
-                        print("[Remux] reposition landed at pts=\(pkt.pointee.pts) wanted \(targetTicks) — aborting")
+                if Int(pkt.pointee.stream_index) == videoIn, (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
+                    // Compared in the index's domain (dts for mov — BUG-199b: on B-frame MP4s the
+                    // boundary keyframe's pts is the reorder offset past its dts/index timestamp).
+                    switch RemuxSeekLanding.classify(pts: pkt.pointee.pts, dts: pkt.pointee.dts,
+                                                     target: targetTicks, tolerance: tolerance,
+                                                     indexIsDTS: indexIsDTS) {
+                    case .keepScanning: break
+                    case .accept: return true
+                    case .reject:
+                        print("[Remux] reposition landed at pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) "
+                              + "wanted \(targetTicks) (\(indexIsDTS ? "dts" : "pts") index) — aborting")
                         av_packet_unref(pkt)
                         return false
                     }
-                    return true
                 }
                 av_packet_unref(pkt)
             }
@@ -821,7 +830,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 avformat_flush(input)                        // clear sticky EOF/queued packets
                 for sink in subSinks.values { sink.resetForReposition() }   // before the scan feeds them
                 let target = map.segments[startSeg - 1].startTicks
-                print("[Remux] seeking to segment \(startSeg) (pts \(target))")
+                print("[Remux] seeking to segment \(startSeg) (\(indexIsDTS ? "dts" : "pts") \(target))")
                 if av_seek_frame(input, Int32(videoIn), target, AVSEEK_FLAG_BACKWARD) < 0 || !scanToBoundary(target) {
                     if isCancelled() { break runLoop }
                     if let newer = takeReposition(), newer != startSeg {
@@ -1016,13 +1025,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 }
 
                 // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
-                // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
-                // domain — the same domain the keyframe index gave us. (A source without pts would
-                // never cut here; mov and matroska always supply it — see RemuxVideoGrid.)
+                // keyframe becomes the first sample of the new fragment. Compared in the keyframe
+                // INDEX's domain (BUG-199b): dts for mov/mp4, whose index holds the sample dts — so
+                // the boundary keyframe matches exactly and a keyframe < reorder-offset earlier can
+                // never cut early on pts — and pts for matroska, whose Cues are pts and whose dts is
+                // synthesized. Equal to the old pts compare whenever pts == dts at keyframes.
                 var opensFragment = false
                 if isVideo, nextBoundary < boundaries.count,
-                   pkt.pointee.pts != noTS, pkt.pointee.pts >= boundaries[nextBoundary],
-                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
+                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
+                   RemuxSeekLanding.opensSegment(pts: pkt.pointee.pts, dts: pkt.pointee.dts,
+                                                 boundary: boundaries[nextBoundary], indexIsDTS: indexIsDTS) {
                     guard finalizeSegmentFiles() else {
                         print("[Remux] fragment flush/finalize failed at segment \(currentSeg) boundary")
                         av_packet_unref(pkt); runEnd = .error; break
@@ -1218,7 +1230,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                                 totalDurationSec: durationSec, segDurSec: config.segmentDurationSec)
     }
 
-    /// Snapshot the video stream's current keyframe index entries as PTS in the stream time_base.
+    /// Snapshot the video stream's current keyframe index entries in the stream time_base — DTS for
+    /// mov/mp4, PTS for matroska (BUG-199b, see RemuxSeekLanding).
     private func keyframeTicks(_ vs: UnsafeMutablePointer<AVStream>) -> [Int64] {
         let count = avformat_index_get_entries_count(vs)
         var ticks: [Int64] = []
