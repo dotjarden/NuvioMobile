@@ -6818,7 +6818,7 @@ final class NuvioTVUITests: XCTestCase {
         let presets: [(name: String, edge: Int, expectedWidth: Int, expectedAlpha: Int)] = [
             ("subtle", 28, 1, 35),
             ("balanced", 42, 2, 60),
-            ("bold", 56, 3, 90),
+            ("bold", 56, 3, 80),   // rc14: Bold's top stop dropped 0.90 → 0.80 (CardDepthStyle); the test lagged it
         ]
 
         // test56's rule: restore the untouched default configuration on every exit (including a
