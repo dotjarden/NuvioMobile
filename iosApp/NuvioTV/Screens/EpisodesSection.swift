@@ -25,6 +25,11 @@ struct EpisodesSection: View {
     @State private var episodeForStreams: EpisodeRoute?
     @State private var postPlayPending: MetaPreview?
     @FocusState private var focusedEpisodeId: String?
+    /// FEAT-83: the episode a hold-menu action just ran on, until focus is back on the shelf.
+    /// Marking the next-up episode moves `nextUpId` while the menu still holds focus
+    /// (`focusedEpisodeId == nil`), and the shelf would then scroll to the new next-up under the
+    /// returning focus (and `.defaultFocus` would offer it); while this is set, neither happens.
+    @State private var heldEpisodeId: String?
     /// BUG-153 (Batch M): gates the episode row's `zIndex` (`DetailTileFocus.raisedZIndex`).
     @Environment(\.focusAppearance) private var focusAppearance
     /// Review r1 #4: the "N aired unwatched" count, cached per (meta, season, watched keys) so a
@@ -91,6 +96,8 @@ struct EpisodesSection: View {
                         posterBySeason: posterBySeason,
                         fallbackImage: meta.poster ?? meta.background,
                         current: current,
+                        meta: meta,
+                        watchedEpisodeKeys: watchedEpisodeKeys,
                         onSelect: { selectedSeason = $0 }
                     )
                 } else {
@@ -104,6 +111,12 @@ struct EpisodesSection: View {
                                         .padding(.horizontal, 20).padding(.vertical, 8)
                                 }
                                 .buttonStyle(.chip(selected: season == current))
+                                // FEAT-83: the same season menu as the posters (titles without
+                                // season art get these chips instead).
+                                .contextMenu {
+                                    SeasonHoldMenuItems(meta: meta, season: season,
+                                                        watchedEpisodeKeys: watchedEpisodeKeys)
+                                }
                             }
                         }
                         .padding(.vertical, 4)
@@ -151,6 +164,15 @@ struct EpisodesSection: View {
                             .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
+                            // FEAT-83 (GitHub #9 item 3): hold for the watched actions. Attached
+                            // unconditionally (an empty menu is never possible here: the episode
+                            // item always exists), after `.focused` and before `.id`, the Continue
+                            // Watching row's order. A plain press still opens the source list.
+                            .contextMenu {
+                                EpisodeHoldMenuItems(meta: meta, episode: episode,
+                                                     watchedEpisodeKeys: watchedEpisodeKeys,
+                                                     willAct: { heldEpisodeId = episode.id })
+                            }
                             .id(episode.id)
                             // BUG-177: the lifted card draws over its right neighbour.
                             // BUG-153 (Batch M): only when SwiftUI draws the lift.
@@ -189,8 +211,9 @@ struct EpisodesSection: View {
                 }
                 .onChange(of: nextUpId) { _, target in
                     // Watched state often lands after the first render (review r1 P2). Only move
-                    // a shelf the user isn't on.
-                    guard focusedEpisodeId == nil, let target else { return }
+                    // a shelf the user isn't on — nor one whose card just ran a hold-menu action
+                    // and is about to take focus back (FEAT-83, `heldEpisodeId`).
+                    guard focusedEpisodeId == nil, heldEpisodeId == nil, let target else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
                     withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
@@ -199,8 +222,14 @@ struct EpisodesSection: View {
             // `.userInitiated`: the default priority only applies to programmatic focus and first
             // load, never to the user's Down from the season row (review r1 P1). Up from Cast now
             // also lands on next-up rather than the last-visited card, as in the Apple TV app.
-            .defaultFocus($focusedEpisodeId, nextUpId, priority: .userInitiated)
+            // FEAT-83: while a hold-menu action is settling, the acted-on card is the default, so
+            // focus coming back from the menu is never redirected to a next-up that just moved.
+            .defaultFocus($focusedEpisodeId, heldEpisodeId ?? nextUpId, priority: .userInitiated)
             .focusSection()
+            .onChange(of: focusedEpisodeId) { _, focused in
+                // FEAT-83: focus is back on the shelf (on the held card, or the user moved on).
+                if focused != nil, heldEpisodeId != nil { heldEpisodeId = nil }
+            }
 
             focusedOverviewPanel(episodes: episodes)
         }
@@ -392,6 +421,87 @@ private struct EpisodeRoute: Identifiable {
     }
 }
 
+/// FEAT-83 (GitHub #9 item 3): an episode card's hold menu — Mark Episode Watched / Unwatched,
+/// then Mark Previous Episodes Watched / Unwatched (mobile's episode action sheet). The policy is
+/// `TitleHoldMenuPolicy.episodeActions`.
+///
+/// Everything is resolved in THIS body, which tvOS evaluates when it presents the menu — never in
+/// the shelf's body, which re-runs on every Left/Right (BUG-153): the previous-episodes list is a
+/// shared sort over every episode. The shared toggles are called with the state each LABEL was
+/// built from (`DetailTileAction.labelState`), never a re-read of the live state; the watched keys
+/// refresh by themselves through `DetailViewModel`'s watched and progress watchers.
+private struct EpisodeHoldMenuItems: View {
+    let meta: MetaDetails
+    let episode: MetaVideo
+    let watchedEpisodeKeys: Set<String>
+    /// Runs before an action, so the shelf records the card before the watched state moves.
+    let willAct: () -> Void
+
+    var body: some View {
+        let today = CurrentDateProvider.shared.todayIsoDate()
+        let previous = meta.previousReleasedEpisodesBefore(target: episode, todayIsoDate: today)
+        let isWatched = TitleHoldMenuPolicy.areAllWatched(keys: [Self.key(episode)],
+                                                          watchedKeys: watchedEpisodeKeys)
+        let arePreviousWatched = TitleHoldMenuPolicy.areAllWatched(keys: previous.map(Self.key),
+                                                                   watchedKeys: watchedEpisodeKeys)
+        ForEach(TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: isWatched,
+                                                   previousCount: previous.count,
+                                                   arePreviousWatched: arePreviousWatched),
+                id: \.self) { action in
+            Button {
+                willAct()
+                switch action {
+                case .episode:
+                    WatchingActions.shared.toggleEpisodeWatched(
+                        meta: meta, episode: episode, isCurrentlyWatched: action.labelState)
+                case .previousEpisodes:
+                    // `episodes` is a Kotlin `Collection<MetaVideo>` (bridged as `Any`): pass the
+                    // `[MetaVideo]` array the shared extension returned, as is.
+                    WatchingActions.shared.togglePreviousEpisodesWatched(
+                        meta: meta, episodes: previous, areCurrentlyWatched: action.labelState)
+                case .season:
+                    break // never in an episode menu (`episodeActions`)
+                }
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        }
+    }
+
+    nonisolated static func key(_ episode: MetaVideo) -> String? {
+        TitleHoldMenuPolicy.episodeKey(season: episode.season?.value, episode: episode.episode?.value)
+    }
+}
+
+/// FEAT-83: a season poster's or season chip's hold menu — Mark Season Watched / Unwatched over
+/// the season's RELEASED episodes (`TitleHoldMenuPolicy.seasonActions`). Same presentation-time
+/// rule as `EpisodeHoldMenuItems`; empty for a season with nothing released yet.
+private struct SeasonHoldMenuItems: View {
+    let meta: MetaDetails
+    /// `EpisodesSection`'s season number (specials normalized to 0, as the shared side does).
+    let season: Int
+    let watchedEpisodeKeys: Set<String>
+
+    var body: some View {
+        let today = CurrentDateProvider.shared.todayIsoDate()
+        let released = meta.releasedEpisodesForSeason(seasonNumber: KotlinInt(int: Int32(season)),
+                                                      todayIsoDate: today)
+        let isWatched = TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: released.map(EpisodeHoldMenuItems.key),
+                                                            watchedKeys: watchedEpisodeKeys)
+        ForEach(TitleHoldMenuPolicy.seasonActions(seasonLabel: EpisodesSection.seasonLabel(season),
+                                                  releasedCount: released.count,
+                                                  isSeasonWatched: isWatched),
+                id: \.self) { action in
+            Button {
+                WatchingActions.shared.toggleSeasonWatched(
+                    meta: meta, episodes: released, areCurrentlyWatched: action.labelState)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        }
+    }
+}
+
 /// FEAT-24's season poster row, pulled out of `EpisodesSection.body` (BUG-153, Batch M) so its
 /// `FocusState` invalidates only this row. Same buttons, styles and identifiers as before.
 private struct SeasonPosterRow: View {
@@ -400,6 +510,9 @@ private struct SeasonPosterRow: View {
     /// The show poster (else background) — a season without its own poster falls back to it.
     let fallbackImage: String?
     let current: Int?
+    /// FEAT-83: for the hold menu only (`SeasonHoldMenuItems` reads them when the menu opens).
+    let meta: MetaDetails
+    let watchedEpisodeKeys: Set<String>
     let onSelect: (Int) -> Void
 
     /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
@@ -427,6 +540,12 @@ private struct SeasonPosterRow: View {
                     // otherwise overrides it — the BUG-25 class).
                     .posterButtonShape()
                     .focused($focusedSeason, equals: season)
+                    // FEAT-83 (GitHub #9 item 3): hold for Mark Season Watched / Unwatched;
+                    // attached unconditionally (an unreleased season shows an empty menu).
+                    .contextMenu {
+                        SeasonHoldMenuItems(meta: meta, season: season,
+                                            watchedEpisodeKeys: watchedEpisodeKeys)
+                    }
                     // BUG-177: the lifted poster draws over its right neighbour.
                     // BUG-153 (Batch M): only when SwiftUI draws the lift.
                     .zIndex(DetailTileFocus.raisedZIndex(
