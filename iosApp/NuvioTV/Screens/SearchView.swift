@@ -116,10 +116,13 @@ nonisolated struct SearchPlaceholderPolicy: Equatable {
     mutating func rearm() { hiddenReason = nil }
 }
 
-/// BUG-195: a non-focusable look-alike of tvOS's search field (magnifier + prompt, the field's own
-/// grey), at the real field's measured spot. Fades on the first `UITextField` editing-began (the
-/// field becoming first responder works in Rail and Tabs mode alike; `searchKeyboardFocused` is
-/// Rail-only) or the first `searchKeyboardFocused`, and always at `SearchPlaceholderPolicy.timeout`.
+/// BUG-195: a non-focusable look-alike of tvOS's search field, at the real field's measured spot.
+/// W3-18 (D5): a cold start draws the magnifier ALONE, in the field's own grey; the prompt text
+/// ("Search movies & shows") keeps its layout (`.hidden()`, not removed), so the magnifier holds
+/// its leading x and vertical centre and does not jump when the real field mounts. Fades on the
+/// first `UITextField` editing-began (the field becoming first responder works in Rail and Tabs
+/// mode alike; `searchKeyboardFocused` is Rail-only) or the first `searchKeyboardFocused`, and
+/// always at `SearchPlaceholderPolicy.timeout`. The warm path (`.already`) never draws it.
 private struct SearchPlaceholderLayer: View {
     /// A plain reference, never observed: read once on appear.
     let queryBox: SearchQueryBox
@@ -133,8 +136,11 @@ private struct SearchPlaceholderLayer: View {
         HStack(spacing: 34) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 58, weight: .medium))
+            // W3-18: hidden, not deleted — the Text's line height sets the HStack's height, so
+            // removing it would raise the magnifier by half the line-height difference.
             Text("Search movies & shows")
                 .font(.system(size: 56.5, weight: .bold))
+                .hidden()
         }
         .foregroundStyle(Color.white.opacity(0.3))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
