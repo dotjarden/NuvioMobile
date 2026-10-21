@@ -362,6 +362,21 @@ struct SourcesSettingsPane: View {
 
     /// The Plugins section body: master switch + per-scraper toggles. Repos are managed on the
     /// phone and arrive via cloud sync (sync-only v1) — reflected in the empty-state copy.
+    /// Review r1 P2-1 / r2 P2-1: whatever removed a repository (the alert, a sync), both pending
+    /// values clear once its URL has left the list, and focus moves to the manifest field.
+    private func reconcilePendingRemoval(_ urls: [String]) {
+        if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
+            pendingPluginRepoRemoval = nil
+        }
+        if let removed = pendingFocusAfterRemoval, !urls.contains(removed) {
+            pendingFocusAfterRemoval = nil
+            // Focus moves at once. If the device pass shows the List winning the race with the
+            // dismissing alert, the device pass decides on a delay instead:
+            // Task { try? await Task.sleep(for: .milliseconds(350)); manifestFieldFocused = true }
+            manifestFieldFocused = true
+        }
+    }
+
     @ViewBuilder
     private var pluginsSection: some View {
         Text("JS plugin providers add extra stream sources. Install a repository by its manifest URL \u{2014} it syncs to your other Nuvio devices automatically.")
@@ -384,20 +399,13 @@ struct SourcesSettingsPane: View {
             // the list's `else` branch it was torn down in the same update that removed the LAST
             // repository, so focus never moved and the pending values stayed set (review r1 P2-1).
             // Whatever removed the URL (the alert, a sync), both pending values clear here.
+            // Wave 3 review r2 (P2-1): the entry row is a LAZY List row. With a long provider list
+            // expanded it is off screen when Remove is confirmed, and an off-screen row runs no
+            // `onChange`; so the same reconcile also runs when the row (re)appears.
             .onChange(of: plugins.repositories.map(\.manifestUrl)) { _, urls in
-                // Review r2 (P3-3): a pending removal whose repository was removed by sync (the
-                // alert's row is gone, so its binding setter never runs) must not pop up later.
-                if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
-                    pendingPluginRepoRemoval = nil
-                }
-                if let removed = pendingFocusAfterRemoval, !urls.contains(removed) {
-                    pendingFocusAfterRemoval = nil
-                    // Focus moves at once. If the device pass shows the List winning the race with the
-                    // dismissing alert, the device pass decides on a delay instead:
-                    // Task { try? await Task.sleep(for: .milliseconds(350)); manifestFieldFocused = true }
-                    manifestFieldFocused = true
-                }
+                reconcilePendingRemoval(urls)
             }
+            .onAppear { reconcilePendingRemoval(plugins.repositories.map(\.manifestUrl)) }
 
         if let status = plugins.statusMessage {
             Text(status)

@@ -1898,13 +1898,13 @@ nonisolated struct RemuxVideoGrid: Sendable {
     private mutating func learn(_ duration: Int64) {
         guard !learnedFromDuration else { return }
         learnSamples.append(duration)
-        if learnSamples.count < Self.learnSampleCount {
-            learnedDuration = max(learnedDuration, duration)
-            return
-        }
+        // Review r2 (P3-2): the provisional unit is the RUNNING MODE (ties to the larger value),
+        // not the largest so far: a long still frame or a corrupt early duration must not inflate
+        // the reorder slack for the first fragment. At most 16 samples, so this stays cheap.
         var counts: [Int64: Int] = [:]
         for d in learnSamples { counts[d, default: 0] += 1 }
         learnedDuration = counts.max { a, b in a.value != b.value ? a.value < b.value : a.key < b.key }!.key
+        if learnSamples.count < Self.learnSampleCount { return }
         learnedFromDuration = true
         learnSamples = []
     }

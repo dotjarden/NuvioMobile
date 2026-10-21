@@ -108,7 +108,7 @@ final class RemuxVideoGridTests: XCTestCase {
         let packets = stream(total: 3000, durations: [656, 672, 672])
         XCTAssertEqual(packets.first { $0.presentationIndex == 144 }?.duration, 656,
                        "the boundary keyframe declares 656, as in the log")
-        let grid = assertCadence(packets)
+        let grid = assertCadence(packets, expectedOldStarts: [92_065, 188_833])
         XCTAssertEqual(grid.unit, 672, "the mode of the first 16 durations")
     }
 
@@ -121,11 +121,12 @@ final class RemuxVideoGridTests: XCTestCase {
     /// Replays `packets` with a fragment every 144 frames; asserts pts ≥ dts, pts untouched, strictly
     /// rising dts, movenc's fragment-start rule, zero clamps and nets, and that the old formula fails.
     @discardableResult
-    private func assertCadence(_ packets: [Packet], file: StaticString = #filePath,
-                               line: UInt = #line) -> RemuxVideoGrid {
+    private func assertCadence(_ packets: [Packet], expectedOldStarts: [Int64]? = nil,
+                               file: StaticString = #filePath, line: UInt = #line) -> RemuxVideoGrid {
         var grid = RemuxVideoGrid(anchor: 0)
         var old = OldGrid(anchor: 0)
         var prev: RemuxVideoGrid.Stamp?
+        var oldStarts: [Int64] = []
         var oldPrev: (dts: Int64, dur: Int64)?
         var fragmentStarts = 0
         var oldFragmentViolations = 0
@@ -149,6 +150,7 @@ final class RemuxVideoGridTests: XCTestCase {
             prev = s
             let o = old.stamp(pts: p.pts, duration: p.duration)
             if opens, let op = oldPrev, o.dts < op.dts + op.dur { oldFragmentViolations += 1 }
+            if opens { oldStarts.append(o.dts) }
             oldPrev = (o.dts, p.duration)
         }
         XCTAssertEqual(fragmentStarts, 20, file: file, line: line)
@@ -157,6 +159,11 @@ final class RemuxVideoGridTests: XCTestCase {
         XCTAssertFalse(grid.netCapExceeded, file: file, line: line)
         XCTAssertGreaterThan(oldFragmentViolations, 0,
                              "reference: the old grid trips movenc's pts rewrite", file: file, line: line)
+        // Review r2 (P3-4): pin the old formula's first fragment-start dts values to the log's own.
+        if let expectedOldStarts {
+            XCTAssertEqual(Array(oldStarts.prefix(expectedOldStarts.count)), expectedOldStarts,
+                           "the old grid's fragment starts match the device log", file: file, line: line)
+        }
         return grid
     }
 

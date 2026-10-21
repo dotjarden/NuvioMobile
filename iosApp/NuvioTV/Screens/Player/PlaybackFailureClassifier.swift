@@ -154,6 +154,9 @@ nonisolated enum PlaybackFailureClassifier {
     ]
     static func isEngineInternalStage(_ stage: String) -> Bool {
         engineInternalStages.contains(stage) || stage.hasPrefix("DV P7 converter init")
+            // Wave 3 (BUG-199, review r2 P3-3): the video grid's net cap is our own limit, never
+            // the source's; a stale FFmpeg code must not relabel it.
+            || stage.hasPrefix("grid net cap")
     }
 
     /// A native pre-playback or remux failure: an engine-internal stage → `.local`, then the
