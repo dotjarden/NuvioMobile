@@ -71,6 +71,8 @@ enum SettingsRowIconTint {
     /// Inherit whatever the row already paints — used by `SettingsDestructiveRow`, whose system
     /// red must not be overridden by the accent.
     case inherit
+    /// A fixed colour, used by `SettingsDestructiveRow` while its platter is up.
+    case fixed(Color)
 }
 
 /// Focus-aware theme accent for the two places the Settings kit is allowed to carry colour: a
@@ -325,6 +327,10 @@ struct SettingsRowLabel: View {
                 case .inherit:
                     Image(systemName: systemImage)
                         .font(SettingsRowFont.title)
+                case .fixed(let color):
+                    Image(systemName: systemImage)
+                        .font(SettingsRowFont.title)
+                        .foregroundStyle(color)
                 }
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
@@ -762,18 +768,60 @@ struct SettingsDestructiveRow: View {
 
     var body: some View {
         Button(role: .destructive, action: action) {
-            // `.inherit`: the destructive red is the row's whole point (HIG), and it stays red
-            // under every theme. An accent glyph here would fight it.
             SettingsRowChrome {
-                SettingsRowLabel(
+                SettingsDestructiveLabel(
                     title: title,
                     subtitle: subtitle,
                     systemImage: systemImage,
-                    iconTint: .inherit,
                     descriptionID: descriptionID
                 )
             }
         }
+    }
+}
+
+/// The destructive row's colour choice, pure so it can be unit tested. At rest the system
+/// destructive red stands (`title == nil`, glyph inherits via `nil`-equivalent system red).
+/// On the always-white focus platter the red title washes out, so the title flips to `.primary`
+/// (nil here means "use `.primary` under the light scheme") and the glyph takes a dark red,
+/// 5.4:1 on white.
+nonisolated enum SettingsDestructiveInk {
+    /// `title`: `nil` = leave the system role colour (at rest); on the platter the caller applies
+    /// `.primary`. `glyph`: the symbol colour for the state.
+    static func colors(focused: Bool) -> (title: Color?, glyph: Color) {
+        focused ? (Color.primary, platterRed) : (nil, Color.red)
+    }
+
+    static let platterRed = Color(red: 0xD7 / 255, green: 0, blue: 0x15 / 255)
+}
+
+/// Reads focus from inside the button label (the one place `\.isFocused` is populated) and
+/// applies `SettingsDestructiveInk`. Same flip the other kit rows use on the platter: the
+/// `.light` scheme so `.primary` / `.secondary` resolve dark.
+private struct SettingsDestructiveLabel: View {
+    let title: String
+    var subtitle: String?
+    var systemImage: String?
+    var descriptionID: SettingsDescriptionID?
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    private var onPlatter: Bool { isFocused || rowFocused || platterActive }
+
+    var body: some View {
+        let ink = SettingsDestructiveInk.colors(focused: onPlatter)
+        SettingsRowLabel(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            iconTint: onPlatter ? .fixed(ink.glyph) : .inherit,
+            descriptionID: descriptionID
+        )
+        .foregroundStyle(ink.title.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.red))
+        .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
     }
 }
 

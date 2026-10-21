@@ -940,37 +940,25 @@ struct StripPager<Row: View>: View {
 
 /// D4 / #3: the strip's clip mask (`StripEdgeMask`), its top edge feathered across the stage's
 /// bottom gutter.
-/// W2-5 knob: `-debug.homeNoStripEdgeMask YES` (`HomePerfKnobs`, launch-latched, Release too) skips
-/// this mask and nothing else, for the rig's A/B; the branch never flips within a run.
 private struct StripEdgeMaskModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if HomePerfKnobs.noStripEdgeMask {
-            content
-        } else {
-            content.mask(alignment: .top) {
-                StripEdgeMask(gutter: StripGeometry.stageBottomGap)
-            }
+        content.mask(alignment: .top) {
+            StripEdgeMask(gutter: StripGeometry.stageBottomGap)
         }
     }
 }
 
 /// §3.4: a strip page's opacity by its offset from the strip top (render time, no state writes).
-/// W2-5 knob: `-debug.homeNoPageOpacity YES` (`HomePerfKnobs`, launch-latched, Release too) skips
-/// the `.visualEffect` and nothing else, so every page draws at full opacity, never offscreen.
 private struct StripPageOpacityModifier: ViewModifier {
     let pageHeight: CGFloat
 
     func body(content: Content) -> some View {
-        if HomePerfKnobs.noPageOpacity {
-            content
-        } else {
-            // Hoisted so the render-time closure captures a plain number.
-            let page = pageHeight
-            content.visualEffect { content, proxy in
-                content.opacity(StripGeometry.pageOpacity(
-                    minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
-                    pageHeight: page))
-            }
+        // Hoisted so the render-time closure captures a plain number.
+        let page = pageHeight
+        content.visualEffect { content, proxy in
+            content.opacity(StripGeometry.pageOpacity(
+                minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
+                pageHeight: page))
         }
     }
 }

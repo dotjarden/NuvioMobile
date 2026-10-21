@@ -596,7 +596,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let videoStream = input.pointee.streams[videoIn] else { return fail("video stream") }
         let videoTB = videoStream.pointee.time_base
 
-        var vDur: Int64 = 0             // learned frame duration — a stream constant, kept across runs
+        // Video DTS grid (BUG-199): one per session; each run repositions it at its start boundary.
+        // Its learned frame duration is a stream constant, kept across runs.
+        var videoGrid = RemuxVideoGrid(anchor: 0, reorderSlack: reorderSlack)
+        var gridNetLogged = false
+        var gridProbeDurations: [Int64: Int] = [:]   // first 1000 video durations, logged once
+        var gridProbeCount = 0
         var isFirstRun = true
         var everRepositioned = false
         var consecutiveErrorParks = 0
@@ -755,7 +760,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // read failure, a newer reposition (the interrupt kicks the read out), or landing on the wrong
         // keyframe — one mis-timed segment would poison the published VOD timeline, so verify + abort.
         func scanToBoundary(_ targetTicks: Int64) -> Bool {
-            let tolerance = max(vDur, 2)
+            let tolerance = max(videoGrid.learnedDuration, 2)
             while true {
                 if isCancelled() { return false }
                 let r = av_read_frame(input, pkt)
@@ -862,8 +867,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             // into that stream's POST-header time_base (see the timescale-trap note in makeMux).
             let anchorSrcTicks = map.segments[startSeg - 1].startTicks - originTicks
             let vAnchorOut = av_rescale_q(anchorSrcTicks, videoTB, run.video.outStream.pointee.time_base)
-            var vIndex: Int64 = 0
-            var vPrevDTS: Int64? = nil
+            videoGrid.reposition(anchor: vAnchorOut)
             var aNextDTS: Int64 = noTS
             let aFloor: Int64 = run.audio.map { av_rescale_q(anchorSrcTicks, videoTB, $0.outStream.pointee.time_base) } ?? 0
             var currentSeg = startSeg
@@ -1007,7 +1011,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
                 // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
                 // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
-                // domain — the same domain the keyframe index gave us.
+                // domain — the same domain the keyframe index gave us. (A source without pts would
+                // never cut here; mov and matroska always supply it — see RemuxVideoGrid.)
+                var opensFragment = false
                 if isVideo, nextBoundary < boundaries.count,
                    pkt.pointee.pts != noTS, pkt.pointee.pts >= boundaries[nextBoundary],
                    (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
@@ -1024,6 +1030,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     consecutiveErrorParks = 0   // a finalized segment = real progress; the error cap
                                                 // counts genuinely consecutive non-productive failures
                     beginSegmentFiles(currentSeg)
+                    opensFragment = true
                 }
 
                 av_packet_rescale_ts(pkt, inS.pointee.time_base, outS.pointee.time_base)
@@ -1045,22 +1052,33 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 }
 
                 if isVideo {
-                    // Video DTS regenerated on a uniform grid (sloppy sources carry missing or
-                    // non-monotonic DTS; AVPlayer rejects such timelines with -12927). Anchored at
-                    // the run's start boundary, offset back for B-frame reorder, clamped at zero.
-                    if pkt.pointee.duration > 0 {
-                        vDur = pkt.pointee.duration
-                    } else if vDur == 0, pkt.pointee.pts != noTS, pkt.pointee.pts > vAnchorOut {
-                        vDur = pkt.pointee.pts - vAnchorOut
+                    // Video DTS regenerated on a grid that accumulates the declared durations
+                    // (RemuxVideoGrid: anchored at the run's start boundary, offset back for B-frame
+                    // reorder, clamped to pts, strictly rising, plus the pts >= dts and fragment-start
+                    // nets — BUG-199).
+                    let before = videoGrid.netFirings
+                    let declared = pkt.pointee.duration
+                    let stamp = videoGrid.stamp(pts: pkt.pointee.pts, duration: declared,
+                                                fragmentStart: opensFragment)
+                    if !gridNetLogged, videoGrid.netFirings > before {
+                        gridNetLogged = true
+                        print("[Remux] grid net fired at segment \(currentSeg) index=\(videoGrid.index - 1) "
+                              + "pts \(pkt.pointee.pts)→\(stamp.pts) dts=\(stamp.dts) dur=\(declared) "
+                              + "(ptsNet=\(videoGrid.ptsNetFirings) fragNet=\(videoGrid.fragmentNetFirings); logged once)")
                     }
-                    var dts = vAnchorOut + (vIndex - reorderSlack) * max(vDur, 1)
-                    if dts < 0 { dts = 0 }
-                    if pkt.pointee.pts != noTS, dts > pkt.pointee.pts { dts = pkt.pointee.pts }
-                    if let prev = vPrevDTS, dts <= prev { dts = prev + 1 }
-                    vPrevDTS = dts
-                    pkt.pointee.dts = dts
-                    if pkt.pointee.pts == noTS { pkt.pointee.pts = vAnchorOut + vIndex * max(vDur, 1) }
-                    vIndex += 1
+                    pkt.pointee.dts = stamp.dts
+                    pkt.pointee.pts = stamp.pts
+                    pkt.pointee.duration = stamp.duration
+                    if gridProbeCount < 1000 {
+                        gridProbeDurations[declared, default: 0] += 1
+                        gridProbeCount += 1
+                        if gridProbeCount == 1000 {
+                            let hist = gridProbeDurations.sorted { $0.value > $1.value }.prefix(6)
+                                .map { "\($0.key):\($0.value)" }.joined(separator: " ")
+                            print("[Remux] grid probe: first 1000 video durations {\(hist)} unit=\(videoGrid.unit) "
+                                  + "clamps=\(videoGrid.clampCount) nets=\(videoGrid.netFirings)")
+                        }
+                    }
                 } else {
                     // Audio keeps source timestamps; gap-fill only when absent, floored at the run
                     // start so a timestamp-less packet can't land at t=0 in a fragment at t=T_K.
@@ -1740,4 +1758,122 @@ nonisolated final class RemuxInterrupts: @unchecked Sendable {
 nonisolated func remuxShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int32 {
     guard let opaque else { return 0 }
     return Unmanaged<RemuxInterrupts>.fromOpaque(opaque).takeUnretainedValue().shouldInterrupt ? 1 : 0
+}
+
+// MARK: - Video DTS grid (BUG-199)
+
+/// The video timestamp rule of the remux loop, pure so it is testable without FFmpeg. All values are
+/// in the video OUTPUT stream's post-header time_base, already on the playlist timeline.
+///
+/// Video DTS is regenerated (sloppy sources carry missing or non-monotonic DTS; AVPlayer rejects such
+/// timelines with -12927): one slot per packet in decode order, anchored at the run's start boundary
+/// and offset back by `reorderSlack` frames of B-frame headroom, then clamped to the packet's pts and
+/// kept strictly rising.
+///
+/// THE GRID ACCUMULATES the declared packet durations (`slot += duration`) instead of the old
+/// `anchor + (index − slack) · vDur`, where `vDur` was re-learned from every packet. On a 1/16000
+/// timescale at 23.976 fps the durations cycle 667/667/668; every flip moved the whole old grid by
+/// ~`index` ticks, which ate the reorder slack mid-run (BUG-199: `pts (590005) < dts (590017)`, write
+/// error -22 at segment 7) and, at every fragment start, left the boundary keyframe's dts below the
+/// previous dts + previous duration, so movenc's `check_pkt` rewrote that keyframe's pts to its dts
+/// ("Packet duration: -671 … out of range" + "pts has no value"): every segment's opening frame lost
+/// its composition offset. Accumulating the durations movenc itself accounts with keeps
+/// `dts[k] − dts[k−1] == duration[k−1]`, so neither happens. A rational slot from `avg_frame_rate`
+/// was rejected: Matroska declares a rounded default duration (41 or 42 ms) that differs from the
+/// rate, so a rate grid would break movenc's fragment-start invariant on every MKV.
+///
+/// MKV EQUIVALENCE: with a constant duration `d` (learned once, `unit == d`), slot k is
+/// `anchor + k·d` and dts is `anchor + (k − slack)·d` — exactly the old formula; the clamp, the
+/// bump and the pts synthesis are unchanged, and the two nets below fire only where the old code
+/// produced a write error (pts < dts) or a movenc pts rewrite. `RemuxVideoGridTests` replays
+/// constant-duration streams through both.
+///
+/// Packets without pts: the remux loop's boundary cut needs a source pts, so such a stream would
+/// never cut (one giant segment). Both demuxers routed native (mov, matroska) always supply pts, so
+/// that stays latent; the grid still synthesises pts = the packet's slot as before.
+nonisolated struct RemuxVideoGrid: Sendable {
+    static let noTS = Int64.min                         // AV_NOPTS_VALUE
+
+    let reorderSlack: Int64
+    /// The run's start boundary on the playlist timeline.
+    private(set) var anchor: Int64
+    /// Slot of the next packet before the reorder offset: anchor + Σ steps of the packets so far.
+    var slot: Int64
+    /// Packets stamped since the last reposition.
+    var index: Int64 = 0
+    /// Learned frame duration: the FIRST positive declared duration (learn-once, kept across runs).
+    /// Before any duration arrives it may hold a provisional pts − anchor guess, as the old code did.
+    var learnedDuration: Int64 = 0
+    var learnedFromDuration = false
+    var prevDTS: Int64?
+    /// Duration written with the previous packet (what movenc adds to its dts for the next fragment).
+    var prevDuration: Int64 = 0
+
+    /// Times dts had to be clamped down to pts (the grid ran ahead of the source); diagnostic only.
+    private(set) var clampCount = 0
+    /// Safety net 1: pts lifted to dts because the clamp + bump left pts < dts (was a write error).
+    private(set) var ptsNetFirings = 0
+    /// Safety net 2: a fragment's first packet lifted to prev dts + prev duration (was a movenc rewrite).
+    private(set) var fragmentNetFirings = 0
+    var netFirings: Int { ptsNetFirings + fragmentNetFirings }
+
+    struct Stamp: Equatable, Sendable {
+        var pts: Int64
+        var dts: Int64
+        /// The duration to write with the packet (the declared one, unless it was an outlier).
+        var duration: Int64
+    }
+
+    init(anchor: Int64, reorderSlack: Int64 = 6) {
+        self.reorderSlack = reorderSlack
+        self.anchor = anchor
+        self.slot = anchor
+    }
+
+    /// Unit step for the reorder offset and for packets without a usable duration.
+    var unit: Int64 { max(learnedDuration, 1) }
+
+    /// A new run (fresh muxer context) starts at `anchor`: the grid restarts there. The learned
+    /// duration survives (a stream constant); nets and counters are per session.
+    mutating func reposition(anchor: Int64) {
+        self.anchor = anchor
+        slot = anchor
+        index = 0
+        prevDTS = nil
+        prevDuration = 0
+    }
+
+    /// Stamp the next video packet in decode order. `pts` may be `noTS`; `duration` is the declared
+    /// (rescaled) packet duration, ≤ 0 when absent. `fragmentStart` = this packet opens a new fragment
+    /// in the SAME muxer context (the boundary keyframe right after a cut).
+    mutating func stamp(pts: Int64, duration: Int64, fragmentStart: Bool = false) -> Stamp {
+        if duration > 0 {
+            if !learnedFromDuration { learnedDuration = duration; learnedFromDuration = true }
+        } else if learnedDuration == 0, pts != Self.noTS, pts > anchor {
+            learnedDuration = pts - anchor
+        }
+        let unit = self.unit
+        var written = duration
+        var step = duration > 0 ? duration : unit
+        // A corrupt or end-of-stream duration far beyond the frame step would shift the whole rest of
+        // the run's grid (the old per-packet formula forgot it on the next packet). Write the unit.
+        if learnedFromDuration, duration > unit * 8 { step = unit; written = unit }
+
+        var dts = slot - reorderSlack * unit
+        if dts < 0 { dts = 0 }
+        if pts != Self.noTS, dts > pts { dts = pts; clampCount += 1 }
+        if let prev = prevDTS, dts <= prev { dts = prev + 1 }
+        if fragmentStart, let prev = prevDTS, dts < prev + prevDuration {
+            dts = prev + prevDuration
+            fragmentNetFirings += 1
+        }
+        var outPTS = pts != Self.noTS ? pts : slot
+        if outPTS < dts { outPTS = dts; ptsNetFirings += 1 }
+
+        prevDTS = dts
+        prevDuration = max(written, 0)
+        slot += step
+        index += 1
+        return Stamp(pts: outPTS, dts: dts, duration: written)
+    }
 }

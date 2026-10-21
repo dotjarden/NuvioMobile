@@ -1,7 +1,7 @@
 import XCTest
 @testable import NuvioTV
 
-/// W2-5 (c): the rig's three Home A/B knobs resolve off by default and on for a `YES` launch value.
+/// W2-5 (c): the rig's Home A/B knob resolve off by default and on for a `YES` launch value.
 final class HomePerfKnobsTests: XCTestCase {
 
     private var suiteName = ""
@@ -19,10 +19,10 @@ final class HomePerfKnobsTests: XCTestCase {
         super.tearDown()
     }
 
-    private let keys = [HomePerfKnobs.noStripEdgeMaskKey, HomePerfKnobs.noPageOpacityKey, HomePerfKnobs.noCardDepthKey]
+    private let keys = [HomePerfKnobs.noCardDepthKey]
 
     func testKeysAreTheDocumentedLaunchArguments() {
-        XCTAssertEqual(keys, ["debug.homeNoStripEdgeMask", "debug.homeNoPageOpacity", "debug.homeNoCardDepth"])
+        XCTAssertEqual(keys, ["debug.homeNoCardDepth"])
     }
 
     func testDefaultIsOff() {
@@ -48,17 +48,17 @@ final class HomePerfKnobsTests: XCTestCase {
         }
     }
 
-    func testKnobsAreIndependent() {
-        defaults.set(true, forKey: HomePerfKnobs.noPageOpacityKey)
-        XCTAssertFalse(HomePerfKnobs.resolve(HomePerfKnobs.noStripEdgeMaskKey, defaults: defaults))
-        XCTAssertTrue(HomePerfKnobs.resolve(HomePerfKnobs.noPageOpacityKey, defaults: defaults))
-        XCTAssertFalse(HomePerfKnobs.resolve(HomePerfKnobs.noCardDepthKey, defaults: defaults))
+    func testKnobIsReadFromTheGivenDefaultsOnly() {
+        // Setting the key in one suite does not leak into another, and a YES launch argument parses.
+        defaults.set("YES", forKey: HomePerfKnobs.noCardDepthKey)
+        XCTAssertTrue(HomePerfKnobs.resolve(HomePerfKnobs.noCardDepthKey, defaults: defaults))
+        let other = UserDefaults(suiteName: suiteName + ".other")!
+        defer { other.removePersistentDomain(forName: suiteName + ".other") }
+        XCTAssertFalse(HomePerfKnobs.resolve(HomePerfKnobs.noCardDepthKey, defaults: other))
     }
 
     func testTheSimulatorRunHasNoKnobSet() {
         // The unit-test host launches without the knobs, so the latched values are the defaults.
-        XCTAssertFalse(HomePerfKnobs.noStripEdgeMask)
-        XCTAssertFalse(HomePerfKnobs.noPageOpacity)
         XCTAssertFalse(HomePerfKnobs.noCardDepth)
     }
 }

@@ -18,6 +18,10 @@ struct SourcesSettingsPane: View {
     @State private var pluginRepoExpanded: [String: Bool] = [:]
     /// Drives the "Remove repository?" confirmation.
     @State private var pendingPluginRepoRemoval: PluginRepositoryItem?
+    /// W3-2 (c): the manifest URL of a repository whose removal was just confirmed. Once it leaves
+    /// `plugins.repositories` the manifest field takes focus (the Remove row it came from is gone).
+    @State private var pendingFocusAfterRemoval: String?
+    @FocusState private var manifestFieldFocused: Bool
 
     private var searchRowsModeBinding: Binding<SearchRowsMode> {
         Binding(
@@ -375,7 +379,7 @@ struct SourcesSettingsPane: View {
             descriptionID: .sourcesPluginsEnabled
         )
 
-        PluginRepoEntryRow(isInstalling: plugins.isInstalling) { plugins.addRepository($0) }
+        PluginRepoEntryRow(isInstalling: plugins.isInstalling, fieldFocused: $manifestFieldFocused) { plugins.addRepository($0) }
 
         if let status = plugins.statusMessage {
             Text(status)
@@ -461,6 +465,7 @@ struct SourcesSettingsPane: View {
                             // Review r2 (P3-3): cleared here too, so a row that leaves while the
                             // alert is up (a sync removal) cannot leave the request pending.
                             pendingPluginRepoRemoval = nil
+                            pendingFocusAfterRemoval = repo.manifestUrl
                             plugins.removeRepository(repo)
                         }
                         Button(String(localized: "Cancel"), role: .cancel) {}
@@ -475,6 +480,10 @@ struct SourcesSettingsPane: View {
                 .onChange(of: plugins.repositories.map(\.manifestUrl)) { _, urls in
                     if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
                         pendingPluginRepoRemoval = nil
+                    }
+                    if let removed = pendingFocusAfterRemoval, !urls.contains(removed) {
+                        pendingFocusAfterRemoval = nil
+                        manifestFieldFocused = true
                     }
                 }
             SettingsActionRow(
@@ -529,9 +538,9 @@ private enum SourceSettingOptions {
 /// through its own `@FocusState`; the Install label carries the modifier for the button.
 private struct PluginRepoEntryRow: View {
     let isInstalling: Bool
+    var fieldFocused: FocusState<Bool>.Binding
     let onInstall: (String) -> Void
     @State private var url = ""
-    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -542,11 +551,11 @@ private struct PluginRepoEntryRow: View {
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
-                    .focused($fieldFocused)
+                    .focused(fieldFocused)
             }
             .padding(Theme.Spacing.lg)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-            .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Repository manifest URL"), systemImage: "puzzlepiece.extension", focused: fieldFocused)
+            .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Repository manifest URL"), systemImage: "puzzlepiece.extension", focused: fieldFocused.wrappedValue)
 
             Button {
                 if !url.isEmpty, !isInstalling {

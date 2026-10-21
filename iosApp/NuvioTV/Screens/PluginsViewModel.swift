@@ -71,6 +71,7 @@ final class PluginsViewModel: ObservableObject {
 
     func removeRepository(_ repo: PluginRepositoryItem) {
         PluginRepository.shared.removeRepository(manifestUrl: repo.manifestUrl)
+        statusMessage = nil
     }
 
     /// Scrapers grouped under their repository, preserving repo order.
