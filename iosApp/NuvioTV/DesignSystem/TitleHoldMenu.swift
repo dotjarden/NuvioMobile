@@ -13,7 +13,11 @@ import SharedCore
 ///   followed by the grid's own list-aware remove. The library toggle is left out there: on a
 ///   Trakt / Simkl / MDBList list `toggleSaved` flips the provider's watchlist, not that list.
 ///
-/// Deliberately NOT attached to Detail rails, Person rails, the Upcoming row, or episode cards.
+/// - Detail episode cards, season posters and season chips (FEAT-83, GitHub #9 item 3): the
+///   watched actions in `TitleHoldMenuPolicy.episodeActions` / `seasonActions`, rendered by
+///   `EpisodesSection` (mobile's episode and season action sheets).
+///
+/// Deliberately NOT attached to Detail rails, Person rails, or the Upcoming row.
 ///
 /// Every wording / ordering / state decision lives in `TitleHoldMenuPolicy` as pure functions so
 /// `TitleHoldMenuPolicyTests` can pin them; the views below only render what the policy says.
@@ -152,6 +156,101 @@ enum TitleHoldMenuPolicy {
     /// test the card's `S02E05` badge uses.
     static func isEpisode(season: Int?, episode: Int?) -> Bool {
         season != nil && episode != nil
+    }
+
+    // MARK: - Detail episode and season menus (FEAT-83)
+
+    /// One entry of a Detail episode card's or season cover's hold menu (FEAT-83, GitHub #9 item
+    /// 3). Each case carries the watched state its LABEL was built from, and that state is exactly
+    /// the `isCurrentlyWatched` / `areCurrentlyWatched` flag the shared `WatchingActions` toggle is
+    /// called with: a button that reads "… Unwatched" unmarks, whatever the live state is by the
+    /// time it is pressed (the `watchedAction(isWatched:)` rule).
+    ///
+    /// The episode lists behind `previousEpisodes` and `season` are the shared RELEASED lists
+    /// (`previousReleasedEpisodesBefore`, `releasedEpisodesForSeason`), as mobile uses: an unaired
+    /// episode is never marked watched (nor synced to Trakt / Simkl as watched).
+    enum DetailTileAction: Hashable {
+        /// The held episode itself.
+        case episode(isWatched: Bool)
+        /// Every released episode before the held one, earlier seasons included.
+        case previousEpisodes(areWatched: Bool)
+        /// Every released episode of one season; `seasonLabel` is `EpisodesSection.seasonLabel`
+        /// ("Season 2", "Specials").
+        case season(seasonLabel: String, isWatched: Bool)
+
+        /// The watched state the label was built from, and the flag the shared toggle receives.
+        var labelState: Bool {
+            switch self {
+            case .episode(let isWatched): return isWatched
+            case .previousEpisodes(let areWatched): return areWatched
+            case .season(_, let isWatched): return isWatched
+            }
+        }
+
+        /// What the button does: `watchedAction(isWatched:)` of its own label state.
+        var watchedAction: WatchedAction {
+            TitleHoldMenuPolicy.watchedAction(isWatched: labelState)
+        }
+
+        var title: String {
+            switch self {
+            case .episode(let isWatched):
+                // "Mark Episode Watched" is the Continue Watching key, so its translations carry over.
+                return isWatched ? String(localized: "Mark Episode Unwatched") : String(localized: "Mark Episode Watched")
+            case .previousEpisodes(let areWatched):
+                return areWatched ? String(localized: "Mark Previous Episodes Unwatched")
+                    : String(localized: "Mark Previous Episodes Watched")
+            case .season(let seasonLabel, let isWatched):
+                return isWatched ? String(localized: "Mark \(seasonLabel) Unwatched")
+                    : String(localized: "Mark \(seasonLabel) Watched")
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .episode(let isWatched), .season(_, let isWatched):
+                return TitleHoldMenuPolicy.watchedIcon(isWatched: isWatched)
+            case .previousEpisodes:
+                return "checklist"
+            }
+        }
+    }
+
+    /// An episode card's menu, in display order: the episode itself, then the previous episodes.
+    /// Mobile's rule for the second item: it is left out when nothing released comes before this
+    /// episode (the first episode), and it offers "Unwatched" once every previous one is watched.
+    static func episodeActions(isEpisodeWatched: Bool, previousCount: Int,
+                               arePreviousWatched: Bool) -> [DetailTileAction] {
+        var actions: [DetailTileAction] = [.episode(isWatched: isEpisodeWatched)]
+        if previousCount > 0 { actions.append(.previousEpisodes(areWatched: arePreviousWatched)) }
+        return actions
+    }
+
+    /// A season poster's or season chip's menu. Empty for a season with no released episode yet:
+    /// the shared toggle returns early on an empty list, so the item would do nothing.
+    static func seasonActions(seasonLabel: String, releasedCount: Int,
+                              isSeasonWatched: Bool) -> [DetailTileAction] {
+        guard releasedCount > 0 else { return [] }
+        return [.season(seasonLabel: seasonLabel, isWatched: isSeasonWatched)]
+    }
+
+    /// The "season:episode" key `DetailViewModel.watchedEpisodeKeys` uses; nil for an entry
+    /// without both numbers, which can never read as watched (`EpisodesSection.isWatched`'s rule).
+    nonisolated static func episodeKey(season: Int?, episode: Int?) -> String? {
+        guard let season, let episode else { return nil }
+        return "\(season):\(episode)"
+    }
+
+    /// Mobile's `areEpisodesWatchedForActions`: a non-empty list whose every entry is watched.
+    /// `watchedKeys` already counts effectively-completed progress as watched, as mobile does.
+    nonisolated static func areAllWatched(keys: [String?], watchedKeys: Set<String>) -> Bool {
+        !keys.isEmpty && keys.allSatisfy { key in key.map(watchedKeys.contains) ?? false }
+    }
+
+    /// A season reads as watched when it has released episodes and every one of them is watched;
+    /// an unaired episode never holds the label at "Watched".
+    nonisolated static func seasonIsWatched(releasedKeys: [String?], watchedKeys: Set<String>) -> Bool {
+        areAllWatched(keys: releasedKeys, watchedKeys: watchedKeys)
     }
 }
 

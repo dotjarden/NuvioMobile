@@ -165,4 +165,105 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
         XCTAssertFalse(TitleHoldMenuPolicy.isEpisode(season: 2, episode: nil))
         XCTAssertFalse(TitleHoldMenuPolicy.isEpisode(season: nil, episode: 5))
     }
+
+    // MARK: - Detail episode and season menus (FEAT-83)
+
+    @MainActor
+    func testEpisodeMenuOrderIsTheEpisodeThenThePreviousEpisodes() {
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: false, previousCount: 3, arePreviousWatched: false),
+                       [.episode(isWatched: false), .previousEpisodes(areWatched: false)])
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: true, previousCount: 3, arePreviousWatched: true),
+                       [.episode(isWatched: true), .previousEpisodes(areWatched: true)])
+    }
+
+    @MainActor
+    func testEpisodeLabelFlipsWithTheEpisodesOwnState() {
+        // "Mark Episode Watched" is the Continue Watching key (its translations carry over).
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.episode(isWatched: false).title, "Mark Episode Watched")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.episode(isWatched: true).title, "Mark Episode Unwatched")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.episode(isWatched: false).title,
+                       TitleHoldMenuPolicy.CWAction.markEpisodeWatched.title)
+    }
+
+    @MainActor
+    func testPreviousIsLeftOutOnTheFirstEpisode() {
+        // Mobile's `canMarkPreviousEpisodes = previousEpisodes.isNotEmpty()`.
+        for watched in [false, true] {
+            XCTAssertEqual(TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: watched, previousCount: 0, arePreviousWatched: false),
+                           [.episode(isWatched: watched)])
+        }
+    }
+
+    @MainActor
+    func testPreviousLabelFlipsOnceEveryPreviousEpisodeIsWatched() {
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.previousEpisodes(areWatched: false).title, "Mark Previous Episodes Watched")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.previousEpisodes(areWatched: true).title, "Mark Previous Episodes Unwatched")
+        // The episode's own state never drives the previous item.
+        let actions = TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: false, previousCount: 2, arePreviousWatched: true)
+        XCTAssertEqual(actions.last, .previousEpisodes(areWatched: true))
+    }
+
+    @MainActor
+    func testSeasonItemIsLeftOutWithNoReleasedEpisode() {
+        XCTAssertEqual(TitleHoldMenuPolicy.seasonActions(seasonLabel: "Season 3", releasedCount: 0, isSeasonWatched: false), [])
+        XCTAssertEqual(TitleHoldMenuPolicy.seasonActions(seasonLabel: "Season 3", releasedCount: 4, isSeasonWatched: false),
+                       [.season(seasonLabel: "Season 3", isWatched: false)])
+    }
+
+    @MainActor
+    func testSeasonLabelNamesTheSeasonAndFlipsWithItsState() {
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.season(seasonLabel: "Season 2", isWatched: false).title, "Mark Season 2 Watched")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.season(seasonLabel: "Season 2", isWatched: true).title, "Mark Season 2 Unwatched")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.season(seasonLabel: "Specials", isWatched: false).title, "Mark Specials Watched")
+    }
+
+    func testSeasonIsWatchedOnlyWhenEveryReleasedEpisodeIs() {
+        let watched: Set<String> = ["1:1", "1:2", "1:3"]
+        XCTAssertTrue(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", "1:2", "1:3"], watchedKeys: watched))
+        XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", "1:2", "1:4"], watchedKeys: watched))
+        // No released episode: never "watched" (mobile's `episodes.isNotEmpty() && …`).
+        XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: [], watchedKeys: watched))
+        // An entry without both numbers can never read as watched.
+        XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", nil], watchedKeys: watched))
+        // Unaired episodes are not in the released list, so they never hold the label at "Watched".
+        XCTAssertTrue(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", "1:2"], watchedKeys: watched))
+    }
+
+    func testAreAllWatchedFollowsTheSameRuleForThePreviousEpisodes() {
+        let watched: Set<String> = ["1:1", "1:2", "2:1"]
+        XCTAssertTrue(TitleHoldMenuPolicy.areAllWatched(keys: ["1:1", "1:2", "2:1"], watchedKeys: watched))
+        XCTAssertFalse(TitleHoldMenuPolicy.areAllWatched(keys: ["1:1", "1:2", "2:1", "2:2"], watchedKeys: watched))
+        XCTAssertFalse(TitleHoldMenuPolicy.areAllWatched(keys: [], watchedKeys: watched))
+    }
+
+    func testEpisodeKeyMatchesTheWatchedEpisodeKeysFormat() {
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: 2, episode: 5), "2:5")
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: 0, episode: 1), "0:1")
+        XCTAssertNil(TitleHoldMenuPolicy.episodeKey(season: nil, episode: 5))
+        XCTAssertNil(TitleHoldMenuPolicy.episodeKey(season: 2, episode: nil))
+    }
+
+    @MainActor
+    func testEveryDetailActionDoesWhatItsLabelSays() {
+        let all: [TitleHoldMenuPolicy.DetailTileAction] = [
+            .episode(isWatched: false), .episode(isWatched: true),
+            .previousEpisodes(areWatched: false), .previousEpisodes(areWatched: true),
+            .season(seasonLabel: "Season 1", isWatched: false), .season(seasonLabel: "Season 1", isWatched: true),
+        ]
+        for action in all {
+            XCTAssertFalse(action.title.isEmpty, "\(action)")
+            XCTAssertFalse(action.systemImage.isEmpty, "\(action)")
+            // A "… Unwatched" label unmarks and passes `true` (currently watched) to the shared toggle.
+            XCTAssertEqual(action.title.hasSuffix("Unwatched"), action.watchedAction == .unmark, "\(action)")
+            XCTAssertEqual(action.watchedAction == .unmark, action.labelState, "\(action)")
+        }
+    }
+
+    @MainActor
+    func testDetailActionGlyphs() {
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.episode(isWatched: false).systemImage, "checkmark.circle")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.episode(isWatched: true).systemImage, "checkmark.circle.fill")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.season(seasonLabel: "Season 1", isWatched: true).systemImage, "checkmark.circle.fill")
+        XCTAssertEqual(TitleHoldMenuPolicy.DetailTileAction.previousEpisodes(areWatched: false).systemImage, "checklist")
+    }
 }
