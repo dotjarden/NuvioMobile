@@ -6841,17 +6841,21 @@ struct HomeHeroForeground: View {
     /// reflow; only what is drawn inside the box differs.
     private var nuvioLayout: some View {
         Group {
-            if isCollectionHero(item) && showsCTA {
+            if isCollectionHero(item) {
+                // W3-14 / BUG-211 (Steven, rc11 verdict 2026-10-21): the PANEL form draws a focused
+                // collection folder through the same merged box as the carousel. rc14 (BUG-119, his
+                // rc13 ask) had given the panel the three-slot column — wordmark, the collection
+                // name as the meta line, a one-line description — but the collection name is also
+                // the row heading right under the hero, so Classic showed it twice ("remove it and
+                // replace it with the larger icon"). The box keeps the wordmark up to
+                // `heroFolderLogoSlotHeight` (about 45 % taller than the column's logo slot) and
+                // the description line only with Show Catalog Details on (B1). The box height is
+                // still the three slots' exact sum, so the hero frame and the rows' plan are
+                // unchanged. A folder with no logo bitmap still shows its name through
+                // `HeroLogo`'s text fallback.
                 folderBox(height: logoSlotHeight + slotGap + Theme.Size.heroMetaSlotHeight
                                   + slotGap + synopsisSlotHeight)
             } else {
-                // rc14 (BUG-119, Steven 2026-09-13 + rc13 verdict): in the CTA-less PANEL form a
-                // focused collection folder keeps the three-slot column — wordmark, then the
-                // folder's collection name as the meta line and a one-line description in the
-                // synopsis slot — instead of the carousel's merged logo-only box. "I can still see
-                // the top row, and there's no title or description in this mode": the panel's job
-                // is to describe the focused tile, and a folder has a name even when it has no
-                // synopsis. The merged box stays for the carousel (FEAT-29's reference footage).
                 VStack(alignment: .leading, spacing: slotGap) {
                     HeroLogo(item: item, image: textPresentation.logo, ink: textPresentation.logoInk)
                         .frame(height: logoSlotHeight, alignment: .bottomLeading)

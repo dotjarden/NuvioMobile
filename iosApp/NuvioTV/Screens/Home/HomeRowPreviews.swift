@@ -13,9 +13,10 @@ enum HomeRowPreviews {
     /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), and `poster`
     /// the cover (the backdrop chain's last fallback). `type` is the `collectionHeroType`
     /// sentinel the trailer, enrichment and CTA gates key on. `releaseInfo` carries the parent
-    /// collection's title and `description` the folder's line for the PANEL form (rc14, BUG-119,
-    /// see the note at the fields); the carousel's logo-only box ignores both, so H-2's "no
-    /// caption under the wordmark" (2026-08-22) still holds there. `genres` is empty for a folder
+    /// collection's title (read by `HeroLogo`'s text fallback and kept for rc14's BUG-119 history;
+    /// since W3-14 / BUG-211 both hero forms draw the merged logo box, which ignores it) and
+    /// `description` the folder's line for that box; H-2's "no caption under the wordmark"
+    /// (2026-08-22) holds unless Show Catalog Details is on. `genres` is empty for a folder
     /// preview. Nil when the folder carries neither a backdrop nor a logo — such a folder has
     /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
     /// poster-shaped cover across the backdrop.
@@ -44,13 +45,11 @@ enum HomeRowPreviews {
             banner: (backdrop?.isEmpty ?? true) ? nil : backdrop,
             logo: (logo?.isEmpty ?? true) ? nil : logo,
             posterShape: .poster,
-            // rc14 (BUG-119): the PANEL form (Show Hero off) renders a folder hero through the
-            // three-slot column again — see `HomeHeroForeground.nuvioLayout` — so the folder
-            // needs text for its meta line and synopsis slot or the panel reads as "no title or
-            // description" (Steven, 2026-09-13). The carousel's merged logo-only box ignores
-            // both fields, so H-2's "no caption under the wordmark" stands there. B1 (rc4
-            // verdict, 2026-10-16): he now wants the source-count line gone, so it is behind
-            // `showsDetails`; the collection title still fills the meta line.
+            // rc14 (BUG-119): the PANEL form once drew a folder hero through the three-slot
+            // column (`HomeHeroForeground.nuvioLayout`), which needed this text. W3-14 / BUG-211
+            // (rc11 verdict, 2026-10-21): the panel draws the merged logo box again, so the
+            // collection title is only `HeroLogo`'s text fallback now. B1 (rc4 verdict,
+            // 2026-10-16): the source-count line is behind `showsDetails`.
             description: showsDetails ? HomeView.folderHeroDescription(collection: collection, folder: folder) : nil,
             releaseInfo: collection.title.trimmingCharacters(in: .whitespacesAndNewlines),
             rawReleaseDate: nil,
