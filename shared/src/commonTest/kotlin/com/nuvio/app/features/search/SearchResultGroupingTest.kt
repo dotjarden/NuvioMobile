@@ -206,10 +206,15 @@ class SearchResultGroupingTest {
 
         assertEquals(SearchEmptyStateReason.NoResults, resolveEmptyState(emptyList(), pending = false, hasPeople = false))
         assertEquals(SearchEmptyStateReason.NoResults, resolveEmptyState(listOf(emptyOutcome), pending = false, hasPeople = false))
-        assertEquals(SearchEmptyStateReason.NoResults, resolveEmptyState(listOf(emptyOutcome, failedOutcome), pending = false, hasPeople = false))
+        // BUG-208: nothing succeeded and one failed → RequestFailed, even beside an Empty answer.
+        assertEquals(SearchEmptyStateReason.RequestFailed, resolveEmptyState(listOf(emptyOutcome, failedOutcome), pending = false, hasPeople = false))
         assertEquals(SearchEmptyStateReason.RequestFailed, resolveEmptyState(listOf(failedOutcome), pending = false, hasPeople = false))
         assertNull(resolveEmptyState(listOf(failedOutcome), pending = true, hasPeople = false))
-        assertNull(resolveEmptyState(listOf(failedOutcome), pending = false, hasPeople = true))
+        // BUG-208: people no longer hide a failure (the Retry lives on RequestFailed)…
+        assertEquals(SearchEmptyStateReason.RequestFailed, resolveEmptyState(listOf(failedOutcome), pending = false, hasPeople = true))
+        assertEquals(SearchEmptyStateReason.RequestFailed, resolveEmptyState(listOf(emptyOutcome, failedOutcome), pending = false, hasPeople = true))
+        // …but still replace a plain no-results page.
+        assertNull(resolveEmptyState(listOf(emptyOutcome), pending = false, hasPeople = true))
         assertNull(resolveEmptyState(listOf(failedOutcome, successOutcome), pending = false, hasPeople = false))
     }
 

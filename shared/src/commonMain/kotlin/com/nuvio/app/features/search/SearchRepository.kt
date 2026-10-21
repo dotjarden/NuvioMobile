@@ -39,6 +39,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
+import kotlin.time.TimeSource
+import com.nuvio.app.features.catalog.CatalogInflightStats
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -187,7 +190,12 @@ object SearchRepository {
                         it.copy(
                             people = found,
                             peopleLoading = false,
-                            emptyStateReason = if (found.isNotEmpty()) null else it.emptyStateReason,
+                            // BUG-208: people never hide a RequestFailed (it carries the Retry).
+                            emptyStateReason = if (found.isNotEmpty() && it.emptyStateReason != SearchEmptyStateReason.RequestFailed) {
+                                null
+                            } else {
+                                it.emptyStateReason
+                            },
                         )
                     }
                 }
@@ -199,14 +207,8 @@ object SearchRepository {
                     // failures become Failed.
                     // B18 (BUG-155 (b)): one slow add-on no longer holds the search open for the
                     // transport's 60 s timeout; past SEARCH_CATALOG_TIMEOUT_MS it is a failed source.
-                    val outcome = runCatching {
-                        withTimeoutOrNull(SEARCH_CATALOG_TIMEOUT_MS) { request.fetchOutcome(forceRefresh = forceRefresh) }
-                            ?: SearchCatalogOutcome.Failed(request = request, error = SearchCatalogTimeoutException(request.catalogId))
-                    }
-                        .getOrElse { error ->
-                            if (error is CancellationException) throw error
-                            SearchCatalogOutcome.Failed(request = request, error = error)
-                        }
+                    // BUG-208: a thrown failure (Cinemeta's 504 on an uncached query) gets one retry.
+                    val outcome = request.fetchOutcomeWithRetry(forceRefresh = forceRefresh)
                     resultChannel.trySend(IndexedSearchOutcome(index = index, outcome = outcome))
                 }
             }
@@ -245,7 +247,10 @@ object SearchRepository {
             val firstFailure = outcomes.firstNotNullOfOrNull { outcome ->
                 (outcome as? SearchCatalogOutcome.Failed)?.error?.message
             }
-            val allFailed = outcomes.isNotEmpty() && outcomes.all { it is SearchCatalogOutcome.Failed }
+            // BUG-208: surface the failure whenever nothing succeeded, even if another add-on
+            // answered Empty or TMDB people arrived; RequestFailed is what carries the Retry.
+            val failedWithoutSuccess = outcomes.none { it is SearchCatalogOutcome.Success } &&
+                outcomes.any { it is SearchCatalogOutcome.Failed }
 
             publish(myId) {
                 // C3: copy, not a fresh state, so people that already landed survive.
@@ -259,7 +264,7 @@ object SearchRepository {
                         pending = hasPendingAddonManifests,
                         hasPeople = it.people.isNotEmpty(),
                     ),
-                    errorMessage = if (allFailed) firstFailure else null,
+                    errorMessage = if (failedWithoutSuccess) firstFailure else null,
                     lastFanOut = fanOutLine,
                     query = normalizedQuery,
                     groups = snapshot.groups,
@@ -805,6 +810,55 @@ object SearchRepository {
     private fun searchCatalogKey(manifestId: String, type: String, catalogId: String): String =
         "$manifestId:$type:$catalogId"
 
+    /// BUG-208: one attempt under [SEARCH_CATALOG_TIMEOUT_MS]; a thrown error becomes Failed,
+    /// cancellation propagates.
+    private suspend fun SearchCatalogRequest.attemptOutcome(forceRefresh: Boolean): SearchCatalogOutcome =
+        runCatching {
+            withTimeoutOrNull(SEARCH_CATALOG_TIMEOUT_MS) { fetchOutcome(forceRefresh = forceRefresh) }
+                ?: SearchCatalogOutcome.Failed(request = this, error = SearchCatalogTimeoutException(catalogId))
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            SearchCatalogOutcome.Failed(request = this, error = error)
+        }
+
+    /// BUG-208: Cinemeta's search origin answers an uncached query with HTTP 504 after ~6 s about
+    /// one time in four, and a second try usually lands (origin warmed). A thrown failure is
+    /// retried once after [SEARCH_CATALOG_RETRY_DELAY_MS] under its own timeout; a timeout is not
+    /// (it already spent the budget). Classified by exception type: the message is localized.
+    /// The failed shared fetch has already left the in-flight map, so the retry is a fresh GET.
+    private suspend fun SearchCatalogRequest.fetchOutcomeWithRetry(forceRefresh: Boolean): SearchCatalogOutcome {
+        val started = TimeSource.Monotonic.markNow()
+        val first = attemptOutcome(forceRefresh)
+        val firstError = (first as? SearchCatalogOutcome.Failed)?.error
+        val retryable = firstError != null && firstError !is SearchCatalogTimeoutException
+        val result = if (retryable) {
+            delay(SEARCH_CATALOG_RETRY_DELAY_MS)
+            attemptOutcome(forceRefresh)
+        } else {
+            first
+        }
+        if (CatalogInflightStats.searchCatalogProbe) {
+            val outcomeLabel = when (result) {
+                is SearchCatalogOutcome.Success -> "ok"
+                is SearchCatalogOutcome.Empty -> "empty"
+                is SearchCatalogOutcome.Failed -> "failed"
+            }
+            val retryLabel = when {
+                !retryable -> "none"
+                result is SearchCatalogOutcome.Failed -> "failed"
+                else -> "ok"
+            }
+            val errorClass = (firstError ?: (result as? SearchCatalogOutcome.Failed)?.error)
+                ?.let { it::class.simpleName } ?: "-"
+            println(
+                "[SearchPerf] catalog q=\"$query\" key=${addon.manifest?.id}:$type:$catalogId " +
+                    "outcome=$outcomeLabel ms=${started.elapsedNow().inWholeMilliseconds} " +
+                    "err=$errorClass retry=$retryLabel",
+            )
+        }
+        return result
+    }
+
     /// C2: fetch + unreleased filter + custom posters, split from [toSection]. An empty page (or
     /// one the unreleased filter empties) is [SearchCatalogOutcome.Empty], not a thrown error.
     private suspend fun SearchCatalogRequest.fetchOutcome(forceRefresh: Boolean): SearchCatalogOutcome {
@@ -1132,6 +1186,9 @@ private fun String.displayLabel(): String =
 
 /** B18 (BUG-155 (b)): a search catalog request's own time limit, well under the transport's 60 s. */
 internal const val SEARCH_CATALOG_TIMEOUT_MS: Long = 10_000
+
+/** BUG-208: pause before the single retry of a failed search catalog. */
+internal const val SEARCH_CATALOG_RETRY_DELAY_MS: Long = 250
 
 /** A search catalog that did not answer within [SEARCH_CATALOG_TIMEOUT_MS]. */
 internal class SearchCatalogTimeoutException(catalogId: String) :

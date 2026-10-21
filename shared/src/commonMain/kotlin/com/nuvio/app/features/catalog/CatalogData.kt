@@ -121,6 +121,7 @@ internal class CatalogInflightRequests<K : Any>(
 
 private val inflightRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CatalogData"))
 private val cancelAbandonedCatalogFetches = atomic(true)
+private val searchCatalogProbeEnabled = atomic(false)
 private val catalogInflightRequests = CatalogInflightRequests<CatalogFetchKey>(
     scope = inflightRequestScope,
     fetch = { key -> fetchAddonResponseText(url = key.url, forceRefresh = key.forceRefresh) },
@@ -139,6 +140,11 @@ object CatalogInflightStats {
     var cancelAbandonedFetches: Boolean
         get() = cancelAbandonedCatalogFetches.value
         set(value) { cancelAbandonedCatalogFetches.value = value }
+    /// BUG-208: the DEBUG app turns this on so every search catalog prints one
+    /// `[SearchPerf] catalog …` line to stdout (Kermit is invisible on device). Off in release.
+    var searchCatalogProbe: Boolean
+        get() = searchCatalogProbeEnabled.value
+        set(value) { searchCatalogProbeEnabled.value = value }
 }
 
 private suspend fun deduplicatedHttpGetText(

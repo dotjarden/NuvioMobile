@@ -442,6 +442,13 @@ private struct SearchContent: View {
                                                     userInfo: ["category": "sources"])
                 }
             )
+            // BUG-208: a failed request no longer hides behind TMDB people; the failure and its
+            // Retry come first, the people they found stay reachable below.
+            if case .manifestFailure = emptyState, !model.people.isEmpty {
+                SearchPeopleRow(people: model.people) {
+                    owner.wash.noteResultFocus()
+                }
+            }
         } else {
             // While a search loads over the previous query's rows (`SearchRowsHold`), the rows stay
             // and "Searching…" doesn't show.

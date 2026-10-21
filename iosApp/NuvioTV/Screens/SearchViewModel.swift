@@ -119,6 +119,10 @@ final class SearchViewModel: ObservableObject {
     var debugHoldPhase: String { rowsHold.phaseToken }
     private var lastSearchAddonSignature: String?
     private var debounce: Task<Void, Never>?
+    /// H3 (BUG-208 investigation): the trimmed query the debounce is waiting to search, nil once it
+    /// fired or the field emptied. `stop()` cancels the debounce but keeps this, so `start()` can
+    /// search a word finished less than the debounce before a tab switch.
+    private var pendingQuery: String?
     #if DEBUG
     /// BUG-155 probe: any publish closes the keystroke's body-count window (`SearchPerfProbe`).
     private var perfSink: AnyCancellable?
@@ -191,6 +195,19 @@ final class SearchViewModel: ObservableObject {
             }
 
         AddonRepository.shared.initialize()
+
+        // H3: the field's `.onChange` does not refire on return, so a debounce that `stop()`
+        // cancelled is re-armed here (same delay, so the addon watcher settles first).
+        if let resumed = Self.queryToResume(pending: pendingQuery, active: activeQuery) {
+            scheduleSearch(resumed)
+        }
+    }
+
+    /// H3: the query a returning screen still owes a search: the pending debounced one, unless it
+    /// is what the active search already covers.
+    static func queryToResume(pending: String?, active: String?) -> String? {
+        guard let pending, !pending.isEmpty, pending != active else { return nil }
+        return pending
     }
 
     func stop() {
@@ -286,13 +303,16 @@ final class SearchViewModel: ObservableObject {
     }
 
     /// B3 g: resolved only for a settled search of the ACTIVE request with nothing on screen (no
-    /// rows, no Top result, no people, the People lookup answered).
+    /// rows, no Top result, no people, the People lookup answered). BUG-208: a failed request
+    /// resolves even with people on screen; `SearchView` puts it, and its Retry, above the People
+    /// row. People still replace a plain "No results".
     private func refreshEmptyState() {
         var resolved: SearchEmptyState?
         if let state = lastSearchState, activeQuery != nil, !isStale(state),
            rowsHold.isFollowingIncoming,
            !state.isLoading, !state.peopleLoading,
-           rows.isEmpty, topResult == nil, people.isEmpty {
+           rows.isEmpty, topResult == nil,
+           people.isEmpty || state.emptyStateReason == SearchEmptyStateReason.requestfailed {
             let disabled = SearchSourceSettings.disabledKeys
             resolved = SearchEmptyState.resolve(
                 reason: state.emptyStateReason,
@@ -466,6 +486,7 @@ final class SearchViewModel: ObservableObject {
             cancelHoldTick()
             activeQuery = nil
             activeRequestId = nil
+            pendingQuery = nil
             if !displayQuery.isEmpty { displayQuery = "" }
             rows = []
             adoptExtras(from: nil)
@@ -473,9 +494,17 @@ final class SearchViewModel: ObservableObject {
             return
         }
 
+        scheduleSearch(trimmed)
+    }
+
+    /// The typing debounce: after `debounceNanoseconds`, `trimmed` becomes the active search.
+    private func scheduleSearch(_ trimmed: String) {
+        debounce?.cancel()
+        pendingQuery = trimmed
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.debounceNanoseconds)
             guard !Task.isCancelled, let self else { return }
+            self.pendingQuery = nil
             #if DEBUG
             SearchPerfProbe.fired(query: trimmed)
             #endif

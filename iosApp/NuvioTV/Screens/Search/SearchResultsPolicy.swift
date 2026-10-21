@@ -193,9 +193,9 @@ nonisolated enum SearchEmptyState: Equatable, Sendable {
     /// failure when all of them failed); only a manifest failure's message reaches the screen.
     ///
     /// Review r1 P3-1: `.requestfailed` is a failure whatever the manifest state. Kotlin emits it
-    /// only when a manifest failed with none loaded, or when EVERY catalog of the fan-out failed
-    /// (`resolveEmptyState`); an empty page is `Empty`, so a real "nothing matched" never gets
-    /// here. Reading it as "No results" hid a dropped connection behind a wrong message with no
+    /// only when a manifest failed with none loaded, or when no catalog of the fan-out succeeded
+    /// and at least one failed (`resolveEmptyState`; BUG-208, was "every catalog failed"); an
+    /// empty page is `Empty`, so a real "nothing matched" never gets here. Reading it as "No results" hid a dropped connection behind a wrong message with no
     /// Retry.
     static func resolve(
         reason: SearchEmptyStateReason?,

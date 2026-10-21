@@ -207,10 +207,12 @@ internal fun resolveEmptyState(
 ): SearchEmptyStateReason? =
     when {
         outcomes.any { outcome -> outcome is SearchCatalogOutcome.Success } -> null
-        hasPeople -> null
         pending -> null
-        outcomes.isNotEmpty() && outcomes.all { outcome -> outcome is SearchCatalogOutcome.Failed } ->
+        // BUG-208: no title source answered and at least one failed — a failure, with or without
+        // TMDB people and even when another add-on answered Empty, so the Retry stays reachable.
+        outcomes.any { outcome -> outcome is SearchCatalogOutcome.Failed } ->
             SearchEmptyStateReason.RequestFailed
+        hasPeople -> null
         else -> SearchEmptyStateReason.NoResults
     }
 

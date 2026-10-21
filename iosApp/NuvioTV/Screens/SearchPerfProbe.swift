@@ -14,6 +14,10 @@ import SharedCore
 ///     [SearchPerf] key n=<keystrokes> body=<SearchContent bodies since that keystroke> dt=<ms since it>
 ///     [SearchPerf] fire q="<query>" inflight=<shared catalog fetches running> keys=<since last fire> maxBody=<worst keystroke so far>
 ///     [SearchPerf] results q="<query>" first=<ms fire → first rows> last=<ms fire → settled> cancelledFetches=<n> legacy=<0|1>
+///     [SearchPerf] catalog q="<query>" key=<manifestId:type:catalogId> outcome=<ok|empty|failed> ms=<n> err=<class|-> retry=<ok|failed|none>
+///
+/// The `catalog` line (BUG-208) prints from Kotlin (`SearchRepository.fetchOutcomeWithRetry`), one
+/// per search catalog, once `applyLegacySwitch` turns `CatalogInflightStats.searchCatalogProbe` on.
 ///
 /// A `key` line prints only when `SearchContent` re-evaluates inside a keystroke's window (the
 /// window closes at the next keystroke, at the debounce firing, or when the view model publishes
@@ -52,6 +56,8 @@ enum SearchPerfProbe {
     /// Applies the A/B switch to the shared fetch registry. Idempotent; called from `start()`.
     static func applyLegacySwitch() {
         CatalogInflightStats.shared.cancelAbandonedFetches = !legacy
+        // BUG-208: one `[SearchPerf] catalog …` stdout line per search catalog (Kotlin side).
+        CatalogInflightStats.shared.searchCatalogProbe = true
         if legacy { print("[SearchPerf] legacy=1 (-debug.searchLegacy): live binding, no fetch cancel") }
     }
 

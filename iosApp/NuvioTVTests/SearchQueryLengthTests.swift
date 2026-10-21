@@ -20,4 +20,14 @@ final class SearchQueryLengthTests: XCTestCase {
     func testDebounceIsLongerThanBefore() {
         XCTAssertEqual(SearchViewModel.debounceNanoseconds, 450_000_000)
     }
+
+    /// H3 (BUG-208 investigation): a debounce `stop()` cancelled is re-armed on `start()` only when
+    /// it still owes a search the active one does not cover.
+    func testResumeQueryAfterTabSwitch() {
+        XCTAssertEqual(SearchViewModel.queryToResume(pending: "Avatar", active: "Avat"), "Avatar")
+        XCTAssertEqual(SearchViewModel.queryToResume(pending: "Avatar", active: nil), "Avatar")
+        XCTAssertNil(SearchViewModel.queryToResume(pending: "Avatar", active: "Avatar"))
+        XCTAssertNil(SearchViewModel.queryToResume(pending: nil, active: "Avat"))
+        XCTAssertNil(SearchViewModel.queryToResume(pending: "", active: "Avat"))
+    }
 }
