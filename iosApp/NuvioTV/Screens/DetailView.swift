@@ -2629,6 +2629,13 @@ struct DetailView: View {
                                 // border shape that only a system button style consumes, and the
                                 // avatar is a circle.
                                 .cardFocusButtonStyle()
+                                // BUG-200: in the default cell (bare `.borderless`, a system
+                                // style) the avatar wears the system highlight, whose platter
+                                // takes the BUTTON's border shape, not the avatar's content shape:
+                                // without this it stood as a rounded square around every avatar
+                                // and the lifted photo lost its circle (sim, 2026-10-21). The ring
+                                // and still styles are custom and ignore it.
+                                .buttonBorderShape(.circle)
                                 .focused($focusedCastIndex, equals: index)
                                 .zIndex(liftedCastZIndex(index))
                             } else {
@@ -3206,6 +3213,38 @@ private struct DetailTrailersRow: View {
     }
 }
 
+/// BUG-200 (GitHub #9 item 1, erdist: on the Detail page the Cast and Production rows "lift only
+/// the picture"): the lift `CastCard` draws on its own avatar.
+///
+/// `CastCard` used to resolve through `PlainLabelRing.lift`, which maps the DEFAULT cell (Accent
+/// Focus Ring off, zoom on) to `.still` — a no-op — on the assumption that the `.borderless`
+/// button around it lifts the whole label. It does not: on tvOS `.borderless` lifts only the
+/// `Image` inside a label (device finding 2026-10-17, `SwatchFocusLift` in
+/// `ProfileSelectionView.swift`), so the photo grew inside its static circle clip and the name
+/// stayed behind.
+///
+/// This is `CardFocusMode.resolve` — the rule every poster card already uses — and it differs
+/// from `PlainLabelRing.lift` in that one cell only: default → `.systemLift`, which
+/// `CardArtworkFocusLift` renders as the system highlight on the avatar circle (`PosterCard`'s
+/// own default treatment under the same `.borderless` button), and which `CardCaptionFocusDrop`
+/// answers by dropping the name and role 20 pt with it. Ring mode stays `.manualScale` and both
+/// No Zoom cells stay `.still(ringed:)`, byte-identical to before. `PlainLabelRing.lift` itself
+/// is untouched: `FolderTile` and `CompanyChip` still resolve through it.
+///
+/// Measured on the tvOS 27 simulator (`DetailLabelLiftMeasureUITests`, 2026-10-21): the system
+/// lift scales the 140 pt avatar ×1.32 (22.6 pt per side, symmetric), inside the cast row's 34 pt
+/// gap; its platter is a circle only because `castRow` sets `.buttonBorderShape(.circle)` on the
+/// link (the system takes the button's border shape, not the avatar's content shape). The same lift on the 52 × 212 pt studio capsule measured ×1.19 (20 pt per side against a
+/// 16 pt row gap), over the ×1.15 ceiling, so the chip's half of BUG-200 is NOT taken here: it
+/// needs its own manual lift in the default cell (`.manualScale` with `smallLabelRise`, ×1.12),
+/// which takes a new `CardButtonLift` case in `PosterCard.swift` so `cardFocusButtonStyle` drops
+/// `.borderless` for it.
+enum DetailLabelLift {
+    static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+}
+
 /// Circular cast avatar + name/role. Platter-free: used inside a `.poster`-styled NavigationLink
 /// when tappable, so it supplies its own focus visuals (ring + scale + shadow); rendered bare for
 /// non-tappable cast, where `isFocused` simply never fires.
@@ -3230,8 +3269,10 @@ struct CastCard: View {
 
     /// BUG-108: same architecture as `FolderTile` — ring mode takes the native `.borderless` lift
     /// away from this label, so the avatar lifts itself and carries its ring up with it.
+    /// BUG-200: and in the default cell the avatar wears the system lift itself (`.systemLift`),
+    /// because `.borderless` only lifts the photo inside the circle; see `DetailLabelLift`.
     private var artworkLift: CardFocusMode {
-        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+        DetailLabelLift.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
 
     var body: some View {
@@ -3266,6 +3307,9 @@ struct CastCard: View {
                     Circle().strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
+            // BUG-200: the avatar's layout box for `DetailLabelLiftMeasureUITests` (DEBUG +
+            // `-debug.cardGeometryProbe YES` only), as `company_artwork` is for the studio chip.
+            .modifier(DebugAXIdentifier("cast_artwork"))
             .modifier(CardArtworkFocusLift(
                 mode: artworkLift,
                 isFocused: stillFocused,
@@ -3366,6 +3410,9 @@ private struct CompanyChip: View {
     /// BUG-111: same architecture as `FolderTile`/`CastCard` — ring mode takes the native
     /// `.borderless` lift away from this label (`cardFocusButtonStyle`'s default `lift: .card`),
     /// so the chip must draw its own in that mode and stay a no-op in the other two.
+    /// BUG-200: still a no-op in the default cell, where `.borderless` lifts only the logo inside
+    /// the white capsule. The system lift measured ×1.19 on this capsule (see `DetailLabelLift`),
+    /// too large for the 16 pt row gap, so the chip waits for its own manual default-cell lift.
     private var artworkLift: CardFocusMode {
         PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
