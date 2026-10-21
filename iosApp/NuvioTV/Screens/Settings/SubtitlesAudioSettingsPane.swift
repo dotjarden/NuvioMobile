@@ -160,8 +160,13 @@ private struct SubtitleAppearanceControls: View {
 }
 
 /// A subtitle text-color swatch: selection wears a ring that contrasts with the swatch's own
-/// fill; focus scales + shadows the circle (platter-free, same focus language as the theme
-/// swatches). Reports "Text Color" to the Settings explainer while focused.
+/// fill; focus wears a slightly lighter ring in the same contrast colour (the Appearance theme
+/// swatch's rule, `AppearanceSettingsPane.SwatchLabel`) AND lifts the circle (`SubtitleSwatchFocusLift`).
+/// BUG-201 (GitHub #9): this swatch read `\.isFocused` and never used it, so focus was invisible.
+/// The ring alone is not enough: `SwatchLabel` checks selection first, so a swatch that is focused
+/// AND selected looked the same as one that is only selected, and focus usually lands on the
+/// selected swatch. The lift is the cue that holds in every state. Reports "Text Color" to the
+/// Settings explainer while focused.
 private struct SubtitleColorSwatch: View {
     let fill: Color
     /// Raw RGB backing `fill`, so the selection ring can pick a shade that stays visible against it.
@@ -169,18 +174,47 @@ private struct SubtitleColorSwatch: View {
     let isSelected: Bool
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// `strokeBorder` (inside the circle), as the Appearance swatch draws it, so the ring never
+    /// grows past the 46 pt frame and the lift's scale is the only thing that changes the footprint.
+    private var ringColor: Color {
+        let contrast = Theme.Palette.onColor(forFillHex: colorHex)
+        if isSelected { return contrast }
+        return isFocused ? contrast.opacity(0.8) : Theme.Palette.textSecondary.opacity(0.4)
+    }
+
+    private var ringWidth: CGFloat {
+        if isSelected { return 4 }
+        return isFocused ? 3 : 1
+    }
 
     var body: some View {
         Circle()
             .fill(fill)
             .frame(width: 46, height: 46)
-            .overlay(
-                Circle().stroke(
-                    isSelected ? Theme.Palette.onColor(forFillHex: colorHex) : Theme.Palette.textSecondary.opacity(0.4),
-                    lineWidth: isSelected ? 4 : 1
-                )
-            )
+            .overlay(Circle().strokeBorder(ringColor, lineWidth: ringWidth))
+            .modifier(SubtitleSwatchFocusLift())
             .padding(Theme.Spacing.xs)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
             .settingsDescription(.subtitlesTextColor, title: String(localized: "Text Color"), systemImage: "textformat")
+    }
+}
+
+/// Focus lift for the subtitle colour swatches: a private copy of `ProfileSelectionView`'s
+/// `SwatchFocusLift` (x1.2 and a shadow). `.borderless` lifts only the IMAGES in a label, so a
+/// plain coloured circle gets no system focus indication on the Apple TV (device pass 2026-10-17).
+/// At 46 pt the x1.2 scale grows each side by 4.6 pt, inside the swatch's 8 pt padding, so it
+/// never reaches the neighbouring swatch (16 pt gap plus its own padding). The animation is
+/// dropped under Reduce Motion; the scale and shadow still apply, instantly.
+private struct SubtitleSwatchFocusLift: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isFocused ? 1.2 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.55 : 0), radius: isFocused ? 14 : 0, y: isFocused ? 8 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 }
