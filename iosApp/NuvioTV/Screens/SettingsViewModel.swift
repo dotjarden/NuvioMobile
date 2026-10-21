@@ -51,6 +51,11 @@ final class SettingsViewModel: ObservableObject {
     /// Preferred track languages (player auto-selects a matching track on load).
     @Published private(set) var preferredAudioLanguage = "device"
     @Published private(set) var preferredSubtitleLanguage = "none"
+    /// FEAT-84: the fallback track languages (shared `secondaryPreferred*Language`, synced per
+    /// profile, the values mobile's dialogs set). "" is None: the shared state carries nil, and the
+    /// pane's `SettingsPickerRow` needs a non-optional value.
+    @Published private(set) var secondaryPreferredAudioLanguage = ""
+    @Published private(set) var secondaryPreferredSubtitleLanguage = ""
     /// Poster card style (size in dp, corner radius in dp, hide titles, landscape catalog rows).
     @Published private(set) var posterWidthDp: Int32 = 126
     @Published private(set) var posterCornerRadiusDp: Int32 = 12
@@ -188,6 +193,8 @@ final class SettingsViewModel: ObservableObject {
             self.assign(\.subtitleStyle, state.subtitleStyle)
             self.assign(\.preferredAudioLanguage, state.preferredAudioLanguage)
             self.assign(\.preferredSubtitleLanguage, state.preferredSubtitleLanguage)
+            self.assign(\.secondaryPreferredAudioLanguage, state.secondaryPreferredAudioLanguage ?? "")
+            self.assign(\.secondaryPreferredSubtitleLanguage, state.secondaryPreferredSubtitleLanguage ?? "")
             self.assign(\.pauseOverlayEnabled, state.pauseOverlayEnabled)
             self.assign(\.showLoadingOverlay, state.showLoadingOverlay)
             self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
@@ -678,6 +685,16 @@ final class SettingsViewModel: ObservableObject {
 
     func setPreferredSubtitleLanguage(_ code: String) {
         PlayerSettingsRepository.shared.setPreferredSubtitleLanguage(language: code)
+    }
+
+    /// FEAT-84 Fallback Audio Language. "" (None) clears it: the shared setter takes nil.
+    func setSecondaryPreferredAudioLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setSecondaryPreferredAudioLanguage(language: code.isEmpty ? nil : code)
+    }
+
+    /// FEAT-84 Fallback Subtitle Language. "" (None) clears it: the shared setter takes nil.
+    func setSecondaryPreferredSubtitleLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setSecondaryPreferredSubtitleLanguage(language: code.isEmpty ? nil : code)
     }
 
     // MARK: - Poster style

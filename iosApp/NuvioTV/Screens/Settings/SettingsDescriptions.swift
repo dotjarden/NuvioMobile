@@ -184,6 +184,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case subtitlesStripSdh = "subtitles.stripSdh"
     case subtitlesAudioLanguage = "subtitles.audioLanguage"
     case subtitlesSubtitleLanguage = "subtitles.subtitleLanguage"
+    case subtitlesFallbackAudioLanguage = "subtitles.fallbackAudioLanguage"
+    case subtitlesFallbackSubtitleLanguage = "subtitles.fallbackSubtitleLanguage"
 
     // MARK: About
     case aboutVersion = "about.version"
@@ -388,6 +390,8 @@ enum SettingsDescriptions {
         case .subtitlesStripSdh: return LocalizedStringResource("Removes sound descriptions and speaker labels, such as [door slams], from text subtitles. Off by default.")
         case .subtitlesAudioLanguage: return LocalizedStringResource("When playback starts, picks the audio track in this language if the video has one.")
         case .subtitlesSubtitleLanguage: return LocalizedStringResource("When playback starts, picks the subtitle track in this language if one is available.")
+        case .subtitlesFallbackAudioLanguage: return LocalizedStringResource("If the video has no audio track in your Audio language, picks one in this language instead. None by default.")
+        case .subtitlesFallbackSubtitleLanguage: return LocalizedStringResource("If no subtitle track is in your Subtitles language, picks one in this language instead. None by default. Hidden while Subtitles is Off, which always stays off.")
 
         // About
         case .aboutVersion: return LocalizedStringResource("The app version and build number running on this Apple TV. Include it when you report a bug.")
