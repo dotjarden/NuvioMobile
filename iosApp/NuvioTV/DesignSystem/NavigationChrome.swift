@@ -52,10 +52,11 @@ nonisolated enum NavigationChrome {
     }
 
     /// FEAT-80: Centre (the default, the pill vertically centred on the left edge) or Corner
-    /// (Batch N; redesigned in Batch O, Christian's 2026-10-20 mock): a bare Home icon at the
-    /// top-left that unrolls into the Centre pill, anchored at the top, when the rail opens.
-    /// Corner replaced rc8's Top, which still reads as Corner (`railPosition(raw:)`), so no stored
-    /// value needs a write.
+    /// (Batch N; redesigned in Batch O, Christian's 2026-10-20 mock; W3-11, D1): a bare Home icon
+    /// at the top-left that, when the rail opens, becomes Centre's column under a glass flush with
+    /// the top and the left screen edges, unrolling downward only (`cornerGlassFrame`). Corner
+    /// ignores the Rail Style. Corner replaced rc8's Top, which still reads as Corner
+    /// (`railPosition(raw:)`), so no stored value needs a write.
     enum RailPosition: String, Equatable, Sendable, CaseIterable {
         case centre
         case corner
@@ -84,6 +85,7 @@ nonisolated enum NavigationChrome {
 
     /// The pill's leading edge from the screen edge: `bezelInset` Floating, 0 Edge. `reservedEdge`
     /// and `pillTrailingEdge` deliberately do NOT derive from it (Edge must not move content).
+    /// Centre only: Corner's column always sits at `bezelInset` (W3-11), its glass flush anyway.
     static func pillLeading(_ style: RailStyle) -> CGFloat {
         style == .edge ? 0 : bezelInset
     }
@@ -107,13 +109,37 @@ nonisolated enum NavigationChrome {
     }
 
     /// FEAT-80 Corner (Batch O): the tvOS top safe-area line on a 1920 × 1080 canvas. The Home
-    /// cell lands on it, at rest (the bare glyph) and open (the pill's first row).
+    /// cell lands on it, at rest (the bare glyph) and open (the column's first row).
     static let cornerSafeTop: CGFloat = 60
-    /// The open pill's top edge (38): `cornerSafeTop` less the pill's `verticalPadding`, so the
-    /// Home cell sits on the safe-area line. The glass's top edge sits above the vertical safe
-    /// area, as Centre's pill already sits outside the horizontal one. Leading, the pill keeps
-    /// Centre's `bezelInset`.
+    /// The Corner column's top edge (38): `cornerSafeTop` less the column's `verticalPadding`, so
+    /// the Home cell sits on the safe-area line. Leading, the column sits at `bezelInset` whatever
+    /// the Rail Style (W3-11, D1: Corner ignores Edge), so the Home cell is at (28, 60). This
+    /// places the ITEMS only. The glass is no longer a pill around them: it is flush with the top
+    /// AND the left screen edges, drawn from the screen corner past both (`cornerGlassFrame`), and
+    /// only its height grows.
     static let cornerPillTop: CGFloat = cornerSafeTop - verticalPadding
+    /// W3-11 (D1, Steven's 2026-10-19 mock): how far Corner's glass and its mask reach past the top
+    /// and the left screen edges, so the Liquid Glass rim on those two sides lands off-canvas.
+    static let cornerBleed: CGFloat = 8
+    /// The Corner glass's one rounded corner, the bottom trailing one (Centre's pill radius).
+    static let cornerRadius: CGFloat = 42
+    /// The Corner column's height around the Home cell alone: `itemPlatter` + 2 × `verticalPadding`
+    /// = 104. The glass's height at rest and in phase 1 (the arm), before the grow.
+    static let cornerRestHeight: CGFloat = itemPlatter + 2 * verticalPadding
+
+    /// W3-11 (D1): the Corner glass's frame in SCREEN coordinates, bleed included, which the glass
+    /// and its mask both draw at. Origin (−bleed, −bleed); width `bezelInset` + the column's width
+    /// (300 with labels, 84 Icons Only) + the bleed, the same whether open or not, so the glass only
+    /// ever grows DOWNWARD; height `cornerPillTop` + the column's height (`cornerRestHeight` until
+    /// open, then `columnHeight`, never less than the rest height) + the bleed. On screen that is a
+    /// flush top bar of 316 × 142 (100 × 142 Icons Only) that unrolls to the column + 38.
+    static func cornerGlassFrame(labels: Bool, open: Bool, columnHeight: CGFloat) -> CGRect {
+        let width = labels ? expandedWidth : collapsedWidth
+        let height = open ? max(columnHeight, cornerRestHeight) : cornerRestHeight
+        return CGRect(x: -cornerBleed, y: -cornerBleed,
+                      width: bezelInset + width + cornerBleed,
+                      height: cornerPillTop + height + cornerBleed)
+    }
 
     // MARK: Layout numbers the math needs (mirrors of `RailMetrics`, NavigationRail.swift)
 
@@ -121,6 +147,13 @@ nonisolated enum NavigationChrome {
     static let bezelInset: CGFloat = 16
     /// The collapsed pill's width.
     static let collapsedWidth: CGFloat = 84
+    /// The open pill's width with labels shown (Corner's glass width with labels, W3-11).
+    static let expandedWidth: CGFloat = 300
+    /// The circle behind each glyph, one rail row's height.
+    static let itemPlatter: CGFloat = 60
+    /// The column's padding beside its rows: the Home cell sits `bezelInset + innerPadding` = 28
+    /// from the left screen edge.
+    static let innerPadding: CGFloat = 12
     /// The pill's padding above its first item and below the profile avatar (FEAT-80 Corner's
     /// `cornerPillTop` is derived from it).
     static let verticalPadding: CGFloat = 22

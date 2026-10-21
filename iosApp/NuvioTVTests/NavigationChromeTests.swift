@@ -293,20 +293,82 @@ final class NavigationChromeTests: XCTestCase {
         }
     }
 
-    /// Batch O: the Corner rail is Centre's pill anchored at the top. Its Home cell (the first row,
-    /// one `verticalPadding` below the pill's top edge, the mirror `RailMetrics` reads) lands on
-    /// the tvOS top safe-area line, and the pill keeps Centre's bezel inset and widths. Review r1
-    /// P3-2: the pill's top is derived from the safe-area line and the padding, never a literal of
-    /// its own, so the relationship is what this pins.
+    /// W3-11 (D1): the Corner rail's ITEMS keep Batch O's place. The column sits at Centre's bezel
+    /// inset whatever the Rail Style, anchored so its Home cell (the first row, one
+    /// `verticalPadding` below the column's top, the mirror `RailMetrics` reads) lands on the tvOS
+    /// top safe-area line: the Home cell at (28, 60). Review r1 P3-2: the column's top is derived
+    /// from the safe-area line and the padding, never a literal of its own. Its GLASS is flush:
+    /// from the screen corner, past the top and the left edges by the bleed, open or not, in both
+    /// label modes, and always around the Home cell.
     func testCornerPillGeometry() {
         XCTAssertEqual(NavigationChrome.cornerSafeTop, 60, "the tvOS top safe-area line on a 1920 × 1080 canvas")
         XCTAssertEqual(NavigationChrome.cornerPillTop + NavigationChrome.verticalPadding, NavigationChrome.cornerSafeTop,
-                       "the Home cell sits one vertical padding below the pill's top, on the safe-area line")
-        XCTAssertGreaterThan(NavigationChrome.cornerPillTop, 0, "the pill keeps a gap above it, never flush")
-        XCTAssertLessThan(NavigationChrome.cornerPillTop, NavigationChrome.cornerSafeTop,
-                          "the glass rises above the safe-area line, the Home cell does not")
-        XCTAssertEqual(NavigationChrome.bezelInset, 16, "Corner keeps Centre's bezel inset")
+                       "the Home cell sits one vertical padding below the column's top, on the safe-area line")
+        XCTAssertEqual(NavigationChrome.cornerPillTop, 38)
+        XCTAssertEqual(NavigationChrome.bezelInset + NavigationChrome.innerPadding, 28,
+                       "the Home cell's leading edge: Centre's bezel inset plus the column's padding")
+        let homeCell = CGRect(x: NavigationChrome.bezelInset + NavigationChrome.innerPadding, y: NavigationChrome.cornerSafeTop,
+                              width: NavigationChrome.itemPlatter, height: NavigationChrome.itemPlatter)
+        XCTAssertEqual(homeCell, CGRect(x: 28, y: 60, width: 60, height: 60))
+        XCTAssertEqual(NavigationChrome.cornerBleed, 8)
+        XCTAssertEqual(NavigationChrome.cornerRadius, 42, "the one rounded corner keeps Centre's radius")
+        XCTAssertEqual(NavigationChrome.cornerRestHeight, 104, "60 + 2 × 22: the column around the Home cell alone")
+        for labels in [true, false] {
+            for open in [true, false] {
+                let glass = NavigationChrome.cornerGlassFrame(labels: labels, open: open, columnHeight: 492)
+                let step = "labels=\(labels) open=\(open): \(glass)"
+                XCTAssertEqual(glass.origin, CGPoint(x: -NavigationChrome.cornerBleed, y: -NavigationChrome.cornerBleed),
+                               "flush: drawn from the screen corner, the bleed past both edges, \(step)")
+                XCTAssertLessThan(glass.minX, 0, "flush past the left edge, never a gap: \(step)")
+                XCTAssertLessThan(glass.minY, 0, "flush past the top edge, never a gap: \(step)")
+                XCTAssertTrue(glass.contains(homeCell), "the glass always holds the Home cell: \(step)")
+                XCTAssertGreaterThanOrEqual(glass.maxY - homeCell.maxY, NavigationChrome.verticalPadding,
+                                            "a vertical padding below the Home cell at least: \(step)")
+            }
+        }
         XCTAssertEqual(NavigationChrome.collapsedWidth, 84, "Corner's Icons Only width is Centre's")
+        XCTAssertEqual(NavigationChrome.expandedWidth, 300, "Corner's Labels Shown width is Centre's")
+    }
+
+    /// W3-11, Labels Shown: the arm shows a flush top bar 316 × 142 on screen (324 × 150 with the
+    /// bleed); the grow only lengthens it, to the column + 38. Its width never follows `open`, so
+    /// nothing grows sideways. Five tabs plus the avatar: 6 × 60 + 5 × 14 + 18 + 2 × 22 = 492.
+    func testCornerGlassFrameLabelsShown() {
+        let rest = NavigationChrome.cornerGlassFrame(labels: true, open: false, columnHeight: 492)
+        XCTAssertEqual(rest, CGRect(x: -8, y: -8, width: 324, height: 150))
+        XCTAssertEqual(rest.maxX, 316, "on screen: 16 + 300 wide")
+        XCTAssertEqual(rest.maxY, 142, "on screen: 38 + 104 tall")
+        let open = NavigationChrome.cornerGlassFrame(labels: true, open: true, columnHeight: 492)
+        XCTAssertEqual(open, CGRect(x: -8, y: -8, width: 324, height: 538))
+        XCTAssertEqual(open.maxY, 530, "on screen: the column + 38")
+        XCTAssertEqual(open.origin, rest.origin, "the unroll never moves the glass's origin")
+        XCTAssertEqual(open.width, rest.width, "the width is independent of open: downward only")
+        XCTAssertGreaterThan(open.height, rest.height, "only the height grows")
+    }
+
+    /// W3-11, Icons Only: 100 × 142 on screen at the arm (108 × 150 with the bleed), then the
+    /// column + 38, the same 100 wide.
+    func testCornerGlassFrameIconsOnly() {
+        let rest = NavigationChrome.cornerGlassFrame(labels: false, open: false, columnHeight: 492)
+        XCTAssertEqual(rest, CGRect(x: -8, y: -8, width: 108, height: 150))
+        XCTAssertEqual(rest.maxX, 100, "on screen: 16 + 84 wide")
+        let open = NavigationChrome.cornerGlassFrame(labels: false, open: true, columnHeight: 492)
+        XCTAssertEqual(open, CGRect(x: -8, y: -8, width: 108, height: 538))
+        XCTAssertEqual(open.width, rest.width, "the width is independent of open: downward only")
+        XCTAssertGreaterThan(open.height, rest.height, "only the height grows")
+    }
+
+    /// The height follows the measured column once open (Discover's own tab adds a row: 7 × 60 +
+    /// 6 × 14 + 18 + 44 = 566), never drops below the top bar (0 = not yet measured), and is
+    /// ignored closed.
+    func testCornerGlassFrameHeight() {
+        XCTAssertEqual(NavigationChrome.cornerGlassFrame(labels: true, open: true, columnHeight: 566).maxY, 604)
+        XCTAssertEqual(NavigationChrome.cornerGlassFrame(labels: true, open: true, columnHeight: 0),
+                       NavigationChrome.cornerGlassFrame(labels: true, open: false, columnHeight: 0),
+                       "floored at the top bar before the first measurement")
+        XCTAssertEqual(NavigationChrome.cornerGlassFrame(labels: false, open: false, columnHeight: 566),
+                       NavigationChrome.cornerGlassFrame(labels: false, open: false, columnHeight: 492),
+                       "closed, the column's height plays no part")
     }
 
     func testRailLabelsResolution() {

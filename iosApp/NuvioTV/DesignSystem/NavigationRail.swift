@@ -218,11 +218,11 @@ private enum RailMetrics {
     static let bezelInset: CGFloat = NavigationChrome.bezelInset            // 16
     static let collapsedWidth: CGFloat = NavigationChrome.collapsedWidth    // 84
     /// Grows rightward only; the height never changes, so no item moves vertically.
-    static let expandedWidth: CGFloat = 300
-    static let innerPadding: CGFloat = 12
+    static let expandedWidth: CGFloat = NavigationChrome.expandedWidth      // 300
+    static let innerPadding: CGFloat = NavigationChrome.innerPadding        // 12
     static let verticalPadding: CGFloat = NavigationChrome.verticalPadding  // 22
     /// The circle behind each glyph; the selected tab's is filled.
-    static let itemPlatter: CGFloat = 60
+    static let itemPlatter: CGFloat = NavigationChrome.itemPlatter          // 60
     static let iconSize: CGFloat = 36
     static let itemSpacing: CGFloat = 14
     /// Extra space above the profile avatar.
@@ -241,25 +241,29 @@ private enum RailMetrics {
     /// How long a route restore gets to move focus out of the rail before the default hand-off.
     static let exitVerifyDelay: TimeInterval = 0.5
 
-    // FEAT-80 Corner (Batch O, Christian's 2026-10-20 mock; Batch N's flush corner tab retired):
-    // open, the Corner rail IS the Centre pill (every number above, the same widths, all four
-    // corners rounded), `bezelInset` from the left edge and anchored at the top so the Home cell
-    // lands on the top safe-area line. At rest only the Home glyph shows, bare, in that same cell
-    // (16 + 12, 38 + 22), so nothing jumps when the pill unrolls around it.
-    /// The pill's top edge, 60 − 22 = 38 (`NavigationChrome.cornerPillTop`: the top safe-area line
-    /// less `verticalPadding`).
+    // FEAT-80 Corner (Batch O, Christian's 2026-10-20 mock; W3-11, D1, Steven's 10-19 mock): open,
+    // the Corner rail is Centre's column (every number above, the same row widths) at `bezelInset`
+    // from the left edge whatever the Rail Style, anchored at the top so the Home cell lands on the
+    // top safe-area line at (28, 60). Its glass is NOT Centre's pill: it is flush with the top and
+    // the left screen edges, drawn from the screen corner with a bleed past both, rounded at the
+    // bottom trailing corner only, as wide as the open column from its first frame, and only its
+    // height grows (`NavigationChrome.cornerGlassFrame`). At rest only the Home glyph shows, bare,
+    // in that same cell, so nothing jumps when the column unrolls around it (Batch N's flush
+    // resting tab stays retired: no glass at rest).
+    /// The column's top edge, 60 − 22 = 38 (`NavigationChrome.cornerPillTop`: the top safe-area
+    /// line less `verticalPadding`).
     static let cornerTop: CGFloat = NavigationChrome.cornerPillTop
-    /// The glass's first frame when it fades in, and its last before it fades out: a pill around
-    /// the Home cell, `collapsedWidth` × (60 + 2 × 22) = 84 × 104.
-    static let cornerRestHeight: CGFloat = itemPlatter + 2 * verticalPadding
+    /// The column's height around the Home cell alone, 60 + 2 × 22 = 104: the glass's first height
+    /// when it fades in (a flush top bar, 38 + 104 = 142 on screen) and its last before it fades out.
+    static let cornerRestHeight: CGFloat = NavigationChrome.cornerRestHeight
     /// The lower items' fade, staggered top to bottom while the column unrolls.
     static let cornerItemFade: Double = 0.18
     static let cornerItemStagger: Double = 0.035
-    /// The glass's own fade: in at the Home pill's size before it grows, out once it has shrunk.
+    /// The glass's own fade: in at the top bar's size before it grows, out once it has shrunk.
     static let cornerGlassFade: Double = 0.12
-    /// Opening: the Home pill holds this long before it grows.
+    /// Opening: the top bar holds this long before it grows down.
     static let cornerGrowDelay: Double = 0.08
-    /// Closing: the shrink's spring is about 90 % of the way back to the Home pill by now.
+    /// Closing: the shrink's spring is about 90 % of the way back to the top bar by now.
     static let cornerGlassFadeOutDelay: Double = 0.22
     /// The resting Home glyph's shadow (on the glyph alone), so the bare icon reads on bright art.
     static let cornerGlyphShadowRadius: CGFloat = 4
@@ -368,17 +372,17 @@ struct NavigationRail: View {
 
     /// FEAT-80 Corner (Batch O): the unroll's second phase, the grow (see `cornerPanel`). Follows
     /// `cornerOpen` through `updateCornerGrowth`: opening, the next turn; closing, the next turn
-    /// (Reduce Motion: once the fade has finished). It holds the pill's frame open through the
+    /// (Reduce Motion: once the fade has finished). It holds the glass's frame open through the
     /// close, and drives the grow on its own only for an arm that MOUNTS the panel
     /// (`cornerArmedAtRest` false).
     @State private var cornerGrown = false
     @State private var cornerGrowthGeneration = 0
     /// FEAT-80 Corner (review r1 P3-1): latched by every arm, true when the panel was already on
     /// screen at rest (Always Visible; Hide While Browsing at a page's top). Such an arm lays the
-    /// pill's frame out full on the arm turn itself, the turn before the first focus write, so
+    /// glass's frame out full on the arm turn itself, the turn before the first focus write, so
     /// that write never targets an item outside a not-yet-grown mask; only the drawn grow waits
     /// `cornerGrowDelay`. False when the arm mounts the panel (Hidden, scrolled down, Search's
-    /// keyboard): there it must mount at the Home pill's size to unroll at all, so it grows on
+    /// keyboard): there it must mount at the top bar's size to unroll at all, so it grows on
     /// `cornerGrown`, a turn later.
     @State private var cornerArmedAtRest = false
 
@@ -488,13 +492,15 @@ struct NavigationRail: View {
         NavigationChrome.railLabels(raw: railLabelsRaw) == .shown
     }
 
-    /// Batch P (P2): Floating pill or Edge (flush left).
+    /// Batch P (P2): Floating pill or Edge (flush left). Centre only: Corner ignores it (W3-11).
     private var style: NavigationChrome.RailStyle {
         NavigationChrome.railStyle(raw: railStyleRaw)
     }
 
     /// The pill's width: grows only while open AND labels are shown. FEAT-80 Corner (Batch O): the
-    /// same 84 / 300 as Centre, following `railOpen` (the unroll).
+    /// column's same 84 / 300 as Centre, following `railOpen` (the arm); W3-11: Corner's GLASS
+    /// does not follow it, it is as wide as the open column from its first frame
+    /// (`NavigationChrome.cornerGlassFrame`).
     private var pillWidth: CGFloat {
         railOpen && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
     }
@@ -516,11 +522,13 @@ struct NavigationRail: View {
                 .animation(.easeOut(duration: RailMetrics.expandDuration), value: expanded)
             if shown {
                 if isCorner {
-                    // FEAT-80 (Batch O): Centre's bezel inset, anchored at the top. A fade in and
+                    // FEAT-80 (Batch O): Centre's bezel inset, anchored at the top. W3-11 (D1):
+                    // the bezel inset whatever the Rail Style, so the Home cell stays at (28, 60);
+                    // the glass reaches the screen corner by itself (`cornerPanel`). A fade in and
                     // out (Hidden's reveal, Hide While Browsing's hide): a slide from the leading
                     // edge would drag the resting Home icon across the screen.
                     cornerPanel
-                        .padding(.leading, NavigationChrome.pillLeading(style))
+                        .padding(.leading, RailMetrics.bezelInset)
                         .padding(.top, RailMetrics.cornerTop)
                         .transition(.opacity)
                 } else {
@@ -611,8 +619,16 @@ struct NavigationRail: View {
         .frame(width: pillWidth, alignment: .leading)
     }
 
+    /// W3-11 (D1, Steven's 10-19 mock): Corner's glass AND mask, so the two never disagree. Square
+    /// at the top leading, bottom leading and top trailing corners (the first three sit off-canvas
+    /// or on the top edge), rounded at the bottom trailing corner only. Never `pillShape`, so Corner
+    /// ignores the Rail Style.
+    private var cornerShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(bottomTrailingRadius: NavigationChrome.cornerRadius, style: .continuous)
+    }
+
     /// Floating: the rounded pill. Edge (Batch P): square on the screen-edge side, rounded on the
-    /// trailing side. Used by the glass AND the Corner panel's mask, so the two never disagree.
+    /// trailing side. Centre's glass (`pill`); Corner draws `cornerShape` instead.
     private var pillShape: AnyShape {
         switch style {
         case .floating:
@@ -627,9 +643,13 @@ struct NavigationRail: View {
     /// The glass is a BACKGROUND behind the buttons, never a `glassEffect` around them: wrapping
     /// focusable content in glass hid it from the focus engine in another tvOS app (the Orivio
     /// trap, `docs/research/orivio-tv-handoff.md`).
-    @ViewBuilder
     private var pillGlass: some View {
-        let shape = pillShape
+        railGlass(in: pillShape)
+    }
+
+    /// The glass in `shape`: Centre's pill (`pillGlass`) or Corner's flush corner (`cornerShape`).
+    @ViewBuilder
+    private func railGlass<S: Shape>(in shape: S) -> some View {
         if showsLabels {
             shape.fill(Color.clear).glassEffect(.regular, in: shape)
         } else {
@@ -641,9 +661,10 @@ struct NavigationRail: View {
     }
 
     #if DEBUG
-    /// Rail08's and Rail12's oracle: the glass's own frame (Corner: mounted only while
-    /// `glassOpacity` is above 0, see `cornerPanel`). `navigation_rail` is a `.contain`
-    /// container, whose accessibility frame is the union of its children, and the collapsed pill's
+    /// Rail08's and Rail12's oracle: the glass's own frame (Corner: `cornerGlassFrame`, bleed
+    /// included, mounted only while `glassOpacity` is above 0, see `cornerPanel`).
+    /// `navigation_rail` is a `.contain` container, whose accessibility frame is the union of its
+    /// children, and the collapsed pill's
     /// labels (laid out, faded) overflow its 84 pt width.
     private var railBoundsOracle: some View {
         Color.white.opacity(0.001)
@@ -683,21 +704,28 @@ struct NavigationRail: View {
         )
     }
 
-    /// FEAT-80 Corner (Batch O; Batch N's unroll, now around Centre's pill): the same column as
-    /// `pill`, laid out at its final geometry from the first frame, behind a top-aligned mask. At
-    /// rest the glass is invisible (opacity 0) and the mask shows only the Home cell, where the
-    /// Home glyph sits bare. Opening runs in two phases:
-    ///  1. `cornerOpen` (the arm): the Buttons replace the labels, and the glass fades in as a pill
-    ///     around Home (84 × 104), Home's selection fill with it.
-    ///  2. The grow, `cornerGrowDelay` later: the glass's frame and the mask grow down to the
-    ///     column's height, and widen to 300 with labels, as Centre's pill widens.
-    /// Closing reverses it: the pill shrinks back around Home at once, then the glass fades out
-    /// and Home's row turns back into the bare glyph. Only the glass's frame and opacity and the
-    /// mask animate. The items never move: no `offset`, no `scaleEffect`, so a focus frame is where
-    /// it is drawn from the first turn (the Orivio trap above, the same reason the glass is a
-    /// background). Collapsed, the items below Home are plain labels (not armed), masked off and
-    /// out of the accessibility tree; they fade in top to bottom as the mask passes them. Reduce
-    /// Motion: a fade, no grow (the size is full at once opening, and snaps back after the fade).
+    /// FEAT-80 Corner (Batch O; Batch N's unroll; W3-11, D1): the same column as `pill`, laid out
+    /// at its final geometry from the first frame, behind a top-aligned mask. At rest the glass is
+    /// invisible (opacity 0) and the mask shows only the Home cell, where the Home glyph sits bare.
+    /// The glass and the mask are `cornerShape` at `NavigationChrome.cornerGlassFrame`: drawn from
+    /// the screen corner, flush with the top and the left screen edges with `cornerBleed` past
+    /// both, as wide as the open column (300 + 16 with labels, 84 + 16 Icons Only) from the first
+    /// frame, so they only ever grow DOWNWARD. Opening runs in two phases:
+    ///  1. `cornerOpen` (the arm): the Buttons replace the labels, and the glass fades in as a flush
+    ///     top bar around Home's row (316 × 142 on screen, 100 × 142 Icons Only), Home's selection
+    ///     fill and label with it.
+    ///  2. The grow, `cornerGrowDelay` later: only the height of the glass's frame and the mask
+    ///     springs, down to the column's height + 38.
+    /// Closing reverses it: the glass shrinks back to the top bar at once, then fades out and
+    /// Home's row turns back into the bare glyph. Only the glass's frame and opacity and the mask
+    /// animate. The bleed and the corner offset live on the background and the mask, never as
+    /// padding on the column: padding would grow the column's `.focusSection()` into the corner.
+    /// The items never move: no `offset`, no `scaleEffect` on them (the only `offset`s place the
+    /// glass and the mask), so a focus frame is where it is drawn from the first turn (the Orivio
+    /// trap above, the same reason the glass is a background). Collapsed, the items below Home are
+    /// plain labels (not armed), masked off and out of the accessibility tree; they fade in top to
+    /// bottom as the mask passes them. Reduce Motion: a fade, no grow (the size is full at once
+    /// opening, and snaps back after the fade).
     ///
     /// Review r1 P3-1: the frame follows `cornerFrameOpen`, which (an arm from rest) flips on the
     /// arm turn itself, so the mask is LAID OUT full before the first focus write lands; the grow
@@ -710,8 +738,13 @@ struct NavigationRail: View {
         let open = cornerOpen
         let frameOpen = cornerFrameOpen
         let glass = glassOpacity
-        let glassWidth = frameOpen && showsLabels ? RailMetrics.expandedWidth : RailMetrics.collapsedWidth
-        let glassHeight = frameOpen ? cornerOpenHeight : RailMetrics.cornerRestHeight
+        // Screen coordinates; the column's own origin is (bezelInset, cornerTop) on screen, so the
+        // shape is drawn back by that much to start at the screen corner (less the bleed).
+        let frame = NavigationChrome.cornerGlassFrame(labels: showsLabels, open: frameOpen,
+                                                      columnHeight: cornerOpenHeight)
+        let shiftX = frame.minX - RailMetrics.bezelInset
+        let shiftY = frame.minY - RailMetrics.cornerTop
+        let shape = cornerShape
         let grow = cornerGrowAnimation(opening: frameOpen)
         return railPillChrome(
             railColumn { item, order in
@@ -722,24 +755,28 @@ struct NavigationRail: View {
                 cornerColumnHeight = measured
             })
             // Before the background, so the glass itself is never masked (it carries its own
-            // frame). The glass's own shape and size, so a label or a focus capsule never shows
-            // outside it while it grows (a plain Rectangle cut the capsule square beside the
+            // frame). The glass's own shape, frame and offset, so a label or a focus capsule never
+            // shows outside it while it grows (a plain Rectangle cut the capsule square beside the
             // glass's rounded corner). Every row, capsule and avatar sits inside it at rest and open.
             .mask(alignment: .topLeading) {
-                pillShape
-                    .frame(width: glassWidth, height: glassHeight)
+                shape
+                    .frame(width: frame.width, height: frame.height)
                     .animation(grow, value: frameOpen)
+                    .offset(x: shiftX, y: shiftY)
             }
             .background(alignment: .topLeading) {
-                pillGlass
-                    .frame(width: glassWidth, height: glassHeight)
+                railGlass(in: shape)
+                    .frame(width: frame.width, height: frame.height)
                     .animation(grow, value: frameOpen)
+                    .offset(x: shiftX, y: shiftY)
                     .opacity(glass)
                 #if DEBUG
-                // Rail12: the glass's frame, only while the glass draws (out of the tree at rest).
+                // Rail12: the glass's frame, bleed included, only while the glass draws (out of
+                // the tree at rest).
                 if glass > 0 {
                     railBoundsOracle
-                        .frame(width: glassWidth, height: glassHeight)
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: shiftX, y: shiftY)
                 }
                 #endif
             }
@@ -800,7 +837,7 @@ struct NavigationRail: View {
     }
 
     /// Phase 2's animation, scoped to the glass's frame and the mask (`cornerPanel`): opening, the
-    /// unroll's spring after `cornerGrowDelay`, so the Home pill holds first; closing, at once.
+    /// unroll's spring after `cornerGrowDelay`, so the top bar holds first; closing, at once.
     /// Reduce Motion: none (the size is full at once opening, and snaps back after the fade).
     private func cornerGrowAnimation(opening: Bool) -> Animation? {
         guard !reduceMotion else { return nil }
