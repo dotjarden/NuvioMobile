@@ -108,6 +108,16 @@ final class StripPagerBox {
     var onRowChange: ((_ index: Int, _ key: String) -> Void)?
     var onPageStart: ((_ toIndex: Int, _ seconds: TimeInterval) -> Void)?
     var onStripFocusLost: (() -> Void)?
+
+    /// Review r2 (P2-1): drops every closure that captures the pager or its host (`ownership`
+    /// captures a pager copy, the callbacks capture the host), so the box cannot retain itself
+    /// through the pager's `@State` once the strip has left the screen. The next body remakes them.
+    func releaseHostClosures() {
+        ownership = nil
+        onRowChange = nil
+        onPageStart = nil
+        onStripFocusLost = nil
+    }
     /// Rows currently reporting ownership. Empty one runloop turn after a release = focus left the
     /// strip (#17); a row-to-row move never empties it, in either report order.
     var owners = Set<String>()
@@ -492,6 +502,10 @@ struct StripPager<Row: View>: View {
         // return routes register on appear too).
         .onDisappear {
             controller.pagerHandle.uninstall(owner: box)
+            // Review r2 (P2-1): the box's cached ownership value captures a copy of this pager,
+            // whose `@State` wrapper holds the box: released here, like the handle above, so a
+            // popped folder page's model and controller are not kept alive by their own strip.
+            box.releaseHostClosures()
         }
         .onChange(of: rowKeys, initial: true) { _, keys in
             rowKeysChanged(keys)

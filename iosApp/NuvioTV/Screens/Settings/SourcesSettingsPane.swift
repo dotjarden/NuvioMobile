@@ -11,11 +11,10 @@ struct SourcesSettingsPane: View {
     /// B6: device-local Search layout. Read through `SearchRowsMode.resolve` so a stale or
     /// unknown stored value shows the default.
     @AppStorage(SearchRowsMode.defaultsKey) private var searchRowsModeRaw = SearchRowsMode.defaultValue.rawValue
-    /// Plugin repositories whose expansion the user flipped (by manifest URL). Expansion is derived:
-    /// repositories start collapsed, except a lone repository, which starts expanded; membership
-    /// here inverts that default. Derived rather than set in `onAppear` so a lazy List re-showing
-    /// a row can never re-expand a repository the user collapsed.
-    /// The viewer's own open/closed choice per repository (absent = the default rule).
+    /// The viewer's own open/closed choice per plugin repository, by manifest URL (absent = the
+    /// default rule, `PluginsViewModel.isRepositoryExpanded`: collapsed, except a lone repository).
+    /// Stored as the choice itself, never as a flip of the default, so installing or removing
+    /// another repository cannot invert it; never set in `onAppear`, which a lazy List re-fires.
     @State private var pluginRepoExpanded: [String: Bool] = [:]
     /// Drives the "Remove repository?" confirmation.
     @State private var pendingPluginRepoRemoval: PluginRepositoryItem?
@@ -455,6 +454,9 @@ struct SourcesSettingsPane: View {
                     ) {
                         Button(String(localized: "Remove"), role: .destructive) {
                             pluginRepoExpanded[repo.manifestUrl] = nil
+                            // Review r2 (P3-3): cleared here too, so a row that leaves while the
+                            // alert is up (a sync removal) cannot leave the request pending.
+                            pendingPluginRepoRemoval = nil
                             plugins.removeRepository(repo)
                         }
                         Button(String(localized: "Cancel"), role: .cancel) {}
@@ -463,6 +465,14 @@ struct SourcesSettingsPane: View {
                     }
                 }
             }
+            // Review r2 (P3-3): a pending removal whose repository was removed by sync (the alert's
+            // row is gone, so its binding setter never runs) must not pop up on a later reinstall.
+            Color.clear.frame(width: 0, height: 0)
+                .onChange(of: plugins.repositories.map(\.manifestUrl)) { _, urls in
+                    if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
+                        pendingPluginRepoRemoval = nil
+                    }
+                }
             SettingsActionRow(
                 title: String(localized: "Refresh Plugins"),
                 subtitle: String(localized: "Re-download provider code from every repository."),

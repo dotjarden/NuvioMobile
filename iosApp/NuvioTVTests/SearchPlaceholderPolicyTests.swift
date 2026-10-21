@@ -23,4 +23,13 @@ final class SearchPlaceholderPolicyTests: XCTestCase {
         XCTAssertGreaterThan(SearchPlaceholderPolicy.timeout, 1.13)
         XCTAssertLessThanOrEqual(SearchPlaceholderPolicy.timeout, 2.0)
     }
+
+    func testAlreadyHidesWithoutAVisitAndRearmShowsAgain() {
+        var policy = SearchPlaceholderPolicy()
+        XCTAssertEqual(policy.hide(.already), .already)
+        XCTAssertEqual(policy.hiddenReason, .already)
+        XCTAssertNil(policy.hide(.signal), "a second reason never replaces the first")
+        policy.rearm()
+        XCTAssertNil(policy.hiddenReason)
+    }
 }

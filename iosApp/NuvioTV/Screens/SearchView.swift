@@ -160,7 +160,10 @@ private struct SearchPlaceholderLayer: View {
                 SearchOpenProbe.mark("placeholder hidden reason=already")
                 return
             }
-            policy.rearm()
+            // Review r2 (P3-4): shown at once on a later visit too, not faded in over 0.25 s.
+            var shown = Transaction()
+            shown.disablesAnimations = true
+            withTransaction(shown) { policy.rearm() }
             SearchOpenProbe.mark("placeholder shown")
             DispatchQueue.main.asyncAfter(deadline: .now() + SearchPlaceholderPolicy.timeout) {
                 if mine == visit { hide(.timeout) }

@@ -1157,7 +1157,7 @@ struct NavigationRail: View {
         DispatchQueue.main.async {
             guard generation == focusGeneration else { return }
             let ladderTag = tab == RailVisibilityRule.searchTab ? "[SearchOpen]" : "[NavRail]"
-            if SearchOpenProbe.enabled { NSLog("%@ ladder rung 0 reset tab=%d t=%.3f", ladderTag, tab, ProcessInfo.processInfo.systemUptime) }
+            if SearchOpenProbe.enabled { NSLog("%@ ladder rung 0 reset tab=%ld t=%.3f", ladderTag, tab, ProcessInfo.processInfo.systemUptime) }
             resetFocus(in: shellFocusScope)
             let checks = SidebarHandOffLadder.checks(forTabTitled: RailItem.title(for: tab))
             for (index, delay) in checks.enumerated() {
@@ -1165,10 +1165,10 @@ struct NavigationRail: View {
                     guard generation == focusGeneration else { return }
                     guard focusedItem == nil, !armed else { return }   // an arm took over meanwhile
                     guard HiddenTabBarFocusBlocker.focusedItemIsNil() else {
-                        if SearchOpenProbe.enabled { NSLog("%@ ladder rung %d at %.2fs: focus already landed t=%.3f", ladderTag, index + 1, delay, ProcessInfo.processInfo.systemUptime) }
+                        if SearchOpenProbe.enabled { NSLog("%@ ladder rung %ld at %.2fs: focus already landed t=%.3f", ladderTag, index + 1, delay, ProcessInfo.processInfo.systemUptime) }
                         return
                     }
-                    if SearchOpenProbe.enabled { NSLog("%@ ladder rung %d at %.2fs: still nowhere t=%.3f", ladderTag, index + 1, delay, ProcessInfo.processInfo.systemUptime) }
+                    if SearchOpenProbe.enabled { NSLog("%@ ladder rung %ld at %.2fs: still nowhere t=%.3f", ladderTag, index + 1, delay, ProcessInfo.processInfo.systemUptime) }
                     if index < checks.count - 1 {
                         resetFocus(in: shellFocusScope)
                     } else {
