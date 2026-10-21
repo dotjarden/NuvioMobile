@@ -381,17 +381,21 @@ struct AppearanceSettingsPane: View {
                     .accessibilityIdentifier("appearance_row_rail_position")
                     .focused($appearanceRowFocus, equals: "railPosition")
 
-                    // Batch P (P2): Floating / Edge. Padding and shape only, no remount.
-                    SettingsPickerRow(
-                        title: String(localized: "Rail Style"),
-                        selection: Binding(
-                            get: { NavigationChrome.railStyle(raw: railStyle).rawValue },
-                            set: { railStyle = $0 }),
-                        options: Self.railStyleOptions.map(\.value),
-                        descriptionID: .appearanceRailStyle,
-                        label: { value in Self.railStyleOptions.first { $0.value == value }?.label ?? value }
-                    )
-                    .accessibilityIdentifier("appearance_row_rail_style")
+                    // Batch P (P2): Floating / Edge. Padding and shape only, no remount. W3-11
+                    // (D1): Centre only. Corner's glass is flush whatever the style, so the row
+                    // hides while Position = Corner (the stored value is kept for Centre).
+                    if NavigationChrome.railPosition(raw: railPosition) == .centre {
+                        SettingsPickerRow(
+                            title: String(localized: "Rail Style"),
+                            selection: Binding(
+                                get: { NavigationChrome.railStyle(raw: railStyle).rawValue },
+                                set: { railStyle = $0 }),
+                            options: Self.railStyleOptions.map(\.value),
+                            descriptionID: .appearanceRailStyle,
+                            label: { value in Self.railStyleOptions.first { $0.value == value }?.label ?? value }
+                        )
+                        .accessibilityIdentifier("appearance_row_rail_style")
+                    }
 
                     SettingsPickerRow(
                         title: String(localized: "Rail Labels"),
