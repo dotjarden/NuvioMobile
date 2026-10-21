@@ -374,28 +374,47 @@ struct ServicesSettingsPane: View {
     @ViewBuilder
     private func debridProviderRows(_ provider: DebridProvider) -> some View {
         if debrid.isConnected(provider.id) {
-            // Session-expired beats Connected (BUG-21 follow-up): the stored token failed auth
-            // on a real provider call or the pane-open revalidation. Same disconnect action —
-            // reconnecting mints a fresh token, which is the entire fix.
-            if debrid.authFailedIds.contains(provider.id) {
-                SettingsDestructiveRow(
-                    title: String(localized: "\(provider.displayName) \u{00B7} Session expired"),
-                    subtitle: String(localized: "\(provider.displayName) rejected the saved sign-in. Press to disconnect, then connect again."),
-                    systemImage: "exclamationmark.triangle.fill",
-                    descriptionID: .servicesDebridProvider
-                ) {
-                    debridDisconnectId = provider.id
+            // BUG-213 hand-off: this row replaces the key field and Save rows after a manual Save
+            // (and claims focus then); pressing it arms the key field for after a confirmed
+            // Disconnect. The disconnect goes through SettingsView's alert, so a Cancel there must
+            // disarm it: the row is still here after a Cancel, and a confirmed Disconnect has
+            // removed the provider's key by the time the check runs (the settings watcher hops to
+            // the main queue once; the check waits half a second).
+            Group {
+                // Session-expired beats Connected (BUG-21 follow-up): the stored token failed auth
+                // on a real provider call or the pane-open revalidation. Same disconnect action —
+                // reconnecting mints a fresh token, which is the entire fix.
+                if debrid.authFailedIds.contains(provider.id) {
+                    SettingsDestructiveRow(
+                        title: String(localized: "\(provider.displayName) \u{00B7} Session expired"),
+                        subtitle: String(localized: "\(provider.displayName) rejected the saved sign-in. Press to disconnect, then connect again."),
+                        systemImage: "exclamationmark.triangle.fill",
+                        descriptionID: .servicesDebridProvider
+                    ) {
+                        activationFocusHandOff = "debrid:\(provider.id):key"
+                        debridDisconnectId = provider.id
+                    }
+                } else {
+                    SettingsDestructiveRow(
+                        title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
+                        subtitle: debrid.activeResolverId == provider.id
+                            ? String(localized: "Active resolver \u{00B7} press to disconnect")
+                            : String(localized: "Press to disconnect"),
+                        systemImage: "checkmark.circle.fill",
+                        descriptionID: .servicesDebridProvider
+                    ) {
+                        activationFocusHandOff = "debrid:\(provider.id):key"
+                        debridDisconnectId = provider.id
+                    }
                 }
-            } else {
-                SettingsDestructiveRow(
-                    title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
-                    subtitle: debrid.activeResolverId == provider.id
-                        ? String(localized: "Active resolver \u{00B7} press to disconnect")
-                        : String(localized: "Press to disconnect"),
-                    systemImage: "checkmark.circle.fill",
-                    descriptionID: .servicesDebridProvider
-                ) {
-                    debridDisconnectId = provider.id
+            }
+            .claimsFocusAfterSwap(handOff("debrid:\(provider.id):connected"))
+            .onChange(of: debridDisconnectId) { old, new in
+                guard old == provider.id, new == nil else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if debrid.isConnected(provider.id), activationFocusHandOff == "debrid:\(provider.id):key" {
+                        activationFocusHandOff = nil
+                    }
                 }
             }
         } else if debrid.authProviderId == provider.id {
@@ -446,7 +465,17 @@ struct ServicesSettingsPane: View {
                 debrid.connect(provider)
             }
             .claimsFocusAfterSwap(handOff("debrid:\(provider.id):connect"))
-            DebridKeyEntryRow(providerName: provider.displayName, descriptionID: .servicesDebridKey) { key in
+            // BUG-213 hand-off, both directions: Save swaps these rows for the Connected row (which
+            // then takes focus), and a confirmed Disconnect swaps them back (the key field takes
+            // it). `saveManualKey` ignores a blank key, so nothing is armed for one.
+            DebridKeyEntryRow(
+                providerName: provider.displayName,
+                descriptionID: .servicesDebridKey,
+                fieldFocusHandOff: handOff("debrid:\(provider.id):key")
+            ) { key in
+                if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    activationFocusHandOff = "debrid:\(provider.id):connected"
+                }
                 debrid.saveManualKey(provider.id, key: key)
             }
         }

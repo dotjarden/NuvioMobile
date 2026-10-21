@@ -22,6 +22,25 @@ struct SourcesSettingsPane: View {
     /// `plugins.repositories` the manifest field takes focus (the Remove row it came from is gone).
     @State private var pendingFocusAfterRemoval: String?
     @FocusState private var manifestFieldFocused: Bool
+    /// BUG-213 focus hand-off for the TMDB and MDBList key rows. Save swaps the key field and Save
+    /// rows for the Remove row, and Remove swaps them back, so the focused control leaves the
+    /// hierarchy both ways. The pressed row arms its replacement ("tmdb:remove" / "tmdb:field",
+    /// "mdblist:remove" / "mdblist:field"); the replacement claims focus once when it appears. One
+    /// value, so a later press simply overwrites an armed one.
+    @State private var keyFocusHandOff: String?
+
+    private func keyHandOff(_ target: String) -> Binding<Bool> {
+        Binding(
+            get: { keyFocusHandOff == target },
+            set: { if !$0, keyFocusHandOff == target { keyFocusHandOff = nil } }
+        )
+    }
+
+    /// Whether a saved key will stick: both repositories store the trimmed key, and a blank one
+    /// clears it, which swaps nothing (so nothing may be armed for it).
+    private static func keepsKey(_ key: String) -> Bool {
+        !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var searchRowsModeBinding: Binding<SearchRowsMode> {
         Binding(
@@ -123,16 +142,20 @@ struct SourcesSettingsPane: View {
                         systemImage: "trash",
                         descriptionID: .sourcesTmdbKey
                     ) {
+                        keyFocusHandOff = "tmdb:field"
                         model.clearTmdbKey()
                     }
+                    .claimsFocusAfterSwap(keyHandOff("tmdb:remove"))
                 } else {
                     Group {
                         DebridKeyEntryRow(
                             providerName: "TMDB",
                             placeholder: String(localized: "Personal API Key (Optional)"),
-                            descriptionID: .sourcesTmdbKey
-                        ) {
-                            model.saveTmdbKey($0)
+                            descriptionID: .sourcesTmdbKey,
+                            fieldFocusHandOff: keyHandOff("tmdb:field")
+                        ) { key in
+                            if Self.keepsKey(key) { keyFocusHandOff = "tmdb:remove" }
+                            model.saveTmdbKey(key)
                         }
                         Text("Leave empty to use the built-in key.")
                             .font(Theme.Font.caption)
@@ -189,8 +212,10 @@ struct SourcesSettingsPane: View {
                         systemImage: "trash",
                         descriptionID: .sourcesMdblistKey
                     ) {
+                        keyFocusHandOff = "mdblist:field"
                         model.clearMdbListKey()
                     }
+                    .claimsFocusAfterSwap(keyHandOff("mdblist:remove"))
                 } else {
                     Group {
                         if model.mdbListUsingAccount {
@@ -209,9 +234,11 @@ struct SourcesSettingsPane: View {
                             placeholder: model.mdbListUsingAccount
                                 ? String(localized: "Personal API Key (Optional)")
                                 : String(localized: "MDBList API key"),
-                            descriptionID: .sourcesMdblistKey
-                        ) {
-                            model.saveMdbListKey($0)
+                            descriptionID: .sourcesMdblistKey,
+                            fieldFocusHandOff: keyHandOff("mdblist:field")
+                        ) { key in
+                            if Self.keepsKey(key) { keyFocusHandOff = "mdblist:remove" }
+                            model.saveMdbListKey(key)
                         }
                         if model.mdbListUsingAccount {
                             Text("A personal key overrides the account.")

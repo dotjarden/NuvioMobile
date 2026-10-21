@@ -827,11 +827,26 @@ private struct SettingsDestructiveLabel: View {
 
 // MARK: - Key entry
 
-/// Manual API-key entry row (debrid fallback, MDBList, and similar key-gated services). Shared
-/// between the Account & Services pane's per-provider debrid rows and the Content Sources pane's
-/// MDBList row. C1: the hand-rolled `glassEffect` capsule around the field is gone — inside a
-/// native `List` the row already has the system's own background and focus treatment, and glass
-/// belongs to floating chrome (HIG hybrid contract, Overlay surfaces).
+/// Manual API-key entry (debrid fallback, MDBList, TMDB and similar key-gated services). Shared
+/// between the Services pane's per-provider debrid rows and the Sources pane's TMDB and MDBList
+/// rows. C1: the hand-rolled `glassEffect` capsule around the field is gone — inside a native
+/// `List` the row already has the system's own background and focus treatment, and glass belongs
+/// to floating chrome (HIG hybrid contract, Overlay surfaces).
+///
+/// BUG-213 (GitHub #10): this used to be ONE List row holding the field and the Save button, and a
+/// tvOS List row is one focus target (the BUG-197 diagnosis), so the two highlighted as one block
+/// and Select did not reach the field. The `Group` body now yields TWO List rows, the shape
+/// `PluginRepoEntryRow` and `BadgeUrlEntryRow` use: the key field row (its rest platter follows the
+/// field's `@FocusState`; a `TextField` has no label to read `\.isFocused` from) and a Save Key kit
+/// row. `@State key` stays owned by this struct, so both rows share it.
+///
+/// Focus hand-off: at every call site Save swaps both rows out for a Remove (or Connected) row and
+/// Remove swaps them back, so the focused control leaves the hierarchy both ways. The call site
+/// arms `ClaimsFocusAfterSwap` on the row that replaces these two from its `onSave` closure;
+/// `fieldFocusHandOff` is the reverse direction, armed by the call site's Remove so the field takes
+/// focus when the rows come back. Same rule as `ClaimsFocusAfterSwap` (gated on the flag, never on
+/// appearance alone, cleared once used, claimed one runloop late), run on the field's own
+/// `@FocusState` because the field already binds it.
 struct DebridKeyEntryRow: View {
     let providerName: String
     var placeholder: String?
@@ -839,19 +854,18 @@ struct DebridKeyEntryRow: View {
     /// compile. A `TextField` has no label descendant to read `\.isFocused` from, so the field
     /// reports through its own `@FocusState` (`focused:` variant of the modifier).
     var descriptionID: SettingsDescriptionID? = nil
+    /// The reverse hand-off (Remove → field); see the type comment. Also declared before `onSave`.
+    var fieldFocusHandOff: Binding<Bool> = .constant(false)
     let onSave: (String) -> Void
     @State private var key = ""
     @FocusState private var fieldFocused: Bool
-    /// V2: the row holds two focusables (field + Save), so its rest platter is not inside one
-    /// control's label and `\.isFocused` is not populated at its level; it reads both FocusStates.
-    @FocusState private var saveFocused: Bool
 
     private var fieldPlaceholder: String {
         placeholder ?? String(localized: "Or paste your \(providerName) API key")
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        Group {
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "key")
                     .font(SettingsRowFont.title)
@@ -861,23 +875,27 @@ struct DebridKeyEntryRow: View {
                     .font(SettingsRowFont.title)
                     .focused($fieldFocused)
             }
+            .modifier(SettingsRestPlatter(explicitFocus: fieldFocused))
             .settingsDescription(descriptionID, title: fieldPlaceholder, systemImage: "key", focused: fieldFocused)
+            .onAppear {
+                guard fieldFocusHandOff.wrappedValue else { return }
+                fieldFocusHandOff.wrappedValue = false
+                DispatchQueue.main.async { fieldFocused = true }
+            }
 
-            Button {
+            // Not disabled while the field is empty: saving clears the field, which disabled the
+            // focused button and threw focus elsewhere. The action already ignores an empty key.
+            SettingsActionRow(
+                title: String(localized: "Save Key"),
+                systemImage: "checkmark",
+                descriptionID: descriptionID
+            ) {
                 if !key.isEmpty {
                     onSave(key)
                     key = ""
                 }
-            } label: {
-                Label("Save Key", systemImage: "checkmark")
-                    .font(SettingsRowFont.subtitle)
-                    .settingsDescription(descriptionID, title: String(localized: "Save Key"), systemImage: "checkmark")
             }
-            // Not `.disabled(key.isEmpty)`: saving clears the field, which disabled the focused
-            // button and threw focus elsewhere. The action already ignores an empty key.
-            .focused($saveFocused)
         }
-        .modifier(SettingsRestPlatter(explicitFocus: fieldFocused || saveFocused))
     }
 }
 
