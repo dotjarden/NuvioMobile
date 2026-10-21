@@ -20,16 +20,29 @@ import SharedCore
 /// at all" reasons, with `emptyReasonHint` pointing at the fix.
 @MainActor
 final class StreamsViewModel: ObservableObject {
-    /// One playable, addon-grouped section for the picker UI.
-    struct Group: Identifiable {
+    /// One playable, addon-grouped section for the picker UI. `Equatable` (the Kotlin streams
+    /// compare by their data-class `equals`), so `apply(_:)` can skip an identical republish.
+    struct Group: Identifiable, Equatable {
         let id: String           // addonId
         let addonName: String
         let streams: [StreamItem]
         /// One stable row key per stream, parallel to `streams` (see `rowKeys(groupId:streams:)`).
         let rowKeys: [String]
+        /// W3-16 (F4): one prebuilt row model per stream, parallel to `streams` and `rowKeys`: built
+        /// once in `apply(_:)` (keys, titles, badges, the playback key), never in the picker's body.
+        let rows: [StreamRowModel]
+        /// The display settings `rows` were built with (badge settings, Instant suffix); a change
+        /// rebuilds the rows.
+        let display: StreamRowDisplay
         /// Mirrors the shared `AddonStreamGroup.isLoading` — this addon hasn't finished
         /// responding yet (more streams may still arrive). Drives the per-group header spinner.
         let isLoading: Bool
+
+        /// The same group with a new loading flag (rows and keys are reused as built).
+        func withLoading(_ loading: Bool) -> Group {
+            Group(id: id, addonName: addonName, streams: streams, rowKeys: rowKeys, rows: rows,
+                  display: display, isLoading: loading)
+        }
     }
 
     @Published private(set) var groups: [Group] = []
@@ -87,6 +100,15 @@ final class StreamsViewModel: ObservableObject {
     var showAddonLogo: Bool { badgeSettings?.showAddonLogo ?? false }
     var badgesOnTop: Bool { badgeSettings?.badgePlacement == .top }
 
+    /// What shapes a prebuilt row (W3-16 F4): the badge settings plus the Instant suffix.
+    private var rowDisplay: StreamRowDisplay {
+        StreamRowDisplay(showFileSize: showFileSizeBadges, badgesOnTop: badgesOnTop,
+                         showAddonLogo: showAddonLogo, instantSuffix: instantSuffixEnabled)
+    }
+
+    /// The display settings the current `groups` were built with.
+    private var appliedDisplay = StreamRowDisplay()
+
     /// Row keys keyed by the stream's identity, not its position: add-ons stream in and the
     /// shared sort reorders, and a positional key moved focus and the resolve spinner onto a
     /// different stream. The identity is the add-on's own text plus the torrent hash, NOT the URL:
@@ -133,11 +155,14 @@ final class StreamsViewModel: ObservableObject {
         badgeWatcher = FlowWatcherKt.watch(StreamBadgeSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? StreamBadgeSettingsUiState else { return }
             self.badgeSettings = value
+            // The prebuilt rows carry these settings (W3-16 F4): rebuild only if they moved.
+            self.reapplyIfDisplayChanged()
         }
         debridWatcher = FlowWatcherKt.watch(DebridSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? DebridSettings else { return }
             let canResolve = value.canResolvePlayableLinks
-            self.instantSuffixEnabled = canResolve && !value.hasCustomStreamFormatting
+            let instant = canResolve && !value.hasCustomStreamFormatting
+            if self.instantSuffixEnabled != instant { self.instantSuffixEnabled = instant }
             self.activeResolverProviderId = canResolve ? value.activeResolverProviderId : nil
             self.updateCredentialWarning()
             if self.debridResolveEnabled != canResolve {
@@ -145,7 +170,7 @@ final class StreamsViewModel: ObservableObject {
                 // Filtering depends on this flag — re-derive the visible groups.
                 if let last = self.lastState { self.apply(last) }
             } else {
-                self.debridResolveEnabled = canResolve
+                self.reapplyIfDisplayChanged()
             }
         }
         healthWatcher = FlowWatcherKt.watch(DebridCredentialHealth.shared.authFailedProviderIds) { [weak self] emitted in
@@ -216,20 +241,49 @@ final class StreamsViewModel: ObservableObject {
         )
     }
 
-    private func apply(_ state: StreamsUiState) {
-        isLoading = state.isAnyLoading
-        let debridEnabled = debridResolveEnabled
+    /// Re-derives the groups when only the row display settings moved (badge settings, Instant
+    /// suffix) since the last `apply(_:)`; a no-op before the first emission or when they are equal.
+    private func reapplyIfDisplayChanged() {
+        guard let last = lastState, rowDisplay != appliedDisplay else { return }
+        apply(last)
+    }
 
-        groups = state.groups.compactMap { group in
+    /// Publishes `state` to the picker. W3-16 (F4): the rows (keys included) are built here, once per
+    /// stream — a group whose streams, name and display settings are unchanged since the last call
+    /// is reused as built (no SHA for its keys, no Kotlin bridging for its titles) — and a result
+    /// identical to what is already published is not republished at all: every `@Published` write
+    /// below is guarded, because an equal write still invalidates the picker's body.
+    func apply(_ state: StreamsUiState) {
+        let loading = state.isAnyLoading
+        if isLoading != loading { isLoading = loading }
+        let debridEnabled = debridResolveEnabled
+        let display = rowDisplay
+        appliedDisplay = display
+
+        var previous: [String: Group] = [:]
+        for group in groups where previous[group.id] == nil { previous[group.id] = group }
+
+        let next: [Group] = state.groups.compactMap { group in
             let playable = group.streams.filter { Self.isListable(stream: $0, debridEnabled: debridEnabled) }
             guard !playable.isEmpty else { return nil }
+            if let old = previous[group.addonId], old.display == display,
+               old.addonName == group.addonName, old.streams == playable {
+                return old.withLoading(group.isLoading)
+            }
+            let keys = Self.rowKeys(groupId: group.addonId, streams: playable)
+            let rows = zip(keys, playable).map { key, stream in
+                StreamRowModel.make(stream: stream, key: key, display: display)
+            }
             return Group(id: group.addonId, addonName: group.addonName, streams: playable,
-                         rowKeys: Self.rowKeys(groupId: group.addonId, streams: playable),
-                         isLoading: group.isLoading)
+                         rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)
         }
-        firstRowKey = groups.first?.rowKeys.first
+        if next != groups { groups = next }
+        let first = next.first?.rowKeys.first
+        if firstRowKey != first { firstRowKey = first }
 
-        if groups.isEmpty && !isLoading {
+        var reason: String?
+        var hint: String?
+        if next.isEmpty && !loading {
             // The shared repository's `emptyStateReason` only covers "we truly found nothing"
             // (no addons, fetch failed, etc.) — it has no concept of the local playability
             // filter above, so a title with plenty of raw torrent results but no debrid
@@ -237,14 +291,13 @@ final class StreamsViewModel: ObservableObject {
             // ourselves: shared handed us streams, but every one of them got filtered out.
             let rawCount = state.groups.reduce(0) { $0 + $1.streams.count }
             if rawCount > 0 {
-                (emptyReason, emptyReasonHint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
+                (reason, hint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
             } else {
-                (emptyReason, emptyReasonHint) = Self.describe(state.emptyStateReason)
+                (reason, hint) = Self.describe(state.emptyStateReason)
             }
-        } else {
-            emptyReason = nil
-            emptyReasonHint = nil
         }
+        if emptyReason != reason { emptyReason = reason }
+        if emptyReasonHint != hint { emptyReasonHint = hint }
 
         // Last, so a controller reacting to it (`.onReceive`) already sees this state's list.
         // Never the overlay flag (`showDirectAutoPlayOverlay`): the tmdb→IMDb remap briefly
@@ -325,5 +378,145 @@ final class StreamsViewModel: ObservableObject {
         badgeWatcher?.cancel()
         debridWatcher?.cancel()
         healthWatcher?.cancel()
+    }
+}
+
+// MARK: - Row model (W3-16)
+
+/// What shapes a prebuilt stream row beyond the stream itself: the shared badge settings and the
+/// "- <Provider> Instant" suffix. Part of the row model's identity (`StreamRowModel.==` compares
+/// the values it produced), and of `StreamsViewModel.Group`, so a settings flip rebuilds the rows.
+nonisolated struct StreamRowDisplay: Equatable {
+    /// The file-size chip is on (`showFileSizeBadges`; the row still needs a size to show it).
+    var showFileSize = true
+    /// Badges above the title instead of below it.
+    var badgesOnTop = false
+    /// The add-on column (logo + name) on the row's trailing edge.
+    var showAddonLogo = false
+    /// The Instant suffix on debrid-cached rows (debrid resolution on, no custom name template).
+    var instantSuffix = false
+}
+
+/// An external player the row's long-press menu can offer. A plain-Swift copy of the Kotlin
+/// `ExternalPlayerApp`, so the menu's list takes part in `StreamRowModel.==`.
+nonisolated struct StreamRowPlayer: Equatable {
+    let id: String
+    let name: String
+}
+
+/// W3-16 (F1/F4, BUG-207): everything a stream row shows, as one plain value. Built in two steps:
+///
+/// - `make(stream:key:display:)`, once per stream in `StreamsViewModel.apply(_:)`: the focus key,
+///   the title (with the Instant suffix), the description, the badges, the size, the add-on column,
+///   the YouTube flag and the playback key (one SHA-256 pair, so a row body never recomputes it);
+/// - `applying(...)`, in the picker's body: the four things only the picker knows — the debrid
+///   spinner, the "Failed recently" caption, and the external players with their default.
+///
+/// `StreamRowView` is `Equatable` over this value, so a row whose model is unchanged is never
+/// re-evaluated when a sibling's focus, the scroll or the list's state moves. Every field below is
+/// compared: dropping one would freeze that part of a row (the spinner, the rejected caption, the
+/// badge settings, the Instant-suffix title, the player list with its default).
+nonisolated struct StreamRowModel: Equatable, Identifiable {
+    /// The focus key (`"<groupId>#<identity>"`), stable across republishes.
+    let key: String
+    /// The row title, with the "- <Provider> Instant" suffix on a debrid-cached torrent row.
+    let title: String
+    /// The add-on's description (release name), nil when empty or absent.
+    let description: String?
+    let badges: [StreamBadgeInfo]
+    /// The file-size chip's bytes; nil when the chip is off or the stream has no size.
+    let sizeBytes: Int64?
+    let badgesOnTop: Bool
+    /// The add-on column (logo + name) is drawn.
+    let showsAddonColumn: Bool
+    let addonName: String
+    /// The add-on's logo URL, nil when it has none.
+    let addonLogo: String?
+    /// The add-on gave only a YouTube video id: the row says so and resolves it on the device.
+    let isYouTube: Bool
+    /// `StreamItem.playbackStreamKey`: what `RejectedStreamLinks` stores.
+    let playbackKey: String
+
+    /// This row's debrid / YouTube resolve is in flight (the spinner beside the title).
+    var isResolving = false
+    /// The link failed recently for this title ("Failed recently" caption).
+    var failedRecently = false
+    /// The external players the long-press menu offers (empty = no menu).
+    var players: [StreamRowPlayer] = []
+    /// The validated default external player's id, nil when the built-in player is the default.
+    var defaultPlayerId: String?
+
+    var id: String { key }
+
+    /// A size chip and/or badges are drawn.
+    var hasBadgeRow: Bool { !badges.isEmpty || sizeBytes != nil }
+
+    /// The part the picker's own state decides (spinner, rejected caption, players).
+    func applying(isResolving: Bool, failedRecently: Bool, players: [StreamRowPlayer],
+                  defaultPlayerId: String?) -> StreamRowModel {
+        var copy = self
+        copy.isResolving = isResolving
+        copy.failedRecently = failedRecently
+        copy.players = players
+        copy.defaultPlayerId = defaultPlayerId
+        return copy
+    }
+
+    /// Builds the static part of a row. `providerLabel` names the debrid provider for the Instant
+    /// suffix (injected so a test needs no provider catalog).
+    @MainActor
+    static func make(
+        stream: StreamItem,
+        key: String,
+        display: StreamRowDisplay,
+        providerLabel: (StreamDebridCacheStatus) -> String = StreamRowModel.debridProviderLabel
+    ) -> StreamRowModel {
+        // Kotlin nullable Strings surface as non-optional Swift String, so widen explicitly.
+        let desc: String? = stream.description_
+        let rawSize: Int64? = stream.behaviorHints.videoSize?.int64Value
+        let logo: String? = stream.addonLogo
+        let badges: [StreamBadge] = stream.badges
+        return StreamRowModel(
+            key: key,
+            title: title(for: stream, instantSuffix: display.instantSuffix, providerLabel: providerLabel),
+            description: (desc ?? "").isEmpty ? nil : desc,
+            badges: badges.map { StreamBadgeInfo($0) },
+            sizeBytes: display.showFileSize ? rawSize : nil,
+            badgesOnTop: display.badgesOnTop,
+            showsAddonColumn: display.showAddonLogo,
+            addonName: stream.addonName,
+            addonLogo: (logo ?? "").isEmpty ? nil : logo,
+            isYouTube: StreamPickerView.isYouTubeResolved(stream),
+            playbackKey: stream.playbackStreamKey
+        )
+    }
+
+    /// Row title with the mobile "- <Provider> Instant" suffix on debrid-cached torrent rows
+    /// (`StreamCard.kt:instantServiceLabel`), shown only while debrid resolution is enabled and
+    /// no custom stream-name template is active (`instantSuffix`).
+    @MainActor
+    static func title(
+        for stream: StreamItem,
+        instantSuffix: Bool,
+        providerLabel: (StreamDebridCacheStatus) -> String = StreamRowModel.debridProviderLabel
+    ) -> String {
+        let base = stream.streamLabel
+        guard instantSuffix,
+              let status = stream.debridCacheStatus,
+              status.state == .cached else { return base }
+        let provider = providerLabel(status)
+        return provider.isEmpty ? base : String(localized: "\(base) - \(provider) Instant")
+    }
+
+    /// The provider's short name, else the cache status' own name, else the provider's display name.
+    static func debridProviderLabel(_ status: StreamDebridCacheStatus) -> String {
+        var provider = DebridProviders.shared.shortName(id: status.providerId)
+        if provider.trimmingCharacters(in: .whitespaces).isEmpty {
+            provider = status.providerName.trimmingCharacters(in: .whitespaces)
+        }
+        if provider.isEmpty {
+            provider = DebridProviders.shared.displayName(id: status.providerId)
+        }
+        return provider
     }
 }

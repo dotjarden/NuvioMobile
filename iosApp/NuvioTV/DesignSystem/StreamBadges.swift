@@ -19,8 +19,35 @@ enum StreamBadgeMetrics {
     static let cornerRadius: CGFloat = 8
 }
 
+/// W3-16 (F1): a plain-Swift copy of the shared `StreamBadge` (a Kotlin data class), so a stream
+/// row's value model compares with synthesized `==` — no Kotlin `isEqual` crossing per chip — and
+/// the model stays free of Kotlin objects. Same six fields, same names.
+nonisolated struct StreamBadgeInfo: Equatable {
+    let name: String
+    let imageURL: String
+    let tagColor: String
+    let tagStyle: String
+    let textColor: String
+    let borderColor: String
+
+    init(name: String, imageURL: String = "", tagColor: String = "", tagStyle: String = "",
+         textColor: String = "", borderColor: String = "") {
+        self.name = name
+        self.imageURL = imageURL
+        self.tagColor = tagColor
+        self.tagStyle = tagStyle
+        self.textColor = textColor
+        self.borderColor = borderColor
+    }
+
+    init(_ badge: StreamBadge) {
+        self.init(name: badge.name, imageURL: badge.imageURL, tagColor: badge.tagColor,
+                  tagStyle: badge.tagStyle, textColor: badge.textColor, borderColor: badge.borderColor)
+    }
+}
+
 struct StreamBadgeChipView: View {
-    let badge: StreamBadge
+    let badge: StreamBadgeInfo
 
     // BUG-28: `.settingsRow`-styled rows force `.environment(\.colorScheme, .light)` while
     // focused (see FlatControlStyles.swift), which flips SEMANTIC colors (`Theme.Palette
@@ -245,6 +272,17 @@ private struct BadgeImageView<Fallback: View>: View {
     @State private var image: UIImage?
     @State private var failed = false
 
+    /// W3-16 (F3): seeded from a synchronous peek at the decoded-thumbnail cache. A badge pack
+    /// repeats a small set of images on every row, so a row that scrolls in finds them already
+    /// decoded and draws them on its FIRST frame. Before, every new row's chips were empty
+    /// (`Color.clear`) for a frame and then swapped to the image: a second layout pass through the
+    /// `ViewThatFits` ladder per new row, in the middle of a scroll.
+    init(url: String, @ViewBuilder fallback: () -> Fallback) {
+        self.url = url
+        self.fallback = fallback()
+        _image = State(initialValue: BadgeImageMemory.peek(url))
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -256,6 +294,10 @@ private struct BadgeImageView<Fallback: View>: View {
             }
         }
         .task(id: url) {
+            if let hit = BadgeImageMemory.peek(url) {
+                if image !== hit { image = hit }
+                return
+            }
             if let loaded = await BadgeImageCache.shared.image(for: url) {
                 image = loaded
             } else {
@@ -265,9 +307,23 @@ private struct BadgeImageView<Fallback: View>: View {
     }
 }
 
+/// W3-16 (F3): the decoded badge thumbnails, readable WITHOUT hopping onto `BadgeImageCache`'s actor
+/// so a view's `init` can peek. `NSCache` is thread-safe; nothing else touches it.
+private enum BadgeImageMemory {
+    nonisolated(unsafe) private static let cache = NSCache<NSString, UIImage>()
+
+    nonisolated static func peek(_ url: String) -> UIImage? {
+        cache.object(forKey: url as NSString)
+    }
+
+    nonisolated static func store(_ image: UIImage, for url: String) {
+        cache.setObject(image, forKey: url as NSString)
+    }
+}
+
 /// Process-wide badge-art cache: one fetch + one downsampled decode per unique URL, concurrent
-/// requests for the same URL coalesced onto one task. NSCache so the (already small) decoded
-/// thumbnails still evict under memory pressure.
+/// requests for the same URL coalesced onto one task. NSCache (`BadgeImageMemory`) so the (already
+/// small) decoded thumbnails still evict under memory pressure.
 private actor BadgeImageCache {
     static let shared = BadgeImageCache()
 
@@ -275,11 +331,10 @@ private actor BadgeImageCache {
     /// Keeps every thumbnail ≤ ~0.6 MB regardless of the source PNG's size.
     private static let maxPixelSize: CGFloat = 400
 
-    private let cache = NSCache<NSString, UIImage>()
     private var inflight: [String: Task<UIImage?, Never>] = [:]
 
     func image(for url: String) async -> UIImage? {
-        if let hit = cache.object(forKey: url as NSString) { return hit }
+        if let hit = BadgeImageMemory.peek(url) { return hit }
         if let running = inflight[url] { return await running.value }
         let task = Task<UIImage?, Never> {
             guard let parsed = URL(string: url),
@@ -291,7 +346,7 @@ private actor BadgeImageCache {
         inflight[url] = task
         let result = await task.value
         inflight[url] = nil
-        if let result { cache.setObject(result, forKey: url as NSString) }
+        if let result { BadgeImageMemory.store(result, for: url) }
         return result
     }
 
