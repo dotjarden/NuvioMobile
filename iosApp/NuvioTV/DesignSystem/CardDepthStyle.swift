@@ -239,13 +239,15 @@ struct CardDepthStyle: Equatable {
         focused && ringBandReserved
     }
 
-    // MARK: - W3-13: shared rail geometry, and the white-rail × tint identity
+    // MARK: - W3-13: geometry shared with CardDepthRasterCache, and the white-rail × tint identity
 
-    /// Where the top sheen's gradient reaches clear, as a fraction of the artwork's height.
+    /// Where the top sheen's gradient reaches clear, as a fraction of the artwork's height. One
+    /// value for the live layer and `CardDepthRasterCache`'s sheen bitmap.
     nonisolated static let sheenFadeLocation: Double = 0.22
 
     /// The coverage mask's band, as fractions of the artwork's height: opaque down to `fadeStart`,
-    /// clear from `fadeEnd` (formulas and rationale on `CardDepthOverlay.coverageMask`).
+    /// clear from `fadeEnd` (formulas and rationale on `CardDepthOverlay.coverageMask`). One source
+    /// for the live mask and `CardDepthRasterCache`'s rail bitmap.
     nonisolated static func coverageBand(coverage: Double) -> (fadeStart: Double, fadeEnd: Double) {
         let fadeEnd = min(0.28 + 0.44 * coverage + 0.28 * coverage * coverage, 1)
         let fadeStart = min(fadeEnd * (0.35 + 0.65 * coverage), fadeEnd)
@@ -492,7 +494,15 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 ///   sheen. White × tint equals the tinted stop at every stop (`CardDepthStyle.multipliedRailStop`,
 ///   checked against SwiftUI's own `.opacity` in `CardDepthRasterCacheTests`), so the colour
 ///   landing is a colour change, not a redraw.
-/// - **Per mount.** Still paid: every card mount rasterises both gradients once.
+/// - **Per mount.** What is left is chosen by the launch-latched, Release-readable
+///   `-debug.cardDepthRender` (`HomePerfKnobs.CardDepthRender`) for the rig A/B: 0 draws the live
+///   SwiftUI layers (today's raster), 1 the same layers inside one `.drawingGroup()` (Metal, one
+///   offscreen texture per card), 2 white rail and sheen bitmaps from `CardDepthRasterCache`,
+///   rendered once per key and shared by every card of the same size and setting. A shape the cache
+///   cannot key (none today: cards pass `RoundedRectangle`, the cast avatar `Circle`) falls back to 1.
+///
+/// Whatever the variant, the root carries `DebugAXIdentifier("card_depth_rail")` OUTSIDE any
+/// `drawingGroup`, so test50 still reads the rail's rect as the artwork's.
 private struct CardDepthOverlay<S: InsettableShape>: View {
     let shape: S
     let style: CardDepthStyle
@@ -508,6 +518,8 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): rail colour override, nil = white.
     /// W3-13: applied by `.colorMultiply` over the white rail.
     var railTint: Color?
+    /// W3-13 variant 2: the cached bitmaps are keyed on, and rendered at, the screen's pixel scale.
+    @Environment(\.displayScale) private var displayScale
 
     /// Every number the layers draw from, resolved once per body.
     private struct Params {
@@ -535,16 +547,37 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     }
 
     var body: some View {
-        liveLayers(params)
+        rendered(params)
             .allowsHitTesting(false)
             // BUG-91 gate (test50): this root fills whatever box `nuvioCardDepth` was attached to, so
             // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
             // picture" against real geometry instead of hunting a 1-3pt hairline in a screenshot.
-            // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift).
+            // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift). W3-13: kept
+            // here, outside every variant's `drawingGroup`.
             .modifier(DebugAXIdentifier("card_depth_rail"))
     }
 
-    /// The SwiftUI layers.
+    /// W3-13 (3): the raster variant. `HomePerfKnobs.cardDepthRender` is latched at launch, so this
+    /// switch never changes for the life of the process.
+    @ViewBuilder
+    private func rendered(_ p: Params) -> some View {
+        switch HomePerfKnobs.cardDepthRender {
+        case .live:
+            liveLayers(p)
+        case .drawingGroup:
+            liveLayers(p).drawingGroup()
+        case .rasterCache:
+            // The bitmaps carry no halo (inert since rc14: `railHaloSpread` is 0); a revived halo, or
+            // a shape the cache has no kind for, takes variant 1 instead of drawing a wrong rail.
+            if p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
+                cachedLayers(p, kind: kind)
+            } else {
+                liveLayers(p).drawingGroup()
+            }
+        }
+    }
+
+    /// Variants 0 and 1: the SwiftUI layers.
     private func liveLayers(_ p: Params) -> some View {
         ZStack {
             if p.sheen > 0 {
@@ -562,6 +595,38 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             if p.edge > 0 {
                 railVisibility(edgeHighlight(p).colorMultiply(CardDepthStyle.railColor(tint: railTint)))
             }
+        }
+    }
+
+    /// Variant 2: the same two layers as shared white bitmaps (`CardDepthRasterCache`). The size
+    /// comes from a `GeometryReader` (a layout pass, no state write); the rail takes the tint by
+    /// multiply and the focus by opacity exactly as the live rail does. The bitmaps are decorative,
+    /// so they stay out of the accessibility tree (the root's `DebugAXIdentifier` is outside).
+    private func cachedLayers(_ p: Params, kind: CardDepthRasterCache.ShapeKind) -> some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            ZStack(alignment: .topLeading) {
+                if p.sheen > 0,
+                   let sheen = CardDepthRasterCache.shared.image(
+                       for: .sheen(size: size, scale: displayScale, shape: kind, sheen: p.sheen)) {
+                    Image(uiImage: sheen)
+                        .resizable()
+                        .frame(width: size.width, height: size.height)
+                }
+                if p.edge > 0,
+                   let rail = CardDepthRasterCache.shared.image(
+                       for: .rail(size: size, scale: displayScale, shape: kind,
+                                  lineWidth: p.width, stops: p.stops, coverage: p.coverage)) {
+                    railVisibility(
+                        Image(uiImage: rail)
+                            .resizable()
+                            .frame(width: size.width, height: size.height)
+                            .colorMultiply(CardDepthStyle.railColor(tint: railTint))
+                    )
+                }
+            }
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .accessibilityHidden(true)
         }
     }
 
@@ -656,7 +721,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// so every intermediate value gets a sensible band. Both converge on 1.0 as c → 1, i.e. the mask
     /// degenerates to "opaque everywhere"; `edgeHighlight` takes that limit exactly by dropping the
     /// mask at Full rather than emitting coincident stops at location 1. W3-13: the formulas live in
-    /// `CardDepthStyle.coverageBand`.
+    /// `CardDepthStyle.coverageBand`, shared with `CardDepthRasterCache`'s rail bitmap.
     ///
     /// The fractions are relative to the masked view's own height, and this overlay is sized to the
     /// card's artwork frame (see `nuvioCardDepth`), so the band is measured against the artwork —
