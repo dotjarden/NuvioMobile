@@ -90,7 +90,70 @@ enum DetailRowAnchor {
     /// thumbnails can finish loading after the settle, and the engine re-reveals the resized card
     /// (fixture step 6: 286 pt short). One retry, never a loop — the Home bounce class.
     static let verifyTolerance: CGFloat = 24
-    static let verifyDelay: TimeInterval = 0.45
+    /// `nonisolated` (W3-15) so the pure `verifyDelay(for:)` below can read it.
+    nonisolated static let verifyDelay: TimeInterval = 0.45
+
+    // MARK: - W3-15 (BUG-153): the anchor glide's duration
+
+    /// W3-15 (BUG-153, "the first Down is too abrupt"): on the Cinematic page, press 1 is the hero
+    /// exit — `startBlendAnchor("hero-exit")` → `anchorPass`, our own scroll over ~766pt (the hero
+    /// is the container − 236) — while presses 2 and 3 are the focus engine's one-row reveal. At a
+    /// fixed 0.3s that glide is the fastest motion on the page: an `easeOut` starts at ~1.7× its
+    /// mean speed, ~4,400pt/s, and it takes over from the engine's slow start. The Up into the hero
+    /// (`heroTopPass`) is the same 766pt in reverse.
+    ///
+    /// So the glide's duration follows its travel: `anchorDurationFloor × travel /
+    /// anchorReferenceTravel`, held to `[anchorDurationFloor, anchorDurationCap]`. Every pass up to
+    /// 380pt keeps today's 0.3s exactly (row-to-row Up anchors and Down straddle rescues stay as
+    /// they are); the hero's 766pt takes ≈0.6s; nothing takes longer than 0.65s.
+    nonisolated static let anchorDurationFloor: TimeInterval = 0.3
+    /// The longest glide, whatever the travel: past ~823pt every pass takes this.
+    nonisolated static let anchorDurationCap: TimeInterval = 0.65
+    /// The travel the floor is sized for: at or under it, the 0.3s the anchor has always used.
+    nonisolated static let anchorReferenceTravel: CGFloat = 380
+    /// How long after a glide ends the verify pass may run. The verify re-issues `scrollTo` with a
+    /// fresh animation when the rest drifted; fired while a longer glide is still running, it
+    /// restarts the curve mid-flight, which shows as a kink.
+    nonisolated static let verifySlack: TimeInterval = 0.1
+
+    /// The Release-readable override, latched at launch: `-debug.detailAnchorSeconds 0.45` on the
+    /// rig (or `defaults write com.nuvio.media.NuvioTV debug.detailAnchorSeconds -float 0.45`)
+    /// makes EVERY anchor glide take that long, whatever its travel. `0.3` reproduces the
+    /// pre-W3-15 behaviour exactly, for the A/B. Unset, 0, negative or non-numeric = off.
+    nonisolated static let anchorSecondsKey = "debug.detailAnchorSeconds"
+    /// The override's ceiling, so a typo cannot park the page in a multi-second glide.
+    nonisolated static let anchorSecondsOverrideMax: TimeInterval = 2
+    nonisolated static let anchorSecondsOverride: TimeInterval? = anchorSecondsOverride(from: .standard)
+
+    /// The knob's parse, pure over its `UserDefaults` so the test can drive a scratch suite. A
+    /// launch argument arrives as a string (`UserDefaults.double(forKey:)` converts it).
+    nonisolated static func anchorSecondsOverride(from defaults: UserDefaults) -> TimeInterval? {
+        guard defaults.object(forKey: anchorSecondsKey) != nil else { return nil }
+        let seconds = defaults.double(forKey: anchorSecondsKey)
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return min(seconds, anchorSecondsOverrideMax)
+    }
+
+    /// The glide's duration for `travel` points (either sign; the content-offset distance the
+    /// `scrollTo` will cover), or `override` when the knob is set. Monotonic in `|travel|`.
+    nonisolated static func anchorDuration(travel: CGFloat, override: TimeInterval?) -> TimeInterval {
+        if let override { return override }
+        let distance = travel.isNaN ? 0 : abs(travel)
+        let scaled = anchorDurationFloor * TimeInterval(distance / anchorReferenceTravel)
+        return min(max(scaled, anchorDurationFloor), anchorDurationCap)
+    }
+
+    /// `anchorDuration(travel:override:)` with the launch-latched knob — what `DetailView` calls.
+    nonisolated static func anchorDuration(travel: CGFloat) -> TimeInterval {
+        anchorDuration(travel: travel, override: anchorSecondsOverride)
+    }
+
+    /// The verify pass's wait after a glide of `duration`: the old `verifyDelay` (0.45s), or the
+    /// glide plus `verifySlack` when that is longer, so the verify never lands mid-glide. At the
+    /// floor this is the old 0.45s unchanged.
+    nonisolated static func verifyDelay(for duration: TimeInterval) -> TimeInterval {
+        max(verifyDelay, duration + verifySlack)
+    }
 
     /// BUG-99 (rc6): the DOWN-only settle wait. Down no longer blends or arms a fallback — it just
     /// lets the engine's own minimal reveal run, waits for it to have settled, then straddle-checks

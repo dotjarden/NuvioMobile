@@ -258,3 +258,116 @@ final class DetailRowAnchorHeroTransitionTests: XCTestCase {
         XCTAssertEqual(DetailRowAnchor.direction(old: .about, oldTop: 1400, newTop: 900), .up)
     }
 }
+
+/// W3-15 (BUG-153, "the first Down is too abrupt"): the anchor glide's duration follows its travel
+/// — 0.3s up to 380pt (every short pass unchanged), ≈0.6s for the Cinematic hero's ~766pt exit,
+/// never past 0.65s — and the verify pass waits for the glide to finish before it may re-issue.
+@MainActor
+final class DetailRowAnchorDurationTests: XCTestCase {
+    /// The Cinematic hero exit's travel on the 1080 fixture: the hero is the container − 236.
+    private let heroExitTravel: CGFloat = 766
+
+    private func duration(_ travel: CGFloat) -> TimeInterval {
+        DetailRowAnchor.anchorDuration(travel: travel, override: nil)
+    }
+
+    func testShortPassesKeepTheOldPointThreeSeconds() {
+        XCTAssertEqual(DetailRowAnchor.anchorDurationFloor, 0.3)
+        for travel: CGFloat in [0, 0.5, 24, 120, 300, 379.9, 380] {
+            XCTAssertEqual(duration(travel), 0.3, accuracy: 1e-9, "travel \(travel)")
+        }
+    }
+
+    func testTheHeroExitTakesAboutPointSix() {
+        let seconds = duration(heroExitTravel)
+        XCTAssertEqual(seconds, 0.3 * 766 / 380, accuracy: 1e-9)
+        XCTAssertEqual(seconds, 0.6, accuracy: 0.01)
+        // The hero return (`heroTopPass`) is the same distance in reverse.
+        XCTAssertEqual(duration(-heroExitTravel), seconds, accuracy: 1e-9)
+    }
+
+    func testTheCapHolds() {
+        XCTAssertEqual(DetailRowAnchor.anchorDurationCap, 0.65)
+        for travel: CGFloat in [823.4, 900, 1080, 4000, .greatestFiniteMagnitude, .infinity, -.infinity] {
+            XCTAssertEqual(duration(travel), 0.65, accuracy: 1e-9, "travel \(travel)")
+        }
+        XCTAssertLessThan(duration(820), 0.65)
+    }
+
+    func testDurationIsMonotonicInTravel() {
+        var previous = duration(0)
+        var travel: CGFloat = 0
+        while travel <= 2000 {
+            let current = duration(travel)
+            XCTAssertGreaterThanOrEqual(current, previous, "travel \(travel)")
+            XCTAssertEqual(duration(-travel), current, accuracy: 1e-12, "the sign of the travel never matters")
+            previous = current
+            travel += 0.5
+        }
+    }
+
+    func testNaNTravelTakesTheFloor() {
+        XCTAssertEqual(duration(.nan), 0.3, accuracy: 1e-9)
+    }
+
+    func testVerifyWaitsForTheGlidePlusSlack() {
+        XCTAssertEqual(DetailRowAnchor.verifySlack, 0.1)
+        // At the floor the verify keeps its old 0.45s.
+        XCTAssertEqual(DetailRowAnchor.verifyDelay(for: 0.3), DetailRowAnchor.verifyDelay, accuracy: 1e-9)
+        XCTAssertEqual(DetailRowAnchor.verifyDelay, 0.45)
+        // The hero exit: the verify may not land before the 0.6s glide has finished.
+        let hero = duration(heroExitTravel)
+        XCTAssertEqual(DetailRowAnchor.verifyDelay(for: hero), hero + 0.1, accuracy: 1e-9)
+        XCTAssertEqual(DetailRowAnchor.verifyDelay(for: DetailRowAnchor.anchorDurationCap), 0.75, accuracy: 1e-9)
+        var travel: CGFloat = 0
+        while travel <= 2000 {
+            let glide = duration(travel)
+            let verify = DetailRowAnchor.verifyDelay(for: glide)
+            XCTAssertGreaterThanOrEqual(verify, glide + DetailRowAnchor.verifySlack - 1e-12, "travel \(travel)")
+            XCTAssertGreaterThanOrEqual(verify, DetailRowAnchor.verifyDelay, "travel \(travel)")
+            travel += 10
+        }
+    }
+
+    // MARK: - debug.detailAnchorSeconds
+
+    func testAnOverrideReplacesTheFormulaWhateverTheTravel() {
+        for travel: CGFloat in [0, 380, 766, 4000] {
+            XCTAssertEqual(DetailRowAnchor.anchorDuration(travel: travel, override: 0.45), 0.45, "travel \(travel)")
+        }
+        XCTAssertEqual(DetailRowAnchor.verifyDelay(for: 1.2), 1.3, accuracy: 1e-9,
+                       "a long override still pushes the verify past its glide")
+    }
+
+    func testTheLiveFormUsesTheLatchedKnob() {
+        for travel: CGFloat in [0, 766, 4000] {
+            XCTAssertEqual(DetailRowAnchor.anchorDuration(travel: travel),
+                           DetailRowAnchor.anchorDuration(travel: travel, override: DetailRowAnchor.anchorSecondsOverride))
+        }
+    }
+
+    func testKnobParse() throws {
+        let suite = "test.detailAnchorSeconds.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = DetailRowAnchor.anchorSecondsKey
+        XCTAssertEqual(key, "debug.detailAnchorSeconds")
+
+        XCTAssertNil(DetailRowAnchor.anchorSecondsOverride(from: defaults), "unset = off")
+        defaults.set(0.45, forKey: key)
+        XCTAssertEqual(DetailRowAnchor.anchorSecondsOverride(from: defaults), 0.45)
+        // A launch argument (`-debug.detailAnchorSeconds 0.3`) arrives as a string.
+        defaults.set("0.3", forKey: key)
+        XCTAssertEqual(DetailRowAnchor.anchorSecondsOverride(from: defaults), 0.3)
+        defaults.set(0, forKey: key)
+        XCTAssertNil(DetailRowAnchor.anchorSecondsOverride(from: defaults), "0 = off")
+        defaults.set(-1, forKey: key)
+        XCTAssertNil(DetailRowAnchor.anchorSecondsOverride(from: defaults), "negative = off")
+        defaults.set("fast", forKey: key)
+        XCTAssertNil(DetailRowAnchor.anchorSecondsOverride(from: defaults), "non-numeric = off")
+        defaults.set(9, forKey: key)
+        XCTAssertEqual(DetailRowAnchor.anchorSecondsOverride(from: defaults),
+                       DetailRowAnchor.anchorSecondsOverrideMax, "clamped to the ceiling")
+        XCTAssertEqual(DetailRowAnchor.anchorSecondsOverrideMax, 2)
+    }
+}
