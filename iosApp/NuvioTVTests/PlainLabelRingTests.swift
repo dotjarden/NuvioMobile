@@ -62,8 +62,11 @@ final class PlainLabelRingTests: XCTestCase {
         }
     }
 
-    /// `.systemLift` would hang a SECOND `.hoverEffect(.highlight)` inside the native button lift
-    /// these labels still wear in the default mode — the one way to make the default render differ.
+    /// `FolderTile` (this resolver's default-cell caller) never asks for the system hover effect:
+    /// in the default cell it keeps the `.borderless` button's own treatment, which on tvOS lifts
+    /// only the image content of the label, not the whole label (device finding 2026-10-17), until
+    /// BUG-216 measures a whole-tile lift for it. The labels that needed one resolve elsewhere
+    /// (`DetailLabelLift` for `CastCard`, `PlainLabelRing.smallLabelLift` for `CompanyChip`).
     func testPlainLabelNeverAsksForTheSystemHoverEffect() {
         for accent in [false, true] {
             for noZoom in [false, true] {

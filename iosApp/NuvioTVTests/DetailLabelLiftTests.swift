@@ -5,8 +5,9 @@ import XCTest
 /// (`DetailLabelLift`). The default cell (Accent Focus Ring off, zoom on) is the only cell that
 /// changed: there the `.borderless` button lifts only the photo inside the avatar circle, so the
 /// avatar must wear the system lift itself. Every other cell must stay exactly what
-/// `PlainLabelRing.lift` resolved before. (The studio chip stays on `PlainLabelRing.lift`: the
-/// system lift measured ×1.19 on its 52 pt capsule, see `DetailLabelLift`.)
+/// `PlainLabelRing.lift` resolved before. (The studio chip does not take this resolver: the
+/// system lift measured ×1.19 on its 52 pt capsule, so it draws its own manual lift through
+/// `PlainLabelRing.smallLabelLift`, see `CompanyChipLiftTests`.)
 @MainActor
 final class DetailLabelLiftTests: XCTestCase {
     private let cells: [(accent: Bool, noZoom: Bool)] = [(false, false), (true, false), (false, true), (true, true)]
@@ -36,7 +37,8 @@ final class DetailLabelLiftTests: XCTestCase {
     }
 
     /// The system lift composites into its own layer, so the default cell needs no `zIndex` bump
-    /// (`liftedCastZIndex` / `liftedCompanyZIndex` already read `CardFocusMode.resolve`).
+    /// (`liftedCastZIndex` already reads `CardFocusMode.resolve`; the chip's `liftedCompanyZIndex`
+    /// reads its own manual lift, `CompanyChipLiftTests`).
     func testDefaultCellDoesNotRaiseTheFocusedCard() {
         XCTAssertFalse(DetailLabelLift.lift(accentFocusRing: false, noZoomOnFocus: false).raisesFocusedCard)
         for cell in cells {
