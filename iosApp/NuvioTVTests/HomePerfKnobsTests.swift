@@ -1,7 +1,7 @@
 import XCTest
 @testable import NuvioTV
 
-/// W2-5 (c): the rig's Home A/B knob resolves off by default and on for a `YES` launch value.
+/// W2-5 (c) / W3-13: the rig's Home A/B knobs resolve off by default and on for a launch value.
 final class HomePerfKnobsTests: XCTestCase {
 
     private var suiteName = ""
@@ -23,6 +23,7 @@ final class HomePerfKnobsTests: XCTestCase {
 
     func testKeysAreTheDocumentedLaunchArguments() {
         XCTAssertEqual(keys, ["debug.homeNoCardDepth"])
+        XCTAssertEqual(HomePerfKnobs.cardDepthRenderKey, "debug.cardDepthRender")
     }
 
     func testDefaultIsOff() {
@@ -60,5 +61,43 @@ final class HomePerfKnobsTests: XCTestCase {
     func testTheSimulatorRunHasNoKnobSet() {
         // The unit-test host launches without the knobs, so the latched values are the defaults.
         XCTAssertFalse(HomePerfKnobs.noCardDepth)
+        XCTAssertEqual(HomePerfKnobs.cardDepthRender, .live)
+    }
+
+    // MARK: - W3-13: -debug.cardDepthRender 0|1|2
+
+    private func render() -> HomePerfKnobs.CardDepthRender {
+        HomePerfKnobs.resolveCardDepthRender(HomePerfKnobs.cardDepthRenderKey, defaults: defaults)
+    }
+
+    func testRenderVariantsAreZeroOneTwo() {
+        XCTAssertEqual(HomePerfKnobs.CardDepthRender.allCases.map(\.rawValue), [0, 1, 2])
+        XCTAssertEqual(HomePerfKnobs.CardDepthRender.allCases, [.live, .drawingGroup, .rasterCache])
+    }
+
+    func testRenderDefaultsToTheLiveLayers() {
+        XCTAssertEqual(render(), .live)
+    }
+
+    func testRenderLaunchStringsSelectEachVariant() {
+        // `-debug.cardDepthRender 2` lands in the argument domain as the string "2".
+        for (raw, expected) in [("0", HomePerfKnobs.CardDepthRender.live), ("1", .drawingGroup), ("2", .rasterCache)] {
+            defaults.set(raw, forKey: HomePerfKnobs.cardDepthRenderKey)
+            XCTAssertEqual(render(), expected, raw)
+        }
+    }
+
+    func testRenderIntegersSelectEachVariant() {
+        for variant in HomePerfKnobs.CardDepthRender.allCases {
+            defaults.set(variant.rawValue, forKey: HomePerfKnobs.cardDepthRenderKey)
+            XCTAssertEqual(render(), variant)
+        }
+    }
+
+    func testRenderOutOfRangeOrGarbageIsTheLiveLayers() {
+        for raw in ["3", "-1", "99", "YES", "fast", ""] {
+            defaults.set(raw, forKey: HomePerfKnobs.cardDepthRenderKey)
+            XCTAssertEqual(render(), .live, "'\(raw)'")
+        }
     }
 }
