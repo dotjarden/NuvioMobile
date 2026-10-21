@@ -595,10 +595,11 @@ struct DetailView: View {
                                            noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
         return raises && focusedCastIndex == index ? 1 : 0
     }
-    /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row.
+    /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row. BUG-200: read off the chip's
+    /// own lift (`PlainLabelRing.smallLabelLift`), which is SwiftUI's scale in the default cell too.
     private func liftedCompanyZIndex(_ index: Int) -> Double {
-        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
-                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        let raises = PlainLabelRing.smallLabelLift(accentFocusRing: accentFocusRing,
+                                                   noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
         return raises && focusedCompanyIndex == index ? 1 : 0
     }
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
@@ -2800,8 +2801,9 @@ struct DetailView: View {
             // BUG-111: row spacing stays `Spacing.md` (16pt), unchanged — the widest chip is 180pt
             // of content plus `Spacing.md` (16pt) padding on each side (`CompanyChip`'s own
             // `.frame(maxWidth: 180)` + `.padding(.horizontal, Spacing.md)`) = 212pt, and its
-            // ring-mode growth per side is `212 × 0.12 / 2 = 12.7pt` — inside the 16pt gap with
-            // room to spare, so a lifted widest chip never touches its row neighbour.
+            // growth per side in either zoom-on mode (ring, and since BUG-200 the default cell) is
+            // `212 × 0.12 / 2 = 12.7pt` — inside the 16pt gap with room to spare, so a lifted
+            // widest chip never touches its row neighbour.
             HStack(spacing: Theme.Spacing.md) {
                 ForEach(Array(companies.enumerated()), id: \.offset) { index, entry in
                     if let tmdbId = entry.company.tmdbId?.value {
@@ -2824,8 +2826,10 @@ struct DetailView: View {
                         // `.manualScale` lift), so it joins the same sweep `CastCard`/`FolderTile`
                         // already made — No Zoom now reaches this row too, and ring mode's manual
                         // lift replaces the native `.borderless` lift here exactly as it does for
-                        // those two (the default `lift: .card`; see `CardButtonLift`).
-                        .cardFocusButtonStyle()
+                        // those two (see `CardButtonLift`).
+                        // BUG-200: `.manual` — the chip lifts itself in the default cell too
+                        // (`PlainLabelRing.smallLabelLift`), so no zoom-on cell is `.borderless`.
+                        .cardFocusButtonStyle(lift: .manual)
                         .focused($focusedCompanyIndex, equals: index)
                         .zIndex(liftedCompanyZIndex(index))
                     } else {
@@ -3229,16 +3233,17 @@ private struct DetailTrailersRow: View {
 /// own default treatment under the same `.borderless` button), and which `CardCaptionFocusDrop`
 /// answers by dropping the name and role 20 pt with it. Ring mode stays `.manualScale` and both
 /// No Zoom cells stay `.still(ringed:)`, byte-identical to before. `PlainLabelRing.lift` itself
-/// is untouched: `FolderTile` and `CompanyChip` still resolve through it.
+/// is untouched: `FolderTile` still resolves through it.
 ///
 /// Measured on the tvOS 27 simulator (`DetailLabelLiftMeasureUITests`, 2026-10-21): the system
 /// lift scales the 140 pt avatar ×1.32 (22.6 pt per side, symmetric), inside the cast row's 34 pt
 /// gap; its platter is a circle only because `castRow` sets `.buttonBorderShape(.circle)` on the
-/// link (the system takes the button's border shape, not the avatar's content shape). The same lift on the 52 × 212 pt studio capsule measured ×1.19 (20 pt per side against a
-/// 16 pt row gap), over the ×1.15 ceiling, so the chip's half of BUG-200 is NOT taken here: it
-/// needs its own manual lift in the default cell (`.manualScale` with `smallLabelRise`, ×1.12),
-/// which takes a new `CardButtonLift` case in `PosterCard.swift` so `cardFocusButtonStyle` drops
-/// `.borderless` for it.
+/// link (the system takes the button's border shape, not the avatar's content shape). The same
+/// lift on the 52 × 212 pt studio capsule measured ×1.19 (20 pt per side against a 16 pt row gap),
+/// over the ×1.15 ceiling, so the chip does NOT take this resolver: it draws its own manual lift
+/// in the default cell (`PlainLabelRing.smallLabelLift`: `.manualScale` with `smallLabelRise`,
+/// ×1.12, no platter), under `cardFocusButtonStyle(lift: .manual)`, the `CardButtonLift` case that
+/// drops `.borderless` for it.
 enum DetailLabelLift {
     static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
         CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
@@ -3408,13 +3413,14 @@ private struct CompanyChip: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// BUG-111: same architecture as `FolderTile`/`CastCard` — ring mode takes the native
-    /// `.borderless` lift away from this label (`cardFocusButtonStyle`'s default `lift: .card`),
-    /// so the chip must draw its own in that mode and stay a no-op in the other two.
-    /// BUG-200: still a no-op in the default cell, where `.borderless` lifts only the logo inside
-    /// the white capsule. The system lift measured ×1.19 on this capsule (see `DetailLabelLift`),
-    /// too large for the 16 pt row gap, so the chip waits for its own manual default-cell lift.
+    /// `.borderless` lift away from this label, so the chip draws its own there.
+    /// BUG-200 (GitHub #9 item 1): and in the default cell too. Under `.borderless` only the logo
+    /// lifted out of the white capsule (a name-only chip got no cue at all), and the system lift
+    /// measured ×1.19 on this capsule (see `DetailLabelLift`), past the 16 pt row gap. So the row
+    /// passes `cardFocusButtonStyle(lift: .manual)` (a custom style in both zoom-on cells) and the
+    /// chip scales itself ×1.12 (`smallLabelRise`) in both; No Zoom stays the still ring.
     private var artworkLift: CardFocusMode {
-        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+        PlainLabelRing.smallLabelLift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
 
     var body: some View {
@@ -3470,7 +3476,11 @@ private struct CompanyChip: View {
             // `PlainLabelRing.smallLabelRise` exist — the flat 20pt every other card class rises
             // by would more than double this 52pt capsule (`1 + 2×20/52 ≈ 1.77`) inside a 16pt
             // row gap; see `PlainLabelRing.smallLabelScaleCeiling`'s doc comment for the math.
-            rise: CompanyChipMetrics.focusRise
+            rise: CompanyChipMetrics.focusRise,
+            // BUG-200: the black platter + shadow in ring mode only; the default cell scales the
+            // capsule alone (no dark slab behind a white chip).
+            focusShadow: PlainLabelRing.smallLabelPlatter(accentFocusRing: accentFocusRing,
+                                                          noZoomOnFocus: noZoomOnFocus)
         ))
         .modifier(DebugAXIdentifier("company_card"))
         // No `CardCaptionFocusDrop` — the chip has no caption slot below it to drop. No
