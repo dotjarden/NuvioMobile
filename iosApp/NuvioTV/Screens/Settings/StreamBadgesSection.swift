@@ -7,10 +7,13 @@ import SharedCore
 /// preserved verbatim.
 ///
 /// beta.15 §C (C3a): the three toggles bind straight to the view-model instead of the legacy
-/// value+action shim. The per-pack row (name/filter-count + Active-or-"Set Active" + delete) and
-/// `BadgeUrlEntryRow` stay custom compositions — no kit primitive covers a row with two
-/// independent trailing actions, or a URL importer with an async progress state — see the C3a
-/// report for the full rationale.
+/// value+action shim.
+///
+/// BUG-213 (GitHub #10): the per-pack row (name/filter-count + Active-or-"Set Active" + delete)
+/// and `BadgeUrlEntryRow` used to be one List row each holding two controls, and a tvOS List row
+/// is one focus target (the BUG-197 diagnosis), so the controls highlighted as one block. Each is
+/// now two List rows built from the settings kit: a pack row that sets the pack active and a
+/// separate Delete row; a URL field row and a separate Import row.
 struct StreamBadgesSection: View {
     @ObservedObject var badges: BadgeSettingsViewModel
 
@@ -47,36 +50,33 @@ struct StreamBadgesSection: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
         } else {
             ForEach(badges.imports, id: \.sourceUrl) { pack in
-                HStack(spacing: Theme.Spacing.md) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                        Text(BadgeSettingsViewModel.packLabel(pack.sourceUrl))
-                            .font(Theme.Font.body.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .lineLimit(1)
-                        Text(pack.enabledFilterCount == 1 ? String(localized: "1 filter \u{00B7} \(pack.sourceUrl)") : String(localized: "\(pack.enabledFilterCount) filters \u{00B7} \(pack.sourceUrl)"))
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .lineLimit(1)
+                // Two List rows per pack, not one: the Set Active button and the Delete button
+                // used to share a row, which the tvOS List treats as ONE focus target.
+                Button {
+                    // The active pack already is what a press would set; nothing to do.
+                    if !pack.isActive { badges.setActive(pack.sourceUrl) }
+                } label: {
+                    SettingsRowChrome {
+                        SettingsRowLabel(
+                            title: BadgeSettingsViewModel.packLabel(pack.sourceUrl),
+                            subtitle: pack.enabledFilterCount == 1 ? String(localized: "1 filter \u{00B7} \(pack.sourceUrl)") : String(localized: "\(pack.enabledFilterCount) filters \u{00B7} \(pack.sourceUrl)"),
+                            systemImage: pack.isActive ? "checkmark.circle.fill" : "checkmark.circle",
+                            descriptionID: .appearanceBadgePack
+                        )
+                        .lineLimit(1)
+                    } trailing: {
+                        SettingsTrailingValue(
+                            value: pack.isActive ? String(localized: "Active") : String(localized: "Set Active"),
+                            showsChevron: false
+                        )
                     }
-                    Spacer()
-                    if pack.isActive {
-                        Label("Active", systemImage: "checkmark.circle.fill")
-                            .font(Theme.Font.meta)
-                            .foregroundStyle(Theme.Palette.accent)
-                    } else {
-                        Button("Set Active") { badges.setActive(pack.sourceUrl) }
-                            .buttonStyle(.chip)
-                            .font(Theme.Font.meta)
-                            .settingsDescription(.appearanceBadgePack, title: String(localized: "Set Active"), systemImage: "checkmark.circle")
-                    }
-                    Button {
-                        badges.deletePack(pack.sourceUrl)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(Theme.Font.caption)
-                            .settingsDescription(.appearanceBadgePack, title: String(localized: "Delete Badge Pack"), systemImage: "trash")
-                    }
-                    .buttonStyle(.chip)
+                }
+                SettingsDestructiveRow(
+                    title: String(localized: "Delete Badge Pack"),
+                    systemImage: "trash",
+                    descriptionID: .appearanceBadgePack
+                ) {
+                    badges.deletePack(pack.sourceUrl)
                 }
             }
         }
@@ -91,7 +91,11 @@ struct StreamBadgesSection: View {
     }
 }
 
-/// URL entry + import button for a stream badge pack (mirrors `PluginRepoEntryRow`).
+/// URL entry + import button for a stream badge pack (mirrors `PluginRepoEntryRow`). BUG-213: the
+/// `Group` body yields TWO List rows, the URL field row (rest platter follows the field's
+/// `@FocusState`, a `TextField` has no label to read `\.isFocused` from) and an Import kit row,
+/// so each is its own focus target. `@State url` stays owned by this struct. No in-content glass
+/// (HIG hybrid contract: glass is floating chrome).
 private struct BadgeUrlEntryRow: View {
     let isImporting: Bool
     let onImport: (String) -> Void
@@ -99,38 +103,39 @@ private struct BadgeUrlEntryRow: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        Group {
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "tag")
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .font(SettingsRowFont.title)
+                    .foregroundStyle(.secondary)
                 TextField("Badge pack JSON URL", text: $url)
                     .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .font(SettingsRowFont.title)
                     .focused($fieldFocused)
             }
+            .modifier(SettingsRestPlatter(explicitFocus: fieldFocused))
             .settingsDescription(.appearanceBadgeImport, title: String(localized: "Badge pack JSON URL"), systemImage: "tag", focused: fieldFocused)
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
+            // Not `.disabled(isImporting)`: the pressed button lost focus. Guarded in the action,
+            // and the label stays the same row while importing (the spinner rides in `trailing`).
             Button {
                 if !url.isEmpty, !isImporting {
                     onImport(url)
                     url = ""
                 }
             } label: {
-                if isImporting {
-                    ProgressView()
-                } else {
-                    Label("Import Badge Pack", systemImage: "plus")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.lg)
-                        .padding(.vertical, Theme.Spacing.xxs + 2)
-                        .settingsDescription(.appearanceBadgeImport, title: String(localized: "Import Badge Pack"), systemImage: "plus")
+                SettingsRowChrome {
+                    SettingsRowLabel(
+                        title: String(localized: "Import Badge Pack"),
+                        systemImage: "plus",
+                        descriptionID: .appearanceBadgeImport
+                    )
+                } trailing: {
+                    if isImporting {
+                        ProgressView().scaleEffect(0.6)
+                    }
                 }
             }
-            .buttonStyle(.borderedProminent)
-            // Not `.disabled(isImporting)`: the pressed button lost focus. Guarded in the action.
         }
     }
 }
