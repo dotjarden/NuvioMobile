@@ -1,11 +1,14 @@
 import XCTest
 
-/// BUG-200 (GitHub #9 item 1): measures the SYSTEM lift the Detail Cast avatar (140 pt circle) and
-/// the studio/network chip (52 pt capsule) wear in the default cell (Accent Focus Ring off, zoom
-/// on) once `DetailLabelLift` hands them `.systemLift`.
+/// BUG-200 (GitHub #9 item 1): measures the lift the Detail Cast avatar (140 pt circle) and the
+/// studio/network chip (52 pt capsule) wear in the default cell (Accent Focus Ring off, zoom on):
+/// the SYSTEM lift on the avatar (`DetailLabelLift` → `.systemLift`), and the chip's own manual
+/// ×1.12 scale (`cardFocusButtonStyle(lift: .manual)` + `PlainLabelRing.smallLabelLift`).
 ///
-/// The system `.hoverEffect(.highlight)` is render-only: AX frames never follow it, so the lift is
-/// read off screenshots against the layout boxes the DEBUG `-debug.cardGeometryProbe YES` probes
+/// The system `.hoverEffect(.highlight)` is render-only (AX frames never follow it), while the
+/// chip's `.scaleEffect` does carry its probe's AX frame (×1.12 about the centre, sim 2026-10-21),
+/// so the lift is read off screenshots, aligned on the centre of the layout boxes (which neither
+/// lift moves) the DEBUG `-debug.cardGeometryProbe YES` probes
 /// publish (`cast_artwork`, `company_artwork`). Same idea as test44's luma edge finder, two
 /// oracles because the two labels differ:
 ///  - **Chip**: a white capsule on the dark page. From seeds inside the capsule's white padding the
@@ -21,8 +24,11 @@ import XCTest
 /// the tvOS 27 simulator, 2026-10-21, with both labels on `.systemLift`: avatar ×1.32 (22.6 pt per
 /// side, symmetric, NCC 0.988), capsule ×1.19 (212 → 252 pt, 52 → 62 pt, symmetric). The capsule's
 /// reading is over critique §2's ×1.15 ceiling (it overlaps a neighbour across the 16 pt gap), so
-/// the chip stays on `PlainLabelRing.lift`; its leg now guards that ceiling, and the cast leg that
-/// the avatar lifts and clears its neighbour.
+/// the chip moved to its own manual lift (×1.12); its leg guards the ×1.08 … ×1.13 window, a
+/// symmetric rise and a clear neighbour, and the cast leg that the avatar lifts and clears its
+/// neighbour. Chip reading on the manual lift (The Dark Knight, 4 chips, same day): 212 × 52 →
+/// 237 × 58 pt (×1.118 / ×1.115, AX box ×1.120), rise = drop = 3.0 pt, 12.5 pt per side, 3.5 pt
+/// clear of the resting neighbour; avatar re-measured ×1.3225, unchanged.
 ///
 /// TMDB enrichment (cast links, logos) comes from `-tmdb_enabled_1 YES` in the argument domain:
 /// read, never written, for the fixture's local profile.
@@ -119,6 +125,41 @@ final class DetailLabelLiftMeasureUITests: XCTestCase {
     /// Titles with TMDB studio logos and TMDB-linked cast (the deep links `RevampEvidenceTests` uses).
     private let titles = ["nuviotv://title?id=tt15239678&type=movie&name=Dune",
                           "nuviotv://title?id=tt0903747&type=series&name=Breaking%20Bad"]
+
+    /// Titles for the chip leg, the most studio logos first: its neighbour check needs a second
+    /// chip, and Dune (the cast leg's first title) shows one. Breaking Bad and Dune are fallbacks.
+    private let chipTitles = ["nuviotv://title?id=tt0468569&type=movie&name=The%20Dark%20Knight",
+                              "nuviotv://title?id=tt0903747&type=series&name=Breaking%20Bad",
+                              "nuviotv://title?id=tt15239678&type=movie&name=Dune"]
+
+    /// Distinct boxes carrying `identifier`, left to right. The probe can publish each one twice,
+    /// and a focused chip's box is scaled about its centre, so boxes are told apart by centre.
+    private func distinct(_ frames: [CGRect]) -> [CGRect] {
+        var boxes: [CGRect] = []
+        for box in frames where !boxes.contains(where: { abs($0.midX - box.midX) < 1 }) { boxes.append(box) }
+        return boxes
+    }
+
+    /// Opens the chip titles until one has a focusable logo row with at least two chips; failing
+    /// that, the first title that had one chip (relaunched if a later title was tried after it).
+    private func openChipRow() -> XCUIApplication? {
+        var single: String?
+        for (index, url) in chipTitles.enumerated() {
+            let app = launchToDetail(url)
+            guard walkDown(to: "logos", in: app) else {
+                attach("\(url) has no focusable logos row; trail=\(walkTrail)", "chip_route\(index)")
+                continue
+            }
+            let count = distinct(namedFrames(app, "company_artwork")).count
+            attach("\(url): \(count) chip(s)", "chip_route\(index)")
+            if count >= 2 { return app }
+            if single == nil { single = url }
+            if index == chipTitles.count - 1, single == url { return app }
+        }
+        guard let single else { return nil }
+        let app = launchToDetail(single)
+        return walkDown(to: "logos", in: app) ? app : nil
+    }
 
     /// Opens the titles' Detail pages until one has a focusable `row`.
     private func openDetail(withRow row: String) -> XCUIApplication? {
@@ -280,9 +321,12 @@ final class DetailLabelLiftMeasureUITests: XCTestCase {
 
     // MARK: - Legs
 
-    /// Studio/network chip, default cell: focused chip vs the same chip at rest.
-    func testChipSystemLiftInDefaultCell() throws {
-        guard let app = openDetail(withRow: "logos") else {
+    /// Studio/network chip, default cell: focused chip vs the same chip at rest. BUG-200: the chip
+    /// draws its own ×1.12 manual lift there (no platter), so its capsule must grow inside the
+    /// ×1.08 … ×1.13 window, about its own centre (rise == drop == `smallLabelRise`, 3.12 pt), and
+    /// stay clear of its resting neighbour.
+    func testChipManualLiftInDefaultCell() throws {
+        guard let app = openChipRow() else {
             throw XCTSkip("no title on the route had a focusable studio/network logo row")
         }
         // Park on the leftmost chip so Right has somewhere to go.
@@ -312,33 +356,58 @@ final class DetailLabelLiftMeasureUITests: XCTestCase {
         guard focusedIndex < framesA.count, focusedIndex < framesB.count else {
             throw XCTSkip("focused chip index \(focusedIndex) has no company_artwork frame (\(framesA.count) chips)")
         }
-        let frame = framesA[focusedIndex]
-        // The page may scroll when focus leaves the row: shot B is read at the chip's NEW layout box.
-        let frameB = framesB[focusedIndex]
+        // Shot A's box is the FOCUSED chip's: its AX frame follows the `.scaleEffect`. Shot B's is
+        // the resting layout box (read there: the page may scroll when focus leaves the row).
+        let boxesA = distinct(framesA)
+        let boxesB = distinct(framesB)
+        guard focusedIndex < boxesA.count, focusedIndex < boxesB.count else {
+            throw XCTSkip("focused chip index \(focusedIndex) has no distinct company_artwork box (\(boxesA.count) / \(boxesB.count))")
+        }
+        let frame = boxesA[focusedIndex]
+        let frameB = boxesB[focusedIndex]
         let imageA = try LumaImage(shotA, windowWidth: app.frame.width)
         let imageB = try LumaImage(shotB, windowWidth: app.frame.width)
         guard let liftedRaw = brightBox(imageA, frame: frame), let restRaw = brightBox(imageB, frame: frameB) else {
             throw XCTSkip("the chip's white capsule was not found around \(frame) / \(frameB)")
         }
-        // Both boxes in the chip's own layout coordinates (shot B shifted by the scroll).
+        // Both boxes in shot A's coordinates: shot B shifted by the scroll, measured on the box
+        // CENTRES, which neither a centre scale nor the system lift moves.
         let lifted = liftedRaw
-        let rest = restRaw.offsetBy(dx: frame.minX - frameB.minX, dy: frame.minY - frameB.minY)
-        var calibration = "none"
-        if let neighbour = framesA.indices.first(where: { $0 != focusedIndex }),
-           let restA = brightBox(imageA, frame: framesA[neighbour]) {
-            calibration = "neighbour \(neighbour) layout=\(framesA[neighbour]) measured=\(restA)"
-        }
+        let rest = restRaw.offsetBy(dx: frame.midX - frameB.midX, dy: frame.midY - frameB.midY)
+        let restLayout = frameB.offsetBy(dx: frame.midX - frameB.midX, dy: frame.midY - frameB.midY)
+        // The model's own reading: the AX box's growth (1 where AX ignores the lift).
+        let axScale = frameB.width > 0 ? frame.width / frameB.width : 0
+        // The resting neighbour to the right, in shot A.
+        let neighbourBox = boxesA.first(where: { $0.minX > restLayout.maxX - 1 })
+        let neighbourRest = neighbourBox.flatMap { brightBox(imageA, frame: $0) }
         let scaleW = lifted.width / rest.width
         let scaleH = lifted.height / rest.height
         let rise = rest.minY - lifted.minY
         let drop = lifted.maxY - rest.maxY
-        attach(String(format: "layout=%@ restMeasured=%@ liftedMeasured=%@ scaleW=%.4f scaleH=%.4f rise=%.2fpt drop=%.2fpt growthPerSide=%.2fpt calibration=%@",
-                      "\(frame)", "\(rest)", "\(lifted)", scaleW, scaleH, rise, drop,
-                      (lifted.width - rest.width) / 2, calibration), "200_chip_lift")
-        XCTAssertEqual(rest.height, frame.height, accuracy: 3, "the resting capsule should measure its own 52 pt layout height")
-        // The system lift measured ×1.19 here (20 pt per side into a 16 pt row gap): the chip's
-        // default-cell lift must stay at or under the small-label ceiling (×1.12, critique §2's ×1.15).
-        XCTAssertLessThanOrEqual(max(scaleW, scaleH), 1.15, "the studio chip lifts past ×1.15 in the default cell — it would cross its 16 pt row gap")
+        let growLeft = rest.minX - lifted.minX
+        let growRight = lifted.maxX - rest.maxX
+        let clearance = neighbourRest.map { $0.minX - lifted.maxX }
+        let neighbourText = "layout=\(neighbourBox.map(String.init(describing:)) ?? "none") measured=\(neighbourRest.map(String.init(describing:)) ?? "none")"
+        let clearanceText = clearance.map { String(format: "%.2fpt", $0) } ?? "n/a"
+        attach(String(format: "layout=%@ axFocused=%@ axScale=%.4f restMeasured=%@ liftedMeasured=%@ scaleW=%.4f scaleH=%.4f rise=%.2fpt drop=%.2fpt growLeft=%.2fpt growRight=%.2fpt chips=%ld neighbour(%@) clearance=%@",
+                      "\(restLayout)", "\(frame)", axScale, "\(rest)", "\(lifted)", scaleW, scaleH, rise, drop,
+                      growLeft, growRight, boxesA.count, neighbourText, clearanceText), "200_chip_lift")
+        XCTAssertEqual(rest.height, restLayout.height, accuracy: 3, "the resting capsule should measure its own 52 pt layout height")
+        XCTAssertEqual(rest.width, restLayout.width, accuracy: 3, "the resting capsule should measure its own layout width")
+        // ×1.12 by construction (`smallLabelScaleCeiling`); the window allows for the edge walk's
+        // antialiasing at the capsule's ends (±1 px on a 52 pt height is ±0.01).
+        for (axis, scale) in [("width", scaleW), ("height", scaleH)] {
+            XCTAssertLessThanOrEqual(scale, 1.13, "the studio chip's \(axis) lifts past ×1.13 in the default cell")
+            XCTAssertGreaterThanOrEqual(scale, 1.08, "the studio chip's \(axis) lifts under ×1.08 in the default cell — the lift is missing or partial")
+        }
+        // About its own centre: the top rises as far as the bottom drops (≈ 3.12 pt), and nothing
+        // shifts the capsule vertically beyond that rise.
+        XCTAssertEqual(rise, drop, accuracy: 1.5, "the focused chip shifted vertically (rise \(rise) pt, drop \(drop) pt)")
+        XCTAssertLessThanOrEqual(rise, 3.12 + 1.5, "the focused chip rose past its 3.12 pt small-label rise")
+        XCTAssertEqual(growLeft, growRight, accuracy: 1.5, "the focused chip grew lopsided (left \(growLeft) pt, right \(growRight) pt)")
+        if let clearance {
+            XCTAssertGreaterThan(clearance, 0, "the lifted chip reaches its resting neighbour")
+        }
     }
 
     /// Cast avatar, default cell: avatar 0 focused vs at rest, photo-matched.
