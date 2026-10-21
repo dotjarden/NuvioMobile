@@ -11,6 +11,13 @@ struct SourcesSettingsPane: View {
     /// B6: device-local Search layout. Read through `SearchRowsMode.resolve` so a stale or
     /// unknown stored value shows the default.
     @AppStorage(SearchRowsMode.defaultsKey) private var searchRowsModeRaw = SearchRowsMode.defaultValue.rawValue
+    /// Plugin repositories whose expansion the user flipped (by manifest URL). Expansion is derived:
+    /// repositories start collapsed, except a lone repository, which starts expanded; membership
+    /// here inverts that default. Derived rather than set in `onAppear` so a lazy List re-showing
+    /// a row can never re-expand a repository the user collapsed.
+    @State private var toggledPluginRepos: Set<String> = []
+    /// Drives the "Remove repository?" confirmation.
+    @State private var pendingPluginRepoRemoval: PluginRepositoryItem?
 
     private var searchRowsModeBinding: Binding<SearchRowsMode> {
         Binding(
@@ -226,6 +233,22 @@ struct SourcesSettingsPane: View {
             SettingsSection(String(localized: "Plugins")) {
                 pluginsSection
             }
+            .alert(
+                String(localized: "Remove repository?"),
+                isPresented: Binding(
+                    get: { pendingPluginRepoRemoval != nil },
+                    set: { if !$0 { pendingPluginRepoRemoval = nil } }
+                ),
+                presenting: pendingPluginRepoRemoval
+            ) { repo in
+                Button(String(localized: "Remove"), role: .destructive) {
+                    toggledPluginRepos.remove(repo.manifestUrl)
+                    plugins.removeRepository(repo)
+                }
+                Button(String(localized: "Cancel"), role: .cancel) {}
+            } message: { repo in
+                Text("\(repo.name) and its providers will be removed from this Apple TV.")
+            }
         }
     }
 
@@ -381,33 +404,44 @@ struct SourcesSettingsPane: View {
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textSecondary)
         } else {
+            // Each repository yields SEPARATE List rows (one focusable row each): a header that
+            // collapses/expands it, an optional error caption, and, while expanded, one row per
+            // provider plus a Remove row. Wrapping them in one VStack made the List treat the
+            // whole block as a single focusable row, so one click flipped every provider at once.
+            // Repositories start collapsed so a long provider list doesn't bury the next repo.
             ForEach(plugins.repositories, id: \.manifestUrl) { repo in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        Text(repo.name)
-                            .font(Theme.Font.body.weight(.semibold))
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                let isExpanded = (plugins.repositories.count == 1) != toggledPluginRepos.contains(repo.manifestUrl)
+                // Providers listed A–Z (Finder-style: case-insensitive, "Provider 2" before "Provider 10").
+                let repoScrapers = PluginsViewModel.sortedScrapers(plugins.scrapers(in: repo))
+                let enabledCount: Int = repoScrapers.filter { $0.enabled }.count
+                Button {
+                    if toggledPluginRepos.contains(repo.manifestUrl) {
+                        toggledPluginRepos.remove(repo.manifestUrl)
+                    } else {
+                        toggledPluginRepos.insert(repo.manifestUrl)
+                    }
+                } label: {
+                    SettingsRowChrome {
+                        SettingsRowLabel(
+                            title: repo.name,
+                            subtitle: String(localized: "\(enabledCount) of \(repoScrapers.count) providers on"),
+                            systemImage: isExpanded ? "chevron.down" : "chevron.right",
+                            descriptionID: .sourcesPluginRepoHeader
+                        )
+                    } trailing: {
                         if repo.isRefreshing {
                             ProgressView().scaleEffect(0.6)
                         }
-                        Text(repo.scraperCount == 1 ? String(localized: "1 provider") : String(localized: "\(repo.scraperCount) providers"))
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                        Button {
-                            plugins.removeRepository(repo)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(Theme.Font.caption)
-                                .settingsDescription(.sourcesPluginRepo, title: String(localized: "Remove Repository"), systemImage: "trash")
-                        }
-                        .buttonStyle(.chip)
                     }
-                    if let error = repo.errorMessage, !error.isEmpty {
-                        Text(error)
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(.red)
-                    }
-                    ForEach(plugins.scrapers(in: repo), id: \.id) { scraper in
+                }
+                .accessibilityHint(isExpanded ? String(localized: "Collapses the provider list.") : String(localized: "Shows the provider list."))
+                if let error = repo.errorMessage, !error.isEmpty {
+                    Text(error)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(.red)
+                }
+                if isExpanded {
+                    ForEach(repoScrapers, id: \.id) { scraper in
                         SettingsToggleRow(
                             title: scraper.name,
                             subtitle: scraper.description_.isEmpty
@@ -419,6 +453,14 @@ struct SourcesSettingsPane: View {
                             ),
                             descriptionID: .sourcesPluginScraper
                         )
+                    }
+                    SettingsDestructiveRow(
+                        title: String(localized: "Remove Repository"),
+                        subtitle: String(localized: "Removes \(repo.name) and its providers."),
+                        systemImage: "trash",
+                        descriptionID: .sourcesPluginRepo
+                    ) {
+                        pendingPluginRepoRemoval = repo
                     }
                 }
             }

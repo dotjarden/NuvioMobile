@@ -170,6 +170,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesSearchCatalog = "sources.searchCatalog"
     case sourcesPluginsEnabled = "sources.pluginsEnabled"
     case sourcesPluginRepoAdd = "sources.pluginRepoAdd"
+    case sourcesPluginRepoHeader = "sources.pluginRepoHeader"
     case sourcesPluginRepo = "sources.pluginRepo"
     case sourcesPluginScraper = "sources.pluginScraper"
     case sourcesPluginsRefresh = "sources.pluginsRefresh"
@@ -373,6 +374,7 @@ enum SettingsDescriptions {
         case .sourcesSearchCatalog: return LocalizedStringResource("Turns this catalog on or off for Search. Fewer catalogs gives faster results. This applies to this Apple TV only.")
         case .sourcesPluginsEnabled: return LocalizedStringResource("Runs your enabled plugin providers when streams load. Plugins add extra sources.")
         case .sourcesPluginRepoAdd: return LocalizedStringResource("Installs a plugin repository from its manifest web address. The repository then syncs to your other Nuvio devices.")
+        case .sourcesPluginRepoHeader: return LocalizedStringResource("Select shows or hides this repository's providers. Each provider has its own switch.")
         case .sourcesPluginRepo: return LocalizedStringResource("Removes this plugin repository and its providers from this Apple TV.")
         case .sourcesPluginScraper: return LocalizedStringResource("Turns this plugin provider on or off. Only enabled providers are used when streams load.")
         case .sourcesPluginsRefresh: return LocalizedStringResource("Downloads the provider code again from every installed repository.")

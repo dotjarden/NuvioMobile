@@ -1434,10 +1434,18 @@ struct DetailView: View {
     /// FEAT-8: also false once the trailer-duration timer has stopped the background player, so the
     /// mute button hides and the poster-backdrop layer (below) reclaims the area it faded into.
     private var isTrailerActive: Bool {
-        backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams
-            && model.trailerPlayback == nil && !backgroundTrailerStopped
-            // FEAT-35 (correction F8): the full-synopsis cover pauses it like any other cover.
-            && !showSynopsisSheet
+        // BUG-198 (GitHub #8): every cover is an input of `DetailTrailerGate`; the series Play
+        // cover was missing from the inline rule, so the hero trailer kept playing under the
+        // series source picker and the player. FEAT-35 (correction F8): the synopsis cover too.
+        DetailTrailerGate.isActive(.init(
+            enabled: backgroundTrailerEnabled,
+            hasTrailer: model.trailerVideoURL != nil,
+            stopped: backgroundTrailerStopped,
+            filmPickerShown: showStreams,
+            seriesPlayShown: seriesPlay != nil,
+            fullScreenTrailerShown: model.trailerPlayback != nil,
+            synopsisSheetShown: showSynopsisSheet,
+            shuffleSheetShown: showShuffleSheet))
     }
 
     /// BUG-41: `isTrailerActive` plus the scroll-dim hysteresis latch — whether the hero-trailer

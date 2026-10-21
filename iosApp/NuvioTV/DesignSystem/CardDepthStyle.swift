@@ -389,7 +389,9 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     @Environment(\.isFocused) private var isFocused
 
     func body(content: Content) -> some View {
-        if style.isEnabled(for: surface) {
+        // W2-5 knob: `-debug.homeNoCardDepth YES` (`HomePerfKnobs`, launch-latched, Release too)
+        // returns the plain content on every surface; the profile-synced setting is left untouched.
+        if !HomePerfKnobs.noCardDepth, style.isEnabled(for: surface) {
             content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent, railTint: railTint) }
         } else {
             content

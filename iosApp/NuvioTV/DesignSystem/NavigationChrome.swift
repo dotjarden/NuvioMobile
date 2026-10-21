@@ -395,30 +395,6 @@ nonisolated enum RailSearchInsetHold {
     static let current: Bool = UserDefaults.standard.bool(forKey: defaultsKey)
 }
 
-/// Batch P (P3/P10): the Icons Only pill's glass material, chosen on the rig. Launch-latched
-/// `-debug.railGlass regular|clear|tinted|material` (a `-all` suffix applies it to Labels Shown
-/// too); unknown or missing is `regular` (today). Read in DEBUG and Release.
-nonisolated enum RailGlassVariant: String, Equatable, Sendable, CaseIterable {
-    case regular, clear, tinted, material
-
-    static let defaultsKey = "debug.railGlass"
-
-    /// The variant for a raw value; a trailing `-all` is ignored here (see `appliesToShown`).
-    static func resolve(_ raw: String?) -> RailGlassVariant {
-        var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if value.hasSuffix("-all") { value = String(value.dropLast(4)) }
-        return RailGlassVariant(rawValue: value) ?? .regular
-    }
-
-    /// True when the raw value ends in `-all`: the variant also applies with Labels Shown.
-    static func appliesToShown(_ raw: String?) -> Bool {
-        raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasSuffix("-all") ?? false
-    }
-
-    static let current: RailGlassVariant = resolve(UserDefaults.standard.string(forKey: defaultsKey))
-    static let currentAppliesToShown: Bool = appliesToShown(UserDefaults.standard.string(forKey: defaultsKey))
-}
-
 /// How a scrolled-down write should move the rail (P4 §1.3, #8). Recorded per tab with the write.
 nonisolated enum RailMotion: Equatable, Sendable {
     /// A scroll mirror crossing: the hide edge is immediate, the show edge waits the resting settle.

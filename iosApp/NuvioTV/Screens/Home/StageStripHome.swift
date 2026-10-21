@@ -81,6 +81,9 @@ struct StageStripHome: View {
     static let upcomingKey = "upcoming"
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StageStripHome")
+        #endif
         let geo = geometry
         let keys = rowKeys
         ZStack(alignment: .topLeading) {

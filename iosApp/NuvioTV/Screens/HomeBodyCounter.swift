@@ -16,7 +16,10 @@ final class HomeBodyCounter: ObservableObject {
 
     /// Names in the order the label prints them.
     static let names = ["HomeView", "HomeRowsList", "CatalogRowView", "ContinueWatchingRow",
-                        "UpcomingRow", "CollectionRowView", "InlineTrailerCard", "PosterCard"]
+                        "UpcomingRow", "CollectionRowView", "InlineTrailerCard", "PosterCard",
+                        // W2-5 (a): the Stage strip's host, pager, page slots and each row's focus
+                        // modifier, so a Stage Down walk can see where a page's fan-out runs.
+                        "StageStripHome", "StripPager", "StripPageSlot", "PinnedRowUpFallback"]
 
     private var counts: [String: Int] = [:]
     private var dirty = false

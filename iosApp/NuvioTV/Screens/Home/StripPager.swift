@@ -101,6 +101,8 @@ final class StripPagerBox {
     var rowIndex = 0
     /// The row that owns focus, or nil while focus is outside the strip.
     var focusedRowKey: String?
+    /// W2-5 (a): the pager's one ownership value (`StripPager.ownership`), made on its first body.
+    var ownership: PinnedRowFocusOwnership?
     /// Rows currently reporting ownership. Empty one runloop turn after a release = focus left the
     /// strip (#17); a row-to-row move never empties it, in either report order.
     var owners = Set<String>()
@@ -249,11 +251,49 @@ private struct StripPageSlot<Content: View>: View {
     let content: () -> Content
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StripPageSlot")
+        #endif
         if mount.isMounted {
             content()
         } else {
             Color.clear
         }
+    }
+}
+
+/// W2-5 (a): the strip's `.scrollPosition(id:)` value, in a reference the pager holds without
+/// observing. Only `StripScroller` observes it.
+@MainActor
+final class StripScrollPosition: ObservableObject {
+    @Published var id: String?
+}
+
+/// W2-5 (a): the strip's `ScrollView` and its `.scrollPosition`. The only view that observes the
+/// position, so a page (one write per Down/Up, inside the glide's `withAnimation`) re-runs this
+/// body alone. `content` is stored as built by the pager's last update; re-emitting the same value
+/// leaves every page slot, row and card un-invalidated.
+private struct StripScroller<Content: View>: View {
+    @ObservedObject var position: StripScrollPosition
+    let content: Content
+
+    init(position: StripScrollPosition, @ViewBuilder content: () -> Content) {
+        self.position = position
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+        }
+        .scrollPosition(id: $position.id, anchor: .top)
+        #if DEBUG
+        // BUG-176 diagnostic: the scroll view's own position writes (an engine scroll shows here
+        // with no `page to=` before it).
+        .onChange(of: position.id) { old, new in
+            StageStripProbe.shared.log("position \(old ?? "-") -> \(new ?? "-")")
+        }
+        #endif
     }
 }
 
@@ -289,7 +329,10 @@ struct StripPager<Row: View>: View {
     let onStripFocusLost: () -> Void
     private let row: (_ key: String) -> Row
 
-    @State private var positionId: String?
+    /// W2-5 (a): the strip's `.scrollPosition` id, observed only by `StripScroller` (see `body`).
+    /// Held, never observed here: before, as `@State`, every page re-ran this body and with it
+    /// every mounted row (fresh closures). Reads and writes go through `positionId`.
+    @State private var position = StripScrollPosition()
     @State private var focusRequest = PinnedRowFocusRequest.none
     /// Flips only between row 0 and row 1, so the host is not re-rendered per hop.
     @State private var atTop = true
@@ -327,16 +370,43 @@ struct StripPager<Row: View>: View {
         self.row = row
     }
 
+    /// The strip's scroll position id (see `position`). A write that does not change it publishes
+    /// nothing, as an unchanged `@State` write did.
+    private var positionId: String? {
+        get { position.id }
+        nonmutating set {
+            if position.id != newValue { position.id = newValue }
+        }
+    }
+
+    /// W2-5 (a): see the `.environment(\.pinnedRowFocusOwnership, …)` line in `body`.
+    private var ownership: PinnedRowFocusOwnership {
+        if let made = box.ownership { return made }
+        let pager = self
+        let made = PinnedRowFocusOwnership(report: { key, owns in
+            pager.handleOwnership(key, owns: owns)
+        })
+        box.ownership = made
+        return made
+    }
+
     /// Only the Home strip drives the shared motion probe (the folder page has its own readout).
     private var ownsProbe: Bool { reportsTab != nil && StageStripProbe.enabled }
 
     var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StripPager")
+        #endif
         // Hoisted so the render-time `visualEffect` closure captures plain numbers (no view value).
         let page = geometry.pageHeight
         let leading = geometry.contentLeading
         let trailing = geometry.trailingMargin
         let exitHandler: (() -> Void)? = atTop ? atTopExit : { pageToTop() }
-        ScrollView(.vertical) {
+        // W2-5 (a): the scroll position lives in `StripScroller`, which alone observes it, so a
+        // page's position write re-runs that leaf and not this body. The pages below are built
+        // once per pager update and handed over as a stored value: a position write re-emits the
+        // same value, so no page slot, row or card re-evaluates for a glide.
+        StripScroller(position: position) {
             // Not a `LazyVStack`: it recreated the row ABOVE the focused one while focus was landing
             // on it (Up from row i: focus reached row i−1's remembered card, the row was rebuilt as
             // the strip began to scroll, focus dropped to nil, and the engine re-entered the row
@@ -373,7 +443,6 @@ struct StripPager<Row: View>: View {
                 }
             }
         }
-        .scrollPosition(id: $positionId, anchor: .top)
         .scrollTargetBehavior(.viewAligned)
         // BUG-176 (Steven rc7; device pass 2026-10-18): while the pop restore's gate is closed the
         // strip does not scroll for focus. The engine's late restoration lands on a neighbour row's
@@ -384,16 +453,16 @@ struct StripPager<Row: View>: View {
         // gutter, so a row leaving upward softens there and never draws over the synopsis. A
         // clip/mask never touches focusability.
         .scrollClipDisabled()
-        .mask(alignment: .top) {
-            StripEdgeMask(gutter: StripGeometry.stageBottomGap)
-        }
+        .modifier(StripEdgeMaskModifier())
         .rowsMotionStamp(.vertical)
         .modifier(StripTabBarReportModifier(tab: reportsTab))
         .modifier(StripExitCommandModifier(installed: menuPagesToTop, handler: exitHandler))
         .environment(\.pinnedRowFocusRequest, focusRequest)
-        .environment(\.pinnedRowFocusOwnership, PinnedRowFocusOwnership(report: { key, owns in
-            handleOwnership(key, owns: owns)
-        }))
+        // W2-5 (a): one ownership value per pager, made on the first body and kept in the box, so
+        // the environment value is bit-identical on every later pager update and no row's
+        // `PinnedRowUpFallbackTarget` is invalidated by a fresh closure. It runs on the pager value
+        // copied on that first body, as the handle's closures do (`box.rowKeys`, review r2 P3-3).
+        .environment(\.pinnedRowFocusOwnership, ownership)
         .environment(\.stripFocusMemory, controller.memory)
         .environment(\.rowRestSource, .custom(controller.signal))
         .onAppear {
@@ -420,11 +489,6 @@ struct StripPager<Row: View>: View {
             rowKeysChanged(keys)
         }
         #if DEBUG
-        // BUG-176 diagnostic: the scroll view's own position writes (an engine scroll shows here
-        // with no `page to=` before it).
-        .onChange(of: positionId) { old, new in
-            StageStripProbe.shared.log("position \(old ?? "-") -> \(new ?? "-")")
-        }
         .onChange(of: fitHeights) { _, _ in noteFitDebug() }
         #endif
         .onChange(of: reduceMotion, initial: true) { _, motion in
@@ -459,11 +523,7 @@ struct StripPager<Row: View>: View {
             .disabled(uncoverGateKey.map { $0 != key } ?? false)
             // §3.4: render-time only, no state writes. The page at rest is exactly 1, so the
             // focused card's lift renders untouched; the peeking page reads 0.6.
-            .visualEffect { content, proxy in
-                content.opacity(StripGeometry.pageOpacity(
-                    minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
-                    pageHeight: pageForRow))
-            }
+            .modifier(StripPageOpacityModifier(pageHeight: pageForRow))
             .id(key)
         }
         // Batch F review r1 P2: with fit pages the last row must still be able to rest at the strip's
@@ -853,6 +913,43 @@ struct StripPager<Row: View>: View {
                                              itemId: firstCard ? nil : itemId,
                                              forceFirst: firstCard)
         StageStripProbe.shared.log("restore row=\(key) item=\(firstCard ? "first" : (itemId ?? "-")) rung=\(rung) landed=\(landed ? 1 : 0) reason=\(reason)")
+    }
+}
+
+/// D4 / #3: the strip's clip mask (`StripEdgeMask`), its top edge feathered across the stage's
+/// bottom gutter.
+/// W2-5 knob: `-debug.homeNoStripEdgeMask YES` (`HomePerfKnobs`, launch-latched, Release too) skips
+/// this mask and nothing else, for the rig's A/B; the branch never flips within a run.
+private struct StripEdgeMaskModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if HomePerfKnobs.noStripEdgeMask {
+            content
+        } else {
+            content.mask(alignment: .top) {
+                StripEdgeMask(gutter: StripGeometry.stageBottomGap)
+            }
+        }
+    }
+}
+
+/// §3.4: a strip page's opacity by its offset from the strip top (render time, no state writes).
+/// W2-5 knob: `-debug.homeNoPageOpacity YES` (`HomePerfKnobs`, launch-latched, Release too) skips
+/// the `.visualEffect` and nothing else, so every page draws at full opacity, never offscreen.
+private struct StripPageOpacityModifier: ViewModifier {
+    let pageHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        if HomePerfKnobs.noPageOpacity {
+            content
+        } else {
+            // Hoisted so the render-time closure captures a plain number.
+            let page = pageHeight
+            content.visualEffect { content, proxy in
+                content.opacity(StripGeometry.pageOpacity(
+                    minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
+                    pageHeight: page))
+            }
+        }
     }
 }
 

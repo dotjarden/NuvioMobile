@@ -630,23 +630,13 @@ struct NavigationRail: View {
     @ViewBuilder
     private var pillGlass: some View {
         let shape = pillShape
-        // Batch P (P3/P10): the Icons Only glass variant, behind `-debug.railGlass`. Shown stays
-        // byte-identical unless the value ends in `-all`.
-        let variant: RailGlassVariant = (!showsLabels || RailGlassVariant.currentAppliesToShown)
-            ? RailGlassVariant.current : .regular
-        switch variant {
-        case .regular:
+        if showsLabels {
             shape.fill(Color.clear).glassEffect(.regular, in: shape)
-        case .clear:
-            shape.fill(Color.clear).glassEffect(.clear, in: shape)
-        case .tinted:
-            // Device pass 2026-10-20 (Test 2, Stage, dark hero): regular, clear and a black tint all
-            // render the collapsed 84 pt pill near-black, because it sits over the Stage's black
-            // left margin where glass has nothing to show through (BUG-196); `.ultraThinMaterial`
-            // vanishes there. A light tint is the one candidate left to shoot.
+        } else {
+            // The device pass of 2026-10-20 picked this tint: regular, clear and a black tint
+            // rendered the collapsed 84 pt pill near-black over the Stage's black left margin
+            // (BUG-196), and ultraThinMaterial vanished.
             shape.fill(Color.clear).glassEffect(.regular.tint(Color.white.opacity(0.12)), in: shape)
-        case .material:
-            shape.fill(.ultraThinMaterial)
         }
     }
 
@@ -1166,13 +1156,18 @@ struct NavigationRail: View {
         let generation = focusGeneration
         DispatchQueue.main.async {
             guard generation == focusGeneration else { return }
+            SearchOpenProbe.mark("ladder rung 0 reset tab=\(tab)")
             resetFocus(in: shellFocusScope)
             let checks = SidebarHandOffLadder.checks(forTabTitled: RailItem.title(for: tab))
             for (index, delay) in checks.enumerated() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     guard generation == focusGeneration else { return }
                     guard focusedItem == nil, !armed else { return }   // an arm took over meanwhile
-                    guard HiddenTabBarFocusBlocker.focusedItemIsNil() else { return }
+                    guard HiddenTabBarFocusBlocker.focusedItemIsNil() else {
+                        SearchOpenProbe.mark("ladder rung \(index + 1) at \(delay)s: focus already landed")
+                        return
+                    }
+                    SearchOpenProbe.mark("ladder rung \(index + 1) at \(delay)s: still nowhere")
                     if index < checks.count - 1 {
                         resetFocus(in: shellFocusScope)
                     } else {

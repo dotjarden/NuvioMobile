@@ -114,6 +114,9 @@ private struct PinnedRowUpFallbackTarget: ViewModifier {
     @Environment(\.stripFocusMemory) private var memory
 
     func body(content: Content) -> some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("PinnedRowUpFallback")
+        #endif
         if let memory {
             stripBody(content, memory: memory)
         } else {

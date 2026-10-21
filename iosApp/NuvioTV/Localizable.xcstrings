@@ -209,6 +209,7 @@
         }
       }
     },
+    "%@ and its providers will be removed from this Apple TV.": {},
     "%@ f=%lld t=%lld y=%lld i=%lld r=%lld": {
       "localizations": {
         "de": {
@@ -1128,6 +1129,7 @@
         }
       }
     },
+    "%lld of %lld providers on": {},
     "%lld of %lld selected": {
       "localizations": {
         "de": {
@@ -10652,6 +10654,7 @@
         }
       }
     },
+    "Collapses the provider list.": {},
     "Collection": {
       "localizations": {
         "de": {
@@ -33307,6 +33310,8 @@
         }
       }
     },
+    "Remove repository?": {},
+    "Removes %@ and its providers.": {},
     "Removes sound descriptions and speaker labels, such as [door slams], from text subtitles. Off by default.": {
       "localizations": {
         "de": {
@@ -35552,6 +35557,7 @@
         }
       }
     },
+    "Select shows or hides this repository's providers. Each provider has its own switch.": {},
     "Semi": {
       "localizations": {
         "de": {
@@ -38306,6 +38312,7 @@
         }
       }
     },
+    "Shows the provider list.": {},
     "Shows the time of day in the corner while the player controls are up. Off by default.": {
       "localizations": {
         "de": {

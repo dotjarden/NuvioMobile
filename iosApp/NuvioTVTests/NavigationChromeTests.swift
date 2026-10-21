@@ -337,17 +337,4 @@ final class NavigationChromeTests: XCTestCase {
         XCTAssertEqual(NavigationChrome.reservedEdge, 116)
         XCTAssertEqual(NavigationChrome.pillTrailingEdge, 100)
     }
-
-    func testRailGlassVariantResolution() {
-        XCTAssertEqual(RailGlassVariant.resolve(nil), .regular)
-        XCTAssertEqual(RailGlassVariant.resolve("regular"), .regular)
-        XCTAssertEqual(RailGlassVariant.resolve("clear"), .clear)
-        XCTAssertEqual(RailGlassVariant.resolve("tinted"), .tinted)
-        XCTAssertEqual(RailGlassVariant.resolve("material"), .material)
-        XCTAssertEqual(RailGlassVariant.resolve("clear-all"), .clear)
-        XCTAssertEqual(RailGlassVariant.resolve("junk"), .regular)
-        XCTAssertTrue(RailGlassVariant.appliesToShown("tinted-all"))
-        XCTAssertFalse(RailGlassVariant.appliesToShown("tinted"))
-        XCTAssertFalse(RailGlassVariant.appliesToShown(nil))
-    }
 }

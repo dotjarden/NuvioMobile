@@ -42,6 +42,9 @@ struct SearchView: View {
                 AmbientWashLayer(feed: owner.wash.feed, probeID: "debug_wash_search")
                     .ignoresSafeArea()
                 SearchFieldLayer(owner: owner, queryBox: owner.queryBox)
+                // BUG-195: the system field mounts ~1.1 s after the tab appears; until then the page
+                // shows this look-alike, above the real field so the field mounts underneath it.
+                SearchPlaceholderLayer()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -90,6 +93,101 @@ struct SearchView: View {
     }
 }
 
+/// BUG-195: when the placeholder of the system search field goes away. Pure so the rules are tested:
+/// it hides once per visit, on the first sign of the real field or at the hard timeout.
+nonisolated struct SearchPlaceholderPolicy: Equatable {
+    enum Reason: String, Equatable { case signal, timeout }
+
+    /// The placeholder always leaves this long after the tab appears, whatever happens.
+    static let timeout: TimeInterval = 1.6
+    static let fadeDuration: TimeInterval = 0.25
+
+    private(set) var hiddenReason: Reason?
+    var isVisible: Bool { hiddenReason == nil }
+
+    /// Returns the reason when this call is the one that hid it (so the caller logs once).
+    mutating func hide(_ reason: Reason) -> Reason? {
+        guard hiddenReason == nil else { return nil }
+        hiddenReason = reason
+        return reason
+    }
+
+    /// A new tab visit shows it again.
+    mutating func rearm() { hiddenReason = nil }
+}
+
+/// BUG-195: a non-focusable look-alike of tvOS's search field (magnifier + prompt, the field's own
+/// grey), at the real field's measured spot. Fades on the first `UITextField` editing-began (the
+/// field becoming first responder works in Rail and Tabs mode alike; `searchKeyboardFocused` is
+/// Rail-only) or the first `searchKeyboardFocused`, and always at `SearchPlaceholderPolicy.timeout`.
+private struct SearchPlaceholderLayer: View {
+    @State private var policy = SearchPlaceholderPolicy()
+    @State private var visit = 0
+    @Environment(\.navigationChrome) private var navigationChrome
+
+    var body: some View {
+        HStack(spacing: 34) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 58, weight: .medium))
+            Text("Search movies & shows")
+                .font(.system(size: 56.5, weight: .bold))
+        }
+        .foregroundStyle(Color.white.opacity(0.3))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.leading, 98)
+        .padding(.top, 158)
+        .ignoresSafeArea()
+        .opacity(policy.isVisible ? 1 : 0)
+        .animation(.easeOut(duration: SearchPlaceholderPolicy.fadeDuration), value: policy.isVisible)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onAppear {
+            policy.rearm()
+            visit += 1
+            let mine = visit
+            SearchOpenProbe.mark("placeholder shown")
+            DispatchQueue.main.asyncAfter(deadline: .now() + SearchPlaceholderPolicy.timeout) {
+                if mine == visit { hide(.timeout) }
+            }
+            pollForField(visit: mine)
+        }
+        .onDisappear { visit += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { _ in
+            hide(.signal)
+        }
+        .onReceive(navigationChrome.$searchKeyboardFocused) { focused in
+            if focused { hide(.signal) }
+        }
+    }
+
+    /// Tabs mode never reports editing-began until the field has focus, so also watch for the field
+    /// itself: tvOS's `UISearchBarTextField` joining the window is the "real field exists" sign.
+    private func pollForField(visit mine: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard mine == visit, policy.isVisible else { return }
+            if Self.searchFieldIsMounted() { hide(.signal) } else { pollForField(visit: mine) }
+        }
+    }
+
+    private static func searchFieldIsMounted() -> Bool {
+        func walk(_ view: UIView) -> Bool {
+            if String(describing: type(of: view)).contains("UISearchBarTextField") { return true }
+            return view.subviews.contains(where: walk)
+        }
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            if windowScene.windows.contains(where: walk) { return true }
+        }
+        return false
+    }
+
+    private func hide(_ reason: SearchPlaceholderPolicy.Reason) {
+        if let done = policy.hide(reason) {
+            SearchOpenProbe.mark("placeholder hidden reason=\(done.rawValue)")
+        }
+    }
+}
+
 /// Batch P (P9, BUG-195, probe only): `-debug.searchOpenProbe YES` (launch-latched, readable in
 /// Release) logs `[SearchOpen] appear|firstBody|keyboard t=<systemUptime>` once per tab visit. The
 /// rail's `[NavRail] select tab=1` line is t0; the main session measures the gap on the rig (first
@@ -126,6 +224,12 @@ enum SearchOpenProbe {
         guard enabled, !keyboardLogged else { return }
         keyboardLogged = true
         log("keyboard")
+    }
+
+    /// Any other mark (the rail's hand-off ladder rungs, the focus request): same probe, same clock.
+    nonisolated static func mark(_ mark: String) {
+        guard enabled else { return }
+        NSLog("[SearchOpen] %@ t=%.3f", mark, ProcessInfo.processInfo.systemUptime)
     }
 
     private static func log(_ mark: String) {
