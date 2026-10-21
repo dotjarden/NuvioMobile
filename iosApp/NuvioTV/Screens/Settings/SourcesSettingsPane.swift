@@ -184,9 +184,11 @@ struct SourcesSettingsPane: View {
                         get: { model.tmdbLanguageSelection },
                         set: { model.setTmdbLanguage($0) }
                     ),
-                    options: LanguageOptions.tmdbMetadata.map(\.code),
+                    // FEAT-84: Device + the 74 bare codes, A–Z (regional tags would read back as
+                    // their primary subtag and check the wrong row; see `LanguageOptions`).
+                    options: LanguageOptions.codes(LanguageOptions.tmdbMetadataCodes, keeping: model.tmdbLanguageSelection, pinned: 1),
                     descriptionID: .sourcesTmdbLanguage,
-                    label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.tmdbMetadata) }
+                    label: LanguageOptions.name(forCode:)
                 )
             }
 

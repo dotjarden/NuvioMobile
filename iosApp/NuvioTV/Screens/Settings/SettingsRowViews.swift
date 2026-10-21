@@ -907,37 +907,129 @@ struct DebridKeyEntryRow: View {
 // button style, so it belongs next to `SettingsRowButtonStyle`/`RowAccentTint` rather than in the
 // Settings kit, which no longer uses it anywhere.
 
-/// Language options for the audio/subtitle preference pickers. Special sentinels (`device`,
-/// `original`, `none`) match the shared `AudioLanguageOption`/`SubtitleLanguageOption` constants;
-/// labels are local since the shared label table lives in the mobile module. Shared between the
-/// Playback pane (Audio & Subtitle Language) and the Content Sources pane (TMDB Metadata Language).
-enum LanguageOptions {
-    static let languages: [(name: String, code: String)] = [
-        (String(localized: "English"), "en"), (String(localized: "Spanish"), "es"),
-        (String(localized: "French"), "fr"), (String(localized: "German"), "de"),
-        (String(localized: "Italian"), "it"), (String(localized: "Portuguese"), "pt"),
-        (String(localized: "Japanese"), "ja"), (String(localized: "Korean"), "ko"),
-        (String(localized: "Chinese"), "zh"), (String(localized: "Russian"), "ru"),
-        (String(localized: "Hindi"), "hi"), (String(localized: "Arabic"), "ar"),
-        // FEAT-19 (beta.12): rode along with the Vietnamese UI localization so vi is also
-        // selectable for TMDB metadata and audio/subtitle track preference.
-        (String(localized: "Vietnamese"), "vi")
-    ]
-    static var audio: [(name: String, code: String)] {
-        [(String(localized: "Device"), "device"), (String(localized: "Original"), "original")] + languages
-    }
-    static var subtitle: [(name: String, code: String)] {
-        [(String(localized: "Off"), "none"), (String(localized: "Device"), "device")] + languages
-    }
-    /// TMDB metadata language: Device = no stored language (the shared repo derives it from the
-    /// Apple TV's language). TMDB accepts the same bare ISO 639-1 codes the track pickers use.
-    static var tmdbMetadata: [(name: String, code: String)] {
-        [(String(localized: "Device"), "device")] + languages
+/// Language options for the audio / subtitle preference pickers, their two fallback pickers and
+/// the TMDB metadata-language picker (Subtitles & Audio pane, Sources pane).
+///
+/// FEAT-84 (GitHub #10 item 4): the language block is the shared `AvailableLanguageOptionCodes`,
+/// mobile's own list: 78 tags, the 74 bare ISO 639-1 codes plus `zh-CN`, `zh-TW`, `pt-BR` and
+/// `es-419`. It is sorted A–Z by label, with each picker's sentinels pinned on top. Rules:
+/// - An option's CODE is `normalizeLanguageCode` of the shared tag. The shared setters store the
+///   normalized form (`pt-BR` → `pt-br`), so a raw tag would never show as selected.
+/// - Its LABEL comes from the original tag, in the localization the app runs in
+///   (`Bundle.main.preferredLocalizations`), not `Locale.current`: a device language the app does
+///   not ship would otherwise put, say, Japanese names into an English screen. The first letter
+///   is capitalised with that locale (French returns "anglais"), and the sort uses that locale's
+///   collation. `zh-CN` / `zh-TW` are labelled through `zh-Hans` / `zh-Hant` (Chinese, Simplified
+///   / Traditional) and keep their codes.
+/// - TMDB takes the 74 bare codes only: the metadata-language readback keeps the primary subtag
+///   (`SettingsViewModel.tmdbLanguageSelection`), so a regional row would leave the checkmark on
+///   the wrong row, and TMDB has no `es-419`.
+/// - The lists are built once (`static let`: a UI-language change relaunches the app), and labels
+///   come from one code → name dictionary, since the Menu draws a label for every entry.
+/// Sentinel codes are the shared `AudioLanguageOption` / `SubtitleLanguageOption` constants; ""
+/// is the fallback pickers' None (the shared setters take nil for it).
+nonisolated enum LanguageOptions {
+    typealias Option = (name: String, code: String)
+
+    // MARK: Pure builders (unit-tested with an injected locale)
+
+    /// The 78 shared tags, in the shared order.
+    static var sharedTags: [String] { PlayerLanguageOptionCodesKt.AvailableLanguageOptionCodes }
+
+    /// The stored form of a shared tag: what the shared setters write, so what a picker reads back.
+    static func code(forTag tag: String) -> String {
+        PlayerLanguagePreferencesKt.normalizeLanguageCode(language: tag) ?? tag.lowercased()
     }
 
-    /// Label lookup for the `SettingsPickerRow` conversions C3 does — the picker stores the code
-    /// and needs the display name back.
-    static func name(forCode code: String, in options: [(name: String, code: String)]) -> String {
+    /// `tag`'s language name in `locale`, first letter capitalised with that locale; the tag itself
+    /// when the locale has no name for it.
+    static func displayName(forTag tag: String, locale: Locale) -> String {
+        let labelTag: String
+        switch tag.lowercased() {
+        case "zh-cn": labelTag = "zh-Hans"
+        case "zh-tw": labelTag = "zh-Hant"
+        default: labelTag = tag
+        }
+        guard let name = locale.localizedString(forIdentifier: labelTag), !name.isEmpty else { return tag }
+        return name.prefix(1).uppercased(with: locale) + name.dropFirst()
+    }
+
+    /// The A–Z language block for `tags` (no sentinels), labelled and collated in `locale`
+    /// (`localizedStandardCompare`'s options, with the locale passed in rather than the current one).
+    static func buildLanguages(tags: [String], locale: Locale) -> [Option] {
+        tags.map { (name: displayName(forTag: $0, locale: locale), code: code(forTag: $0)) }
+            .sorted {
+                $0.name.compare(
+                    $1.name,
+                    options: [.caseInsensitive, .numeric, .widthInsensitive, .forcedOrdering],
+                    locale: locale
+                ) == .orderedAscending
+            }
+    }
+
+    /// `codes`, plus `current` right after the `pinned` sentinels when it is not one of them: a
+    /// value mobile synced that tvOS has no row for (audio `default`, subtitle `forced`). The
+    /// Menu's Picker then still has a tag for its selection and shows it checked and labelled.
+    static func codes(_ codes: [String], keeping current: String, pinned: Int) -> [String] {
+        guard !codes.contains(current) else { return codes }
+        var out = codes
+        out.insert(current, at: min(pinned, out.count))
+        return out
+    }
+
+    // MARK: Lists, built once in the app's UI locale
+
+    /// The localization the app runs in (see the type comment).
+    static let uiLocale = Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
+
+    private static let device: Option = (String(localized: "Device"), AudioLanguageOption.shared.DEVICE)
+    private static let original: Option = (String(localized: "Original"), AudioLanguageOption.shared.ORIGINAL)
+    private static let off: Option = (String(localized: "Off"), SubtitleLanguageOption.shared.NONE)
+    private static let none: Option = (String(localized: "None"), "")
+
+    /// All 78 languages, A–Z.
+    static let languages: [Option] = buildLanguages(tags: sharedTags, locale: uiLocale)
+    /// The 74 bare codes, A–Z (TMDB).
+    static let bareLanguages: [Option] = buildLanguages(tags: sharedTags.filter { !$0.contains("-") }, locale: uiLocale)
+
+    static let audio: [Option] = [device, original] + languages
+    static let subtitle: [Option] = [off, device] + languages
+    /// TMDB metadata language: Device = no stored language (the shared repo derives it from the
+    /// Apple TV's language).
+    static let tmdbMetadata: [Option] = [device] + bareLanguages
+    /// Fallback Audio Language: None, Original (mobile parity), then the languages.
+    static let fallbackAudio: [Option] = [none, original] + languages
+    /// Fallback Subtitle Language: None, then the languages.
+    static let fallbackSubtitle: [Option] = [none] + languages
+
+    static let audioCodes = audio.map(\.code)
+    static let subtitleCodes = subtitle.map(\.code)
+    static let tmdbMetadataCodes = tmdbMetadata.map(\.code)
+    static let fallbackAudioCodes = fallbackAudio.map(\.code)
+    static let fallbackSubtitleCodes = fallbackSubtitle.map(\.code)
+
+    /// Every code any list offers, plus the sentinels mobile can sync that tvOS offers no row for.
+    /// Each code has one label in every list (`none` is Off, "" is None).
+    static let names: [String: String] = {
+        var names = [
+            AudioLanguageOption.shared.DEFAULT: String(localized: "Default"),
+            SubtitleLanguageOption.shared.FORCED: String(localized: "Forced"),
+        ]
+        for option in audio + subtitle + fallbackAudio + tmdbMetadata where names[option.code] == nil {
+            names[option.code] = option.name
+        }
+        return names
+    }()
+
+    /// The label for a stored language code: the lists' name, else the UI locale's name for it,
+    /// else the code.
+    static func name(forCode code: String) -> String {
+        names[code] ?? displayName(forTag: code, locale: uiLocale)
+    }
+
+    /// Label lookup in a short local table (the Sources pane's Library / Watch Progress Source
+    /// pickers use it with their own tables).
+    static func name(forCode code: String, in options: [Option]) -> String {
         options.first { $0.code == code }?.name ?? code
     }
 }
