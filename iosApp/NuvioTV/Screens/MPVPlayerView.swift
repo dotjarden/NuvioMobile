@@ -1273,9 +1273,14 @@ final class MPVTVPlayerViewController: UIViewController {
 
         // Subtitles: shared plan decides targets + forced/normal mode.
         guard !didAutoSelectSubtitles, !didUserSelectSubtitle else { return }
+        // FEAT-84 Off stays Off: no fallback subtitle language while Subtitles is Off (the shared
+        // resolver would return it). See `SubtitleFallbackGuard`.
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
-            secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
+            secondaryPreferredSubtitleLanguage: SubtitleFallbackGuard.effectiveSecondary(
+                primary: settings.preferredSubtitleLanguage,
+                secondary: settings.secondaryPreferredSubtitleLanguage
+            ),
             deviceLanguages: deviceLanguages
         )
         guard !subInfos.isEmpty else {

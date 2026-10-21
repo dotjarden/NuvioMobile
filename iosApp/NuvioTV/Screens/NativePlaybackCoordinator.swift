@@ -366,9 +366,15 @@ final class NativePlaybackCoordinator: ObservableObject {
             // Title's original language for the "Original" audio preference (was nil = inert).
             contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context)
         )
+        // FEAT-84 Off stays Off: no fallback subtitle language while Subtitles is Off (the shared
+        // resolver would return it), so the plan below is `subtitlesOff`. See
+        // `SubtitleFallbackGuard`.
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
-            secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
+            secondaryPreferredSubtitleLanguage: SubtitleFallbackGuard.effectiveSecondary(
+                primary: settings.preferredSubtitleLanguage,
+                secondary: settings.secondaryPreferredSubtitleLanguage
+            ),
             deviceLanguages: deviceLanguages
         )
         var plan = LanguagePlan()
