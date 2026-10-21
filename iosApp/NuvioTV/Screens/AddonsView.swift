@@ -25,6 +25,10 @@ struct AddonsView: View {
             // FEAT-30 / H9: Menu summons the rail in Rail mode (a second Menu, with focus in the
             // rail, exits as before). No modifier at all in tabs mode.
             .railMenuReveal()
+            // BUG-214: the app background every other screen draws (`SettingsView` does the same
+            // on its root). `Theme.Palette.background` is what OLED True Black swaps to pure
+            // black; without it OLED never reached this screen.
+            .background(Theme.Palette.background.ignoresSafeArea())
             .navigationTitle("Add-ons")
         }
         .onAppear { model.start() }
