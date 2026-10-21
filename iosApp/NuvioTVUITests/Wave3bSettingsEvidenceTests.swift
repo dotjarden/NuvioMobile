@@ -133,6 +133,46 @@ final class Wave3bSettingsEvidenceTests: XCTestCase {
 
     func testClipMinimal() { clipEvidence(style: "minimal", tag: "w9") }
 
+    // MARK: BUG-213 — plugin and badge entry rows: field and button are separate List rows
+
+    /// Pushes `category`, walks Down until the explainer title reads `fieldTitle`, shoots it, then
+    /// one Down must land on `buttonTitle` (its own row, its own focus target), shoot again.
+    private func entrySplitEvidence(category: String, fieldTitle: String, buttonTitle: String, tag: String) {
+        let app = launch(settingsStyle: "default")
+        openSettingsRoot(app)
+        XCTAssertTrue(openPane(app, category), "\(category) pane never opened")
+        let title = app.staticTexts["settings_explainer_title"]
+        var reached = false
+        for _ in 0..<90 {
+            if title.exists && title.label == fieldTitle { reached = true; break }
+            remote.press(.down)
+            pause(0.45)
+        }
+        XCTAssertTrue(reached, "never reached the \(fieldTitle) row")
+        pause(0.8)
+        shot("\(tag)-1-field-focused")
+        note("\(tag)-1-field-focus", focusedNodes(app))
+        remote.press(.down)
+        pause(0.9)
+        note("\(tag)-2-button-explainer", title.exists ? title.label : "(none)")
+        XCTAssertEqual(title.exists ? title.label : "", buttonTitle, "Down from the field must land on the \(buttonTitle) row")
+        shot("\(tag)-2-button-focused")
+        note("\(tag)-2-button-focus", focusedNodes(app))
+        remote.press(.up)
+        pause(0.9)
+        note("\(tag)-3-back-explainer", title.exists ? title.label : "(none)")
+        remote.press(.menu)
+        pause(1.5)
+    }
+
+    func testPluginEntryRowsSplit() {
+        entrySplitEvidence(category: "sources", fieldTitle: "Repository manifest URL", buttonTitle: "Install Repository", tag: "w7-plugin")
+    }
+
+    func testBadgeEntryRowsSplit() {
+        entrySplitEvidence(category: "appearance", fieldTitle: "Badge pack JSON URL", buttonTitle: "Import Badge Pack", tag: "w7-badge")
+    }
+
     // MARK: BUG-201 — subtitle swatch focus walk, and are the four swatches separate targets?
 
     func testSubtitleSwatchWalk() {
