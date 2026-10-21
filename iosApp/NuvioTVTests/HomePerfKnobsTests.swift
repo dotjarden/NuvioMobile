@@ -1,7 +1,7 @@
 import XCTest
 @testable import NuvioTV
 
-/// W2-5 (c): the rig's Home A/B knob resolve off by default and on for a `YES` launch value.
+/// W2-5 (c): the rig's Home A/B knob resolves off by default and on for a `YES` launch value.
 final class HomePerfKnobsTests: XCTestCase {
 
     private var suiteName = ""

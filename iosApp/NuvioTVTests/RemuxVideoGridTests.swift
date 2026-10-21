@@ -2,9 +2,12 @@ import XCTest
 @testable import NuvioTV
 
 /// W3-1 (BUG-199): the remux's video DTS grid. A Netflix WEB-DL MP4 on a 1/16000 timescale (23.976 fps,
-/// durations cycling 667/667/668, B-frames) failed at segment 7 with movenc's `pts (590005) < dts
-/// (590017)` because the old grid `anchor + (index − 6) · vDur` re-learned `vDur` from every packet and
-/// jittered by ~index ticks; at every fragment start movenc also rewrote the opening keyframe's pts.
+/// B-frames) declares millisecond-rounded durations cycling 656/672 (41/42 ms ×16; the log's fragment
+/// starts sit 96768 = 144 × 672 ticks apart, each "Packet duration: -671"). It failed at segment 7 with
+/// movenc's `pts (590005) < dts (590017)` because the old grid `anchor + (index − 6) · vDur` re-learned
+/// `vDur` from every packet and jumped by 16·index ticks on every flip; at every fragment start (a
+/// keyframe declaring 656) movenc also rewrote the opening keyframe's pts. The exact-rate 667/667/668
+/// cadence is kept as a second scenario.
 final class RemuxVideoGridTests: XCTestCase {
 
     private typealias Packet = (pts: Int64, duration: Int64, isKey: Bool, presentationIndex: Int)
@@ -99,9 +102,27 @@ final class RemuxVideoGridTests: XCTestCase {
         XCTAssertLessThan(o.pts, o.dts, "reference: the old formula hands movenc pts < dts")
     }
 
-    // (b) 3000 packets, 667/667/668, mini-GOP 8, keyframe every 36, fragment every 144 frames.
+    // (b) The observed cadence: 3000 packets, durations 656/672/672 (the boundary keyframe at every
+    // 144th frame declares 656), mini-GOP 8, keyframe every 36, fragment every 144 frames.
+    func testObservedMillisecondCadenceStaysOrderedWithNoRewrites() {
+        let packets = stream(total: 3000, durations: [656, 672, 672])
+        XCTAssertEqual(packets.first { $0.presentationIndex == 144 }?.duration, 656,
+                       "the boundary keyframe declares 656, as in the log")
+        let grid = assertCadence(packets)
+        XCTAssertEqual(grid.unit, 672, "the mode of the first 16 durations")
+    }
+
+    // (b2) The exact-rate cadence 667/667/668, same shape.
     func testNetflixCadenceStaysOrderedWithNoRewrites() {
-        let packets = stream(total: 3000, durations: [667, 667, 668])
+        let grid = assertCadence(stream(total: 3000, durations: [667, 667, 668]))
+        XCTAssertEqual(grid.unit, 667)
+    }
+
+    /// Replays `packets` with a fragment every 144 frames; asserts pts ≥ dts, pts untouched, strictly
+    /// rising dts, movenc's fragment-start rule, zero clamps and nets, and that the old formula fails.
+    @discardableResult
+    private func assertCadence(_ packets: [Packet], file: StaticString = #filePath,
+                               line: UInt = #line) -> RemuxVideoGrid {
         var grid = RemuxVideoGrid(anchor: 0)
         var old = OldGrid(anchor: 0)
         var prev: RemuxVideoGrid.Stamp?
@@ -111,16 +132,18 @@ final class RemuxVideoGridTests: XCTestCase {
         for p in packets {
             let opens = p.isKey && p.presentationIndex % 144 == 0 && p.presentationIndex > 0
             let s = grid.stamp(pts: p.pts, duration: p.duration, fragmentStart: opens)
-            XCTAssertGreaterThanOrEqual(s.pts, s.dts, "frame \(p.presentationIndex)")
-            XCTAssertEqual(s.pts, p.pts, "pts rewritten at frame \(p.presentationIndex)")
-            XCTAssertEqual(s.duration, p.duration)
+            XCTAssertGreaterThanOrEqual(s.pts, s.dts, "frame \(p.presentationIndex)", file: file, line: line)
+            XCTAssertEqual(s.pts, p.pts, "pts rewritten at frame \(p.presentationIndex)", file: file, line: line)
+            XCTAssertEqual(s.duration, p.duration, file: file, line: line)
             if let prev {
-                XCTAssertGreaterThan(s.dts, prev.dts, "dts not strictly rising at frame \(p.presentationIndex)")
+                XCTAssertGreaterThan(s.dts, prev.dts, "dts not strictly rising at frame \(p.presentationIndex)",
+                                     file: file, line: line)
                 if opens {
                     fragmentStarts += 1
                     // movenc check_pkt: a fragment's first dts ≥ previous dts + previous duration.
                     XCTAssertGreaterThanOrEqual(s.dts, prev.dts + prev.duration,
-                                                "fragment start at frame \(p.presentationIndex)")
+                                                "fragment start at frame \(p.presentationIndex)",
+                                                file: file, line: line)
                 }
             }
             prev = s
@@ -128,10 +151,13 @@ final class RemuxVideoGridTests: XCTestCase {
             if opens, let op = oldPrev, o.dts < op.dts + op.dur { oldFragmentViolations += 1 }
             oldPrev = (o.dts, p.duration)
         }
-        XCTAssertEqual(fragmentStarts, 20)
-        XCTAssertEqual(grid.netFirings, 0, "the stable grid needs no net")
-        XCTAssertEqual(grid.clampCount, 0)
-        XCTAssertGreaterThan(oldFragmentViolations, 0, "reference: the old grid trips movenc's pts rewrite")
+        XCTAssertEqual(fragmentStarts, 20, file: file, line: line)
+        XCTAssertEqual(grid.netFirings, 0, "the stable grid needs no net", file: file, line: line)
+        XCTAssertEqual(grid.clampCount, 0, file: file, line: line)
+        XCTAssertFalse(grid.netCapExceeded, file: file, line: line)
+        XCTAssertGreaterThan(oldFragmentViolations, 0,
+                             "reference: the old grid trips movenc's pts rewrite", file: file, line: line)
+        return grid
     }
 
     // (c) Constant durations (MKV-like): the new grid gives the old formula's stamps exactly.
@@ -213,13 +239,101 @@ final class RemuxVideoGridTests: XCTestCase {
         XCTAssertEqual(grid.ptsNetFirings, 0)
     }
 
-    // An outlier duration does not shift the rest of the run's grid.
+    // An outlier duration (once the unit is settled) does not shift the rest of the run's grid.
     func testOutlierDurationIsReplacedByTheUnit() {
         var grid = RemuxVideoGrid(anchor: 0)
-        _ = grid.stamp(pts: 0, duration: 667)
-        let s = grid.stamp(pts: 5336, duration: 1_000_000)
+        for i in 0..<RemuxVideoGrid.learnSampleCount { _ = grid.stamp(pts: Int64(i) * 667, duration: 667) }
+        XCTAssertTrue(grid.learnedFromDuration)
+        let s = grid.stamp(pts: 16 * 667, duration: 1_000_000)
         XCTAssertEqual(s.duration, 667)
-        XCTAssertEqual(grid.slot, 2 * 667)
+        XCTAssertEqual(grid.slot, 17 * 667)
+    }
+
+    // P2-4: an atypically small FIRST duration (a 1-tick leader sample) neither shrinks the slack nor
+    // turns the normal frames into outliers; the grid tracks the real 672 cadence.
+    func testSmallFirstDurationDoesNotPoisonTheUnit() {
+        var packets = stream(total: 600, durations: [672])
+        packets[0].duration = 1
+        var grid = RemuxVideoGrid(anchor: 0)
+        var prev: RemuxVideoGrid.Stamp?
+        for (i, p) in packets.enumerated() {
+            let opens = i > 0 && p.isKey && p.presentationIndex % 144 == 0
+            let s = grid.stamp(pts: p.pts, duration: p.duration, fragmentStart: opens)
+            XCTAssertGreaterThanOrEqual(s.pts, s.dts, "decode \(i)")
+            XCTAssertEqual(s.pts, p.pts)
+            XCTAssertEqual(s.duration, p.duration, "a normal frame is not an outlier (decode \(i))")
+            if let prev {
+                XCTAssertGreaterThan(s.dts, prev.dts)
+                if i > 8 { XCTAssertEqual(s.dts - prev.dts, prev.duration, "grid steps by the declared duration") }
+                if opens { XCTAssertGreaterThanOrEqual(s.dts, prev.dts + prev.duration) }
+            }
+            prev = s
+        }
+        XCTAssertEqual(grid.unit, 672)
+        XCTAssertTrue(grid.learnedFromDuration)
+        XCTAssertEqual(grid.clampCount, 0)
+        XCTAssertEqual(grid.netFirings, 0)
+    }
+
+    // The unit is the mode of the first 16 positive durations (ties → the larger), learned once.
+    func testUnitIsTheModeOfTheFirstSixteen() {
+        var grid = RemuxVideoGrid(anchor: 0)
+        let durations: [Int64] = [1, 700] + Array(repeating: 672, count: 14)
+        for (i, d) in durations.enumerated() {
+            _ = grid.stamp(pts: Int64(i) * 672, duration: d)
+            if i < 15 { XCTAssertFalse(grid.learnedFromDuration) }
+        }
+        XCTAssertTrue(grid.learnedFromDuration)
+        XCTAssertEqual(grid.learnedDuration, 672)
+        _ = grid.stamp(pts: 16 * 672, duration: 656)
+        XCTAssertEqual(grid.learnedDuration, 672, "settled once")
+    }
+
+    // P2-3: a grid running systematically ahead (declared 1001 against 667-tick frames) makes the pts
+    // net fire on B-frames; past the per-segment cap the grid asks for the handover.
+    func testPtsNetCapTripsInOneSegment() {
+        let packets = stream(total: 400, durations: [667], declared: { _ in 1001 })
+        var grid = RemuxVideoGrid(anchor: 0)
+        var trippedAt: Int?
+        for (i, p) in packets.enumerated() {
+            let opens = i > 0 && p.isKey && p.presentationIndex % 144 == 0
+            _ = grid.stamp(pts: p.pts, duration: p.duration, fragmentStart: opens)
+            if grid.netCapExceeded { trippedAt = i; break }
+        }
+        XCTAssertNotNil(trippedAt, "repeated pts nets must end the run")
+        XCTAssertEqual(grid.segmentPtsNetFirings, RemuxVideoGrid.segmentNetCap + 1)
+        XCTAssertLessThanOrEqual(grid.ptsNetFirings, RemuxVideoGrid.sessionNetCap)
+    }
+
+    // P2-3: up to the per-segment cap in every segment is tolerated, until the session total passes
+    // its cap. Every pts-0 packet after the first is clamped, bumped and netted.
+    func testPtsNetCapTripsOnTheSessionTotal() {
+        var grid = RemuxVideoGrid(anchor: 0)
+        _ = grid.stamp(pts: 0, duration: 667)
+        XCTAssertEqual(grid.ptsNetFirings, 0)
+        for seg in 0..<9 {
+            for j in 0..<RemuxVideoGrid.segmentNetCap {
+                _ = grid.stamp(pts: 0, duration: 667, fragmentStart: j == 0)
+                let total = seg * RemuxVideoGrid.segmentNetCap + j + 1
+                XCTAssertEqual(grid.ptsNetFirings, total)
+                XCTAssertEqual(grid.netCapExceeded, total > RemuxVideoGrid.sessionNetCap, "net \(total)")
+            }
+        }
+        XCTAssertTrue(grid.netCapExceeded)
+        // A reposition resets the segment count, never the session's.
+        grid.reposition(anchor: 0)
+        XCTAssertEqual(grid.segmentPtsNetFirings, 0)
+        XCTAssertTrue(grid.netCapExceeded)
+    }
+
+    // P3-5: a packet without a duration writes (and steps by) the unit, never 0.
+    func testMissingDurationWritesTheUnit() {
+        var grid = RemuxVideoGrid(anchor: 0)
+        _ = grid.stamp(pts: 0, duration: 1001)
+        let s = grid.stamp(pts: 1001, duration: 0)
+        XCTAssertEqual(s.duration, 1001)
+        XCTAssertEqual(grid.prevDuration, 1001)
+        XCTAssertEqual(grid.slot, 2002)
     }
 
     // Missing pts is synthesised at the packet's slot and never lands below dts.

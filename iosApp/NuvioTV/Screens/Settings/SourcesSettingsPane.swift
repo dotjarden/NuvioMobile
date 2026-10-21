@@ -380,6 +380,24 @@ struct SourcesSettingsPane: View {
         )
 
         PluginRepoEntryRow(isInstalling: plugins.isInstalling, fieldFocused: $manifestFieldFocused) { plugins.addRepository($0) }
+            // The repositories observer lives on the entry row because it is ALWAYS present: inside
+            // the list's `else` branch it was torn down in the same update that removed the LAST
+            // repository, so focus never moved and the pending values stayed set (review r1 P2-1).
+            // Whatever removed the URL (the alert, a sync), both pending values clear here.
+            .onChange(of: plugins.repositories.map(\.manifestUrl)) { _, urls in
+                // Review r2 (P3-3): a pending removal whose repository was removed by sync (the
+                // alert's row is gone, so its binding setter never runs) must not pop up later.
+                if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
+                    pendingPluginRepoRemoval = nil
+                }
+                if let removed = pendingFocusAfterRemoval, !urls.contains(removed) {
+                    pendingFocusAfterRemoval = nil
+                    // Focus moves at once. If the device pass shows the List winning the race with the
+                    // dismissing alert, the device pass decides on a delay instead:
+                    // Task { try? await Task.sleep(for: .milliseconds(350)); manifestFieldFocused = true }
+                    manifestFieldFocused = true
+                }
+            }
 
         if let status = plugins.statusMessage {
             Text(status)
@@ -474,18 +492,6 @@ struct SourcesSettingsPane: View {
                     }
                 }
             }
-            // Review r2 (P3-3): a pending removal whose repository was removed by sync (the alert's
-            // row is gone, so its binding setter never runs) must not pop up on a later reinstall.
-            Color.clear.frame(width: 0, height: 0)
-                .onChange(of: plugins.repositories.map(\.manifestUrl)) { _, urls in
-                    if let pending = pendingPluginRepoRemoval, !urls.contains(pending.manifestUrl) {
-                        pendingPluginRepoRemoval = nil
-                    }
-                    if let removed = pendingFocusAfterRemoval, !urls.contains(removed) {
-                        pendingFocusAfterRemoval = nil
-                        manifestFieldFocused = true
-                    }
-                }
             SettingsActionRow(
                 title: String(localized: "Refresh Plugins"),
                 subtitle: String(localized: "Re-download provider code from every repository."),

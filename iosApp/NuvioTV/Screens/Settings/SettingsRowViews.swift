@@ -780,16 +780,16 @@ struct SettingsDestructiveRow: View {
     }
 }
 
-/// The destructive row's colour choice, pure so it can be unit tested. At rest the system
-/// destructive red stands (`title == nil`, glyph inherits via `nil`-equivalent system red).
-/// On the always-white focus platter the red title washes out, so the title flips to `.primary`
-/// (nil here means "use `.primary` under the light scheme") and the glyph takes a dark red,
-/// 5.4:1 on white.
+/// The destructive row's colour choice, pure so it can be unit tested; the label applies exactly
+/// what this returns (one source of truth). At rest the title is `.red` (systemRed, what the
+/// destructive role draws in the dark scheme) and the glyph inherits it. On the always-white focus
+/// platter the red title washes out, so the title flips to `.primary` (resolved dark: the label
+/// switches to the `.light` scheme there) and the glyph takes a dark red, 5.4:1 on white.
 nonisolated enum SettingsDestructiveInk {
-    /// `title`: `nil` = leave the system role colour (at rest); on the platter the caller applies
-    /// `.primary`. `glyph`: the symbol colour for the state.
-    static func colors(focused: Bool) -> (title: Color?, glyph: Color) {
-        focused ? (Color.primary, platterRed) : (nil, Color.red)
+    /// `title`: the label's foreground for the state. `glyph`: the symbol colour (applied on the
+    /// platter; at rest the symbol inherits `title`, the same `.red`).
+    static func colors(focused: Bool) -> (title: Color, glyph: Color) {
+        focused ? (Color.primary, platterRed) : (Color.red, Color.red)
     }
 
     static let platterRed = Color(red: 0xD7 / 255, green: 0, blue: 0x15 / 255)
@@ -820,7 +820,7 @@ private struct SettingsDestructiveLabel: View {
             iconTint: onPlatter ? .fixed(ink.glyph) : .inherit,
             descriptionID: descriptionID
         )
-        .foregroundStyle(ink.title.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.red))
+        .foregroundStyle(ink.title)
         .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
     }
 }

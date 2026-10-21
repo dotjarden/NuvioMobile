@@ -2,13 +2,13 @@ import SwiftUI
 import XCTest
 @testable import NuvioTV
 
-/// W3-2 (b): the destructive row keeps the system red at rest and flips to the dark-on-white ink
-/// on the focus platter.
+/// W3-2 (b): the destructive row is red at rest (the colour the label applies) and flips to the
+/// dark-on-white ink on the focus platter.
 final class SettingsDestructiveInkTests: XCTestCase {
 
-    func testAtRestKeepsTheSystemRole() {
+    func testAtRestIsRed() {
         let ink = SettingsDestructiveInk.colors(focused: false)
-        XCTAssertNil(ink.title)
+        XCTAssertEqual(ink.title, Color.red)
         XCTAssertEqual(ink.glyph, Color.red)
     }
 
