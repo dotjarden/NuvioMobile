@@ -4,7 +4,9 @@
     "": {
       "shouldTranslate": false
     },
-    " ": {},
+    " ": {
+      "shouldTranslate": false
+    },
     "%.1f GB": {
       "localizations": {
         "de": {
@@ -209,7 +211,40 @@
         }
       }
     },
-    "%@ and its providers will be removed from this Apple TV.": {},
+    "%@ and its providers will be removed from this Apple TV.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ und seine Anbieter werden von diesem Apple TV entfernt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ y sus proveedores se eliminarán de este Apple TV."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ et ses fournisseurs seront retirés de cette Apple TV."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ e i suoi provider verranno rimossi da questa Apple TV."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ và các nhà cung cấp của nó sẽ bị gỡ khỏi Apple TV này."
+          }
+        }
+      }
+    },
     "%@ f=%lld t=%lld y=%lld i=%lld r=%lld": {
       "localizations": {
         "de": {
@@ -1129,7 +1164,40 @@
         }
       }
     },
-    "%lld of %lld providers on": {},
+    "%lld of %lld providers on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld Anbietern aktiv"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld proveedores activados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld fournisseurs sur %lld activés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld provider su %lld attivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trên %lld nhà cung cấp đang bật"
+          }
+        }
+      }
+    },
     "%lld of %lld selected": {
       "localizations": {
         "de": {
@@ -1262,6 +1330,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld trong %lld · trong thẻ Phụ đề"
+          }
+        }
+      }
+    },
+    "%lld of 1 provider on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von 1 Anbieter aktiv"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de 1 proveedor activado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld fournisseur sur 1 activé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld provider su 1 attivo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trên 1 nhà cung cấp đang bật"
           }
         }
       }
@@ -1742,7 +1844,40 @@
         }
       }
     },
-    "+%lld dB": {},
+    "+%lld dB": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld dB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld dB"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld dB"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld dB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld dB"
+          }
+        }
+      }
+    },
     "+0.1 s": {
       "localizations": {
         "de": {
@@ -6571,7 +6706,40 @@
         }
       }
     },
-    "Audio Mode": {},
+    "Audio Mode": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audiomodus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modo de audio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mode audio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modalità audio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chế độ âm thanh"
+          }
+        }
+      }
+    },
     "Audio tracks": {
       "localizations": {
         "de": {
@@ -8204,7 +8372,40 @@
         }
       }
     },
-    "Boost": {},
+    "Boost": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verstärken"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Realce"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Amplifier"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Potenzia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tăng cường"
+          }
+        }
+      }
+    },
     "Born %@": {
       "localizations": {
         "de": {
@@ -10654,7 +10855,40 @@
         }
       }
     },
-    "Collapses the provider list.": {},
+    "Collapses the provider list.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klappt die Anbieterliste ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contrae la lista de proveedores."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replie la liste des fournisseurs."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprime l'elenco dei provider."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thu gọn danh sách nhà cung cấp."
+          }
+        }
+      }
+    },
     "Collection": {
       "localizations": {
         "de": {
@@ -14735,8 +14969,74 @@
         }
       }
     },
-    "Dialogue": {},
-    "Dialogue raises voices. Boost can distort loud scenes.": {},
+    "Dialogue": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialog"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diálogos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialogues"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialoghi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hội thoại"
+          }
+        }
+      }
+    },
+    "Dialogue raises voices. Boost can distort loud scenes.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialog hebt Stimmen an. Verstärken kann laute Szenen verzerren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diálogos realza las voces. Realce puede distorsionar las escenas ruidosas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialogues renforce les voix. Amplifier peut saturer les scènes fortes."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialoghi alza le voci. Potenzia può distorcere le scene ad alto volume."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hội thoại làm rõ giọng nói. Tăng cường có thể gây méo tiếng ở cảnh ồn."
+          }
+        }
+      }
+    },
     "Died %@": {
       "localizations": {
         "de": {
@@ -17627,8 +17927,74 @@
         }
       }
     },
-    "Floating": {},
-    "Floating keeps the rail a pill just inside the left edge. Edge sets it flat against the left edge of the screen. Default: Floating.": {},
+    "Floating": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schwebend"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flotante"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flottant"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fluttuante"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nổi"
+          }
+        }
+      }
+    },
+    "Floating keeps the rail a pill just inside the left edge. Edge sets it flat against the left edge of the screen. Default: Floating.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schwebend zeigt die Leiste als Pille mit etwas Abstand zum linken Rand. Kante setzt sie direkt an den linken Bildschirmrand. Standard: Schwebend."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flotante mantiene la barra como una píldora separada del borde izquierdo. Borde la pega al borde izquierdo de la pantalla. Por defecto: Flotante."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flottant garde le rail en pastille, légèrement en retrait du bord gauche. Bord le plaque contre le bord gauche de l'écran. Par défaut : Flottant."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fluttuante mantiene la barra come una pillola leggermente staccata dal bordo sinistro. Bordo la appoggia al bordo sinistro dello schermo. Predefinito: Fluttuante."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nổi giữ thanh điều hướng dạng viên thuốc cách mép trái một chút. Viền đặt thanh áp sát mép trái màn hình. Mặc định: Nổi."
+          }
+        }
+      }
+    },
     "Focus Mode": {
       "localizations": {
         "de": {
@@ -22425,7 +22791,40 @@
         }
       }
     },
-    "Loading subtitle lines…": {},
+    "Loading subtitle lines…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitelzeilen werden geladen …"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando líneas de subtítulos…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chargement des lignes de sous-titres…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caricamento delle righe dei sottotitoli…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải các dòng phụ đề…"
+          }
+        }
+      }
+    },
     "Loading subtitle settings…": {
       "localizations": {
         "de": {
@@ -25410,6 +25809,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không tìm thấy phụ đề"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Untertitelzeilen gefunden"
           }
         }
       }
@@ -31130,7 +31535,40 @@
         }
       }
     },
-    "Press Sync Line while a line is spoken, then pick that line.": {},
+    "Press Sync Line while a line is spoken, then pick that line.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drücke Zeile abgleichen, während eine Zeile gesprochen wird, und wähle dann diese Zeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulsa Sincronizar línea mientras se dice una frase y luego elige esa línea."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appuyez sur Caler la ligne pendant qu'une réplique est prononcée, puis choisissez cette ligne."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premi Allinea riga mentre viene pronunciata una battuta, poi scegli quella riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhấn Khớp dòng khi một câu thoại đang được nói, rồi chọn dòng đó."
+          }
+        }
+      }
+    },
     "Press to disconnect": {
       "localizations": {
         "de": {
@@ -31165,7 +31603,40 @@
         }
       }
     },
-    "Press while a line is spoken, then pick that line.": {},
+    "Press while a line is spoken, then pick that line.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drücke, während eine Zeile gesprochen wird, und wähle dann diese Zeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulsa mientras se dice una frase y luego elige esa línea."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appuyez pendant qu'une réplique est prononcée, puis choisissez cette ligne."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premi mentre viene pronunciata una battuta, poi scegli quella riga."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhấn khi một câu thoại đang được nói, rồi chọn dòng đó."
+          }
+        }
+      }
+    },
     "Previous/Next Chapter": {
       "localizations": {
         "de": {
@@ -31744,7 +32215,40 @@
         }
       }
     },
-    "Rail Style": {},
+    "Rail Style": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leistenstil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estilo de la barra"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Style du rail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stile della barra"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kiểu thanh điều hướng"
+          }
+        }
+      }
+    },
     "Rail swaps the top tab bar for a column of icons on the left.": {
       "localizations": {
         "de": {
@@ -32799,7 +33303,40 @@
         }
       }
     },
-    "Remember Speed for This Show": {},
+    "Remember Speed for This Show": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geschwindigkeit für diese Serie merken"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recordar la velocidad para esta serie"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mémoriser la vitesse pour cette série"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricorda la velocità per questa serie"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhớ tốc độ cho chương trình này"
+          }
+        }
+      }
+    },
     "Remembers what you search for and shows it on the Search screen. Off hides past searches and stops saving new ones. On by default.": {
       "localizations": {
         "de": {
@@ -33310,8 +33847,74 @@
         }
       }
     },
-    "Remove repository?": {},
-    "Removes %@ and its providers.": {},
+    "Remove repository?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repository entfernen?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Eliminar el repositorio?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirer le dépôt ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovere il repository?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gỡ kho lưu trữ?"
+          }
+        }
+      }
+    },
+    "Removes %@ and its providers.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entfernt %@ und seine Anbieter."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elimina %@ y sus proveedores."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retire %@ et ses fournisseurs."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuove %@ e i suoi provider."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gỡ %@ và các nhà cung cấp của nó."
+          }
+        }
+      }
+    },
     "Removes sound descriptions and speaker labels, such as [door slams], from text subtitles. Off by default.": {
       "localizations": {
         "de": {
@@ -35557,7 +36160,40 @@
         }
       }
     },
-    "Select shows or hides this repository's providers. Each provider has its own switch.": {},
+    "Select shows or hides this repository's providers. Each provider has its own switch.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auswählen zeigt oder verbirgt die Anbieter dieses Repositorys. Jeder Anbieter hat einen eigenen Schalter."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seleccionar muestra u oculta los proveedores de este repositorio. Cada proveedor tiene su propio interruptor."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sélectionner affiche ou masque les fournisseurs de ce dépôt. Chaque fournisseur a son propre interrupteur."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seleziona mostra o nasconde i provider di questo repository. Ogni provider ha il proprio interruttore."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhấn chọn để hiện hoặc ẩn các nhà cung cấp của kho này. Mỗi nhà cung cấp có công tắc riêng."
+          }
+        }
+      }
+    },
     "Semi": {
       "localizations": {
         "de": {
@@ -38312,7 +38948,40 @@
         }
       }
     },
-    "Shows the provider list.": {},
+    "Shows the provider list.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeigt die Anbieterliste."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra la lista de proveedores."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche la liste des fournisseurs."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra l'elenco dei provider."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiện danh sách nhà cung cấp."
+          }
+        }
+      }
+    },
     "Shows the time of day in the corner while the player controls are up. Off by default.": {
       "localizations": {
         "de": {
@@ -42325,7 +42994,40 @@
         }
       }
     },
-    "Sync Line": {},
+    "Sync Line": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeile abgleichen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronizar línea"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caler la ligne"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allinea riga"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khớp dòng"
+          }
+        }
+      }
+    },
     "Sync Now": {
       "localizations": {
         "de": {
@@ -47080,6 +47782,12 @@
             "state": "translated",
             "value": "Không thể tải phụ đề"
           }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitelzeilen konnten nicht geladen werden"
+          }
         }
       }
     },
@@ -51165,7 +51873,9 @@
         }
       }
     },
-    "focused": {},
+    "focused": {
+      "shouldTranslate": false
+    },
     "https://backend.example.com": {
       "localizations": {
         "de": {
@@ -51472,7 +52182,9 @@
         }
       }
     },
-    "rail bounds": {},
+    "rail bounds": {
+      "shouldTranslate": false
+    },
     "refresh=%lld leg=%lld": {
       "localizations": {
         "de": {
@@ -51745,8 +52457,12 @@
         }
       }
     },
-    "selected": {},
-    "stage text slot": {},
+    "selected": {
+      "shouldTranslate": false
+    },
+    "stage text slot": {
+      "shouldTranslate": false
+    },
     "store full": {
       "localizations": {
         "de": {

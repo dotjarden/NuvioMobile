@@ -405,7 +405,11 @@ struct SourcesSettingsPane: View {
                     SettingsRowChrome {
                         SettingsRowLabel(
                             title: repo.name,
-                            subtitle: String(localized: "\(enabledCount) of \(repoScrapers.count) providers on"),
+                            // Review r1 P3 (plural): one key per grammatical number, so every
+                            // language gets a real singular instead of "1 of 1 providers on".
+                            subtitle: repoScrapers.count == 1
+                                ? String(localized: "\(enabledCount) of 1 provider on")
+                                : String(localized: "\(enabledCount) of \(repoScrapers.count) providers on"),
                             systemImage: isExpanded ? "chevron.down" : "chevron.right",
                             descriptionID: .sourcesPluginRepoHeader
                         )
