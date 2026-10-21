@@ -640,7 +640,11 @@ struct NavigationRail: View {
         case .clear:
             shape.fill(Color.clear).glassEffect(.clear, in: shape)
         case .tinted:
-            shape.fill(Color.clear).glassEffect(.regular.tint(Color.black.opacity(0.35)), in: shape)
+            // Device pass 2026-10-20 (Test 2, Stage, dark hero): regular, clear and a black tint all
+            // render the collapsed 84 pt pill near-black, because it sits over the Stage's black
+            // left margin where glass has nothing to show through (BUG-196); `.ultraThinMaterial`
+            // vanishes there. A light tint is the one candidate left to shoot.
+            shape.fill(Color.clear).glassEffect(.regular.tint(Color.white.opacity(0.12)), in: shape)
         case .material:
             shape.fill(.ultraThinMaterial)
         }

@@ -1082,18 +1082,12 @@ struct DetailView: View {
         // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
         // above Play, so this names the target the engine already picked there.
         .defaultFocus($heroFocus, .play)
-        // BUG-194: while a pop restore is live, the remembered cast / studio card outranks Play as
-        // the default, so the engine's own restoration lands there instead of detouring via Play.
-        // An index that matches no card leaves Play's default in charge.
-        // Review r1 P3-7 / DEVICE-PASS ITEM: whether the engine RE-READS `.defaultFocus` on a pop's
-        // restoration is unproven (the page's own note below says it "runs once"). If it does not,
-        // this default has no effect and the gate alone does the work (it removes the app's
-        // `armHeroReturn` for the stray landing, not the engine's reveal scroll). The device pass
-        // (Test 2) logs `moves=` on cast → biography → Back and says which half did it.
-        .defaultFocus($focusedCastIndex, popRestoreRow == .cast ? popRestoreKey.flatMap(Int.init) : -1,
-                      priority: .userInitiated)
-        .defaultFocus($focusedCompanyIndex, popRestoreRow == .logos ? popRestoreKey.flatMap(Int.init) : -1,
-                      priority: .userInitiated)
+        // BUG-194 device pass (2026-10-20, Test 2): a second `.defaultFocus` at `.userInitiated`
+        // priority with a sentinel value is NOT inert. The engine honours it, finds no card and
+        // falls to the first focusable item, which on a long synopsis is the teaser above Play
+        // (FEAT-35 regressed; proven by an A/B against the pre-batch build). The restore needs no
+        // default: the forced rung at +32 ms puts cast focus back (`[DetailPop] rung applied`),
+        // and the studios row lands by itself (`moves=1`). Only Play's default stays here.
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
@@ -2112,7 +2106,6 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { playButtonHeight = $0 })
                 .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
@@ -2150,7 +2143,6 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { playButtonHeight = $0 })
                 .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
@@ -2197,7 +2189,6 @@ struct DetailView: View {
                         )
                     }
                 )
-                .modifier(DetailActionSquareFrame(side: squareSide))
                 .focused($heroFocus, equals: .trailer)
                 .accessibilityIdentifier("detail_action_trailer")
             }
@@ -2217,7 +2208,6 @@ struct DetailView: View {
                 }
             )
             .tint(model.isWatched ? Theme.Palette.accent : nil)
-            .modifier(DetailActionSquareFrame(side: squareSide))
             // Review r1 #2: identity only (a move between hero buttons is user input).
             .focused($heroFocus, equals: .watched)
             .accessibilityIdentifier("detail_action_watched")
@@ -2237,7 +2227,6 @@ struct DetailView: View {
                 }
             )
             .tint(model.isSaved ? Theme.Palette.accent : nil)
-            .modifier(DetailActionSquareFrame(side: squareSide))
             .focused($heroFocus, equals: .library)
             .accessibilityIdentifier("detail_action_library")
 
@@ -2264,7 +2253,6 @@ struct DetailView: View {
                     }
                 )
                 .tint(model.shuffleSettings.enabled ? Theme.Palette.accent : nil)
-                .modifier(DetailActionSquareFrame(side: squareSide))
                 .focused($heroFocus, equals: .shuffle)
                 .accessibilityIdentifier("detail_action_shuffle")
             }
@@ -2442,6 +2430,10 @@ struct DetailView: View {
         memory.goLive((target.row, target.key), startedAt: started)
         popRestoreRow = target.row
         popRestoreKey = target.key
+        #if DEBUG
+        // Device-pass probe (Test 2 reads the console, not the label): the restore went live.
+        if DetailFocusProbe.enabled { NSLog("[DetailPop] live row=%@ key=%@", "\(target.row)", target.key) }
+        #endif
         for rung in DetailFocusRestore.rungs {
             DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
                 guard memory.isCurrent(generation),
@@ -2461,6 +2453,15 @@ struct DetailView: View {
     /// change has already run the handler for itself).
     private func endPopRestore() {
         guard popRestoreRow != nil || focusMemory.restoreLive else { return }
+        #if DEBUG
+        if DetailFocusProbe.enabled {
+            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d focused=%@ idx=%@",
+                  popRestoreRow.map { "\($0)" } ?? "-", popRestoreKey ?? "-", focusMemory.popMoves,
+                  focusMemory.heldFocusChange == nil ? 0 : 1,
+                  focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1,
+                  focusedRow.map { "\($0)" } ?? "-", detailFocusProbeKey)
+        }
+        #endif
         let held = focusMemory.endRestore()
         popRestoreRow = nil
         popRestoreKey = nil
@@ -2475,6 +2476,12 @@ struct DetailView: View {
             guard let index = Int(key),
                   DetailFocusRestore.shouldApply(force: force, current: focusedCastIndex.map(String.init),
                                                  target: key) else { return }
+            #if DEBUG
+            if DetailFocusProbe.enabled {
+                NSLog("[DetailPop] rung applied row=cast key=%@ force=%d t=%d", key, force ? 1 : 0,
+                      Int((ProcessInfo.processInfo.systemUptime - focusMemory.popStartedAt) * 1000))
+            }
+            #endif
             focusedCastIndex = index
         case .logos:
             guard let index = Int(key),
@@ -2516,7 +2523,6 @@ struct DetailView: View {
                 )
             }
         )
-        .modifier(DetailActionSquareFrame(side: squareSide))
         .disabled(!model.isPlayEnabled)
         .focused($heroFocus, equals: .startOver)
         .accessibilityIdentifier("detail_start_over")
@@ -2569,8 +2575,15 @@ struct DetailView: View {
     @ViewBuilder
     private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
         if usesIconOnlyLabel(primary: primary) {
+            // FEAT-82 device pass (2026-10-20): the square is the LABEL (icon + padding), sized to
+            // Play's padded label, so the button style adds the same insets to every button and the
+            // secondaries come out equal and as tall as Play. A fixed frame on the Button itself
+            // did not do that on hardware: the style drew its platter outside the frame, so the
+            // squares overlapped their gaps and sat shorter than Play.
             content.padding(Theme.Spacing.md)
                 .modifier(DetailActionSquareLabel(side: primary ? nil : squareSide))
+                .onGeometryChange(for: CGFloat.self, of: { primary ? $0.size.height.rounded() : 0 },
+                                  action: { if primary { playButtonHeight = $0 } })
         } else {
             content
                 .padding(.horizontal, horizontal)
@@ -2636,7 +2649,6 @@ struct DetailView: View {
             // `DetailView` no new focus state (and no body re-run per Left/Right).
             DetailPosterLinkRow(row: .moreLikeThis, title: String(localized: "More Like This"),
                                 items: items, restore: detailFocusRestore,
-                                livePopKey: popRestoreRow == .moreLikeThis ? popRestoreKey : nil,
                                 onFocus: { noteDetailFocus(.moreLikeThis, $0) })
         }
     }
@@ -2749,7 +2761,6 @@ struct DetailView: View {
             // BUG-187: a child view owning its `FocusState` — see `moreLikeThisRow`.
             DetailPosterLinkRow(row: .collection, title: collectionTitle,
                                 items: items, restore: detailFocusRestore,
-                                livePopKey: popRestoreRow == .collection ? popRestoreKey : nil,
                                 onFocus: { noteDetailFocus(.collection, $0) })
         }
     }
@@ -3078,8 +3089,6 @@ private struct DetailPosterLinkRow: View {
     let items: [MetaPreview]
     let restore: DetailFocusRestoreRequest
     /// BUG-194: the live pop restore's card key when it names this row, else nil (review r2: the
-    /// request above arrives one runloop late and outlives viewer input; this is the live state).
-    var livePopKey: String? = nil
     let onFocus: (String?) -> Void
 
     @FocusState private var focusedId: String?
@@ -3120,9 +3129,6 @@ private struct DetailPosterLinkRow: View {
         }
         .focusSection()
         .onChange(of: focusedId) { _, id in onFocus(id) }
-        // BUG-194 (review r1 P2-2): while a restore request names this row, its card is the row's
-        // default so the engine's own restoration lands on it; "" matches no card otherwise.
-        .defaultFocus($focusedId, livePopKey ?? "", priority: .userInitiated)
         .onChange(of: restore) { _, request in
             guard request.row == row, let key = request.key,
                   DetailFocusRestore.shouldApply(force: request.force, current: focusedId, target: key) else { return }

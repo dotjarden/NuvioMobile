@@ -13,8 +13,8 @@ import SwiftUI
 ///
 /// Rounded and Round, and Classic with text labels, never see a side (nil) and keep today's layout.
 nonisolated enum DetailActionSquare {
-    /// The square's side: Play's measured height (whole points), or nil until Play has been
-    /// measured (0 or a sliver).
+    /// The square's side: Play's measured padded-label height (whole points), or nil until Play
+    /// has been measured (0 or a sliver).
     static func side(playHeight: CGFloat) -> CGFloat? {
         playHeight > 1 ? playHeight.rounded() : nil
     }
@@ -25,21 +25,9 @@ nonisolated enum DetailActionSquare {
     }
 }
 
-/// The label half: lets the label fill whatever the fixed outer frame proposes.
+/// The padded icon label sized to a `side × side` square (side = Play's padded label height), so
+/// the button style adds the same insets to every button and the secondaries match Play's height.
 struct DetailActionSquareLabel: ViewModifier {
-    let side: CGFloat?
-
-    func body(content: Content) -> some View {
-        if side != nil {
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            content
-        }
-    }
-}
-
-/// The button half: the fixed `side × side` frame around the whole button.
-struct DetailActionSquareFrame: ViewModifier {
     let side: CGFloat?
 
     func body(content: Content) -> some View {
