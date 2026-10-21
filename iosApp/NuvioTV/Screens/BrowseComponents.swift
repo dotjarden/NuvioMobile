@@ -986,20 +986,58 @@ extension PinnedRowTitle {
     nonisolated enum SlideHoldVerdict: Equatable, Sendable {
         /// Apply the target now (eased, or snapped under Reduce Motion).
         case apply
+        /// W3-14 (BUG-209): apply the target now WITHOUT animation, because the rows are still
+        /// moving and this is the focused row's in-band slide — the title tracks the clip edge
+        /// frame by frame and lands with its posters.
+        case track
         /// Set the slide to 0 with no animation.
         case snapToZero
         /// Keep the target pending until the rest is decided (or the fallback fires).
         case hold
     }
 
+    /// W3-14 (BUG-209): the slack on the slide's in-band test. The same ±2 the settle corrector's
+    /// `inBand` membership test carries (`PinnedRowSettle.settlePlan`, "the probe's own 2pt
+    /// quantization"): with `margin = −visibleMinY` and `slide = max(visibleMinY, 0)`, the
+    /// corrector's low edge `margin ≥ −clearance.focused − 2` is exactly
+    /// `slide ≤ clearance.focused + 2`. A focused row whose slide is inside it is never nudged up.
+    nonisolated static let slideBandSlack: CGFloat = 2
+
+    /// W3-14 (BUG-209): whether a slide target keeps the title within the focused card's lifted
+    /// clearance (plus `slideBandSlack`) — the band the corrector leaves alone, and the bound on
+    /// how far a title tracked mid-motion can ride onto the focused card's artwork.
+    nonisolated static func slideInBand(target: CGFloat, clearances: Clearances) -> Bool {
+        target <= clearances.focused + slideBandSlack
+    }
+
     /// - A 0 target while the rows MOVE snaps (round 4 F2's "0 is never held", without the 0.22s
     ///   ease that let the title detach from a row still travelling); at rest it eases as before.
-    /// - A nonzero target waits while the rows move OR a settle decision is still to come: the
-    ///   decision may be a nudge, and a title applied before it eases a second time after it.
+    ///   Checked first, whatever the other inputs say.
+    /// - W3-14 (BUG-209, Steven's rc11 video: on Classic + Hide Titles every Down's incoming heading
+    ///   landed high, then dropped a notch): the FOCUSED row (`focused`) with an IN-BAND target
+    ///   (`inBand`, `slideInBand`) and no hold episode already running (`!holding`) no longer waits
+    ///   — while the rows move it `.track`s (applied unanimated, so the heading rides the clip edge
+    ///   over the reveal's last ~10pt and lands once, with the posters), and still it `.apply`s
+    ///   (the 0.22s ease) even if a decision is pending: an in-band focused rest is one the
+    ///   corrector never nudges, so the decision could only ever say "clean".
+    ///   - Focused only: an unfocused row is the one a nudge or a departing scroll carries, and
+    ///     tracking it reopens rc14's "title painted across a departing row".
+    ///   - In band only: a deeper target is one the corrector may nudge (beta.18's double ease),
+    ///     and tracking it mid-motion would paint the title onto the focused card's artwork.
+    ///   - Not while `holding`: a hold that started out of band (an Up approach coming down from
+    ///     above the clip edge) has left the title at a stale slide; tracking from there would pop
+    ///     it down by the whole band in one frame. That episode keeps the release below.
+    /// - Any other nonzero target waits while the rows move OR a settle decision is still to come:
+    ///   the decision may be a nudge, and a title applied before it eases a second time after it.
     nonisolated static func slideHoldVerdict(target: CGFloat, current: CGFloat,
-                                             moving: Bool, restPending: Bool) -> SlideHoldVerdict {
+                                             moving: Bool, restPending: Bool,
+                                             focused: Bool, inBand: Bool,
+                                             holding: Bool) -> SlideHoldVerdict {
         if target == 0 {
             return (moving && current != 0) ? .snapToZero : .apply
+        }
+        if focused, inBand, !holding {
+            return moving ? .track : .apply
         }
         return (moving || restPending) ? .hold : .apply
     }
@@ -1462,6 +1500,12 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// rest it eases once, by the measured amount (≈8pt on a held-regime rest). Rest behaviour is
     /// byte-identical to before — only motion is excluded.
     ///
+    /// W3-14 (BUG-209): that "eases once" was itself the notch Steven filmed on every Down — the
+    /// incoming row's heading landed clipped, then dropped ≈10pt a quarter-second later. The
+    /// FOCUSED row's in-band slide is now exempt from the hold and tracks the clip edge
+    /// unanimated while the rows move (see `PinnedRowTitle.slideHoldVerdict`); every other row
+    /// keeps the hold exactly as described here.
+    ///
     /// Cost: one `asyncAfter` chain per hold episode, not per frame — `slideHoldToken` dedups
     /// re-arms while a check is already pending, and the pending target is a reference-box write.
     ///
@@ -1480,7 +1524,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// not from the sibling geometry observer's cache, so it does not depend on the order SwiftUI
     /// runs the two observers' actions in.
     private func applySlide(_ reading: PinnedRowTitle.Reading) {
-        commitSlide(target: reading.onScreen ? reading.slide : 0, measured: reading.slide)
+        // W3-14 (BUG-209): the Reading rides along for its clearances — the in-band test is
+        // judged against the focused card's lifted clearance (`PinnedRowTitle.slideInBand`).
+        commitSlide(target: reading.onScreen ? reading.slide : 0, measured: reading.slide, reading: reading)
     }
 
     /// The two motion signals, either one counts (device round 2): the rows scroll's own stamp,
@@ -1497,11 +1543,20 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// own 0.12s quiet clock. That clock released before the corrector's 0.25s decision; a nudge
     /// then moved the rows again, re-held the title, and it eased a second time — Steven's beta.18
     /// "titles bounce again" and the ~1s collection name. Now the title lands once, after the nudge.
-    private func commitSlide(target: CGFloat, measured: CGFloat) {
+    ///
+    /// W3-14 (BUG-209): except the FOCUSED row's in-band slide, which the corrector never nudges —
+    /// it tracks the clip edge unanimated while the rows move and eases only at rest, never waiting
+    /// on the decision. `tracking.isFocused` (the live mirror, not the captured `isFocused`) is the
+    /// focus test; `tracking.pendingSlide != nil` is "a hold episode is already running".
+    private func commitSlide(target: CGFloat, measured: CGFloat, reading: PinnedRowTitle.Reading) {
         let motion = slideMotion()
         let restPending = PinnedRowSettle.isRestPending
+        let focused = tracking.isFocused
+        let inBand = PinnedRowTitle.slideInBand(target: target, clearances: reading.clearances)
+        let holding = tracking.pendingSlide != nil
         switch PinnedRowTitle.slideHoldVerdict(target: target, current: slide,
-                                               moving: motion.moving, restPending: restPending) {
+                                               moving: motion.moving, restPending: restPending,
+                                               focused: focused, inBand: inBand, holding: holding) {
         case .snapToZero:
             // beta.18 verdict (BUG-87/89, R1): round 4 F2 already never HELD a 0 target, but it
             // eased it over 0.22s while the row still travelled, so the title visibly detached
@@ -1525,10 +1580,20 @@ private struct PinnedRowTitleTracking: ViewModifier {
             tracking.ceilingRestarted = false // review r1 (P3-5): new episode, one restart again
             tracking.slideHoldToken &+= 1
             scheduleSlideHoldFallback(token: tracking.slideHoldToken, after: Self.slideMotionHold)
+        case .track:
+            // W3-14 (BUG-209): unanimated, one state write per changed reading — at most the
+            // reveal's last ~10 frames, on this title's subtree only. No hold chain is running
+            // (`!holding`), so the token bump only keeps the invariant that an apply ends one.
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
+                             animated: false, exempt: true, restPending: restPending)
         case .apply:
             tracking.pendingSlide = nil
             tracking.slideHoldToken &+= 1
-            applySlideTarget(target, measured: measured, via: "immediate", motion: motion)
+            applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
+                             exempt: target != 0 && focused && inBand && !holding,
+                             restPending: restPending)
         }
     }
 
@@ -1596,19 +1661,36 @@ private struct PinnedRowTitleTracking: ViewModifier {
         applySlideTarget(pending, measured: pending, via: via, motion: slideMotion())
     }
 
+    /// W3-14 (BUG-209): `animated: false` is the `.track` apply — the slide follows the clip edge
+    /// with animations disabled, the same transaction `snapToZero` uses. The probe line says which:
+    /// `via=` is still who released it (`immediate` = applied on the reading, `settle`/`quiet`/
+    /// `fallback`/`ceiling` = a held target released later), `anim=` how (`track` unanimated while
+    /// moving, `ease` the 0.22s curve, `none` under Reduce Motion), and on an immediate apply
+    /// `exempt=1` marks the focused in-band exemption and `restPending=1` a decision it did not
+    /// wait for. On a device pass, BUG-209 fixed reads as a run of
+    /// `slide apply … via=immediate anim=track exempt=1` lines per Down and no `via=settle` line
+    /// for the focused row.
     private func applySlideTarget(_ target: CGFloat, measured: CGFloat, via: String,
-                                  motion: (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval)) {
+                                  motion: (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval),
+                                  animated: Bool = true, exempt: Bool? = nil, restPending: Bool? = nil) {
         if HomeGeometryProbe.enabled, slide != target {
+            let anim = reduceMotion ? "none" : (animated ? "ease" : "track")
             NSLog("[HomeScrollProbe] slide %@",
                   "apply row=\(rowKey) from=\(Int(slide.rounded())) to=\(Int(target.rounded()))"
                     + " measured=\(Int(measured.rounded()))"
                     + " sinceScroll=\(Int((min(motion.sinceScroll, 99) * 1000).rounded()))ms"
                     + " sinceTitle=\(Int((min(motion.sinceTitle, 99) * 1000).rounded()))ms"
-                    + " via=\(via)")
+                    + " via=\(via) anim=\(anim)"
+                    + (exempt.map { " exempt=\($0 ? 1 : 0)" } ?? "")
+                    + (restPending.map { " restPending=\($0 ? 1 : 0)" } ?? ""))
         }
         guard slide != target else { return }
         if reduceMotion {
             slide = target
+        } else if !animated {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { slide = target }
         } else {
             withAnimation(.easeOut(duration: 0.22)) { slide = target }
         }

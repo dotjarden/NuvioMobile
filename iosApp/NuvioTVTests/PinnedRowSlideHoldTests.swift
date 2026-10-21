@@ -6,46 +6,181 @@ import CoreGraphics
 /// corrector's rest DECISION, not by its own wall clock. Pure-value tests, like
 /// `PinnedRowSettleRc14Tests`: the verdict `commitSlide` switches on, the rest-decision observer
 /// registry, the reason the decision line carries, and the timing invariants between the hold's
-/// clocks and the corrector's.
+/// clocks and the corrector's. W3-14 (BUG-209) adds the focused row's in-band exemption: the
+/// `.track` verdict, its guards (focused, in band, no hold running) and `slideInBand`.
 @MainActor
 final class PinnedRowSlideHoldTests: XCTestCase {
 
     // MARK: - slideHoldVerdict
 
+    /// The verdict with the W3-14 (BUG-209) inputs spelled out. The defaults describe the row the
+    /// pre-W3-14 rule covered whole: unfocused, out of band, no hold running.
+    private func verdict(target: CGFloat, current: CGFloat, moving: Bool, pending: Bool,
+                         focused: Bool = false, inBand: Bool = false,
+                         holding: Bool = false) -> PinnedRowTitle.SlideHoldVerdict {
+        PinnedRowTitle.slideHoldVerdict(target: target, current: current,
+                                        moving: moving, restPending: pending,
+                                        focused: focused, inBand: inBand, holding: holding)
+    }
+
     func testZeroTargetWhileMovingSnaps() {
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 8, moving: true, restPending: false),
-                       .snapToZero)
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 8, moving: true, restPending: true),
-                       .snapToZero)
+        XCTAssertEqual(verdict(target: 0, current: 8, moving: true, pending: false), .snapToZero)
+        XCTAssertEqual(verdict(target: 0, current: 8, moving: true, pending: true), .snapToZero)
     }
 
     func testZeroTargetAtRestEases() {
         // A pending decision never holds a 0 target: 0 is never wrong for a contained title.
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 8, moving: false, restPending: false),
-                       .apply)
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 8, moving: false, restPending: true),
-                       .apply)
+        XCTAssertEqual(verdict(target: 0, current: 8, moving: false, pending: false), .apply)
+        XCTAssertEqual(verdict(target: 0, current: 8, moving: false, pending: true), .apply)
     }
 
     func testZeroTargetAlreadyAtZeroIsAPlainApply() {
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 0, moving: false, restPending: false),
-                       .apply)
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 0, current: 0, moving: true, restPending: false),
-                       .apply)
+        XCTAssertEqual(verdict(target: 0, current: 0, moving: false, pending: false), .apply)
+        XCTAssertEqual(verdict(target: 0, current: 0, moving: true, pending: false), .apply)
     }
 
+    /// W3-14 (BUG-209): the 0-target snap is untouched — it wins over the focused in-band
+    /// exemption in every combination, so a title leaving the clip edge still snaps home.
+    func testZeroTargetIgnoresTheFocusedInBandExemption() {
+        for focused in [false, true] {
+            for inBand in [false, true] {
+                for holding in [false, true] {
+                    let label = "focused=\(focused) inBand=\(inBand) holding=\(holding)"
+                    XCTAssertEqual(verdict(target: 0, current: 8, moving: true, pending: true,
+                                           focused: focused, inBand: inBand, holding: holding),
+                                   .snapToZero, label)
+                    XCTAssertEqual(verdict(target: 0, current: 8, moving: false, pending: true,
+                                           focused: focused, inBand: inBand, holding: holding),
+                                   .apply, label)
+                    XCTAssertEqual(verdict(target: 0, current: 0, moving: true, pending: false,
+                                           focused: focused, inBand: inBand, holding: holding),
+                                   .apply, label)
+                }
+            }
+        }
+    }
+
+    /// The hold as beta.18 built it, now for every row the W3-14 exemption does not cover: an
+    /// unfocused row (in band or not) and a focused row out of band wait while the rows move OR a
+    /// decision is pending.
     func testNonzeroTargetHoldsWhileMovingOrPending() {
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 8, current: 0, moving: true, restPending: false),
-                       .hold)
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 8, current: 0, moving: false, restPending: true),
-                       .hold)
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 8, current: 0, moving: true, restPending: true),
-                       .hold)
+        let nonExempt: [(focused: Bool, inBand: Bool)] = [(false, false), (false, true), (true, false)]
+        for row in nonExempt {
+            let label = "focused=\(row.focused) inBand=\(row.inBand)"
+            XCTAssertEqual(verdict(target: 8, current: 0, moving: true, pending: false,
+                                   focused: row.focused, inBand: row.inBand), .hold, label)
+            XCTAssertEqual(verdict(target: 8, current: 0, moving: false, pending: true,
+                                   focused: row.focused, inBand: row.inBand), .hold, label)
+            XCTAssertEqual(verdict(target: 8, current: 0, moving: true, pending: true,
+                                   focused: row.focused, inBand: row.inBand), .hold, label)
+        }
     }
 
     func testNonzeroTargetAtDecidedRestApplies() {
-        XCTAssertEqual(PinnedRowTitle.slideHoldVerdict(target: 8, current: 0, moving: false, restPending: false),
-                       .apply)
+        for focused in [false, true] {
+            for inBand in [false, true] {
+                for holding in [false, true] {
+                    XCTAssertEqual(verdict(target: 8, current: 0, moving: false, pending: false,
+                                           focused: focused, inBand: inBand, holding: holding),
+                                   .apply, "focused=\(focused) inBand=\(inBand) holding=\(holding)")
+                }
+            }
+        }
+    }
+
+    // MARK: - W3-14 (BUG-209): the focused row's in-band slide
+
+    /// The matrix: focused/unfocused × in/out of band × moving/pending, no hold running. Only the
+    /// focused in-band row changes: it tracks while moving, and eases at rest without waiting for
+    /// the decision.
+    func testFocusedInBandMatrix() {
+        struct Case { let focused: Bool; let inBand: Bool; let moving: Bool; let pending: Bool
+                      let expected: PinnedRowTitle.SlideHoldVerdict }
+        let cases: [Case] = [
+            // Focused, in band: the exemption.
+            Case(focused: true, inBand: true, moving: true, pending: false, expected: .track),
+            Case(focused: true, inBand: true, moving: true, pending: true, expected: .track),
+            Case(focused: true, inBand: true, moving: false, pending: true, expected: .apply),
+            Case(focused: true, inBand: true, moving: false, pending: false, expected: .apply),
+            // Focused, out of band: beta.18's hold (a nudge may come).
+            Case(focused: true, inBand: false, moving: true, pending: false, expected: .hold),
+            Case(focused: true, inBand: false, moving: true, pending: true, expected: .hold),
+            Case(focused: true, inBand: false, moving: false, pending: true, expected: .hold),
+            Case(focused: true, inBand: false, moving: false, pending: false, expected: .apply),
+            // Unfocused, in band: rc14's hold (the row a nudge or a departing scroll carries).
+            Case(focused: false, inBand: true, moving: true, pending: false, expected: .hold),
+            Case(focused: false, inBand: true, moving: true, pending: true, expected: .hold),
+            Case(focused: false, inBand: true, moving: false, pending: true, expected: .hold),
+            Case(focused: false, inBand: true, moving: false, pending: false, expected: .apply),
+            // Unfocused, out of band: unchanged.
+            Case(focused: false, inBand: false, moving: true, pending: false, expected: .hold),
+            Case(focused: false, inBand: false, moving: true, pending: true, expected: .hold),
+            Case(focused: false, inBand: false, moving: false, pending: true, expected: .hold),
+            Case(focused: false, inBand: false, moving: false, pending: false, expected: .apply),
+        ]
+        for c in cases {
+            XCTAssertEqual(verdict(target: 10.5, current: 4, moving: c.moving, pending: c.pending,
+                                   focused: c.focused, inBand: c.inBand),
+                           c.expected,
+                           "focused=\(c.focused) inBand=\(c.inBand) moving=\(c.moving) pending=\(c.pending)")
+        }
+    }
+
+    /// A hold episode already running (it started out of band — an Up approach coming down from
+    /// above the clip edge) keeps the release path even once its target reaches the band:
+    /// tracking from the stale slide would pop the title down by the whole band in one frame.
+    func testFocusedInBandKeepsARunningHold() {
+        XCTAssertEqual(verdict(target: 10, current: 0, moving: true, pending: false,
+                               focused: true, inBand: true, holding: true), .hold)
+        XCTAssertEqual(verdict(target: 10, current: 0, moving: true, pending: true,
+                               focused: true, inBand: true, holding: true), .hold)
+        XCTAssertEqual(verdict(target: 10, current: 0, moving: false, pending: true,
+                               focused: true, inBand: true, holding: true), .hold)
+        XCTAssertEqual(verdict(target: 10, current: 0, moving: false, pending: false,
+                               focused: true, inBand: true, holding: true), .apply)
+    }
+
+    /// Steven's Down, reading by reading (`P351c0p1r0z0t38hzrt4`: rest −10.52, `clearance.focused`
+    /// 10): the incoming focused row's slide is 0 below the clip edge, then tracks every reading of
+    /// the reveal's last ~10pt, and never holds — so the settle decision has nothing to release.
+    func testStevensDownTracksEveryReadingToTheRest() {
+        let clearances = PinnedRowTitle.Clearances(atRest: 30, focused: 10, lift: 20, focusedRaw: 10)
+        var current: CGFloat = 0
+        for target: CGFloat in [0, 0, 1.5, 4, 7, 9, 10, 10.524] {
+            let inBand = PinnedRowTitle.slideInBand(target: target, clearances: clearances)
+            XCTAssertTrue(inBand, "every slide on the way to the rest is in band (\(target))")
+            let v = verdict(target: target, current: current, moving: true, pending: true,
+                            focused: true, inBand: inBand, holding: false)
+            XCTAssertEqual(v, target == 0 ? .apply : .track, "target \(target)")
+            current = target
+        }
+        XCTAssertEqual(current, 10.524, accuracy: 0.001, "the title lands on the rest with the posters")
+    }
+
+    // MARK: - slideInBand
+
+    func testSlideInBandIsTheCorrectorsLowEdgeWithItsSlack() {
+        XCTAssertEqual(PinnedRowTitle.slideBandSlack, 2)
+        let clearances = PinnedRowTitle.Clearances(atRest: 30, focused: 10, lift: 20, focusedRaw: 10)
+        XCTAssertTrue(PinnedRowTitle.slideInBand(target: 0, clearances: clearances))
+        XCTAssertTrue(PinnedRowTitle.slideInBand(target: 10, clearances: clearances))
+        // Steven's held rest: −10.52 against bandLo −10 — in band only through the slack, exactly
+        // as the corrector reads it (`PinnedRowGeometryTests.testMediumPlusPanelHeldSpendsOnlyTheHoldOvershoot`).
+        XCTAssertTrue(PinnedRowTitle.slideInBand(target: 10.524, clearances: clearances))
+        XCTAssertTrue(PinnedRowTitle.slideInBand(target: 12, clearances: clearances), "boundary is inside")
+        XCTAssertFalse(PinnedRowTitle.slideInBand(target: 12.01, clearances: clearances))
+        XCTAssertFalse(PinnedRowTitle.slideInBand(target: 72, clearances: clearances))
+    }
+
+    func testSlideInBandJudgesTheLiftedClearanceNotTheRestingOne() {
+        // An unfocused row's resting clearance is larger; the exemption is judged on the focused
+        // (lifted) one, which is what the tracked title actually rides over.
+        let clearances = PinnedRowTitle.Clearances(atRest: 30, focused: 10, lift: 20, focusedRaw: 10)
+        XCTAssertFalse(PinnedRowTitle.slideInBand(target: 20, clearances: clearances))
+        // A lift-deficit row (focused clamped at 0) is in band only within the slack.
+        let deficit = PinnedRowTitle.Clearances(atRest: 12, focused: 0, lift: 30, focusedRaw: -18)
+        XCTAssertTrue(PinnedRowTitle.slideInBand(target: 2, clearances: deficit))
+        XCTAssertFalse(PinnedRowTitle.slideInBand(target: 3, clearances: deficit))
     }
 
     // MARK: - Rest-decision observers
