@@ -37,11 +37,29 @@ final class NavigationRailUITests: XCTestCase {
         Thread.sleep(forTimeInterval: seconds)
     }
 
+    /// An attachment, plus (W3-11) a PNG named `<name>.png` in `RAIL_SHOT_DIR` when the runner has
+    /// that variable (`TEST_RUNNER_RAIL_SHOT_DIR=<dir> xcodebuild test …`), for sim evidence.
     private func shot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        if let dir = ProcessInfo.processInfo.environment["RAIL_SHOT_DIR"], !dir.isEmpty {
+            let url = URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent("\(name).png")
+            do {
+                try screenshot.pngRepresentation.write(to: url)
+            } catch {
+                print("[NavigationRailUITests] could not write \(url.path): \(error)")
+            }
+        }
+    }
+
+    /// W3-11: a wall-clock marker in the runner's output, printed BEFORE a press (XCUIRemote waits
+    /// for the app to idle, so after it the unroll is over), so frames of a `simctl io
+    /// recordVideo` capture can be found for the mid-unroll shots.
+    private func mark(_ event: String) {
+        print(String(format: "[rail-shot] %@ t=%.3f", event, Date().timeIntervalSince1970))
     }
 
     private func note(_ name: String, _ text: String) {
@@ -724,15 +742,30 @@ final class NavigationRailUITests: XCTestCase {
         shot("rail11_discover_tab")
     }
 
-    // MARK: - testRail12 (FEAT-80 Corner, Batch N; Batch O)
+    // MARK: - testRail12 (FEAT-80 Corner, Batch N; Batch O; W3-11, D1)
 
-    /// Batch O geometry: the Corner rail is Centre's pill at (16, 38), so its 60 pt Home cell is at
-    /// (16 + 12, 38 + 22), centred on (58, 90), at rest and open. Five tabs (Discover off) plus
-    /// the avatar: 6 × 60 + 5 × 14 + 18 + 2 × 22 = 492.
-    private static let cornerPillOrigin = CGPoint(x: 16, y: 38)
+    /// W3-11 (D1) geometry. The Corner rail's COLUMN sits at (16, 38) whatever the Rail Style, so
+    /// its 60 pt Home cell is at (16 + 12, 38 + 22), centred on (58, 90), at rest and open. Its
+    /// GLASS is flush with the top and the left screen edges: drawn from the screen corner with an
+    /// 8 pt bleed past both (`NavigationChrome.cornerGlassFrame`), so the oracle's frame starts at
+    /// (−8, −8). Its width is 8 + 16 + the column's width (108 Icons Only, 324 Labels Shown) from
+    /// the arm on, never growing sideways; its height is 8 + 38 + the column's height: 150 at the
+    /// arm, 538 open. Five tabs (Discover off) plus the avatar: 6 × 60 + 5 × 14 + 18 + 2 × 22 = 492.
+    private static let cornerBleed: CGFloat = 8
+    private static let cornerGlassOrigin = CGPoint(x: -cornerBleed, y: -cornerBleed)
     private static let cornerHomeCellCentre = CGPoint(x: 58, y: 90)
     private static let cornerColumnHeight: CGFloat = 492
     private static let cornerItemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+
+    /// The flush glass's width for a column `columnWidth` wide (84 Icons Only, 300 Labels Shown).
+    private static func cornerGlassWidth(column columnWidth: CGFloat) -> CGFloat {
+        cornerBleed + 16 + columnWidth
+    }
+
+    /// The flush glass's height for a column `columnHeight` tall (104 at the arm, 492 open).
+    private static func cornerGlassHeight(column columnHeight: CGFloat) -> CGFloat {
+        cornerBleed + 38 + columnHeight
+    }
 
     private func railItem(_ app: XCUIApplication, _ title: String) -> XCUIElement {
         app.descendants(matching: .any)["rail_item_\(title)"].firstMatch
@@ -783,43 +816,58 @@ final class NavigationRailUITests: XCTestCase {
         return frame
     }
 
-    /// Open: Centre's pill at (16, 38), `width` wide, the column's height, inside the screen with a
-    /// gap on every side, every item inside it. Returns the glass's frame.
+    /// Open (W3-11, D1): the glass flush with the top and the left screen edges, from (−8, −8) (the
+    /// bleed past both), `width` (the column's: 84 / 300) + 16 + 8 wide, the column + 38 + 8 tall;
+    /// its trailing and bottom edges on screen; every item inside it. Returns the glass's frame.
     @discardableResult
     private func assertCornerOpen(_ app: XCUIApplication, width: CGFloat, _ step: String) -> CGRect {
         for title in Self.cornerItemTitles {
-            XCTAssertTrue(railItem(app, title).exists, "\(step): rail_item_\(title) must exist once the pill unrolls")
+            XCTAssertTrue(railItem(app, title).exists, "\(step): rail_item_\(title) must exist once the column unrolls")
         }
         let glass = railGlass(app)
         XCTAssertTrue(glass.exists, "\(step): the glass shows while the rail is open")
         XCTAssertEqual(rail(app, "glass"), "1", "\(step): the glass draws at full opacity: \(railState(app))")
         XCTAssertEqual(rail(app, "selrow"), "1", "\(step): the selected tab's row draws: \(railState(app))")
-        let column = glass.frame
-        XCTAssertEqual(column.minX, Self.cornerPillOrigin.x, accuracy: 1, "\(step): Centre's bezel inset: \(column)")
-        XCTAssertEqual(column.minY, Self.cornerPillOrigin.y, accuracy: 1, "\(step): anchored at the top, never flush: \(column)")
-        XCTAssertEqual(column.width, width, accuracy: 2, "\(step): Centre's pill width: \(column)")
-        XCTAssertEqual(column.height, Self.cornerColumnHeight, accuracy: 4, "\(step): the column's height: \(column)")
+        let frame = glass.frame
+        XCTAssertEqual(frame.minX, Self.cornerGlassOrigin.x, accuracy: 1, "\(step): flush past the left edge by the bleed: \(frame)")
+        XCTAssertEqual(frame.minY, Self.cornerGlassOrigin.y, accuracy: 1, "\(step): flush past the top edge by the bleed: \(frame)")
+        XCTAssertEqual(frame.width, Self.cornerGlassWidth(column: width), accuracy: 2,
+                       "\(step): the open column's width + 16 + the bleed, never wider: \(frame)")
+        XCTAssertEqual(frame.height, Self.cornerGlassHeight(column: Self.cornerColumnHeight), accuracy: 4,
+                       "\(step): grown down to the column + 38 + the bleed: \(frame)")
         let screen = app.frame
-        XCTAssertTrue(column.minX > 0 && column.minY > 0 && column.maxX < screen.maxX && column.maxY < screen.maxY,
-                      "\(step): every corner inside the screen with a gap: \(column) in \(screen)")
+        XCTAssertTrue(frame.minX < 0 && frame.minY < 0 && frame.maxX < screen.maxX && frame.maxY < screen.maxY,
+                      "\(step): flush top and left, the trailing and bottom edges on screen: \(frame) in \(screen)")
         for title in Self.cornerItemTitles {
-            let frame = railItem(app, title).frame
-            XCTAssertTrue(frame.minY >= column.minY && frame.maxY <= column.maxY,
-                          "\(step): rail_item_\(title) inside the glass: \(frame) vs \(column)")
+            let item = railItem(app, title).frame
+            XCTAssertTrue(item.minX >= frame.minX && item.maxX <= frame.maxX && item.minY >= frame.minY && item.maxY <= frame.maxY,
+                          "\(step): rail_item_\(title) inside the glass: \(item) vs \(frame)")
         }
-        return column
+        return frame
     }
 
-    /// FEAT-80 Corner, `-rail_position corner` (Batch O, Christian's 2026-10-20 mock: the open rail
-    /// is Centre's pill, the resting rail a bare Home icon).
-    ///  - Always Visible, Icons Only, at rest: only the Home glyph, no glass, in the pill's Home
-    ///    cell; no reserved width (`inset=0`, `pos=corner`).
-    ///  - Menu at Home row 0: the pill unrolls at (16, 38), 84 × the column; Home's cell has not
-    ///    moved. Right closes it back to the bare glyph.
-    ///  - The same with Labels Shown: 300 wide open, the same resting glyph.
+    /// Home's open row: its cell is where the resting glyph sat, (58, 90).
+    private func assertHomeCellUnmoved(_ app: XCUIApplication, _ step: String) {
+        let homeOpen = railItem(app, "Home").frame
+        let openCentre = Self.homeCellCentre(homeOpen, open: true)
+        XCTAssertEqual(openCentre.x, Self.cornerHomeCellCentre.x, accuracy: 2, "\(step): Home's cell never moves: \(homeOpen)")
+        XCTAssertEqual(openCentre.y, Self.cornerHomeCellCentre.y, accuracy: 2, "\(step): Home's row never moves: \(homeOpen)")
+    }
+
+    /// FEAT-80 Corner, `-rail_position corner` (Batch O, Christian's 2026-10-20 mock: the resting
+    /// rail a bare Home icon; W3-11, D1, Steven's 10-19 mock: the open column under a glass flush
+    /// with the top and the left screen edges, unrolling downward only).
+    ///  - Always Visible, Icons Only, at rest: only the Home glyph, no glass, in the column's Home
+    ///    cell at (58, 90); no reserved width (`inset=0`, `pos=corner`).
+    ///  - Menu at Home row 0: the glass unrolls flush from (−8, −8), 108 × 538 (Icons Only); Home's
+    ///    cell has not moved. Right closes it back to the bare glyph.
+    ///  - The same with Labels Shown: 324 wide open (316 on screen), the same resting glyph.
     ///  - rc8's stored Top reads as Corner (`pos=corner`).
-    ///  - Hidden: nothing at rest; Menu opens the full pill.
-    /// Frames and existence only: the tvOS 27 simulator never reports `hasFocus`.
+    ///  - Hidden, both label modes: nothing at rest; Menu mounts the panel, which fades in as the
+    ///    flush top bar and unrolls to the same open frame.
+    /// Frames and existence only: the tvOS 27 simulator never reports `hasFocus`. The mid-unroll
+    /// state is too short for the harness (a press waits for the app to idle): `mark` prints the
+    /// wall clock before every opening Menu, for frames of a `simctl io recordVideo` capture.
     func testRail12_CornerTabUnrolls() throws {
         for (labels, width) in [("icons", CGFloat(84)), ("shown", CGFloat(300))] {
             let app = launch(Self.railArguments() + ["-rail_position", "corner", "-rail_labels", labels])
@@ -829,21 +877,19 @@ final class NavigationRailUITests: XCTestCase {
             assertCornerAtRest(app, "\(labels) rest")
             shot("rail12_corner_rest_\(labels)")
 
-            // Menu at Home row 0 unrolls the pill.
+            // Menu at Home row 0 unrolls the column.
             XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
+            mark("menu labels=\(labels) vis=always")
             remote.press(.menu)
             XCTAssertTrue(poll(2.5) { railExpanded(app) }, "\(labels): Menu must open the Corner rail: \(railState(app))")
             pause(0.8)   // the spring settles
             assertCornerOpen(app, width: width, "\(labels) open")
-            // Home's cell never moves: the open row's cell is where the resting glyph sat.
-            let homeOpen = railItem(app, "Home").frame
-            let openCentre = Self.homeCellCentre(homeOpen, open: true)
-            XCTAssertEqual(openCentre.x, Self.cornerHomeCellCentre.x, accuracy: 2, "\(labels): Home's cell never moves: \(homeOpen)")
-            XCTAssertEqual(openCentre.y, Self.cornerHomeCellCentre.y, accuracy: 2, "\(labels): Home's row never moves: \(homeOpen)")
+            assertHomeCellUnmoved(app, labels)
             shot("rail12_corner_open_\(labels)")
+            mark("right labels=\(labels) vis=always")
             remote.press(.right)
             XCTAssertTrue(poll(2.0) { rail(app, "expanded") == "0" }, "\(labels): Right must close the rail: \(railState(app))")
-            XCTAssertTrue(poll(2.0) { !railItem(app, "Search").exists }, "\(labels): the pill rolls back up to the Home glyph")
+            XCTAssertTrue(poll(2.0) { !railItem(app, "Search").exists }, "\(labels): the column rolls back up to the Home glyph")
             pause(0.6)   // the shrink, then the glass's fade
             assertCornerAtRest(app, "\(labels) closed")
         }
@@ -853,21 +899,29 @@ final class NavigationRailUITests: XCTestCase {
         try requireRail(legacy)
         XCTAssertEqual(rail(legacy, "pos"), "corner", "a stored Top reads as Corner: \(railState(legacy))")
 
-        // Hidden: nothing at rest; Menu opens the full pill.
-        let hidden = launch(Self.railArguments(visibility: "hidden") + ["-rail_position", "corner", "-rail_labels", "icons"])
-        try requireRail(hidden)
-        XCTAssertEqual(rail(hidden, "shown"), "0", "\(railState(hidden))")
-        XCTAssertFalse(hidden.descendants(matching: .any)["navigation_rail"].exists, "Corner + Hidden shows nothing at rest")
-        XCTAssertFalse(railItem(hidden, "Home").exists, "Corner + Hidden shows nothing at rest")
-        XCTAssertFalse(railGlass(hidden).exists, "Corner + Hidden shows no glass at rest")
-        guard menuIsSafe(hidden) else { return }
-        remote.press(.menu)
-        XCTAssertTrue(poll(2.5) { railExpanded(hidden) }, "Menu must open the hidden Corner rail: \(railState(hidden))")
-        pause(0.8)
-        assertCornerOpen(hidden, width: 84, "hidden open")
-        shot("rail12_corner_hidden_open")
-        remote.press(.right)
-        XCTAssertTrue(poll(2.0) { rail(hidden, "shown") == "0" }, "Right must close the hidden rail: \(railState(hidden))")
+        // Hidden: nothing at rest; Menu mounts the panel and unrolls the same flush glass.
+        for (labels, width) in [("icons", CGFloat(84)), ("shown", CGFloat(300))] {
+            let hidden = launch(Self.railArguments(visibility: "hidden") + ["-rail_position", "corner", "-rail_labels", labels])
+            try requireRail(hidden)
+            XCTAssertEqual(rail(hidden, "shown"), "0", "\(railState(hidden))")
+            XCTAssertFalse(hidden.descendants(matching: .any)["navigation_rail"].exists, "Corner + Hidden shows nothing at rest")
+            XCTAssertFalse(railItem(hidden, "Home").exists, "Corner + Hidden shows nothing at rest")
+            XCTAssertFalse(railGlass(hidden).exists, "Corner + Hidden shows no glass at rest")
+            shot("rail12_corner_hidden_rest_\(labels)")
+            guard menuIsSafe(hidden) else {
+                XCTFail("precondition: hidden rail closed — \(railState(hidden))")
+                continue
+            }
+            mark("menu labels=\(labels) vis=hidden")
+            remote.press(.menu)
+            XCTAssertTrue(poll(2.5) { railExpanded(hidden) }, "Menu must open the hidden Corner rail: \(railState(hidden))")
+            pause(0.8)
+            assertCornerOpen(hidden, width: width, "hidden \(labels) open")
+            assertHomeCellUnmoved(hidden, "hidden \(labels)")
+            shot("rail12_corner_hidden_open_\(labels)")
+            remote.press(.right)
+            XCTAssertTrue(poll(2.0) { rail(hidden, "shown") == "0" }, "Right must close the hidden rail: \(railState(hidden))")
+        }
     }
 
     /// FEAT-80 Corner, Batch N review r1: the rail opens on a LOWER tab. The items below Home fade in
@@ -875,8 +929,8 @@ final class NavigationRailUITests: XCTestCase {
     /// the next turn and at +0.15 s; on hardware an item still near opacity 0 refuses focus, so the
     /// selected tab's item is drawn at full opacity from the arm. Here (Labels Shown, the default):
     /// switch to Settings through the Corner rail; at the Settings root the rail rests as the bare
-    /// Home glyph; Menu there opens the pill (Batch O: Centre's, 300 wide at (16, 38)) with focus on
-    /// Settings (4), every item inside the glass. Batch O review r1 P2-1: then on to Search, whose
+    /// Home glyph; Menu there opens the column (W3-11: under the flush glass, 324 wide from
+    /// (−8, −8)) with focus on Settings (4), every item inside the glass. Batch O review r1 P2-1: then on to Search, whose
     /// row starts 8 pt above the bottom of the resting Home pill's mask: once the rail has closed
     /// onto Search, nothing selected is drawn or in the tree below Home (`selrow=0`, `glass=0`, no
     /// `rail_item_Search`). The probe, not a frame: B4 hides the pill once Search's keyboard takes
@@ -906,7 +960,7 @@ final class NavigationRailUITests: XCTestCase {
         assertCornerAtRest(app, "settings rest")
         shot("rail12b_corner_rest_on_settings")
 
-        // Menu at the Settings root: the pill unrolls with focus on Settings.
+        // Menu at the Settings root: the column unrolls with focus on Settings.
         guard menuIsSafe(app) else {
             XCTFail("precondition: rail closed on the Settings root — \(railState(app))")
             return
@@ -978,25 +1032,27 @@ final class NavigationRailUITests: XCTestCase {
         shot("rail13_edge_centre_open")
     }
 
-    /// Edge, Corner: the open pill is flush at (0, 38); at rest the Home cell sits at x 12 + 30.
+    /// W3-11 (D1): Corner ignores the Rail Style. With Edge stored, the resting Home glyph stays in
+    /// the Home cell at (58, 90) (Edge's x 0 no longer moves it to 42), and the open glass is
+    /// Rail12's flush corner from (−8, −8), 324 wide (Labels Shown, the default).
     func testRail13b_EdgeCornerUnrollsFlush() throws {
         let app = launch(Self.railArguments() + ["-rail_position", "corner", "-rail_style", "edge"])
         try requireRail(app)
         let home = railItem(app, "Home")
         XCTAssertTrue(home.waitForExistence(timeout: 4), "the Home glyph shows at rest")
         let rest = Self.homeCellCentre(home.frame, open: false)
-        XCTAssertEqual(rest.x, 42, accuracy: 2, "Edge Corner rest glyph sits at 12 + 30: \(home.frame)")
+        XCTAssertEqual(rest.x, Self.cornerHomeCellCentre.x, accuracy: 2, "Edge does not move the Corner rest glyph: \(home.frame)")
+        XCTAssertEqual(rest.y, Self.cornerHomeCellCentre.y, accuracy: 2, "\(home.frame)")
         XCTAssertTrue(menuIsSafe(app), "precondition: rail closed — \(railState(app))")
         remote.press(.menu)
         XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu must open the Corner rail: \(railState(app))")
         pause(0.8)
-        let glass = railGlass(app).frame
-        XCTAssertEqual(glass.minX, 0, accuracy: 1, "Edge Corner pill flush: \(glass)")
-        XCTAssertEqual(glass.minY, Self.cornerPillOrigin.y, accuracy: 1, "anchored at the top: \(glass)")
+        assertCornerOpen(app, width: 300, "edge corner open")
+        assertHomeCellUnmoved(app, "edge corner")
         shot("rail13b_edge_corner_open")
     }
 
-    /// No `-rail_style`: Floating, Rail12's origin (16, 38) still holds.
+    /// No `-rail_style`: Floating, the same flush glass as Edge (Rail12's frame from (−8, −8)).
     func testRail13c_FloatingUnchanged() throws {
         let app = launch(Self.railArguments() + ["-rail_position", "corner"])
         try requireRail(app)
@@ -1005,7 +1061,8 @@ final class NavigationRailUITests: XCTestCase {
         XCTAssertTrue(poll(2.5) { railExpanded(app) }, "Menu must open the Corner rail: \(railState(app))")
         pause(0.8)
         let glass = railGlass(app).frame
-        XCTAssertEqual(glass.minX, Self.cornerPillOrigin.x, accuracy: 1, "Floating keeps the bezel inset: \(glass)")
-        XCTAssertEqual(glass.minY, Self.cornerPillOrigin.y, accuracy: 1, "\(glass)")
+        XCTAssertEqual(glass.minX, Self.cornerGlassOrigin.x, accuracy: 1, "flush past the left edge: \(glass)")
+        XCTAssertEqual(glass.minY, Self.cornerGlassOrigin.y, accuracy: 1, "flush past the top edge: \(glass)")
+        XCTAssertEqual(glass.width, Self.cornerGlassWidth(column: 300), accuracy: 2, "\(glass)")
     }
 }
