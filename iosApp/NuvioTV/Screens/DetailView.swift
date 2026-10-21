@@ -1445,7 +1445,9 @@ struct DetailView: View {
             seriesPlayShown: seriesPlay != nil,
             fullScreenTrailerShown: model.trailerPlayback != nil,
             synopsisSheetShown: showSynopsisSheet,
-            shuffleSheetShown: showShuffleSheet))
+            // Review r1 P2-2: the sheet's action clears `showShuffleSheet` before `onDismiss` sets
+            // `seriesPlay`, so the pending route keeps the gate shut across the dismissal.
+            shuffleSheetShown: showShuffleSheet || pendingShuffleRoute != nil))
     }
 
     /// BUG-41: `isTrailerActive` plus the scroll-dim hysteresis latch — whether the hero-trailer

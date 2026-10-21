@@ -15,7 +15,8 @@ struct SourcesSettingsPane: View {
     /// repositories start collapsed, except a lone repository, which starts expanded; membership
     /// here inverts that default. Derived rather than set in `onAppear` so a lazy List re-showing
     /// a row can never re-expand a repository the user collapsed.
-    @State private var toggledPluginRepos: Set<String> = []
+    /// The viewer's own open/closed choice per repository (absent = the default rule).
+    @State private var pluginRepoExpanded: [String: Bool] = [:]
     /// Drives the "Remove repository?" confirmation.
     @State private var pendingPluginRepoRemoval: PluginRepositoryItem?
 
@@ -233,22 +234,6 @@ struct SourcesSettingsPane: View {
             SettingsSection(String(localized: "Plugins")) {
                 pluginsSection
             }
-            .alert(
-                String(localized: "Remove repository?"),
-                isPresented: Binding(
-                    get: { pendingPluginRepoRemoval != nil },
-                    set: { if !$0 { pendingPluginRepoRemoval = nil } }
-                ),
-                presenting: pendingPluginRepoRemoval
-            ) { repo in
-                Button(String(localized: "Remove"), role: .destructive) {
-                    toggledPluginRepos.remove(repo.manifestUrl)
-                    plugins.removeRepository(repo)
-                }
-                Button(String(localized: "Cancel"), role: .cancel) {}
-            } message: { repo in
-                Text("\(repo.name) and its providers will be removed from this Apple TV.")
-            }
         }
     }
 
@@ -410,16 +395,13 @@ struct SourcesSettingsPane: View {
             // whole block as a single focusable row, so one click flipped every provider at once.
             // Repositories start collapsed so a long provider list doesn't bury the next repo.
             ForEach(plugins.repositories, id: \.manifestUrl) { repo in
-                let isExpanded = (plugins.repositories.count == 1) != toggledPluginRepos.contains(repo.manifestUrl)
+                let isExpanded = PluginsViewModel.isRepositoryExpanded(stored: pluginRepoExpanded[repo.manifestUrl],
+                                                                       repositoryCount: plugins.repositories.count)
                 // Providers listed A–Z (Finder-style: case-insensitive, "Provider 2" before "Provider 10").
                 let repoScrapers = PluginsViewModel.sortedScrapers(plugins.scrapers(in: repo))
                 let enabledCount: Int = repoScrapers.filter { $0.enabled }.count
                 Button {
-                    if toggledPluginRepos.contains(repo.manifestUrl) {
-                        toggledPluginRepos.remove(repo.manifestUrl)
-                    } else {
-                        toggledPluginRepos.insert(repo.manifestUrl)
-                    }
+                    pluginRepoExpanded[repo.manifestUrl] = !isExpanded
                 } label: {
                     SettingsRowChrome {
                         SettingsRowLabel(
@@ -461,6 +443,23 @@ struct SourcesSettingsPane: View {
                         descriptionID: .sourcesPluginRepo
                     ) {
                         pendingPluginRepoRemoval = repo
+                    }
+                    // Review r1 P2-5: the alert lives on the Remove row itself (one presenter, on the
+                    // row that is focused when pressed), not on the Section.
+                    .alert(
+                        String(localized: "Remove repository?"),
+                        isPresented: Binding(
+                            get: { pendingPluginRepoRemoval?.manifestUrl == repo.manifestUrl },
+                            set: { if !$0 { pendingPluginRepoRemoval = nil } }
+                        )
+                    ) {
+                        Button(String(localized: "Remove"), role: .destructive) {
+                            pluginRepoExpanded[repo.manifestUrl] = nil
+                            plugins.removeRepository(repo)
+                        }
+                        Button(String(localized: "Cancel"), role: .cancel) {}
+                    } message: {
+                        Text("\(repo.name) and its providers will be removed from this Apple TV.")
                     }
                 }
             }

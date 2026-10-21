@@ -103,6 +103,11 @@ final class StripPagerBox {
     var focusedRowKey: String?
     /// W2-5 (a): the pager's one ownership value (`StripPager.ownership`), made on its first body.
     var ownership: PinnedRowFocusOwnership?
+    /// Review r1 P3-4: the host callbacks, refreshed on every pager body, so the ownership value
+    /// (made once, on the first body's copy) always calls the latest closures.
+    var onRowChange: ((_ index: Int, _ key: String) -> Void)?
+    var onPageStart: ((_ toIndex: Int, _ seconds: TimeInterval) -> Void)?
+    var onStripFocusLost: (() -> Void)?
     /// Rows currently reporting ownership. Empty one runloop turn after a release = focus left the
     /// strip (#17); a row-to-row move never empties it, in either report order.
     var owners = Set<String>()
@@ -381,6 +386,9 @@ struct StripPager<Row: View>: View {
 
     /// W2-5 (a): see the `.environment(\.pinnedRowFocusOwnership, …)` line in `body`.
     private var ownership: PinnedRowFocusOwnership {
+        box.onRowChange = onRowChange
+        box.onPageStart = onPageStart
+        box.onStripFocusLost = onStripFocusLost
         if let made = box.ownership { return made }
         let pager = self
         let made = PinnedRowFocusOwnership(report: { key, owns in
@@ -595,7 +603,7 @@ struct StripPager<Row: View>: View {
                 guard pagerBox.owners.isEmpty, pagerBox.focusedRowKey != nil else { return }
                 pagerBox.focusedRowKey = nil
                 StageStripProbe.shared.log("focus left the strip from row=\(key)")
-                onStripFocusLost()
+                pagerBox.onStripFocusLost?()
             }
             return
         }
@@ -654,7 +662,7 @@ struct StripPager<Row: View>: View {
         controller.swap.debug.setRow(index, key: key)
         controller.swap.debug.setAtTop(top)
         #endif
-        onRowChange(index, key)
+        box.onRowChange?(index, key)
     }
 
     // MARK: Paging
@@ -689,7 +697,7 @@ struct StripPager<Row: View>: View {
         controller.swap.debug.setPage(key)
         #endif
         let generation = signal.pageStarted(duration: seconds)
-        onPageStart(index, seconds)
+        box.onPageStart?(index, seconds)
         StageStripProbe.shared.log("page to=\(index) key=\(key) seconds=\(seconds) gen=\(generation)")
         if seconds == 0 {
             positionId = key
@@ -745,7 +753,7 @@ struct StripPager<Row: View>: View {
                       !pagerBox.rowKeys.contains(stale) else { return }
                 pagerBox.focusedRowKey = nil
                 StageStripProbe.shared.log("focus left the strip: row=\(stale) removed")
-                onStripFocusLost()
+                pagerBox.onStripFocusLost?()
             }
         }
         if positionId == nil, let first = keys.first {
@@ -770,7 +778,7 @@ struct StripPager<Row: View>: View {
         controller.swap.debug.setRow(index, key: key)
         controller.swap.debug.setAtTop(top)
         #endif
-        onRowChange(index, key)
+        box.onRowChange?(index, key)
     }
 
     /// Review r1 (A P2-6): rows changed while focus is outside the strip (the tab bar at launch, the

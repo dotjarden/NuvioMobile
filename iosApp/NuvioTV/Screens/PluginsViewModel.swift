@@ -96,6 +96,13 @@ final class PluginsViewModel: ObservableObject {
         }.map(\.element)
     }
 
+    /// Whether a repository's provider list is open: the viewer's own choice when they made one,
+    /// otherwise open only for a lone repository. Storing the choice (not a flip against the
+    /// default) keeps it stable when the repository count crosses 1.
+    nonisolated static func isRepositoryExpanded(stored: Bool?, repositoryCount: Int) -> Bool {
+        stored ?? (repositoryCount == 1)
+    }
+
     deinit {
         watcher?.cancel()
     }

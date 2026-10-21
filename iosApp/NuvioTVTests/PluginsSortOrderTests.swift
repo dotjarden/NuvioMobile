@@ -1,7 +1,7 @@
 import XCTest
 @testable import NuvioTV
 
-final class PluginsSortOrderTests: XCTestCase {
+final class PluginsSettingsRulesTests: XCTestCase {
     private struct Item { let name: String; let tag: Int }
 
     private func order(_ items: [Item]) -> [String] {
@@ -26,6 +26,22 @@ final class PluginsSortOrderTests: XCTestCase {
             name: \.name
         )
         XCTAssertEqual(sorted.map(\.tag), [1, 0, 2, 3])
+    }
+
+    // Expansion rule (review r1 P2-1)
+    func testLoneRepositoryDefaultsOpen() {
+        XCTAssertTrue(PluginsViewModel.isRepositoryExpanded(stored: nil, repositoryCount: 1))
+        XCTAssertFalse(PluginsViewModel.isRepositoryExpanded(stored: nil, repositoryCount: 2))
+    }
+
+    func testCollapsedLoneRepositoryStaysCollapsedWhenASecondIsInstalled() {
+        XCTAssertFalse(PluginsViewModel.isRepositoryExpanded(stored: false, repositoryCount: 1))
+        XCTAssertFalse(PluginsViewModel.isRepositoryExpanded(stored: false, repositoryCount: 2))
+    }
+
+    func testExpandedRepositoryStaysExpandedWhenAnotherIsRemoved() {
+        XCTAssertTrue(PluginsViewModel.isRepositoryExpanded(stored: true, repositoryCount: 2))
+        XCTAssertTrue(PluginsViewModel.isRepositoryExpanded(stored: true, repositoryCount: 1))
     }
 
     func testCaseDiffersLowercaseFirstLikeTheFinder() {

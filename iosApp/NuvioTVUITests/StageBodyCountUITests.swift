@@ -13,6 +13,9 @@ final class StageBodyCountUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
     override func setUpWithError() throws {
+        // Review r1 P3-5: an evidence leg (70-140 s), not part of the default UI gate.
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["NUVIO_BODY_COUNT"] == "1",
+                          "evidence leg: set NUVIO_BODY_COUNT=1 to run")
         continueAfterFailure = true
     }
 

@@ -44,7 +44,7 @@ struct SearchView: View {
                 SearchFieldLayer(owner: owner, queryBox: owner.queryBox)
                 // BUG-195: the system field mounts ~1.1 s after the tab appears; until then the page
                 // shows this look-alike, above the real field so the field mounts underneath it.
-                SearchPlaceholderLayer()
+                SearchPlaceholderLayer(queryBox: owner.queryBox)
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -96,7 +96,7 @@ struct SearchView: View {
 /// BUG-195: when the placeholder of the system search field goes away. Pure so the rules are tested:
 /// it hides once per visit, on the first sign of the real field or at the hard timeout.
 nonisolated struct SearchPlaceholderPolicy: Equatable {
-    enum Reason: String, Equatable { case signal, timeout }
+    enum Reason: String, Equatable { case signal, timeout, already }
 
     /// The placeholder always leaves this long after the tab appears, whatever happens.
     static let timeout: TimeInterval = 1.6
@@ -121,8 +121,12 @@ nonisolated struct SearchPlaceholderPolicy: Equatable {
 /// field becoming first responder works in Rail and Tabs mode alike; `searchKeyboardFocused` is
 /// Rail-only) or the first `searchKeyboardFocused`, and always at `SearchPlaceholderPolicy.timeout`.
 private struct SearchPlaceholderLayer: View {
+    /// A plain reference, never observed: read once on appear.
+    let queryBox: SearchQueryBox
     @State private var policy = SearchPlaceholderPolicy()
     @State private var visit = 0
+    /// True between `onAppear` and `onDisappear`: the app-wide editing-began observer is inert otherwise.
+    @State private var active = false
     @Environment(\.navigationChrome) private var navigationChrome
 
     var body: some View {
@@ -134,25 +138,41 @@ private struct SearchPlaceholderLayer: View {
         }
         .foregroundStyle(Color.white.opacity(0.3))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.leading, 98)
-        .padding(.top, 158)
-        .ignoresSafeArea()
+        // Review r1 P2-4: padded from the SAFE AREA (which already carries the rail's extra leading
+        // inset in Edge + Always Visible, and the tab bar in Tabs mode), like `SearchContent`'s
+        // padding, not pinned absolutely. 18 = 98 - 80 side safe area; 98 = 158 - 60 top safe area.
+        .padding(.leading, 18)
+        .padding(.top, 98)
         .opacity(policy.isVisible ? 1 : 0)
         .animation(.easeOut(duration: SearchPlaceholderPolicy.fadeDuration), value: policy.isVisible)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .onAppear {
-            policy.rearm()
+            active = true
             visit += 1
             let mine = visit
+            // Review r1 P2-3: a pop back from a pushed title, or a revisit of the kept-alive tab,
+            // finds the real field already mounted (or holding a query): never draw over it.
+            if Self.searchFieldIsMounted() || !queryBox.text.isEmpty {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { _ = policy.hide(.already) }
+                SearchOpenProbe.mark("placeholder hidden reason=already")
+                return
+            }
+            policy.rearm()
             SearchOpenProbe.mark("placeholder shown")
             DispatchQueue.main.asyncAfter(deadline: .now() + SearchPlaceholderPolicy.timeout) {
                 if mine == visit { hide(.timeout) }
             }
             pollForField(visit: mine)
         }
-        .onDisappear { visit += 1 }
+        .onDisappear {
+            active = false
+            visit += 1
+        }
         .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { _ in
+            guard active else { return }
             hide(.signal)
         }
         .onReceive(navigationChrome.$searchKeyboardFocused) { focused in
@@ -174,9 +194,11 @@ private struct SearchPlaceholderLayer: View {
             if String(describing: type(of: view)).contains("UISearchBarTextField") { return true }
             return view.subviews.contains(where: walk)
         }
+        // Key window only; `walk` stops at the first match (review r1 P3-2).
         for scene in UIApplication.shared.connectedScenes {
-            guard let windowScene = scene as? UIWindowScene else { continue }
-            if windowScene.windows.contains(where: walk) { return true }
+            guard let windowScene = scene as? UIWindowScene,
+                  let key = windowScene.windows.first(where: \.isKeyWindow) else { continue }
+            if walk(key) { return true }
         }
         return false
     }
