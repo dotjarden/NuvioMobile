@@ -548,8 +548,16 @@ private enum SourceSettingOptions {
 }
 
 /// Manifest-URL entry for installing a plugin repository from the TV (mirrors the addon install
-/// row; the shared repo normalizes the URL and appends /manifest.json). The text field reports
-/// through its own `@FocusState`; the Install label carries the modifier for the button.
+/// row; the shared repo normalizes the URL and appends /manifest.json).
+///
+/// BUG-213 (GitHub #10): this used to be ONE List row holding the field and the Install button,
+/// and a tvOS List row is one focus target (the BUG-197 diagnosis), so the two highlighted as one
+/// block and Select did not reach the field. The `Group` body now yields TWO List rows, the same
+/// split `MdbListActivationCard` uses: the manifest field row (its rest platter follows the
+/// field's `@FocusState`, a `TextField` has no label to read `\.isFocused` from) and an Install
+/// kit row. `@State url` stays owned by this struct, so both rows share it. The in-content
+/// `.glassEffect` is gone: glass belongs to floating chrome (HIG hybrid contract), and the List
+/// row already has the system's background and focus treatment.
 private struct PluginRepoEntryRow: View {
     let isInstalling: Bool
     var fieldFocused: FocusState<Bool>.Binding
@@ -557,38 +565,39 @@ private struct PluginRepoEntryRow: View {
     @State private var url = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        Group {
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "puzzlepiece.extension")
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .font(SettingsRowFont.title)
+                    .foregroundStyle(.secondary)
                 TextField("Repository manifest URL", text: $url)
                     .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .font(SettingsRowFont.title)
                     .focused(fieldFocused)
             }
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .modifier(SettingsRestPlatter(explicitFocus: fieldFocused.wrappedValue))
             .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Repository manifest URL"), systemImage: "puzzlepiece.extension", focused: fieldFocused.wrappedValue)
 
+            // Not `.disabled(isInstalling)`: the pressed button lost focus. Guarded in the action,
+            // and the label stays the same row while installing (the spinner rides in `trailing`).
             Button {
                 if !url.isEmpty, !isInstalling {
                     onInstall(url)
                     url = ""
                 }
             } label: {
-                if isInstalling {
-                    ProgressView()
-                } else {
-                    Label("Install Repository", systemImage: "plus")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.lg)
-                        .padding(.vertical, Theme.Spacing.xxs + 2)
-                        .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Install Repository"), systemImage: "plus")
+                SettingsRowChrome {
+                    SettingsRowLabel(
+                        title: String(localized: "Install Repository"),
+                        systemImage: "plus",
+                        descriptionID: .sourcesPluginRepoAdd
+                    )
+                } trailing: {
+                    if isInstalling {
+                        ProgressView().scaleEffect(0.6)
+                    }
                 }
             }
-            .buttonStyle(.borderedProminent)
-            // Not `.disabled(isInstalling)`: the pressed button lost focus. Guarded in the action.
         }
     }
 }
