@@ -662,7 +662,7 @@ struct SettingsListPickerRow: View {
 /// by a tvOS `List`), then claims focus one runloop later, with `.defaultFocus` at
 /// `.userInitiated` priority for the engine's own initial pick. The push transition can still hand
 /// initial focus to the first row in view after that claim (it did with Zulu), so the page looks
-/// again once the push has settled and re-claims if focus is elsewhere.
+/// again once the push has settled and re-claims if focus is on another row.
 ///
 /// The page scrolls ONCE, before any focus lands. The settle check does nothing when the checked
 /// row already has focus, and when it re-claims it only moves focus: the row is still on screen
@@ -741,15 +741,19 @@ struct SettingsListPickerPage: View {
     }
 
     /// Scrolls the checked row into view, then focuses it one runloop later. After the push
-    /// transition (0.45 s) it looks once more: nothing to do when the checked row has focus;
-    /// otherwise focus moves to it WITHOUT a second scroll (see the type comment), unless the row
-    /// is no longer realized.
+    /// transition (0.45 s) it looks once more: nothing to do when the checked row has focus or
+    /// when focus has left the page (nil, the page is closing); when focus sits on another row it
+    /// moves to the checked row WITHOUT a second scroll (see the type comment), unless that row is
+    /// no longer realized.
     private func claimCheckedRow(_ proxy: ScrollViewProxy) {
         let current = selection.wrappedValue
         scrollIntoView(current, proxy)
         DispatchQueue.main.async { focused = current }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            guard focused != current else { return }
+            // Re-claim only when focus sits on ANOTHER row of this page (the push transition's
+            // pick). Nil means focus has left the page (Menu or Select inside the window, the page
+            // is closing): never write focus into a page that is being popped (review r2 P3-1).
+            guard let now = focused, now != current else { return }
             if checkedRowOnScreen {
                 focused = current
             } else {
