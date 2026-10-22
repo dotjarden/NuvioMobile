@@ -10,19 +10,8 @@ import XCTest
 /// chrome honours the fixed frame on tvOS 26 is exactly what the first run answers.
 final class DetailActionSquareUITests: XCTestCase {
 
-    let remote = XCUIRemote.shared
-
     override func setUpWithError() throws {
         continueAfterFailure = false
-    }
-
-    private func pause(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
-
-    private func press(_ button: XCUIRemote.Button, times: Int = 1, gap: TimeInterval = 0.8) {
-        for _ in 0..<times {
-            remote.press(button)
-            pause(gap)
-        }
     }
 
     private func shot(_ name: String) {
@@ -32,22 +21,11 @@ final class DetailActionSquareUITests: XCTestCase {
         add(attachment)
     }
 
-    /// Classic Home -> the hero CTA route into Detail, Cinematic layout (icon-only secondaries).
+    /// Into Detail by the shared, fixture-independent Search route (`DetailEntryRoute`), Cinematic
+    /// layout (icon-only secondaries) unless a leg asks for Classic. Classic Home stays pinned for
+    /// the route's verified hero-CTA fallback.
     private func launchToDetail(extraArguments: [String], detailLayout: String = "cinematic") -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments += ["-home_layout", "classic", "-detail_layout", detailLayout] + extraArguments
-        app.launch()
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
-        if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-        remote.press(.select)
-        pause(10) // Home catalog fan-out
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(2)
-        remote.press(.select)
-        pause(6)
-        return app
+        DetailEntryRoute.launchToDetail(self, arguments: ["-home_layout", "classic", "-detail_layout", detailLayout] + extraArguments)
     }
 
     private static let iconIDs = ["detail_start_over", "detail_action_trailer", "detail_action_watched",
