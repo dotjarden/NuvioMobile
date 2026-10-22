@@ -1167,6 +1167,9 @@ struct DetailView: View {
         .onChange(of: heroFocus) { old, new in
             // BUG-187: back in the hero, nothing below is remembered.
             if new != nil { focusMemory.clear() }
+            // BUG-194 probe (review r3 P3-2.4): Play focused before the card's first landing sets no
+            // `focusedRow` (nil to nil), so no `stray` line and no `away=`; this line shows it.
+            logPopHero(new: new)
             if DetailLatePlayFocus.latchesClaim(pending: latePlayClaimPending, new: new) {
                 didClaimLatePlayFocus = true
             } else if DetailLatePlayFocus.isUserMove(old: old, new: new) {
@@ -2512,12 +2515,17 @@ struct DetailView: View {
         // Every build (BUG-194 rc11): `regrabs=` stray landings re-grabbed, `away=` ms focus spent off
         // the card after its first landing (the "second move"; ~230 ms before the re-grab).
         if DetailFocusProbe.enabled {
-            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d regrabs=%d away=%d via=%@ focused=%@ idx=%@",
+            // `input=` (review r3 P3-2.1): which input ended it. A resting thumb that rolls 40 pt on the
+            // clickpad records `.swipe`, releases the restore and leaves the engine's Play stray in
+            // place (the BUG-187 symptom): `via=viewer input=swipe` with no deliberate press. `-` for a
+            // retire, where the clock's last kind is older than the pop.
+            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d regrabs=%d away=%d via=%@ input=%@ focused=%@ idx=%@",
                   popRestoreRow.map { "\($0)" } ?? "-", popRestoreKey ?? "-", focusMemory.popMoves,
                   focusMemory.heldFocusChange == nil ? 0 : 1,
                   focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1,
                   focusMemory.popRegrabs,
                   Int(focusMemory.awayTime(at: ProcessInfo.processInfo.systemUptime) * 1000), reason,
+                  reason == "viewer" ? ViewerInputClock.shared.lastKindLabel : "-",
                   focusedRow.map { "\($0)" } ?? "-", popProbeFocusedKey)
         }
         let held = focusMemory.endRestore()
@@ -2532,15 +2540,21 @@ struct DetailView: View {
     private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool, via: String) {
         switch row {
         case .cast:
+            let current = focusedCastIndex.map(String.init)
             guard let index = Int(key),
-                  DetailFocusRestore.shouldApply(force: force, current: focusedCastIndex.map(String.init),
-                                                 target: key) else { return }
+                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
+                return
+            }
             logPopRung("applied", row: row, key: key, force: force, via: via)
             focusedCastIndex = index
         case .logos:
+            let current = focusedCompanyIndex.map(String.init)
             guard let index = Int(key),
-                  DetailFocusRestore.shouldApply(force: force, current: focusedCompanyIndex.map(String.init),
-                                                 target: key) else { return }
+                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
+                return
+            }
             logPopRung("applied", row: row, key: key, force: force, via: via)
             focusedCompanyIndex = index
         case .collection, .moreLikeThis:
@@ -2548,6 +2562,8 @@ struct DetailView: View {
             // on that card, where the row would apply nothing.
             if !(focusedRow == row && focusMemory.row == row && focusMemory.key == key) {
                 logPopRung("sent", row: row, key: key, force: force, via: via)
+            } else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: key)
             }
             detailFocusRestore = DetailFocusRestoreRequest(row: row, key: key, force: force,
                                                            generation: detailFocusRestore.generation + 1)
@@ -2580,11 +2596,32 @@ struct DetailView: View {
               popProbeMs(), via)
     }
 
-    /// A landing on the target row: `n=` counts landings, `away=` is the time off the card so far.
+    /// A rung that applies nothing, logged for the gate's re-grab only (`via=regrab-<n>`; the timed
+    /// ladder's refusals are the normal case and stay silent). A re-grab that `shouldApply` refuses
+    /// still spends one of the three, so without this line it is a `stray … regrab=1` followed by
+    /// nothing (review r3 P3-2.3). `current=` is the row's focused card key (`-` when none): the
+    /// rows' focus state not yet nil, or a cast index gone after the reload.
+    private func logPopRungSkipped(row: DetailRowID, key: String, force: Bool, via: String, current: String?) {
+        guard DetailFocusProbe.enabled, via.hasPrefix("regrab") else { return }
+        NSLog("[DetailPop] rung skipped row=%@ key=%@ force=%d t=%d via=%@ current=%@", "\(row)", key,
+              force ? 1 : 0, popProbeMs(), via, current ?? "-")
+    }
+
+    /// The hero's focus changed while a restore is live (review r3 P3-2.4). `new=` the hero button
+    /// (`-` when focus left the hero). Probe-only.
+    private func logPopHero(new: DetailHeroFocus?) {
+        guard DetailFocusProbe.enabled, focusMemory.restoreLive else { return }
+        NSLog("[DetailPop] hero new=%@ t=%d", new.map { "\($0)" } ?? "-", popProbeMs())
+    }
+
+    /// A landing on the target row: `n=` counts landings, `away=` is the time off the card so far,
+    /// `idx=` the card the row's own focus state reports (`-` when focus sits on a row stand-in such
+    /// as BUG-188's `UIKitFocusableFillerItem`, where the row binding is set and the card state is
+    /// nil; the landing still counts, so no re-grab runs, and `idx=-` is the tell).
     private func logPopLanding(row: DetailRowID, key: String, now: TimeInterval) {
         guard DetailFocusProbe.enabled else { return }
-        NSLog("[DetailPop] land row=%@ key=%@ t=%d n=%d away=%d", "\(row)", key, popProbeMs(now),
-              focusMemory.popLandings, Int(focusMemory.awayTime(at: now) * 1000))
+        NSLog("[DetailPop] land row=%@ key=%@ t=%d n=%d away=%d idx=%@", "\(row)", key, popProbeMs(now),
+              focusMemory.popLandings, Int(focusMemory.awayTime(at: now) * 1000), popProbeFocusedKey)
     }
 
     /// Focus went off the target: where (`to=` the row, `hero`, or `-` outside the page's rows; `item=`
