@@ -228,7 +228,7 @@ private enum RailMetrics {
     /// Extra space above the profile avatar.
     static let avatarGap: CGFloat = 18
     static let labelGap: CGFloat = 18
-    static let cornerRadius: CGFloat = 42
+    static let cornerRadius: CGFloat = NavigationChrome.pillRadius          // 42
     static let profileRingWidth: CGFloat = 4
     /// Full screen, behind the pill, only while it is expanded.
     static let dimOpacity: Double = 0.55

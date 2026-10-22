@@ -121,8 +121,9 @@ nonisolated enum NavigationChrome {
     /// W3-11 (D1, Steven's 2026-10-19 mock): how far Corner's glass and its mask reach past the top
     /// and the left screen edges, so the Liquid Glass rim on those two sides lands off-canvas.
     static let cornerBleed: CGFloat = 8
-    /// The Corner glass's one rounded corner, the bottom trailing one (Centre's pill radius).
-    static let cornerRadius: CGFloat = 42
+    /// The Corner glass's one rounded corner, the bottom trailing one: Centre's pill radius
+    /// (`pillRadius`, review r1 P3-6), so the two cannot drift apart.
+    static let cornerRadius: CGFloat = pillRadius
     /// The Corner column's height around the Home cell alone: `itemPlatter` + 2 × `verticalPadding`
     /// = 104. The glass's height at rest and in phase 1 (the arm), before the grow.
     static let cornerRestHeight: CGFloat = itemPlatter + 2 * verticalPadding
@@ -151,6 +152,9 @@ nonisolated enum NavigationChrome {
     static let expandedWidth: CGFloat = 300
     /// The circle behind each glyph, one rail row's height.
     static let itemPlatter: CGFloat = 60
+    /// Centre's pill corner radius, the one literal: `RailMetrics.cornerRadius` (Centre's pill)
+    /// and `cornerRadius` (Corner's one rounded corner, W3-11) both read it.
+    static let pillRadius: CGFloat = 42
     /// The column's padding beside its rows: the Home cell sits `bezelInset + innerPadding` = 28
     /// from the left screen edge.
     static let innerPadding: CGFloat = 12
