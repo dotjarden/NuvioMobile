@@ -635,9 +635,13 @@ struct SettingsListPickerRow: View {
         self.label = label
     }
 
+    /// BUG-219: set by the pushed page as it leaves; the row takes focus back one runloop later.
+    @State private var reclaimFocus = false
+
     var body: some View {
         NavigationLink {
             SettingsListPickerPage(title: title, selection: selection, options: options, label: label)
+                .onDisappear { reclaimFocus = true }
         } label: {
             SettingsRowChrome {
                 SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
@@ -649,6 +653,30 @@ struct SettingsListPickerRow: View {
         // `SettingsTrailingValue` already renders the value as accessible text, so VoiceOver
         // would read it twice (review r1 P3-4).
         .navigationLinkIndicatorVisibility(.hidden)
+        .modifier(ReclaimsFocusAfterPop(pending: $reclaimFocus))
+    }
+}
+
+/// BUG-219 (2026-10-22, the Apple TV): Menu from a pushed Settings page landed focus on the pane's
+/// FIRST realized row, not on the row that pushed the page (Audio → the language list → Menu came
+/// back on Bold; the simulator came back on Audio). The pane `List` has no focus state of its own,
+/// so the return relied on tvOS's focus memory alone, which the root pane already records as
+/// unreliable (`SettingsRootView`'s landing correction). Same rule as `ClaimsFocusAfterSwap`
+/// (`FocusRow.swift`): a flag the departing view sets, consumed once, the claim one runloop late so
+/// it lands after the engine's own fallback. `onChange`, not `onAppear`: a List cell does not
+/// re-fire `onAppear` on a pop.
+struct ReclaimsFocusAfterPop: ViewModifier {
+    @Binding var pending: Bool
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($focused)
+            .onChange(of: pending) { _, now in
+                guard now else { return }
+                pending = false
+                DispatchQueue.main.async { focused = true }
+            }
     }
 }
 
@@ -862,9 +890,13 @@ struct SettingsLinkRow<Destination: View>: View {
         self.destination = destination
     }
 
+    /// BUG-219: see `ReclaimsFocusAfterPop`.
+    @State private var reclaimFocus = false
+
     var body: some View {
         NavigationLink {
             destination()
+                .onDisappear { reclaimFocus = true }
         } label: {
             SettingsRowChrome {
                 SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
@@ -878,6 +910,7 @@ struct SettingsLinkRow<Destination: View>: View {
         // platter stopped short of the row's trailing edge. Hide the system one; the kit's `›`
         // inside the platter is the only chevron, and the label (with its platter) spans the row.
         .navigationLinkIndicatorVisibility(.hidden)
+        .modifier(ReclaimsFocusAfterPop(pending: $reclaimFocus))
     }
 }
 
