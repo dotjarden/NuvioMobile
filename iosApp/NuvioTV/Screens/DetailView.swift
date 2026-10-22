@@ -2494,6 +2494,10 @@ struct DetailView: View {
     /// own focus state has caught up with the move, instead of at the 0.8 s free rung: the stray
     /// now lasts a frame or two, not ~230 ms on Play. The late rungs stay as the fallback for a
     /// dropped write; a viewer input or a newer restore in between stands this down.
+    /// It runs one run-loop turn after the stray, not after Home's 0.15 s `regrabDefer`: the input clock
+    /// stamps Siri Remote presses and swipes at begin, ahead of the focus move they cause. What it
+    /// cannot see (VoiceOver, a thumbstick) is undone, and strays before the first landing spend the
+    /// budget; see the residuals at `DetailPopGate.maxRegrabs`.
     private func regrabPopTarget(row: DetailRowID, key: String) {
         let memory = focusMemory
         let generation = memory.currentGeneration

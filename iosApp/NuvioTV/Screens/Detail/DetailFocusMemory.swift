@@ -204,6 +204,18 @@ nonisolated enum DetailPopGate {
 
     /// Re-grabs per restore, Home's count with a live clock: Classic Home saw the engine fire its
     /// default-candidate restoration twice (0.59 s and 0.98 s after the pop).
+    ///
+    /// Two known residuals of this budget (review r3 P3-1; no code yet, each waits for a rig sign):
+    /// - Strays BEFORE the first landing (`stray … landed=0`) spend it during the transition, where
+    ///   forced writes do not stick; if they exhaust it, the real post-landing stray falls back to
+    ///   `.hold` (rc11's behaviour). Fix if rig item 1 shows `landed=0` strays: gate `.regrab` on
+    ///   `popLandedAt != nil` (the ladder's forced rungs already cover the transition).
+    /// - Input the viewer clock never sees (VoiceOver gestures, a game controller's thumbstick) is
+    ///   undone, at most 3 times within the 1.3 s retire; the recognizer stamps every press and 40 pt
+    ///   swipe at begin, so Siri Remote input is not affected. Fix if rig item 5 shows a lost press:
+    ///   re-grab at once only for the `.defaultFocus` signature (`row == nil && heroFocus == .play`,
+    ///   the analogue of Home's `regrabsImmediately(fillerFocused:)`) and take the `regrabDefer`
+    ///   path with a clock re-check for anything else.
     static let maxRegrabs: Int = UncoverRestorePolicy.maxRegrabs(clockLive: true)
 
     /// Viewer input wins, then a focus report on the target row (the caller passes the target key when the row matches) lands;
