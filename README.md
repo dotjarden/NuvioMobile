@@ -44,6 +44,17 @@ cd NuvioMobile
 ./scripts/run-mobile.sh ios
 ```
 
+### Build configuration
+
+`local.properties` in this folder holds the server address and keys; git ignores it, so a fresh clone has none and sign-in then talks to `localhost`. Create it with Nuvio's public values before the first build:
+
+```
+SUPABASE_URL=https://api.nuvio.tv
+SUPABASE_ANON_KEY=sb_publishable_1Clq8rlTVACkdcZuqr6_AD__xUUC_EN
+```
+
+The same file can carry a TMDB key and the Trakt, Simkl, MDBList and IntroDB ids; the fork's `docs/nuvio-cloud-api-reference.md` lists them.
+
 ### Project Structure
 
 - `composeApp/` contains the shared Kotlin Multiplatform and Compose Multiplatform app code.
