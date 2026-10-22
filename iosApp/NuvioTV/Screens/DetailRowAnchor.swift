@@ -116,10 +116,13 @@ enum DetailRowAnchor {
     /// restarts the curve mid-flight, which shows as a kink.
     nonisolated static let verifySlack: TimeInterval = 0.1
 
-    /// The Release-readable override, latched at launch: `-debug.detailAnchorSeconds 0.45` on the
-    /// rig (or `defaults write com.nuvio.media.NuvioTV debug.detailAnchorSeconds -float 0.45`)
-    /// makes EVERY anchor glide take that long, whatever its travel. `0.3` reproduces the
-    /// pre-W3-15 behaviour exactly, for the A/B. Unset, 0, negative or non-numeric = off.
+    /// The Release-readable override, latched at launch: `-debug.detailAnchorSeconds 0.45` (the
+    /// launch argument, the rig recipe; on the simulator also `defaults write
+    /// com.nuvio.media.NuvioTV debug.detailAnchorSeconds -float 0.45`, which a tvOS device does not
+    /// take, and a device build may carry the `com.youngchris29` bundle ID) makes EVERY anchor glide
+    /// take that long, whatever its travel. `0.3` reproduces the pre-W3-15 behaviour exactly, for
+    /// the A/B. Unset, 0, negative or non-numeric = off. Review r1 P3-3: the knob does nothing until
+    /// `DetailView` calls `anchorDuration(travel:)` (see below).
     nonisolated static let anchorSecondsKey = "debug.detailAnchorSeconds"
     /// The override's ceiling, so a typo cannot park the page in a multi-second glide.
     nonisolated static let anchorSecondsOverrideMax: TimeInterval = 2
@@ -143,7 +146,9 @@ enum DetailRowAnchor {
         return min(max(scaled, anchorDurationFloor), anchorDurationCap)
     }
 
-    /// `anchorDuration(travel:override:)` with the launch-latched knob — what `DetailView` calls.
+    /// `anchorDuration(travel:override:)` with the launch-latched knob — what `DetailView` will call
+    /// once the owner wires it (after wave3b). NOT YET CALLED: `DetailView`'s anchor passes still
+    /// use the fixed 0.3 s glide and 0.45 s verify (review r1 P3-3).
     nonisolated static func anchorDuration(travel: CGFloat) -> TimeInterval {
         anchorDuration(travel: travel, override: anchorSecondsOverride)
     }
