@@ -7,7 +7,8 @@ import XCTest
 /// live focused row (`-` in the hero), `idx` the last card a tracked row remembered (the cast
 /// index, or the More Like This item id).
 ///
-/// Cast cards are links only with a TMDB id, so the fixture needs TMDB enrichment on; a title
+/// Cast cards are links only with a TMDB id, so TMDB enrichment must be on: every launch passes
+/// `-debug.tmdbEnabledOverride YES` (DEBUG, in memory, never synced; ui-legs 2026-10-22). A title
 /// with no tappable cast (or no More Like This) skips its leg rather than failing. Helpers are a
 /// trimmed file-private copy, the `DetailScrollProbeTests` convention.
 final class DetailFocusReturnUITests: XCTestCase {
@@ -41,7 +42,10 @@ final class DetailFocusReturnUITests: XCTestCase {
     private func launchToDetail() -> XCUIApplication {
         // The shared, fixture-independent Search route into Detail (`DetailEntryRoute`); Classic
         // Home stays pinned for the route's verified hero-CTA fallback.
-        let app = DetailEntryRoute.launchToDetail(self, arguments: ["-home_layout", "classic", "-debug.detailFocusProbe", "YES"])
+        // ui-legs (2026-10-22): TMDB on for this launch through the DEBUG override, in memory only —
+        // the Cast row needs it, and `-tmdb_enabled_<profile> YES` is a synced key.
+        let app = DetailEntryRoute.launchToDetail(self, arguments: ["-home_layout", "classic", "-debug.detailFocusProbe", "YES",
+                                                                    "-debug.tmdbEnabledOverride", "YES"])
         var waited: TimeInterval = 0
         while !app.staticTexts["Cast"].exists, waited < 14 {
             pause(1)

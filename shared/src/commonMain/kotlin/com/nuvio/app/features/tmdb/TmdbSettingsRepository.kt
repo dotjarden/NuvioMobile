@@ -31,6 +31,9 @@ object TmdbSettingsRepository {
     private var useMoreLikeThis = true
     private var useCollections = true
 
+    // DEBUG harness seam (ui-legs, 2026-10-22). See [setDebugEnabledOverride].
+    private var debugEnabledOverrideValue: Boolean? = null
+
     fun ensureLoaded() {
         if (hasLoaded) return
         loadFromDisk()
@@ -69,6 +72,24 @@ object TmdbSettingsRepository {
         invalidateReleaseDateMetadata()
         invalidateHeroEnrichment()
     }
+
+    /**
+     * DEBUG harness seam (ui-legs, 2026-10-22): when [value] is non-null it stands in for the
+     * persisted `tmdb_enabled` in the [TmdbSettings] this repository publishes, for this process
+     * only (it survives profile switches, which reload from storage). It is never written to
+     * [TmdbSettingsStorage], and the profile-settings sync export
+     * ([TmdbSettingsStorage.exportToSyncPayload]) reads storage, so the account's payload keeps
+     * the persisted value. Only the tvOS app's DEBUG build calls this (`TmdbDebugOverride`, the
+     * `-debug.tmdbEnabledOverride YES|NO` launch argument); Release never does. null clears it.
+     */
+    fun setDebugEnabledOverride(value: Boolean?) {
+        if (debugEnabledOverrideValue == value) return
+        debugEnabledOverrideValue = value
+        if (hasLoaded) loadFromDisk()
+    }
+
+    /** The active DEBUG override of `tmdb_enabled`, or null (see [setDebugEnabledOverride]). */
+    fun currentDebugEnabledOverride(): Boolean? = debugEnabledOverrideValue
 
     fun setEnabled(value: Boolean) {
         ensureLoaded()
@@ -224,7 +245,8 @@ object TmdbSettingsRepository {
         hasLoaded = true
         // Upstream 60ee0160: no `&& apiKey.isNotBlank()` gate any more — the key is bundled, so
         // a stored/synced `tmdb_enabled=true` now takes effect on its own. Default stays opt-in.
-        enabled = TmdbSettingsStorage.loadEnabled() ?: false
+        // ui-legs: the DEBUG override (in memory only) is consulted before the persisted value.
+        enabled = debugEnabledOverrideValue ?: TmdbSettingsStorage.loadEnabled() ?: false
         // Upstream df589078: the personal key is back as an optional override of the bundled one.
         apiKey = TmdbSettingsStorage.loadApiKey()?.trim().orEmpty()
         val storedLanguage = TmdbSettingsStorage.loadLanguage()
