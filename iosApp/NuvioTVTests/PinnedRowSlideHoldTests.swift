@@ -157,6 +157,63 @@ final class PinnedRowSlideHoldTests: XCTestCase {
         XCTAssertEqual(current, 10.524, accuracy: 0.001, "the title lands on the rest with the posters")
     }
 
+    // MARK: - SlideHoldDecision.exempt (review r1 P3-5, r2 P3-2)
+
+    /// The probe's `exempt=` flag is the decision's own: true exactly when the W3-14 focused
+    /// in-band exemption produced the verdict (a nonzero target, focused, in band, no hold running),
+    /// across the whole input space, and the verdict is `slideHoldVerdict`'s whatever the flag.
+    func testExemptIsTheFocusedInBandRuleAcrossEveryInput() {
+        var exemptCount = 0
+        for target: CGFloat in [0, 1.5, 10.5, 72] {
+            for current: CGFloat in [0, 4] {
+                for moving in [false, true] {
+                    for pending in [false, true] {
+                        for focused in [false, true] {
+                            for inBand in [false, true] {
+                                for holding in [false, true] {
+                                    let label = "target=\(target) current=\(current) moving=\(moving) pending=\(pending) "
+                                        + "focused=\(focused) inBand=\(inBand) holding=\(holding)"
+                                    let decision = PinnedRowTitle.slideHoldDecision(
+                                        target: target, current: current, moving: moving, restPending: pending,
+                                        focused: focused, inBand: inBand, holding: holding)
+                                    XCTAssertEqual(decision.exempt, target != 0 && focused && inBand && !holding, label)
+                                    XCTAssertEqual(decision.verdict,
+                                                   verdict(target: target, current: current, moving: moving,
+                                                           pending: pending, focused: focused, inBand: inBand,
+                                                           holding: holding), label)
+                                    if decision.exempt {
+                                        exemptCount += 1
+                                        XCTAssertEqual(decision.verdict, moving ? .track : .apply, label)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(exemptCount, 0, "the exemption is reachable")
+    }
+
+    /// The two ends the flag distinguishes in the log: Steven's focused in-band Down is exempt
+    /// whether the rows move or rest; the unfocused neighbour, the out-of-band row, a running hold
+    /// and the 0-target snap are not.
+    func testExemptMarksOnlyTheFocusedInBandRowWithNoHoldRunning() {
+        // `current` is off 0 so a 0 target has a title to snap home.
+        func decision(target: CGFloat = 8, moving: Bool = true, focused: Bool = true, inBand: Bool = true,
+                      holding: Bool = false) -> PinnedRowTitle.SlideHoldDecision {
+            PinnedRowTitle.slideHoldDecision(target: target, current: 4, moving: moving, restPending: true,
+                                             focused: focused, inBand: inBand, holding: holding)
+        }
+        XCTAssertEqual(decision(), .init(verdict: .track, exempt: true))
+        XCTAssertEqual(decision(moving: false), .init(verdict: .apply, exempt: true))
+        XCTAssertEqual(decision(focused: false), .init(verdict: .hold, exempt: false))
+        XCTAssertEqual(decision(inBand: false), .init(verdict: .hold, exempt: false))
+        XCTAssertEqual(decision(holding: true), .init(verdict: .hold, exempt: false))
+        XCTAssertEqual(decision(target: 0), .init(verdict: .snapToZero, exempt: false))
+        XCTAssertEqual(decision(target: 0, moving: false), .init(verdict: .apply, exempt: false))
+    }
+
     // MARK: - slideInBand
 
     func testSlideInBandIsTheCorrectorsLowEdgeWithItsSlack() {
