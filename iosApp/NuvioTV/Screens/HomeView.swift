@@ -7346,6 +7346,15 @@ struct HeroLogo: View {
     var maxHeight: CGFloat = Theme.Size.heroLogoSlotHeight
     /// beta.19-rc1 verdict (M5): see the type doc.
     var ink: HeroLogoInk = .legible
+    /// BUG-190 (Steven rc10; reopened 2026-10-22 by the UI legs' first full run): where the wordmark
+    /// sits inside its `maxHeight` box. Home, Discover and Classic keep `.bottomLeading`. The Stage's
+    /// folder page passes `.topLeading` once its own folder logo has risen (`StageView.logoAlignment`),
+    /// so the title block reads top-down from the stage block's top. rc11's fix set that alignment
+    /// on the OUTER slot frame only; this inner frame kept bottom-aligning the bitmap inside the
+    /// same height, so a short wordmark still floated (slot − logo) pt below the block top (a 68 pt
+    /// wordmark in the 150 pt slot sat at 201, not 120). The text stand-in has no inner frame and
+    /// already followed the outer alignment.
+    var alignment: Alignment = .bottomLeading
 
     var body: some View {
         Group {
@@ -7359,7 +7368,7 @@ struct HeroLogo: View {
                     .frame(
                         maxWidth: Theme.Size.heroLogoMaxWidth,
                         maxHeight: maxHeight,
-                        alignment: .bottomLeading
+                        alignment: alignment
                     )
             } else {
                 // UX-19 (2026-10-22, the Apple TV): a Continue Watching item whose metadata had not

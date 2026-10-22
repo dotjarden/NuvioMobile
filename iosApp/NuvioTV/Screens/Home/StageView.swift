@@ -252,7 +252,8 @@ struct StageTextBlock: View {
                 let copy = StageCopy.make(item: shown.item, progress: progressLookup?(shown.item),
                                           rowHeading: copySource.rowHeading(for: shown.item))
                 VStack(alignment: .leading, spacing: StripGeometry.slotGap) {
-                    HeroLogo(item: shown.item, image: shown.logo, maxHeight: geometry.logoSlot, ink: shown.logoInk)
+                    HeroLogo(item: shown.item, image: shown.logo, maxHeight: geometry.logoSlot, ink: shown.logoInk,
+                             alignment: logoAlignment)
                         .frame(height: geometry.logoSlot, alignment: logoAlignment)
                         // The alignment flips while the logo is still hidden (the folder logo's
                         // rise); it must not glide.
