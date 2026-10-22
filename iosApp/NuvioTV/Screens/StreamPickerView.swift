@@ -277,112 +277,118 @@ struct StreamPickerView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                // Lazy so collapsed groups' rows (the overwhelming majority while addons are
-                // still streaming in) are never built at all — this was the lag source (BUG-5):
-                // a non-lazy VStack built every row of every addon up front.
-                LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
-                    // FEAT-42: one heading — the title's logo when it loads, else the plain text
-                    // title (mobile shows the series/movie logo on its stream-list screen too).
-                    // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo, decoded for the header's slot.
-                    TitleLogoHeader(title: title, logoUrl: logoUrl,
-                                    decodeSize: .points(width: 600, height: 120), upgrade: .logo)
+            // Review r1 P2-3 (W3-16 F2): the reader lets a row that grows after its dwell (a long
+            // release name, `StreamRowDescription`) re-reveal itself; UIKit does not scroll for a
+            // focused view's later resize. See `streamRowView`.
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    // Lazy so collapsed groups' rows (the overwhelming majority while addons are
+                    // still streaming in) are never built at all — this was the lag source (BUG-5):
+                    // a non-lazy VStack built every row of every addon up front.
+                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
+                        // FEAT-42: one heading — the title's logo when it loads, else the plain text
+                        // title (mobile shows the series/movie logo on its stream-list screen too).
+                        // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo, decoded for the header's slot.
+                        TitleLogoHeader(title: title, logoUrl: logoUrl,
+                                        decodeSize: .points(width: 600, height: 120), upgrade: .logo)
 
-                    // BUG-21 follow-up: the active debrid credential failed auth on a recent
-                    // call — without this banner the only symptom is every resolve failing
-                    // while Settings still says "Connected". Not focusable; purely advisory.
-                    if let warning = model.credentialWarning {
-                        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.yellow)
-                            Text(warning)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                        }
-                        .padding(Theme.Spacing.md)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(.yellow.opacity(0.12))
-                        )
-                        .frame(maxWidth: 1100, alignment: .leading)
-                    }
-
-                    if model.isLoading {
-                        HStack(spacing: Theme.Spacing.md) {
-                            ProgressView()
-                            Text("Finding streams\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
-                        }
-                    }
-
-                    ForEach(model.groups) { group in
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                            groupHeader(group)
-                            // Collapsed groups render nothing at all (not just off-screen —
-                            // absent from the hierarchy), which is what actually kills the lag:
-                            // the old always-expanded list built every row of every addon.
-                            if expandedGroups.contains(group.id) {
-                                // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel`
-                                // built them, keys included); the picker only adds what it alone
-                                // knows. Computed once per group, not per row.
-                                let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
-                                let defaultPlayerId = activeDefaultExternalPlayer?.id
-                                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                    ForEach(group.rows) { row in
-                                        streamRowView(row, players: players, defaultPlayerId: defaultPlayerId)
-                                    }
-                                }
-                                .padding(.top, Theme.Spacing.xs)
-                            }
-                        }
-                        // Each addon group is its own focus section: D-pad up/down navigates
-                        // between group headers and (when expanded) that group's rows without
-                        // leaking focus into a sibling group's rows.
-                        .focusSection()
-                    }
-
-                    if let reason = model.emptyReason {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                            // Primary reason renders at full text-primary weight — prominent,
-                            // not the muted secondary tone the plain "nothing found" empty
-                            // states get elsewhere on tvOS — since the debrid/filtered case is
-                            // actionable rather than a dead end.
-                            Text(reason)
-                                .font(Theme.Font.body)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                            if let hint = model.emptyReasonHint {
-                                Text(hint)
+                        // BUG-21 follow-up: the active debrid credential failed auth on a recent
+                        // call — without this banner the only symptom is every resolve failing
+                        // while Settings still says "Connected". Not focusable; purely advisory.
+                        if let warning = model.credentialWarning {
+                            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.yellow)
+                                Text(warning)
                                     .font(Theme.Font.caption)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .foregroundStyle(Theme.Palette.textPrimary)
                             }
+                            .padding(Theme.Spacing.md)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(.yellow.opacity(0.12))
+                            )
+                            .frame(maxWidth: 1100, alignment: .leading)
                         }
-                        .padding(.top, Theme.Spacing.xs)
-                    }
 
-                    // Dev/diagnostics affordance — only when there is nothing real to play, so it
-                    // can never steal initial focus from the stream list (the old always-visible
-                    // button was the only focusable view while loading → focus started at the
-                    // bottom of the screen).
-                    if model.groups.isEmpty && !model.isLoading {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                            Text("Test")
-                                .font(Theme.Font.sectionTitle)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                            Button {
-                                selected = context(url: testStreamURL, stream: nil)
-                            } label: {
-                                Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
-                                    .padding(.vertical, Theme.Spacing.xs)
+                        if model.isLoading {
+                            HStack(spacing: Theme.Spacing.md) {
+                                ProgressView()
+                                Text("Finding streams\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
                             }
-                            .buttonStyle(.glass)
-                            .focused($focusedRow, equals: Self.testRowKey)
                         }
-                        .padding(.top, Theme.Spacing.lg)
+
+                        ForEach(model.groups) { group in
+                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                groupHeader(group)
+                                // Collapsed groups render nothing at all (not just off-screen —
+                                // absent from the hierarchy), which is what actually kills the lag:
+                                // the old always-expanded list built every row of every addon.
+                                if expandedGroups.contains(group.id) {
+                                    // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel`
+                                    // built them, keys included); the picker only adds what it alone
+                                    // knows. Computed once per group, not per row.
+                                    let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
+                                    let defaultPlayerId = activeDefaultExternalPlayer?.id
+                                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                        ForEach(group.rows) { row in
+                                            streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
+                                                          scrollProxy: scrollProxy)
+                                        }
+                                    }
+                                    .padding(.top, Theme.Spacing.xs)
+                                }
+                            }
+                            // Each addon group is its own focus section: D-pad up/down navigates
+                            // between group headers and (when expanded) that group's rows without
+                            // leaking focus into a sibling group's rows.
+                            .focusSection()
+                        }
+
+                        if let reason = model.emptyReason {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                                // Primary reason renders at full text-primary weight — prominent,
+                                // not the muted secondary tone the plain "nothing found" empty
+                                // states get elsewhere on tvOS — since the debrid/filtered case is
+                                // actionable rather than a dead end.
+                                Text(reason)
+                                    .font(Theme.Font.body)
+                                    .foregroundStyle(Theme.Palette.textPrimary)
+                                if let hint = model.emptyReasonHint {
+                                    Text(hint)
+                                        .font(Theme.Font.caption)
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                }
+                            }
+                            .padding(.top, Theme.Spacing.xs)
+                        }
+
+                        // Dev/diagnostics affordance — only when there is nothing real to play, so it
+                        // can never steal initial focus from the stream list (the old always-visible
+                        // button was the only focusable view while loading → focus started at the
+                        // bottom of the screen).
+                        if model.groups.isEmpty && !model.isLoading {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                Text("Test")
+                                    .font(Theme.Font.sectionTitle)
+                                    .foregroundStyle(Theme.Palette.textPrimary)
+                                Button {
+                                    selected = context(url: testStreamURL, stream: nil)
+                                } label: {
+                                    Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
+                                        .padding(.vertical, Theme.Spacing.xs)
+                                }
+                                .buttonStyle(.glass)
+                                .focused($focusedRow, equals: Self.testRowKey)
+                            }
+                            .padding(.top, Theme.Spacing.lg)
+                        }
                     }
+                    .padding(Theme.Spacing.screen)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Under the loading cover nothing in the list may take focus or a Select.
+                    .disabled(loadingCoverVisible)
                 }
-                .padding(Theme.Spacing.screen)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Under the loading cover nothing in the list may take focus or a Select.
-                .disabled(loadingCoverVisible)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.Palette.background.ignoresSafeArea())
@@ -675,8 +681,15 @@ struct StreamPickerView: View {
     /// The closures are not part of the row's identity, so they carry the KEY and look the stream up
     /// when pressed (`liveStream(forRowKey:)`): a debrid preparation that swaps a resolved URL into
     /// the same row (`replacePreparedStream`) must reach the press, whether or not the row redrew.
+    ///
+    /// Review r1 P2-3: the dwell (`StreamRowDescription.dwell`) grows the focused row AFTER the
+    /// engine scrolled it into view at its 3-line height, so on the bottom-most visible row (and
+    /// always on the last one) the full name could sit below the fold, and Down, the only way on,
+    /// collapses it. `onExpanded` runs once the grown row has laid out and asks the list for a
+    /// minimal reveal (`anchor: nil`): it scrolls only when the row overflows, by the overflow. No
+    /// animation, like the expansion itself.
     private func streamRowView(_ row: StreamRowModel, players: [StreamRowPlayer],
-                               defaultPlayerId: String?) -> some View {
+                               defaultPlayerId: String?, scrollProxy: ScrollViewProxy) -> some View {
         let key = row.key
         let model = row.applying(
             isResolving: resolvingKey == key,
@@ -688,10 +701,13 @@ struct StreamPickerView: View {
             model: model,
             onSelect: { selectRow(key) },
             onBuiltIn: { playRowInBuiltInPlayer(key) },
-            onExternal: { playerId in playRowExternally(key, playerId: playerId) }
+            onExternal: { playerId in playRowExternally(key, playerId: playerId) },
+            onExpanded: { scrollProxy.scrollTo(key, anchor: nil) }
         )
         .equatable()
         .focused($focusedRow, equals: key)
+        // The `scrollTo` target (the same value as the `ForEach` identity, so no identity change).
+        .id(key)
     }
 
     /// The stream currently listed under `key` (nil if the list changed under the press).
@@ -1490,6 +1506,9 @@ struct StreamRowView: View, Equatable {
     let onSelect: () -> Void
     let onBuiltIn: () -> Void
     let onExternal: (String) -> Void
+    /// Review r1 P2-3: called once the description's dwell has grown the focused row and it has
+    /// laid out (the picker scrolls it back on screen). Not compared, like the other closures.
+    var onExpanded: () -> Void = {}
 
     nonisolated static func == (lhs: StreamRowView, rhs: StreamRowView) -> Bool {
         lhs.model == rhs.model
@@ -1515,7 +1534,7 @@ struct StreamRowView: View, Equatable {
                         }
                     }
                     if let description = model.description {
-                        StreamRowDescription(text: description)
+                        StreamRowDescription(text: description, onExpanded: onExpanded)
                     }
                     if model.hasBadgeRow && !model.badgesOnTop {
                         StreamRowBadges(badges: model.badges, sizeBytes: model.sizeBytes)
@@ -1573,10 +1592,17 @@ struct StreamRowView: View, Equatable {
 /// rows' heights while the engine scrolled a lazy stack on estimated heights. It now waits for a
 /// dwell (`StreamRowDescription.dwell`): a browsing move changes no height at all. The collapse on
 /// losing focus is immediate (derived from focus), and neither direction animates.
+///
+/// Review r1 P2-3: once grown, the row calls `onExpanded` (the picker's minimal `scrollTo`), so a
+/// row near the bottom edge does not leave the end of its name below the fold.
 private struct StreamRowDescription: View {
     let text: String
+    let onExpanded: () -> Void
     /// ~0.5 s of the row holding focus before it grows.
     static let dwell: Duration = .milliseconds(500)
+    /// After the grow, one frame or so for the taller row to lay out before the reveal is asked for:
+    /// a `scrollTo` issued in the same update would measure the row at its 3-line height.
+    static let revealDelay: Duration = .milliseconds(20)
 
     @Environment(\.settingsRowIsFocused) private var focused
     @State private var dwelled = false
@@ -1598,6 +1624,11 @@ private struct StreamRowDescription: View {
                 try? await Task.sleep(for: Self.dwell)
                 guard !Task.isCancelled else { return }
                 withTransaction(transaction) { dwelled = true }
+                // Review r1 P2-3: reveal the grown row once it has laid out. Focus leaving in the
+                // meantime cancels this task (its id is `focused`), so a departed row never scrolls.
+                try? await Task.sleep(for: Self.revealDelay)
+                guard !Task.isCancelled else { return }
+                onExpanded()
             }
     }
 }
