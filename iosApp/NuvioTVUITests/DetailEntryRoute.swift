@@ -9,12 +9,16 @@ import XCTest
 /// Detail" and the `DetailFocusReturnUITests` Back legs skipped. The route now goes through Search:
 ///
 ///   profile picker ("Chris" focused, read) → tab bar or rail → Search (focused, read)
-///   → inline keyboard (a key focused, read) → type the query → wait for the Top result
-///   → Down until the Top result card holds focus and names the query (read) → Select
-///   → wait for `detail_action_play`.
+///   → inline keyboard (a key focused, read) → type the query → wait for the results
+///   → Down until the Top result card holds focus and its label names the query AND the wanted
+///     type ("Series · …"), else on into that type's row (`search.group.type:<type>`) and Right
+///     to the first card naming the query (each step read) → Select → wait for `detail_action_play`.
 ///
-/// Without a Top result (Search Results set to per-add-on rows) the first row card that names the
-/// query stands in for it, found the same way. A query with no results moves on to the next one.
+/// The type matters: "Severance"'s Top result on the fixture is the 2006 FILM, whose Detail reads
+/// "Playback unavailable" (no movie stream source on FA87), so Play is disabled, default focus
+/// lands on Watched and the action-row frames read lifted. The series is the default target.
+/// Without a Top result (Search Results set to per-add-on rows) the type's row is used directly.
+/// A query with no results moves on to the next target.
 ///
 /// SAFETY (a blind Select on this fixture once created real profiles on the account): every Select
 /// here follows a focus read (`hasFocus`; FA87's tvOS 26.5 runtime reports it). When focus cannot
@@ -26,7 +30,8 @@ import XCTest
 /// Down under the tab bar is the Home hero's CTA ("Go to Movie: …" / "Go to Show: …", a
 /// NavigationLink to Detail, never to playback; "Open Folder" is not taken). Anything else fails.
 ///
-/// Launch: every launch adds `-debug.rememberLastProfile NO` (the DEBUG override of "Open Last
+/// Launch: every launch adds `-detail_trailer_autoplay NO` (see `launchToDetail`) and
+/// `-debug.rememberLastProfile NO` (the DEBUG override of "Open Last
 /// Profile at Launch", in memory only, never persisted) so the picker always shows and the "Chris"
 /// check runs on every launch.
 ///
@@ -42,12 +47,21 @@ struct DetailEntryRoute {
         case failed(String)
     }
 
+    /// A title to search for and the meta type its card must carry (`movie` / `series`).
+    struct Target {
+        let query: String
+        let type: String
+
+        /// The meta line's word for the type (`SearchTopResultCard.typeLabel`, English fixture).
+        var typeWord: String { type == "series" ? "Series" : "Movie" }
+    }
+
     let test: XCTestCase
     let app: XCUIApplication
     private let remote = XCUIRemote.shared
 
-    /// The series the FA87 fixture's add-ons find first, then a film.
-    static let defaultQueries = ["Severance", "Dune"]
+    /// The FA87 fixture's series first, then a film.
+    static let defaultTargets = [Target(query: "Severance", type: "series"), Target(query: "Dune", type: "movie")]
 
     /// The system tab bar's titles (Search & Discover: Discover is its own tab by default).
     private static let tabTitles = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
@@ -62,20 +76,29 @@ struct DetailEntryRoute {
     /// exists; on any unverified focus it records a failure and returns without pressing.
     @discardableResult
     static func launchToDetail(_ test: XCTestCase, arguments: [String],
-                               queries: [String] = defaultQueries) -> XCUIApplication {
+                               targets: [Target] = defaultTargets) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += arguments + ["-debug.rememberLastProfile", "NO"]
+        // Detail auto-plays its trailer FULL SCREEN ~4 s after the trailer resolves unless the
+        // viewer has interacted (`DetailView.scheduleAutoPlayTrailerIfNeeded`), which pulls the
+        // action row out of the tree under any leg that reads the page while idle (FA87 run
+        // 2026-10-22: Play "never appeared" behind the Severance trailer). Off for the visit
+        // through the argument domain: a device-local @AppStorage read, nothing persisted, not
+        // in any sync payload. A caller that passes the key keeps its own value.
+        if !arguments.contains("-detail_trailer_autoplay") {
+            app.launchArguments += ["-detail_trailer_autoplay", "NO"]
+        }
         app.launch()
         let route = DetailEntryRoute(test: test, app: app)
         guard route.enterChrisProfile() else { return app }
-        route.openDetail(queries: queries)
+        route.openDetail(targets: targets)
         return app
     }
 
     /// From anywhere past the profile picker: Search first, the verified hero CTA second.
     @discardableResult
-    func openDetail(queries: [String] = defaultQueries) -> Bool {
-        switch openViaSearch(queries: queries) {
+    func openDetail(targets: [Target] = defaultTargets) -> Bool {
+        switch openViaSearch(targets: targets) {
         case .opened:
             return true
         case .failed(let reason):
@@ -122,14 +145,15 @@ struct DetailEntryRoute {
 
     // MARK: - Search route
 
-    private func openViaSearch(queries: [String]) -> Outcome {
+    private func openViaSearch(targets: [Target]) -> Outcome {
         guard openTab("Search") else {
             return .unavailable("could not put verified focus on the Search tab (focused: \(focusedLabels()))")
         }
         guard app.searchFields.firstMatch.waitForExistence(timeout: 10) else {
             return .unavailable("Search showed no search field")
         }
-        for query in queries {
+        for target in targets {
+            let query = target.query
             guard focusSearchKeyboard() else {
                 return .unavailable("no key of the inline keyboard took focus (focused: \(focusedLabels()))")
             }
@@ -150,17 +174,17 @@ struct DetailEntryRoute {
                 continue
             }
             shot("detail_route_results_\(query)")
-            guard let label = focusResultCard(query: query, topResult: hasTopResult) else {
-                return .unavailable("focus never verifiably reached a result card naming '\(query)' "
+            guard let label = focusResultCard(target, topResult: hasTopResult) else {
+                return .unavailable("focus never verifiably reached a \(target.type) card naming '\(query)' "
                     + "(topResult=\(hasTopResult), focused: \(focusedLabels()))")
             }
-            note("detail_route_select", "Select on the focused result '\(label)' (query '\(query)')")
+            note("detail_route_select", "Select on the focused result '\(label)' (\(target.type) '\(query)')")
             remote.press(.select)
             if waitForDetail() { return .opened }
             return .failed("no detail_action_play 30 s after selecting '\(label)' "
                 + "(keyboards=\(app.keyboards.count), focused: \(focusedLabels()))")
         }
-        return .unavailable("no query produced a typed field and results: \(queries)")
+        return .unavailable("no target produced a typed field and results: \(targets.map(\.query))")
     }
 
     /// Waits up to 20 s: true once the Top result is up, false when only result rows are (per-add-on
@@ -180,25 +204,29 @@ struct DetailEntryRoute {
         return rows.exists ? false : nil
     }
 
-    /// Moves focus from the keyboard to the Top result card (or, with no Top result, to the first
-    /// row card naming `query`), reading focus after every press. Returns the focused card's label,
-    /// or nil when the target never verifiably held focus (nothing is pressed then).
-    private func focusResultCard(query: String, topResult: Bool) -> String? {
-        // Keyboard → suggestion chips → Top result → (People) → rows: Down, Up on overshoot.
-        for _ in 0..<6 {
-            let spot = focusedSearchSpot()
-            if topResult, spot.container == "search.topResult" { break }
-            if !topResult, spot.container?.hasPrefix("search.group.") == true { break }
-            let pastTop = spot.container == "search.people" || spot.container?.hasPrefix("search.group.") == true
-            remote.press(topResult && pastTop ? .up : .down)
+    /// Moves focus from the keyboard to the Top result card when it is the wanted title and type,
+    /// else to the first card naming the query in the type's row, reading focus after every press.
+    /// Returns the focused card's label, or nil when no such card verifiably held focus (nothing is
+    /// pressed then).
+    private func focusResultCard(_ target: Target, topResult: Bool) -> String? {
+        let query = target.query
+        // Keyboard → suggestion chips → Top result: Down, one step at a time.
+        if topResult {
+            for _ in 0..<4 where focusedSearchSpot().container != "search.topResult" {
+                remote.press(.down)
+                pause(0.9)
+            }
+            let top = focusedSearchSpot()
+            guard top.container == "search.topResult" else { return nil }
+            if names(top.label, query), names(top.label, target.typeWord) { return top.label }
+            note("detail_route_top_result", "Top result '\(top.label)' is not the \(target.type) '\(query)': on to its row")
+        }
+        // On down into the type's row (People and other rows are passed through).
+        for _ in 0..<8 where !isRow(focusedSearchSpot().container, of: target.type) {
+            remote.press(.down)
             pause(0.9)
         }
-        let spot = focusedSearchSpot()
-        if topResult {
-            guard spot.container == "search.topResult" else { return nil }
-            return names(spot.label, query) ? spot.label : nil
-        }
-        guard let row = spot.container, row.hasPrefix("search.group.") else { return nil }
+        guard let row = focusedSearchSpot().container, isRow(row, of: target.type) else { return nil }
         for _ in 0..<6 {
             remote.press(.left)
             pause(0.4)
@@ -211,6 +239,13 @@ struct DetailEntryRoute {
             pause(0.6)
         }
         return nil
+    }
+
+    /// A result row of `type`: grouped `search.group.type:<type>`, or a per-add-on
+    /// `search.group.<addon>:<type>:<catalog>`.
+    private func isRow(_ container: String?, of type: String) -> Bool {
+        guard let container, container.hasPrefix("search.group.") else { return false }
+        return container.contains("type:\(type)") || container.contains(":\(type):")
     }
 
     private func names(_ label: String, _ query: String) -> Bool {
@@ -394,11 +429,33 @@ struct DetailEntryRoute {
 
     // MARK: - Shared bits
 
+    /// Waits for `detail_action_play`, then for the page to SETTLE before handing it to the leg:
+    /// Play exists before the meta lands and reads "Play" until then ("Playback unavailable" /
+    /// "Resume …" after), so a leg reading frames straight away measured a different Play width on
+    /// each launch (FA87 run 2026-10-22: 268.8 vs 374.5). Waits (≤15 s) for a meta-gated section
+    /// heading, then for Play's label and frame to hold for 2 s (≤8 s). The old blind route's
+    /// `pause(6)` after Select did the same job by luck.
     private func waitForDetail() -> Bool {
         let play = app.buttons["detail_action_play"]
-        let opened = play.waitForExistence(timeout: 30)
-        shot(opened ? "detail_route_opened" : "detail_route_no_play")
-        return opened
+        guard play.waitForExistence(timeout: 30) else {
+            shot("detail_route_no_play")
+            return false
+        }
+        let metaHeading = app.staticTexts
+            .matching(NSPredicate(format: "label IN %@", ["Cast", "Parental Guide", "Details", "More Like This"])).firstMatch
+        let metaLanded = metaHeading.waitForExistence(timeout: 15)
+        var last = ""
+        var stableReads = 0
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline, stableReads < 4 {
+            pause(0.5)
+            let now = play.exists ? "\(play.label) \(play.frame)" : ""
+            stableReads = !now.isEmpty && now == last ? stableReads + 1 : 0
+            last = now
+        }
+        note("detail_route_settled", "meta=\(metaLanded) stableReads=\(stableReads) play: \(last)")
+        shot("detail_route_opened")
+        return true
     }
 
     private func moveFocus(_ direction: XCUIRemote.Button, until element: XCUIElement, max: Int) -> Bool {
