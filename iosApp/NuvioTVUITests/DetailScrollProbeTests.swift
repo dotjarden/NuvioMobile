@@ -65,8 +65,8 @@ final class DetailScrollProbeTests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -132,11 +132,9 @@ final class DetailScrollProbeTests: XCTestCase {
     /// many D-pad downs follow — a 2026-09-04 run hit exactly this (`dark` stuck at 0 after 8
     /// downs) with the previous fixed `pause(12)`.
     private func openDetailFromHomeHero(_ app: XCUIApplication) {
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(2)
-        remote.press(.select)
-        pause(6)
+        // ui-legs (2026-10-22): the blind hero-CTA Select (Up ×6, Down ×1) is the shared,
+        // focus-verified Search route now (`DetailEntryRoute`).
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         var waited: TimeInterval = 0
         while !app.staticTexts["Cast"].exists, waited < 14 {
             pause(1)
@@ -162,7 +160,7 @@ final class DetailScrollProbeTests: XCTestCase {
         openTabByName(app, "Search")
         pause(1.5)
         _ = typeIntoSearchField(app, "Les Condés")
-        openFirstSearchResult(app)
+        openFirstSearchResult(app, query: "Les Condés")
         var waited: TimeInterval = 0
         while !app.staticTexts["debug_ux6"].exists, waited < 15 {
             pause(1)
@@ -389,7 +387,7 @@ final class DetailScrollProbeTests: XCTestCase {
     /// empty results screen just means the following `ux6Probe`/screenshot in the caller shows
     /// "debug_ux6 MISSING" or a Search screen instead of a Detail one, which the report calls out
     /// explicitly rather than this helper asserting past it.
-    private func openFirstSearchResult(_ app: XCUIApplication) {
+    private func openFirstSearchResult(_ app: XCUIApplication, query: String, tolerant: Bool = false) {
         enterSearchResults(app) // out of the inline keyboard: Down (linear) / Right×7 (grid)
         // 2026-09-04 finding: default focus after one Down does NOT reliably land on the leftmost
         // cell — a query with exactly one real match + a "See All" tile landed on "See All"
@@ -401,8 +399,45 @@ final class DetailScrollProbeTests: XCTestCase {
             remote.press(.left)
             pause(0.3)
         }
-        remote.press(.select)
+        // ui-legs (2026-10-22): Select only on a result card naming the query, read focused here
+        // (FA87's tvOS 26.5 reports focus). Since Search & Discover the Down + Lefts above stop on
+        // the suggestion chips or the keyboard (first full run: focus on the "b" key), so when no
+        // such card holds focus the shared, focus-verified route (`DetailEntryRoute`, any type)
+        // re-types the query and walks to it instead.
+        let focused = focusedSearchResultLabel(app)
+        if let label = focused, label.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            remote.press(.select)
+        } else {
+            shot(app, "search_result_not_focused_\(query)")
+            let route = DetailEntryRoute(test: self, app: app)
+            if tolerant {
+                // The repro leg notes a title missing from the fixture's catalog instead of failing.
+                guard route.openDetailBySearchIfFound(targets: [.init(query: query, type: "any")]) else { return }
+            } else {
+                guard route.openDetail(targets: [.init(query: query, type: "any")]) else { return }
+            }
+        }
         pause(10) // Detail page fetch + hero-trailer resolve chain settle
+    }
+
+    /// ui-legs: the deepest focused element's label when it sits inside a Search RESULT container
+    /// (`search.topResult` or a `search.group.*` row), from one snapshot; nil elsewhere.
+    private func focusedSearchResultLabel(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var hits: [(container: String?, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot, _ container: String?) {
+            let id = node.identifier
+            let isContainer = id == "search.topResult" || id == "search.people" || id == "search.suggestions"
+                || id.hasPrefix("search.group.")
+            let here = isContainer ? id : container
+            if node.hasFocus { hits.append((here, node.label)) }
+            node.children.forEach { walk($0, here) }
+        }
+        walk(root, nil)
+        guard let hit = hits.last(where: { !$0.label.isEmpty }) ?? hits.last,
+              let container = hit.container,
+              container == "search.topResult" || container.hasPrefix("search.group.") else { return nil }
+        return hit.label
     }
 
     /// BUG-41 item 8: opens the two French titles the tester named (Steven's beta.17 verdict —
@@ -427,7 +462,7 @@ final class DetailScrollProbeTests: XCTestCase {
                 continue
             }
             shot(app, "bug41_repro_\(title)_00_results")
-            openFirstSearchResult(app)
+            openFirstSearchResult(app, query: title, tolerant: true)
             shot(app, "bug41_repro_\(title)_01_detail_top")
             let onDetail = app.staticTexts["debug_ux6"].waitForExistence(timeout: 4)
             if !onDetail {
@@ -494,6 +529,11 @@ final class DetailScrollProbeTests: XCTestCase {
                 if focused >= 0 { remote.press(focused < index ? .down : .up) }
                 pause(0.5)
             }
+            // ui-legs: never Select an unverified rail item.
+            guard railFocusedItem(app) == index, railState(app).contains("expanded=1") else {
+                XCTFail("openTabByName(\(name)): the rail's focus never read item \(index) — \(railState(app)); not pressing Select")
+                return
+            }
             remote.press(.select)
             pause(2.5)
             return
@@ -514,6 +554,11 @@ final class DetailScrollProbeTests: XCTestCase {
                 remote.press(.left)
                 pause(0.35)
             }
+        }
+        // ui-legs: never Select an unverified tab.
+        guard tab.exists, tab.hasFocus else {
+            XCTFail("openTabByName(\(name)): the \(name) tab never read focused — not pressing Select")
+            return
         }
         remote.press(.select)
         pause(2)

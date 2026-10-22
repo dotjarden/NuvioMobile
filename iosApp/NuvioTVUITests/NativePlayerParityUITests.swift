@@ -533,8 +533,8 @@ class NativePlayerParityUITests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
         if chris.exists {
-            if !chris.hasFocus { for _ in 0..<3 { remote.press(.left); Thread.sleep(forTimeInterval: 0.5) } }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         Thread.sleep(forTimeInterval: 6)
         return app

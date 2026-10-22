@@ -50,11 +50,8 @@ final class DiscoverGenreLocalizationUITests: XCTestCase {
         app.launch()
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the FA87 fixture set up?")
-        remote.press(.left)
-        pause(0.5)
-        remote.press(.left)
-        pause(0.5)
-        remote.press(.select)
+        // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+        DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         pause(14)
         return app
     }

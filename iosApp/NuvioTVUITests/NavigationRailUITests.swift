@@ -101,11 +101,8 @@ final class NavigationRailUITests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the FA87 fixture set up?")
         if chris.exists {
-            remote.press(.left)
-            pause(0.5)
-            remote.press(.left)
-            pause(0.5)
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(settle)
         return app
@@ -417,7 +414,12 @@ final class NavigationRailUITests: XCTestCase {
             XCTFail("the Settings root never appeared after selecting rail_item_Settings — \(railState(app))")
             return
         }
-        XCTAssertTrue(focusSettingsRootRow(app, named: "Appearance"), "could not focus Appearance on the Settings root")
+        // ui-legs (2026-10-22): a failed walk here ends on row 0, Account & Profiles — Select only
+        // once Appearance reads focused.
+        guard focusSettingsRootRow(app, named: "Appearance"), focusedSettingsRootTitle(app) == "Appearance" else {
+            XCTFail("could not focus Appearance on the Settings root — not pressing Select")
+            return
+        }
         remote.press(.select)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4), "Appearance did not push")
         pause(1.0)
@@ -651,7 +653,12 @@ final class NavigationRailUITests: XCTestCase {
             XCTFail("the Settings root never appeared — \(railState(app))")
             return
         }
-        XCTAssertTrue(focusSettingsRootRow(app, named: "Appearance"), "could not focus Appearance")
+        // ui-legs (2026-10-22): a failed walk here ends on row 0, Account & Profiles — Select only
+        // once Appearance reads focused.
+        guard focusSettingsRootRow(app, named: "Appearance"), focusedSettingsRootTitle(app) == "Appearance" else {
+            XCTFail("could not focus Appearance — not pressing Select")
+            return
+        }
         remote.press(.select)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4), "Appearance did not push")
         let navigationRow = app.descendants(matching: .any)["appearance_row_navigation"].firstMatch

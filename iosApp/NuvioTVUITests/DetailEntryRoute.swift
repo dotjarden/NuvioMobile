@@ -47,7 +47,8 @@ struct DetailEntryRoute {
         case failed(String)
     }
 
-    /// A title to search for and the meta type its card must carry (`movie` / `series`).
+    /// A title to search for and the meta type its card must carry (`movie` / `series`, or `any`
+    /// for a caller that only knows the title: the Top result or the first result row naming it).
     struct Target {
         let query: String
         let type: String
@@ -97,8 +98,12 @@ struct DetailEntryRoute {
 
     /// From anywhere past the profile picker: Search first, the verified hero CTA second.
     @discardableResult
-    func openDetail(targets: [Target] = defaultTargets) -> Bool {
-        switch openViaSearch(targets: targets) {
+    ///
+    /// `settle: false` hands the page over as soon as `detail_action_play` exists, for a leg that
+    /// must read a probe before Detail's own timers run (test51 reads the trailer bridge idle
+    /// before the 4 s auto-play fires; the settle wait outlasted it).
+    func openDetail(targets: [Target] = defaultTargets, settle: Bool = true) -> Bool {
+        switch openViaSearch(targets: targets, settle: settle) {
         case .opened:
             return true
         case .failed(let reason):
@@ -107,7 +112,7 @@ struct DetailEntryRoute {
             return false
         case .unavailable(let reason):
             note("detail_route_search_unavailable", reason)
-            switch openViaHomeHero() {
+            switch openViaHomeHero(settle: settle) {
             case .opened:
                 return true
             case .unavailable(let why), .failed(let why):
@@ -118,23 +123,33 @@ struct DetailEntryRoute {
         }
     }
 
+    /// Search only, for a caller that tolerates a title missing from the fixture's catalog: no
+    /// hero fallback, and no failure when no card names the query (noted, nothing pressed). A
+    /// content Select that opened no Detail page still fails. True once a Detail page opened.
+    @discardableResult
+    func openDetailBySearchIfFound(targets: [Target]) -> Bool {
+        switch openViaSearch(targets: targets) {
+        case .opened:
+            return true
+        case .failed(let reason):
+            shot("detail_route_failed")
+            XCTFail("Detail route (Search): \(reason)")
+            return false
+        case .unavailable(let reason):
+            note("detail_route_search_unavailable", reason)
+            return false
+        }
+    }
+
     // MARK: - Profile picker
 
     /// Selects the "Chris" tile only once it reads focused (Left, then Right, one press at a time).
     func enterChrisProfile() -> Bool {
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        guard chris.waitForExistence(timeout: 90) else {
+        guard let selected = Self.selectChrisTile(test, app) else {
             XCTFail("profile picker never appeared — is the sim session still signed in?")
             return false
         }
-        pause(1)
-        guard moveFocus(.left, until: chris, max: 4) || moveFocus(.right, until: chris, max: 6) else {
-            shot("detail_route_profile_unverified")
-            XCTFail("the \"Chris\" tile never read focused on the profile picker (focused: \(focusedLabels())) — not pressing Select")
-            return false
-        }
-        note("detail_route_profile", "Select on '\(chris.label)' (hasFocus)")
-        remote.press(.select)
+        guard selected else { return false }
         let home = app.buttons["Home"]
         let rail = app.descendants(matching: .any)["rail_state"].firstMatch
         let deadline = Date().addingTimeInterval(30)
@@ -143,9 +158,48 @@ struct DetailEntryRoute {
         return true
     }
 
+    /// The one profile-picker Select every UI test file uses (ui-legs, 2026-10-22: each file used
+    /// to press Select after a blind "Left ×2/×3", and a blind Select on this fixture once created
+    /// real profiles). Waits for the "Chris" tile, walks Left then Right one press at a time until
+    /// the tile reads `hasFocus`, and only then presses Select. The picker's tile labels are logged
+    /// on every call (`profile_picker_tiles`), so a run shows the account's profile list never
+    /// changed. Returns nil when no "Chris" tile appeared within `timeout` (nothing pressed; the
+    /// caller decides), true after the Select. When the tile never reads focused it records the
+    /// focused labels, fails and STOPS the test (`continueAfterFailure = false`): nothing after it
+    /// may press on a picker whose focus is unknown.
+    @discardableResult
+    static func selectChrisTile(_ test: XCTestCase, _ app: XCUIApplication, timeout: TimeInterval = 90) -> Bool? {
+        let route = DetailEntryRoute(test: test, app: app)
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        guard chris.waitForExistence(timeout: timeout) else { return nil }
+        route.pause(1)
+        route.note("profile_picker_tiles", route.pickerTileLabels().joined(separator: " | "))
+        guard route.moveFocus(.left, until: chris, max: 4) || route.moveFocus(.right, until: chris, max: 6) else {
+            route.shot("profile_picker_unverified")
+            test.continueAfterFailure = false
+            XCTFail("the \"Chris\" tile never read focused on the profile picker (focused: \(route.focusedLabels())) — not pressing Select")
+            return false
+        }
+        route.note("profile_select", "Select on '\(chris.label)' (hasFocus)")
+        XCUIRemote.shared.press(.select)
+        return true
+    }
+
+    /// The profile picker's button labels (its tiles, Add Profile included), from one snapshot.
+    private func pickerTileLabels() -> [String] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [String] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.elementType == .button, !node.label.isEmpty { out.append(node.label) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
     // MARK: - Search route
 
-    private func openViaSearch(targets: [Target]) -> Outcome {
+    private func openViaSearch(targets: [Target], settle: Bool = true) -> Outcome {
         guard openTab("Search") else {
             return .unavailable("could not put verified focus on the Search tab (focused: \(focusedLabels()))")
         }
@@ -180,7 +234,7 @@ struct DetailEntryRoute {
             }
             note("detail_route_select", "Select on the focused result '\(label)' (\(target.type) '\(query)')")
             remote.press(.select)
-            if waitForDetail() { return .opened }
+            if waitForDetail(settle: settle) { return .opened }
             return .failed("no detail_action_play 30 s after selecting '\(label)' "
                 + "(keyboards=\(app.keyboards.count), focused: \(focusedLabels()))")
         }
@@ -218,7 +272,7 @@ struct DetailEntryRoute {
             }
             let top = focusedSearchSpot()
             guard top.container == "search.topResult" else { return nil }
-            if names(top.label, query), names(top.label, target.typeWord) { return top.label }
+            if names(top.label, query), target.type == "any" || names(top.label, target.typeWord) { return top.label }
             note("detail_route_top_result", "Top result '\(top.label)' is not the \(target.type) '\(query)': on to its row")
         }
         // On down into the type's row (People and other rows are passed through).
@@ -245,6 +299,7 @@ struct DetailEntryRoute {
     /// `search.group.<addon>:<type>:<catalog>`.
     private func isRow(_ container: String?, of type: String) -> Bool {
         guard let container, container.hasPrefix("search.group.") else { return false }
+        if type == "any" { return true }
         return container.contains("type:\(type)") || container.contains(":\(type):")
     }
 
@@ -313,7 +368,7 @@ struct DetailEntryRoute {
 
     // MARK: - Verified Home-hero fallback
 
-    private func openViaHomeHero() -> Outcome {
+    private func openViaHomeHero(settle: Bool = true) -> Outcome {
         guard openTab("Home") else {
             return .unavailable("could not put verified focus on the Home tab (focused: \(focusedLabels()))")
         }
@@ -328,7 +383,7 @@ struct DetailEntryRoute {
         }
         note("detail_route_hero_select", "fallback: Select on the focused hero CTA '\(cta)'")
         remote.press(.select)
-        return waitForDetail() ? .opened : .failed("no detail_action_play 30 s after selecting the hero CTA '\(cta)'")
+        return waitForDetail(settle: settle) ? .opened : .failed("no detail_action_play 30 s after selecting the hero CTA '\(cta)'")
     }
 
     // MARK: - Tabs and rail
@@ -435,11 +490,15 @@ struct DetailEntryRoute {
     /// each launch (FA87 run 2026-10-22: 268.8 vs 374.5). Waits (≤15 s) for a meta-gated section
     /// heading, then for Play's label and frame to hold for 2 s (≤8 s). The old blind route's
     /// `pause(6)` after Select did the same job by luck.
-    private func waitForDetail() -> Bool {
+    private func waitForDetail(settle: Bool = true) -> Bool {
         let play = app.buttons["detail_action_play"]
         guard play.waitForExistence(timeout: 30) else {
             shot("detail_route_no_play")
             return false
+        }
+        guard settle else {
+            note("detail_route_opened_unsettled", "play: \(play.label) \(play.frame)")
+            return true
         }
         let metaHeading = app.staticTexts
             .matching(NSPredicate(format: "label IN %@", ["Cast", "Parental Guide", "Details", "More Like This"])).firstMatch

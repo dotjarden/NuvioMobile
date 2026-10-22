@@ -38,6 +38,54 @@ final class RevampEvidenceTests: XCTestCase {
         }
     }
 
+    /// ui-legs (2026-10-22): the focused Settings ROOT row, by its `settings_category_<raw>`
+    /// identifier or by a focused label starting with the category title (a List row's focus can
+    /// sit on its Cell, which carries the label but not the identifier — first full run).
+    private static let rootTitles: [String: String] = [
+        "accountProfiles": "Account & Profiles", "services": "Services", "appearance": "Appearance",
+        "homeScreen": "Home Screen", "detailPage": "Detail Page", "player": "Player", "sources": "Sources",
+        "subtitlesAudio": "Subtitles & Audio", "about": "About", "developer": "Developer",
+    ]
+
+    private func rootRowFocused(_ app: XCUIApplication, _ raw: String) -> Bool {
+        guard let title = Self.rootTitles[raw], let root = try? app.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool {
+            if node.hasFocus, node.identifier == "settings_category_\(raw)" || node.label.hasPrefix(title) { return true }
+            return node.children.contains(where: walk)
+        }
+        return walk(root)
+    }
+
+    /// ui-legs (2026-10-22): whether an element with `identifier` holds focus, from one snapshot.
+    private func focusedIdentifier(_ app: XCUIApplication, _ identifier: String) -> Bool {
+        guard let root = try? app.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool {
+            (node.hasFocus && node.identifier == identifier) || node.children.contains(where: walk)
+        }
+        return walk(root)
+    }
+
+    /// ui-legs: Select only when `isTarget()` holds on a focus read made right here; otherwise a
+    /// screenshot, a failure naming what was focused, and no press.
+    @discardableResult
+    private func selectIfFocused(_ app: XCUIApplication, _ what: String, when isTarget: () -> Bool) -> Bool {
+        if isTarget() {
+            remote.press(.select)
+            return true
+        }
+        shot("unverified-\(what)")
+        var focused: [String] = []
+        if let root = try? app.snapshot() {
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.hasFocus { focused.append(node.label.isEmpty ? "<\(node.identifier)>" : node.label) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+        }
+        XCTFail("\(what): focus is not on the intended element (focused: \(focused)) — not pressing Select")
+        return false
+    }
+
     @discardableResult
     private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
@@ -46,9 +94,9 @@ final class RevampEvidenceTests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
         if chris.exists {
-            // Default focus is the first profile; Left is a no-op there, Right would hit Add Profile.
-            press(.left, times: 2, gap: 0.5)
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused; a blind
+            // Right here would hit Add Profile).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         return app
     }
@@ -87,14 +135,21 @@ final class RevampEvidenceTests: XCTestCase {
     }
 
     func testDetailSynopsisSheetAndScroll() {
-        let app = launch(["-debug.openDeepLink", "nuviotv://title?id=tt0903747&type=series&name=Breaking%20Bad"])
+        // ui-legs (2026-10-22): trailer auto-play off (device-local, never synced) so the teaser stays
+        // on screen; the full-screen auto-play cover otherwise holds focus by the time Up is pressed.
+        let app = launch(["-debug.openDeepLink", "nuviotv://title?id=tt0903747&type=series&name=Breaking%20Bad",
+                          "-detail_trailer_autoplay", "NO"])
         pause(25)
         // Up from Play reaches the teaser when it is truncated.
         press(.up)
         pause(1)
         shot("detail-teaser-focused")
-        if app.buttons["detail_synopsis_teaser"].exists || app.descendants(matching: .any)["detail_synopsis_teaser"].exists {
-            remote.press(.select)
+        // ui-legs: only the teaser BUTTON (a truncated synopsis) opens a sheet, and it must hold
+        // focus. The plain-text teaser also carries the id; matching it pressed Select on whatever
+        // held focus — on this fixture "Mark Watched" (Play is "Playback unavailable"), since
+        // Breaking Bad's synopsis fits four lines (debug_detail_hero trunc=0, with or without TMDB).
+        if app.buttons["detail_synopsis_teaser"].exists,
+           selectIfFocused(app, "teaser", when: { focusedIdentifier(app, "detail_synopsis_teaser") }) {
             pause(2)
             shot("detail-synopsis-sheet")
             tree(app, "detail-synopsis-sheet-tree")
@@ -116,15 +171,21 @@ final class RevampEvidenceTests: XCTestCase {
             remote.press(.right)
             pause(0.5)
         }
-        remote.press(.select)
+        guard selectIfFocused(app, "settings-tab", when: { settings.exists && settings.hasFocus }) else { return }
         pause(3)
         press(.down)
         pause(1.5)
         shot("settings-root")
         tree(app, "settings-root-tree")
         press(.down, times: 3, gap: 0.8)
+        // ui-legs: the root does not always open on its first row (first full run: Down x3 read
+        // "Detail Page"), so step to Home Screen one row at a time, reading focus after each press.
+        for step in 0..<10 where !rootRowFocused(app, "homeScreen") {
+            remote.press(step < 3 ? .up : .down)
+            pause(0.7)
+        }
         shot("settings-root-homescreen-focused")
-        remote.press(.select)
+        guard selectIfFocused(app, "home-screen-row", when: { rootRowFocused(app, "homeScreen") }) else { return }
         pause(2.5)
         shot("settings-pane-homescreen")
         press(.down, times: 2, gap: 0.8)
@@ -135,23 +196,25 @@ final class RevampEvidenceTests: XCTestCase {
         shot("settings-after-pop")
     }
 
-    private func openSettings(_ app: XCUIApplication) {
+    @discardableResult
+    private func openSettings(_ app: XCUIApplication) -> Bool {
         let settings = app.buttons["Settings"]
         press(.up, times: 6, gap: 0.4)
         for _ in 0..<8 where !(settings.exists && settings.hasFocus) {
             remote.press(.right)
             pause(0.5)
         }
-        remote.press(.select)
+        guard selectIfFocused(app, "settings-tab", when: { settings.exists && settings.hasFocus }) else { return false }
         pause(3)
         press(.down)
         pause(1.5)
+        return true
     }
 
     func testSettingsEveryPane() {
         let app = launch([])
         pause(8)
-        openSettings(app)
+        guard openSettings(app) else { return }
         // Anchor on the first category, then walk the fixed root order.
         // Up×12 parks focus on the tab bar; one Down lands on the first category.
         press(.up, times: 12, gap: 0.3)
@@ -160,8 +223,19 @@ final class RevampEvidenceTests: XCTestCase {
         shot("settings-root-top")
         let names = ["account", "services", "appearance", "homescreen", "detailpage",
                      "player", "sources", "subtitles", "about", "developer"]
+        // ui-legs (2026-10-22): each Select goes only to the root row it names (read by its
+        // `settings_category_<raw>` identifier), and the Account & Profiles pane is not opened on
+        // the signed-in fixture (its rows include Sign Out and Switch Profile): stepped past.
+        let raws = ["accountProfiles", "services", "appearance", "homeScreen", "detailPage",
+                    "player", "sources", "subtitlesAudio", "about", "developer"]
         for (index, name) in names.enumerated() {
-            remote.press(.select)
+            if raws[index] == "accountProfiles" {
+                shot("pane-\(index)-\(name)-not-opened")
+                press(.down)
+                pause(0.8)
+                continue
+            }
+            guard selectIfFocused(app, "root-row-\(raws[index])", when: { rootRowFocused(app, raws[index]) }) else { return }
             pause(2.5)
             shot("pane-\(index)-\(name)-top")
             press(.down, times: 2, gap: 0.8)
@@ -176,7 +250,10 @@ final class RevampEvidenceTests: XCTestCase {
     }
 
     func testDetailHeroMotion() {
-        let app = launch(["-debug.openDeepLink", "nuviotv://title?id=tt15239678&type=movie&name=Dune"])
+        // ui-legs (2026-10-22): trailer auto-play off (device-local, never synced): in the first full
+        // run the Dune trailer had gone full screen by the teaser step (nothing reported focus).
+        let app = launch(["-debug.openDeepLink", "nuviotv://title?id=tt15239678&type=movie&name=Dune",
+                          "-detail_trailer_autoplay", "NO"])
         pause(14)
         shot("motion-landing")
         press(.down)
@@ -188,11 +265,19 @@ final class RevampEvidenceTests: XCTestCase {
         press(.up)
         pause(1.5)
         shot("motion-teaser-focused")
-        remote.press(.select)
-        pause(2.5)
-        shot("motion-synopsis-sheet")
-        remote.press(.menu)
-        pause(2)
+        // ui-legs: the sheet step needs a truncated synopsis (the teaser BUTTON) holding focus. This
+        // fixture's tt15239678 (Dune: Part Two) synopsis fits four lines with or without TMDB, Up
+        // stays on "Mark Watched" (Play is "Playback unavailable"), and the blind Select here would
+        // have marked the title watched on the account: noted and skipped instead.
+        if app.buttons["detail_synopsis_teaser"].exists {
+            guard selectIfFocused(app, "motion-teaser", when: { focusedIdentifier(app, "detail_synopsis_teaser") }) else { return }
+            pause(2.5)
+            shot("motion-synopsis-sheet")
+            remote.press(.menu)
+            pause(2)
+        } else {
+            add(XCTAttachment(string: "NOTE: no teaser button (the synopsis fits four lines) — the sheet step was skipped"))
+        }
         press(.down, times: 14, gap: 1.0)
         pause(2)
         shot("motion-bottom-about")

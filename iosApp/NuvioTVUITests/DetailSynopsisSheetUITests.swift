@@ -24,12 +24,19 @@ final class DetailSynopsisSheetUITests: XCTestCase {
 
     func testSheetDrawsTheBackdropNotAMaterial() throws {
         let app = XCUIApplication()
-        app.launchArguments += ["-debug.openDeepLink", "nuviotv://title?id=tt0903747&type=series&name=Breaking%20Bad",
-                                "-detail_layout", "cinematic"]
+        // ui-legs (2026-10-22): the fixture's Breaking Bad synopsis fits four lines (debug_detail_hero
+        // trunc=0: Cinemeta's two lines with TMDB off, TMDB's exactly four with it on), so it has no
+        // teaser BUTTON and no sheet. Dune (2021) with TMDB on (DEBUG override, in memory, never
+        // synced) carries a longer overview. `-detail_trailer_autoplay NO` (device-local, never
+        // synced): Detail auto-plays its trailer full screen ~4 s after it resolves otherwise.
+        app.launchArguments += ["-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+                                "-detail_layout", "cinematic", "-detail_trailer_autoplay", "NO",
+                                "-debug.tmdbEnabledOverride", "YES"]
         app.launch()
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         if chris.waitForExistence(timeout: 90) {
-            remote.press(.left); pause(0.5); remote.press(.left); pause(0.5); remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         // Review r2 P3-4: the teaser id sits on both the truncated BUTTON and the plain text; only
         // the button proves the synopsis is truncated (Select on plain text would land on Play).
@@ -38,10 +45,17 @@ final class DetailSynopsisSheetUITests: XCTestCase {
         // fixed four Ups from the hero; the assertions below are on existence, so a wrong landing
         // (Select on Play, which opens the player instead of the sheet) FAILS instead of skipping.
         // Breaking Bad's synopsis is long enough to be truncated, so the teaser must exist.
-        XCTAssertTrue(teaser.waitForExistence(timeout: 30), "no synopsis teaser on the Breaking Bad fixture")
+        XCTAssertTrue(teaser.waitForExistence(timeout: 30), "no synopsis teaser on the Dune (2021) fixture")
         for _ in 0..<4 {
             remote.press(.up)
             pause(0.8)
+        }
+        // ui-legs (2026-10-22): Select only once the teaser BUTTON reads focused (FA87's tvOS 26.5
+        // reports focus); a Select on Play would open the player instead of the sheet.
+        guard teaser.hasFocus else {
+            shot("bug193-teaser-not-focused")
+            XCTFail("the synopsis teaser never read focused after four Ups — not pressing Select")
+            return
         }
         remote.press(.select)
         let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]

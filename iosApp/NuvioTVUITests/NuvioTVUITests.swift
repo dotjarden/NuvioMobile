@@ -175,6 +175,103 @@ final class NuvioTVUITests: XCTestCase {
         }
     }
 
+    // MARK: - Verified presses (ui-legs, 2026-10-22)
+    //
+    // Every Select / Play-Pause in this class follows a focus read of the element it is meant for,
+    // in the same route, right before the press (the blind-route audit: a blind Select on this
+    // fixture once created real profiles). These press only when `isTarget()` holds on that read;
+    // otherwise they attach a screenshot and the focused labels and do NOT press. The throwing form
+    // fails the leg (a thrown error), or skips it when nothing on screen reports focus at all (the
+    // runtime cannot verify); the Bool form records a failure and leaves the rest to the caller.
+
+    private struct UnverifiedFocus: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    private func buttonName(_ button: XCUIRemote.Button) -> String {
+        button == .playPause ? "Play/Pause" : (button == .select ? "Select" : "the button")
+    }
+
+    /// Labels (or `<identifier>`) of every element reporting focus, from one snapshot.
+    private func focusedLabelList(_ app: XCUIApplication) -> [String] {
+        focusedNodes(app).map { $0.label.isEmpty ? "<\($0.identifier)>" : $0.label }
+    }
+
+    private func pressVerified(_ app: XCUIApplication, _ what: String, button: XCUIRemote.Button = .select,
+                               holdFor: TimeInterval? = nil, when isTarget: () -> Bool) throws {
+        if isTarget() {
+            if let holdFor { remote.press(button, forDuration: holdFor) } else { remote.press(button) }
+            return
+        }
+        let focused = focusedLabelList(app)
+        shot(app, "unverified_\(what)")
+        if focused.isEmpty {
+            throw XCTSkip("\(what): no element reports focus on this runtime — not pressing \(buttonName(button)) blind")
+        }
+        throw UnverifiedFocus(description: "\(what): focus is not on the intended element (focused: \(focused)) — not pressing \(buttonName(button))")
+    }
+
+    @discardableResult
+    private func pressIfVerified(_ app: XCUIApplication, _ what: String, button: XCUIRemote.Button = .select,
+                                 when isTarget: () -> Bool) -> Bool {
+        if isTarget() {
+            remote.press(button)
+            return true
+        }
+        shot(app, "unverified_\(what)")
+        XCTFail("\(what): focus is not on the intended element (focused: \(focusedLabelList(app))) — not pressing \(buttonName(button))")
+        return false
+    }
+
+    /// The `settings_category_<raw>` of the focused Settings ROOT row, language-independent: the
+    /// identifier on the deepest focused element or inside its subtree (a List row's focus sits on
+    /// its Cell, which carries the localized label but not the identifier — first full run, test05).
+    private func focusedRootCategoryRaw(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var focused: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused.append(node) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        func search(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier.hasPrefix("settings_category_") { return String(node.identifier.dropFirst("settings_category_".count)) }
+            for child in node.children { if let hit = search(child) { return hit } }
+            return nil
+        }
+        return focused.last.flatMap(search)
+    }
+
+    /// The deepest focused element's label when focus sits on a content card in a Home row: not a
+    /// tab-bar button and not the hero's CTA ("Go to …", "Open Folder"). nil otherwise.
+    private func focusedHomeCardLabel(_ app: XCUIApplication) -> String? {
+        let tabs: Set<String> = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        guard let label = focusedNodes(app).map(\.label).last(where: { !$0.isEmpty }) else { return nil }
+        if tabs.contains(label) || label.hasPrefix("Go to") || label.hasPrefix("Open Folder") { return nil }
+        return label
+    }
+
+    /// The deepest focused element's label when it sits inside a Search RESULT container
+    /// (`search.topResult` or a `search.group.*` row), from one snapshot; nil elsewhere (keyboard,
+    /// suggestion chips, People).
+    private func focusedSearchResultLabel(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var hits: [(container: String?, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot, _ container: String?) {
+            let id = node.identifier
+            let isContainer = id == "search.topResult" || id == "search.people" || id == "search.suggestions"
+                || id.hasPrefix("search.group.")
+            let here = isContainer ? id : container
+            if node.hasFocus { hits.append((here, node.label)) }
+            node.children.forEach { walk($0, here) }
+        }
+        walk(root, nil)
+        guard let hit = hits.last(where: { !$0.label.isEmpty }) ?? hits.last,
+              let container = hit.container,
+              container == "search.topResult" || container.hasPrefix("search.group.") else { return nil }
+        return hit.label
+    }
+
     /// Launch and pass the profile gate (profile "Chris", no PIN, first in the row and focused by
     /// default). Lands on Home.
     ///
@@ -227,8 +324,8 @@ final class NuvioTVUITests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -246,8 +343,7 @@ final class NuvioTVUITests: XCTestCase {
         if railMode(app) { return false }
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         if chris.waitForExistence(timeout: 8) {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            guard DetailEntryRoute.selectChrisTile(self, app, timeout: 5) == true else { return false }
             pause(10)
             return !stageHomeMounted(app)
         }
@@ -272,6 +368,8 @@ final class NuvioTVUITests: XCTestCase {
         if !moveFocus(.left, until: homeTab, max: 8) {
             _ = moveFocus(.right, until: homeTab, max: 8)
         }
+        // ui-legs: never Select an unverified tab — relaunch instead.
+        guard homeTab.exists, homeTab.hasFocus else { return false }
         remote.press(.select)
         pause(3)
         // A Stage Home is not what an argument-less leg in this class was written against.
@@ -446,7 +544,7 @@ final class NuvioTVUITests: XCTestCase {
         if !moveFocus(.right, until: tab, max: 6) {
             _ = moveFocus(.left, until: tab, max: 8)
         }
-        remote.press(.select)
+        guard pressIfVerified(app, "openTab_\(title)", when: { tab.exists && tab.hasFocus }) else { return }
         pause(2)
         press(.down, times: 1)
     }
@@ -570,7 +668,9 @@ final class NuvioTVUITests: XCTestCase {
             return false
         }
         focusSettingsRootRow(app, named: title)
-        remote.press(.select)
+        guard pressIfVerified(app, "openSettingsCategory_\(entry.raw)", when: { focusedSettingsRootTitle(app) == title }) else {
+            return false
+        }
         pause(1.5)
         return app.descendants(matching: .any)["settings_pane_\(entry.raw)"].waitForExistence(timeout: 4)
     }
@@ -794,7 +894,14 @@ final class NuvioTVUITests: XCTestCase {
 
         // Mute toggle while playing: the glyph in the tile's bottom-trailing corner must flip
         // between speaker.slash.fill and speaker.wave.2.fill. (Audio itself is device-only.)
-        remote.press(.playPause)
+        // ui-legs: Play/Pause and the closing Select go only to the Home card this walk dwelt on,
+        // read here (a tab, the hero CTA or an unreadable focus gets no press).
+        // The card's composed label carries a live trailer readout ("debug_trailerTile … stage=…,
+        // <title>"), so the card is matched by its title, the part after the last ", ".
+        func cardTitle(_ label: String?) -> String? { label?.components(separatedBy: ", ").last }
+        let dwellCard = cardTitle(focusedHomeCardLabel(app))
+        NSLog("[test01] dwell card: \(dwellCard ?? "none")")
+        try pressVerified(app, "01_mute_on_card", button: .playPause, when: { dwellCard != nil })
         pause(2)
         shot(app, "01i_after_playpause")
 
@@ -818,7 +925,7 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "01n_refocus_cache_hit")
 
         // Select → Detail: inline player must tear down, Detail loads (⇒ focus was never lost).
-        remote.press(.select)
+        try pressVerified(app, "01_card_to_detail", when: { dwellCard != nil && cardTitle(focusedHomeCardLabel(app)) == dwellCard })
         pause(4)
         shot(app, "01o_detail_from_card")
         XCTAssertTrue(app.state == .runningForeground, "app should survive card → detail push")
@@ -828,14 +935,11 @@ final class NuvioTVUITests: XCTestCase {
 
     func test02DetailAutoPlayAndPoster() throws {
         let app = launchToHome()
-        // Land on a *movies catalog* row (portrait cards → NavigationLink to DetailView). The
-        // Continue Watching and Streaming rows above it open the stream picker / entity browse
-        // instead, so going only 3 rows deep verifies the wrong screen.
-        press(.down, times: 4)
-        pause(0.5)
+        // ui-legs (2026-10-22): the blind "Down ×4, Select" into a catalog row's Detail now goes
+        // through the shared, focus-verified Search route (`DetailEntryRoute`); on the fixture's
+        // current Home that walk could land on a Continue Watching card (the player) or a folder.
         shot(app, "02x_row_before_select")
-        remote.press(.select)
-        pause(2.5)
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         shot(app, "02a_detail_early_poster_layer") // before trailer resolves: poster right
         pause(3)
         shot(app, "02b_detail_trailer_bg")         // bg trailer active ⇒ poster hidden
@@ -868,11 +972,9 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         shot(app, "03c_scrolled_back_bar_visible")
 
-        // Detail page is immersive: bar hidden while pushed, back on pop.
-        press(.down, times: 3)
-        pause(0.5)
-        remote.press(.select)
-        pause(3)
+        // Detail page is immersive: bar hidden while pushed, back on pop. ui-legs: into Detail by
+        // the verified Search route, not a blind "Down ×3, Select".
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         shot(app, "03d_detail_bar_hidden")
         remote.press(.menu)
         pause(2)
@@ -977,7 +1079,7 @@ final class NuvioTVUITests: XCTestCase {
         press(.up, times: 1)
         pause(0.8)
         XCTAssertEqual(focusedSettingsRootTitle(app), "Home Screen", "Up from Detail Page must land on Home Screen")
-        remote.press(.select)
+        try pressVerified(app, "04_home_screen_row", when: { focusedSettingsRootTitle(app) == "Home Screen" })
         pause(1.5)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4),
                       "Select on Home Screen must push its pane")
@@ -1016,7 +1118,12 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "05a_settings_de")
         // Category names are localized; walk a few and screenshot whatever renders.
         press(.down, times: 2)
-        remote.press(.select)
+        // ui-legs: Select only on a Settings root category row, never Account & Profiles (the
+        // row identifiers are language-independent).
+        try pressVerified(app, "05_settings_category_de", when: {
+            guard let raw = focusedRootCategoryRaw(app) else { return false }
+            return raw != "accountProfiles"
+        })
         pause(1.5)
         shot(app, "05b_settings_de_category")
         press(.down, times: 3)
@@ -1145,11 +1252,13 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "09b_corners_after_square_defocused")
 
-        let depthToggle = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Card Depth'")).firstMatch
-        _ = moveFocus(.down, until: depthToggle, max: 24)
+        // ui-legs: walked by tree index with the landing verified (the old Down walk keyed on a
+        // `Card Depth` match that never reported focus and ran on to "Import Badge Pack" — first
+        // full run); Select only on the Card Depth row.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Card Depth", sidebarMaxX: 0, category: "Appearance")
         pause(1)
         shot(app, "09c_depth_before_press")
-        remote.press(.select)
+        try pressVerified(app, "09_card_depth_toggle", when: { focusedButton(app)?.label.hasPrefix("Card Depth") == true })
         pause(4)
         shot(app, "09d_depth_4s_after_press")
 
@@ -1234,7 +1343,7 @@ final class NuvioTVUITests: XCTestCase {
         // row so the switch renders on the white platter. Auto-Play Trailer moved to the Detail
         // Page pane in the revamp; Accent Focus Ring is the Appearance toggle directly below the
         // swatches.
-        remote.press(.select)
+        try pressVerified(app, "13_appearance_row", when: { focusedSettingsRootTitle(app) == "Appearance" })
         pause(1.5)
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4), "Select on Appearance must re-push the pane")
         press(.down, times: 1)
@@ -1446,11 +1555,8 @@ final class NuvioTVUITests: XCTestCase {
     /// this measures whether focus-driven scrolling feeds `onScrollGeometryChange` at all.
     func test17DetailScrollDarkening() throws {
         let app = launchToHome()
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(2)
-        remote.press(.select)
-        pause(8)
+        // ui-legs: the blind hero-CTA Select (Up ×6, Down ×1) is the verified Search route now.
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         ux6Probe(app, "17a_detail_opened")
         shot(app, "17a_detail_top")
         // FEAT-35 (Cinematic, the default layout): the synopsis is the hero's four-line teaser
@@ -1770,10 +1876,8 @@ final class NuvioTVUITests: XCTestCase {
         // cards → NavigationLink to DetailView), not the Continue Watching / Streaming rows
         // above it which open the stream picker / entity browse instead.
         let app = launchToHome()
-        press(.down, times: 4)
-        pause(0.5)
-        remote.press(.select)
-        pause(2.5)
+        // ui-legs: into Detail by the verified Search route, not a blind "Down ×4, Select".
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
 
         // Walk focus down toward the Trailers & Extras shelf (test17's detail-scroll walk).
         press(.down, times: 10, gap: 0.5)
@@ -1932,7 +2036,10 @@ final class NuvioTVUITests: XCTestCase {
                 return
             }
             press(.right, times: 3, gap: 0.6) // land on the row-end See All card
-            remote.press(.select)
+            walkFocusOntoSeeAll(app) // ui-legs: Select only once See All itself reads focused
+            try pressVerified(app, "23_see_all_\(iteration)", when: {
+                focusedButton(app)?.label.localizedCaseInsensitiveContains("See All") == true
+            })
 
             if iteration == 1 {
                 // Back almost immediately — the race window the `stopped` guard closes (device
@@ -1996,7 +2103,9 @@ final class NuvioTVUITests: XCTestCase {
     private func selectIntoSeeAllGrid(_ app: XCUIApplication, shotName: String) -> Bool {
         for attempt in 0..<6 {
             walkFocusOntoSeeAll(app)
-            remote.press(.select)
+            guard pressIfVerified(app, "\(shotName)_see_all", when: {
+                focusedButton(app)?.label.localizedCaseInsensitiveContains("See All") == true
+            }) else { return false }
             pause(2.5)
             if !app.staticTexts["debug_ux6"].exists {
                 shot(app, shotName)
@@ -2773,25 +2882,16 @@ final class NuvioTVUITests: XCTestCase {
     /// Cinematic leg has nothing to check on posters; the poster skip is thrown last.
     func test33SeasonPosterRow() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        press(.down, times: 3)          // hero → CW → Streaming → first catalog row
         let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
         let anyChip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Season '"))
-        // Rows are a mix of movie and series catalogs on this account; walk down until a title
-        // with a season selector opens (≤ 5 rows), backing out of anything else.
+        // ui-legs (2026-10-22): the blind per-row "Left ×6, Select" hunt for a multi-season series
+        // is the shared, focus-verified Search route to one (the fixture's Severance) now.
         var found = false
-        for row in 0..<5 {
-            press(.left, times: 6, gap: 0.3)
-            pause(1.0)
-            remote.press(.select)
-            pause(7)
-            shot(app, "33a_row\(row)_detail_opened")
+        if DetailEntryRoute(test: self, app: app).openDetail(targets: [.init(query: "Severance", type: "series")]) {
+            shot(app, "33a_row0_detail_opened")
             press(.down, times: 3, gap: 1.0)
             pause(1.5)
-            if anyPoster.count > 0 || anyChip.count > 0 { found = true; break }
-            // Not a series: back to Home (Menu pops the pushed Detail) and try the next row.
-            remote.press(.menu)
-            pause(2)
-            press(.down, times: 1)
+            found = anyPoster.count > 0 || anyChip.count > 0
         }
         guard found else { throw XCTSkip("no multi-season series found in the first five rows — nothing to verify") }
         shot(app, "33b_detail_episodes")
@@ -2834,11 +2934,8 @@ final class NuvioTVUITests: XCTestCase {
         }
         let classic = launchToHome(extraArguments: ["-detail_layout", "classic", "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES"],
                                    forceFreshLaunch: true)
-        press(.down, times: 3)          // hero → CW → Streaming → first catalog row
-        press(.left, times: 6, gap: 0.3)
-        pause(1.0)
-        remote.press(.select)
-        pause(7)
+        // ui-legs: into a Classic Detail by the verified Search route (any title scrolls).
+        guard DetailEntryRoute(test: self, app: classic).openDetail() else { return }
         shot(classic, "33d_classic_detail_opened")
         guard let classicBefore = glassProbe(classic) else {
             throw XCTSkip("the Classic walk did not open a Detail page (debug_ux6 absent) — nothing to measure")
@@ -3316,7 +3413,16 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         if before != on {
-            remote.press(.select)
+            // ui-legs: the walk's post-condition is checked here, not assumed: Select only on the
+            // row. The walk can finish one row past the target onto a picker row whose focused Cell
+            // has no label (first full run: on "Edge" under Card Depth), so nudge toward the row by
+            // frame, one press at a time, reading focus after each.
+            for _ in 0..<4 {
+                guard let direction = settingsRowNudge(app, labelPrefix) else { break }
+                remote.press(direction)
+                pause(0.7)
+            }
+            try pressVerified(app, "toggle_\(labelPrefix)", when: { settingsRowHasFocus(app, labelPrefix) })
             pause(1.5)
         }
         guard let after = readState() else {
@@ -3324,6 +3430,43 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         XCTAssertEqual(after, on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF") (was \(before)) — candidates: \(describeCandidates())")
+    }
+
+    /// The deepest focused element and the control of the Settings row whose label starts with
+    /// `labelPrefix` (a Cell, Button, Switch or Toggle; section headers are text and never match),
+    /// from one snapshot.
+    private func settingsRowFrames(_ app: XCUIApplication, _ labelPrefix: String) -> (focused: XCUIElementSnapshot?, row: XCUIElementSnapshot?) {
+        guard let root = try? app.snapshot() else { return (nil, nil) }
+        var focused: XCUIElementSnapshot?
+        var row: XCUIElementSnapshot?
+        let rowTypes: [XCUIElement.ElementType] = [.cell, .button, .switch, .toggle]
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused = node }
+            if row == nil, rowTypes.contains(node.elementType), node.label.hasPrefix(labelPrefix), node.frame.height > 0 { row = node }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return (focused, row)
+    }
+
+    /// ui-legs: whether the Settings row `labelPrefix` holds focus — the deepest focused element's
+    /// label starts with it, or that element sits on the row (same vertical centre ±14 pt; a row's
+    /// focus can sit on a Cell with no label).
+    private func settingsRowHasFocus(_ app: XCUIApplication, _ labelPrefix: String) -> Bool {
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused else { return false }
+        if focused.label.hasPrefix(labelPrefix) { return true }
+        guard let row = frames.row else { return false }
+        return abs(focused.frame.midY - row.frame.midY) < 14
+    }
+
+    /// ui-legs: the D-pad press that moves focus toward the Settings row `labelPrefix` (Up when focus
+    /// sits below it), or nil when it already holds focus or either frame is unreadable.
+    private func settingsRowNudge(_ app: XCUIApplication, _ labelPrefix: String) -> XCUIRemote.Button? {
+        if settingsRowHasFocus(app, labelPrefix) { return nil }
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused, let row = frames.row else { return nil }
+        return focused.frame.midY > row.frame.midY ? .up : .down
     }
 
     // MARK: - Home "Upcoming" row (next airing episodes of followed shows)
@@ -3380,8 +3523,8 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(badgeCard.exists, "no Upcoming card with an S00E00 code + air-date pill in the tree")
 
         // Select → the show's Detail page (a pushed screen: the root tab bar leaves the tree's
-        // visible band). Menu pops back.
-        remote.press(.select)
+        // visible band). Menu pops back. ui-legs: only while an Upcoming card reads focused.
+        try pressVerified(app, "34_upcoming_card", when: { badgeCards.allElementsBoundByIndex.contains { $0.hasFocus } })
         pause(4)
         shot(app, "34b_detail_from_upcoming")
         let homeTab = app.buttons["Home"]
@@ -3401,6 +3544,11 @@ final class NuvioTVUITests: XCTestCase {
     /// and wipes local data on the signed-in sim; the destructive half lives in
     /// `ScratchServerSwitchTests` (scratch-device only).
     func test35ServerDiscoveryReview() throws {
+        // ui-legs (2026-10-22): this leg walks and selects rows of the Account & Profiles pane on
+        // the signed-in fixture, which a blind run must never touch. Opt-in only.
+        guard ProcessInfo.processInfo.environment["NUVIO_ACCOUNT_ROWS"] == "1" else {
+            throw XCTSkip("walks Account & Profiles rows — set TEST_RUNNER_NUVIO_ACCOUNT_ROWS=1 to run it deliberately")
+        }
         let stub = DiscoveryStubServer(document: .init(emailPasswordAuth: true, tvLogin: false))
         try stub.start()
         defer { stub.stop() }
@@ -3425,7 +3573,7 @@ final class NuvioTVUITests: XCTestCase {
         try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Profiles")
         let connectRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Connect to a Self-Hosted Server'")).firstMatch
         guard connectRow.exists else { XCTFail("Server section row missing from Account & Profiles"); return }
-        remote.press(.select)
+        try pressVerified(app, "35_connect_row", when: { focusedButton(app)?.label.hasPrefix("Connect to a Self-Hosted Server") == true })
         pause(1.5)
 
         let urlField = app.textFields["server.url"]
@@ -3439,7 +3587,7 @@ final class NuvioTVUITests: XCTestCase {
         // 1) Negative path: the official host is refused with a typed error.
         func enterUrl(_ text: String) -> Bool {
             if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
-            remote.press(.select)
+            guard pressIfVerified(app, "35_url_field", when: { urlField.hasFocus }) else { return false }
             pause(2) // full-screen keyboard
             // Clear anything pre-filled (a custom server's discovery base is pre-filled when
             // one is active; on the official sim it is empty) — select-all isn't available on
@@ -3460,7 +3608,7 @@ final class NuvioTVUITests: XCTestCase {
         // Server is the leftmost control of the row, Left past it is a no-op).
         func focusCheckServer() { press(.down, times: 1); press(.left, times: 2, gap: 0.5) }
         focusCheckServer()
-        remote.press(.select)
+        try pressVerified(app, "35_check_server", when: { hasFocusByFrame(app, check) })
         pause(2)
         let officialError = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "official server")).firstMatch
         XCTAssertTrue(officialError.waitForExistence(timeout: 8), "typing the official host must surface the 'official server' discovery error")
@@ -3470,7 +3618,7 @@ final class NuvioTVUITests: XCTestCase {
         // Menu-commit keeps the text — so re-open the keyboard and replace it: tvOS keyboards
         // have a clear ("Clear") key; fall back to appending if clearing isn't reachable.
         if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
-        remote.press(.select)
+        try pressVerified(app, "35_url_field_again", when: { urlField.hasFocus })
         pause(2)
         let clearKey = app.keys["Clear"]
         if clearKey.waitForExistence(timeout: 2) {
@@ -3493,7 +3641,7 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         focusCheckServer()
-        remote.press(.select)
+        try pressVerified(app, "35_check_server_stub", when: { hasFocusByFrame(app, check) })
 
         let reviewTitle = app.staticTexts["server.review"]
         guard reviewTitle.waitForExistence(timeout: 20) else {
@@ -3515,7 +3663,7 @@ final class NuvioTVUITests: XCTestCase {
             // Back is the rightmost control of the review's button row.
             press(.down, times: 8, gap: 0.4)
             press(.right, times: 2, gap: 0.5)
-            remote.press(.select)
+            try pressVerified(app, "35_back", when: { hasFocusByFrame(app, back) })
             pause(1.5)
             XCTAssertTrue(urlField.waitForExistence(timeout: 5), "Back must return to the URL entry step")
         }
@@ -3967,7 +4115,7 @@ final class NuvioTVUITests: XCTestCase {
         }
         let settingsTab = app.buttons["Settings"]
         if !moveFocus(.right, until: settingsTab, max: 6) { _ = moveFocus(.left, until: settingsTab, max: 8) }
-        remote.press(.select)
+        try pressVerified(app, "40_settings_tab", when: { settingsTab.exists && settingsTab.hasFocus })
         pause(2)
         if focusedSettingsRootTitle(app) == nil, tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) {
             press(.down, times: 1)
@@ -3994,7 +4142,7 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(focusedSettingsRootTitle(app), "About", "Up from Developer must land on About")
 
         // Select pushes the About pane.
-        remote.press(.select)
+        try pressVerified(app, "40_about_row", when: { focusedSettingsRootTitle(app) == "About" })
         pause(1.5)
         shot(app, "40c_about_pane")
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_about"].waitForExistence(timeout: 4),
@@ -4206,13 +4354,13 @@ final class NuvioTVUITests: XCTestCase {
         // via the Add Profile cover (name field on screen), an existing guest instead shows a
         // normal picker tile.
         if !continueAsGuest.hasFocus { _ = moveFocus(.up, until: continueAsGuest, max: 4) }
-        remote.press(.select)
+        try pressVerified(app, "42_continue_as_guest", when: { continueAsGuest.hasFocus })
         pause(3)
 
         if app.staticTexts["Add Profile"].exists, app.textFields.firstMatch.exists {
             let name = app.textFields.firstMatch
             if !name.hasFocus { _ = moveFocus(.up, until: name, max: 4) }
-            remote.press(.select)
+            try pressVerified(app, "42_name_field", when: { name.hasFocus })
             pause(2)
             app.typeText("Guest")
             pause(0.8)
@@ -4221,7 +4369,7 @@ final class NuvioTVUITests: XCTestCase {
             let save = app.buttons["Save"]
             if save.waitForExistence(timeout: 3) {
                 if !save.hasFocus { _ = moveFocus(.down, until: save, max: 6) }
-                remote.press(.select)
+                try pressVerified(app, "42_save", when: { save.hasFocus })
                 pause(6)
             }
             // ScratchServerSwitchTests' documented finding: the picker stops taking arrow presses
@@ -4235,7 +4383,8 @@ final class NuvioTVUITests: XCTestCase {
         }
 
         if !app.buttons["Home"].exists {
-            remote.press(.select) // whichever profile tile the fresh launch defaulted focus to
+            // ui-legs: only the guest profile this leg made ("Guest"), read focused; never another tile.
+            try pressVerified(app, "42_guest_tile", when: { focusedLabelList(app).contains { $0.contains("Guest") } })
             pause(4)
         }
         guard app.buttons["Home"].waitForExistence(timeout: 30) else {
@@ -4270,8 +4419,8 @@ final class NuvioTVUITests: XCTestCase {
         )
 
         // Open the seeded folder (its tile should already hold focus — CollectionRowView's
-        // `focusSection` contains only that one tile in this seed).
-        remote.press(.select)
+        // `focusSection` contains only that one tile in this seed). ui-legs: verified, not assumed.
+        try pressVerified(app, "42_seeded_folder_tile", when: { focusedLabelList(app).contains { $0.contains(folderTitle) } })
         pause(2.5)
         shot(app, "42c_folder_page")
 
@@ -4555,7 +4704,7 @@ final class NuvioTVUITests: XCTestCase {
         // The push lands on the swatch row (the pane's first focusable row).
         let emerald = app.buttons["Emerald"]
         XCTAssertTrue(moveFocus(.right, until: emerald, max: 8), "must be able to reach the Emerald swatch")
-        remote.press(.select)
+        try pressVerified(app, "43_emerald", when: { emerald.exists && emerald.hasFocus })
         pause(3) // the .id() remount
 
         // Defect 1: the swatch row must still be on screen. Pre-fix this was the Account &
@@ -4597,7 +4746,8 @@ final class NuvioTVUITests: XCTestCase {
             moveFocus(.left, until: relaunched.buttons["Crimson"], max: 8),
             "must be able to restore the fixture's CRIMSON theme"
         )
-        remote.press(.select)
+        let crimson = relaunched.buttons["Crimson"]
+        try pressVerified(relaunched, "43_crimson_restore", when: { crimson.exists && crimson.hasFocus })
         pause(3)
         shot(relaunched, "43e_restored_crimson")
 
@@ -4670,7 +4820,8 @@ final class NuvioTVUITests: XCTestCase {
 
         // Step 3: expand. Focus is already parked on the Catalogs row (walkToRowByTreeIndex's
         // postcondition) — same "press Select right after the walk" idiom `ensureToggleRow` uses.
-        remote.press(.select)
+        // ui-legs: the post-condition is read here: Select only on the Catalogs header.
+        try pressVerified(app, "45_catalogs_header", when: { focusedButton(app)?.label.hasPrefix("Catalogs") == true })
         pause(1.5)
         shot(app, "45b_catalogs_expanded")
 
@@ -4715,16 +4866,40 @@ final class NuvioTVUITests: XCTestCase {
         // press whenever the inline path didn't get to it; focus hasn't moved on any of those
         // paths, so a second Select at the same position flips the same row back.
         var needsRestore = false
+        // ui-legs: the catalog row (value Enabled/Disabled) holding focus, by the deepest focused
+        // element's subtree in one snapshot; the toggle and both restore presses go only to the
+        // row read here.
+        func focusedCatalogRow() -> String? {
+            guard let root = try? app.snapshot() else { return nil }
+            var focused: [XCUIElementSnapshot] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.hasFocus { focused.append(node) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            func search(_ node: XCUIElementSnapshot) -> String? {
+                if let value = node.value as? String, value == "Enabled" || value == "Disabled" { return node.label }
+                for child in node.children { if let hit = search(child) { return hit } }
+                return nil
+            }
+            return focused.last.flatMap(search)
+        }
+        var toggledRow: String?
         addTeardownBlock { [self] in
             if needsRestore {
-                remote.press(.select)
-                pause(1.5)
+                if let row = toggledRow, focusedCatalogRow() == row {
+                    remote.press(.select)
+                    pause(1.5)
+                } else {
+                    XCTFail("restore NOT pressed: focus is not on the toggled catalog row '\(toggledRow ?? "?")' (focused: \(focusedLabelList(app))) — the fixture's catalog may be left toggled")
+                }
             }
         }
 
         remote.press(.down)
         pause(1)
-        remote.press(.select)
+        toggledRow = focusedCatalogRow()
+        try pressVerified(app, "45_first_catalog_row", when: { toggledRow != nil })
         needsRestore = true
         pause(1.5)
         shot(app, "45c_after_toggle_press")
@@ -4750,7 +4925,7 @@ final class NuvioTVUITests: XCTestCase {
 
         // Step 5: restore. Select again at the same focus position flips the same catalog row
         // back, leaving the signed-in fixture unchanged.
-        remote.press(.select)
+        try pressVerified(app, "45_restore_catalog_row", when: { toggledRow != nil && focusedCatalogRow() == toggledRow })
         needsRestore = false
         pause(1.5)
         shot(app, "45d_restored")
@@ -6419,10 +6594,20 @@ final class NuvioTVUITests: XCTestCase {
                         "detail page should have closed after Menu before trying the next title (attempt \(attempt))"
                     )
                 }
-                press(.right, times: 1)
             }
-            remote.press(.select)
-            pause(8)
+            // ui-legs (2026-10-22): one title per attempt through the shared, focus-verified Search
+            // route instead of a blind Select on the next Home card (on the fixture's Home that
+            // could be a Continue Watching card, i.e. the player, or a folder).
+            let targets = DetailEntryRoute.defaultTargets
+                + [.init(query: "Breaking Bad", type: "series"), .init(query: "The 100", type: "series")]
+            guard attempt <= targets.count,
+                  DetailEntryRoute(test: self, app: app).openDetail(targets: [targets[attempt - 1]]) else {
+                previousAttemptOpenedPage = false
+                outcomes.append(.init(identifier: "attempt \(attempt)",
+                                      detail: "the verified Search route opened no Detail page"))
+                continue
+            }
+            pause(2)
             // Bumped from the old fixed 6s: a still-loading page (not just an absent one) is
             // exactly the failure mode this retry exists to tell apart from "no page opened".
             guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 15) else {
@@ -7355,16 +7540,10 @@ final class NuvioTVUITests: XCTestCase {
                              "-debug.trailerDiagnostics", "YES", "-debug.trailerProbe", "YES"],
             forceFreshLaunch: true
         )
-        // Detail-page entry via the hero CTA ("Go to Movie"/"Go to Show"): test22's focus
-        // normalization. The four-downs walk test21 uses lands on a collection folder page on the
-        // current fixture Home, not a detail page.
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(1.5)
-        let cta = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Go to'")).firstMatch
-        XCTAssertTrue(cta.waitForExistence(timeout: 8), "hero CTA not on screen; cannot reach a detail page")
-        remote.press(.select)
-        pause(2.5)
+        // ui-legs (2026-10-22): Detail-page entry by the shared, focus-verified Search route; the
+        // hero-CTA Select here was blind (the CTA's existence was checked, never its focus). No
+        // settle wait: the bridge must still read idle before the 4 s auto-play fires.
+        guard DetailEntryRoute(test: self, app: app).openDetail(settle: false) else { return }
         shot(app, "51a_detail")
 
         // Watch Trailer only renders once the hero trailer resolved, which is auto-play's
@@ -8942,6 +9121,13 @@ final class NuvioTVUITests: XCTestCase {
         for step in 0..<6 {
             if step > 0 { press(.down); pause(1.2) }
             shot(app, "71_step\(step)_before_hold")
+            // ui-legs: hold only on a focused Home card, read here; a step whose focus is on the
+            // hero CTA, a tab or nothing readable passes with no press.
+            guard let card = focusedHomeCardLabel(app) else {
+                NSLog("[HoldMenu] step \(step): focus not on a Home card (\(focusedLabelList(app))) — no hold")
+                continue
+            }
+            NSLog("[HoldMenu] step \(step): hold on '\(card)'")
             remote.press(.select, forDuration: 2.0)
             pause(1.5)
             shot(app, "71_step\(step)_after_hold")
@@ -8986,11 +9172,17 @@ final class NuvioTVUITests: XCTestCase {
     /// does not pick up progress. The mode is a launch-argument override, so there is no toggle to
     /// turn back off.
     func test72AutoPlayFirstPlayAndHoldPlay() throws {
+        // ui-legs (2026-10-22): `-stream_auto_play_mode_2` is a SYNCED key (PlayerSettingsStorage
+        // exports it from NSUserDefaults, argument domain included), so a settings push during the
+        // visit would carry it to the signed-in fixture's account. Opt-in only.
+        guard ProcessInfo.processInfo.environment["NUVIO_SYNCED_LAUNCH_ARGS"] == "1" else {
+            throw XCTSkip("launches with the synced key -stream_auto_play_mode_2 — set TEST_RUNNER_NUVIO_SYNCED_LAUNCH_ARGS=1 on a throwaway fixture")
+        }
         var app = try launchTheHundredOnPlay(shotPrefix: "72a")
         if app.buttons["Playback unavailable"].exists {
             throw XCTSkip("Play is disabled (no source can serve The 100 on this fixture)")
         }
-        remote.press(.select)
+        try pressVerified(app, "72a_play", when: { app.buttons["detail_action_play"].hasFocus })
         XCTAssertTrue(anyElement(containing: "Finding the best source", in: app).waitForExistence(timeout: 10),
                       "plain Select on Play with auto mode on did not show the \"Finding the best source…\" overlay")
         shot(app, "72a_overlay")
@@ -9020,7 +9212,7 @@ final class NuvioTVUITests: XCTestCase {
         if outcome == "player" { remote.press(.menu); pause(1.5) }
 
         app = try launchTheHundredOnPlay(shotPrefix: "72b")
-        remote.press(.select, forDuration: 2.0)
+        try pressVerified(app, "72b_hold_play", holdFor: 2.0, when: { app.buttons["detail_action_play"].hasFocus })
         pause(1.5)
         shot(app, "72b_after_hold")
         let chooseSource = anyElement(containing: "Choose Source", in: app)
@@ -9029,7 +9221,7 @@ final class NuvioTVUITests: XCTestCase {
             remote.press(.menu) // the hold fell through to a plain press: leave the picker before it plays
             return
         }
-        remote.press(.select)
+        try pressVerified(app, "72b_choose_source", when: { hasFocusByFrame(app, chooseSource) })
         var sawOverlay = false
         var listSeen = false
         var settledTicks = 0
@@ -9200,7 +9392,7 @@ final class NuvioTVUITests: XCTestCase {
         }
         shot(app, "78a_teaser_focused")
         XCTAssertTrue(teaserFocused(), "Up from the action row must focus the synopsis teaser — focused: \(focusedNodes(app).map { "\($0.identifier)|\($0.label)" })")
-        remote.press(.select)
+        try pressVerified(app, "78_teaser", when: teaserFocused)
         let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
         XCTAssertTrue(sheet.waitForExistence(timeout: 4), "Select on the teaser must open detail_synopsis_sheet")
         pause(1)
@@ -9319,7 +9511,7 @@ final class NuvioTVUITests: XCTestCase {
         focusSettingsRootRow(app, named: "Home Screen")
         _ = titleBecomes(["Home Screen"])
         let summary = explainerBody.exists ? explainerBody.label : ""
-        remote.press(.select)
+        try pressVerified(app, "82_home_screen_row", when: { focusedSettingsRootTitle(app) == "Home Screen" })
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4), "Home Screen pane did not push")
         // Home Stage & Strip (P2 §3.2, §4.4): the pane's first row is now the Home Layout picker
         // (the new Layout section), in both layouts. This run is Classic (`launchToHome`): Home
@@ -9329,8 +9521,12 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Home Layout row")
         XCTAssertNotEqual(rowBody, summary, "the explainer body still shows the Home Screen summary on a focused row")
         shot(app, "82b_home_layout")
+        // ui-legs (2026-10-22): Batch F put Collections Layout directly under Home Layout in both
+        // layouts (HomeScreenSettingsPane.layoutSection), one row above Upcoming Episodes.
         press(.down, times: 1)
-        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Home Layout must move the explainer to Upcoming Episodes (Ambient Background is Stage only)")
+        XCTAssertEqual(titleBecomes(["Collections Layout"]), "Collections Layout", "Classic: Down from Home Layout must move the explainer to Collections Layout (Ambient Background is Stage only)")
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collections Layout must move the explainer to Upcoming Episodes")
         shot(app, "82b2_home_upcoming")
         press(.down, times: 1)
         let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
@@ -9352,7 +9548,9 @@ final class NuvioTVUITests: XCTestCase {
         }
         XCTAssertEqual(stageTitleBecomes("Home Layout"), "Home Layout", "Stage: the pane's first row must be Home Layout")
         press(.down, times: 1)
-        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Home Layout must reach Ambient Background")
+        XCTAssertEqual(stageTitleBecomes("Collections Layout"), "Collections Layout", "Stage: Down from Home Layout must reach Collections Layout (Batch F)")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Collections Layout must reach Ambient Background")
         shot(stage, "82c2_stage_ambient")
 
         // Minimal style: no explainer column at the root.
@@ -9411,7 +9609,7 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(rootUp, "the Settings root did not appear after selecting rail_item_Settings — \(railState(app))")
         XCTAssertEqual(railToken(app, "tab"), "4", "the rail must report the Settings tab — \(railState(app))")
         focusSettingsRootRow(app, named: "Appearance")
-        remote.press(.select)
+        try pressVerified(app, "84_appearance_row", when: { focusedSettingsRootTitle(app) == "Appearance" })
         XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4),
                       "Settings › Appearance pane did not open in Rail mode")
         pause(1)
@@ -9472,7 +9670,7 @@ extension NuvioTVUITests {
         // Search & Discover (B3 d): the helper steps past the suggestion chips (selecting chip 0
         // would only record the query, never open a result).
         enterSearchResults(app)
-        remote.press(.select)
+        try pressVerified(app, "92_search_result", when: { focusedSearchResultLabel(app) != nil })
         pause(5)
         shot(app, "test92-detail")
         XCTAssertEqual(app.keyboards.count, 0, "no keyboard over Detail (the old .searchable ban's bug)")
@@ -9558,10 +9756,12 @@ extension NuvioTVUITests {
         let groups = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'search.group.'"))
         searchNote("94_groups", groups.allElementsBoundByIndex.map(\.identifier).joined(separator: ", "))
 
+        // ui-legs (2026-10-22): since FEAT-72 (Batch B wave 1) the Top result card carries title,
+        // year and type only ("Dune, Movie · 2021" on FA87) and the ROWS keep "Found in …"
+        // (SearchView: `cardFootnote`), so the caption is asserted on the Movies row, one Down on.
         press(.down, times: 2, gap: 1.0)
         pause(1.0)
         let foundIn = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).firstMatch
-        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×2 (chips → Top result) must put a 'Found in …' caption on screen")
         searchNote("94_found_in_top", foundIn.exists ? foundIn.label : "<none>")
         shot(app, "search-topresult-foundin")
 
@@ -9570,6 +9770,7 @@ extension NuvioTVUITests {
         let footnote = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).count
         searchNote("94_movies_row", "focused=\(focusedLabels) foundInLabels=\(footnote)")
         shot(app, "94_movies_row_footnote")
+        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×3 (chips → Top result → Movies row) must put a 'Found in …' caption on screen")
 
         let people = app.descendants(matching: .any)["search.people"].firstMatch
         if people.exists {
@@ -9900,7 +10101,10 @@ extension NuvioTVUITests {
     /// (`folder_rows_state … state=rows row=0`, the initial focus, P2 §2.3). Returns the readout
     /// (settled or not), or nil when the page never appeared.
     private func openSeededFolderRowsPage(_ app: XCUIApplication) -> String? {
-        remote.press(.select)
+        // ui-legs: Select only while the strip reports the seeded folder tile focused (read here).
+        guard pressIfVerified(app, "seeded_folder_tile", when: {
+            tok(stageProbeLabel(app, "debug_stage"), "fitem") == Self.folderRowsFolderId && !tabBarHasFocus(app)
+        }) else { return nil }
         _ = pollUntil(15, step: 0.5) {
             let line = stageProbeLabel(app, "folder_rows_state")
             return tok(line, "state") == "rows" && tok(line, "row") == "0"
@@ -9935,8 +10139,15 @@ extension NuvioTVUITests {
     /// inline or behind a nested `submenu` row). Throws `XCTSkip` when the runtime never publishes
     /// the option as a focusable button — a known soft spot (PinnedRowSettleRegimeTests' Poster
     /// Size leg) — after closing the menu with Menu, so nothing was changed.
-    private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String) throws {
-        remote.press(.select)
+    private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String,
+                                  onRow rowTitle: String) throws {
+        // ui-legs: the menu opens only from the row it belongs to, read focused here (its Cell's
+        // composed label, or the explainer, which names the focused row).
+        try pressVerified(app, "menu_row_\(rowTitle)", when: {
+            let explainer = app.staticTexts["settings_explainer_title"]
+            return focusedNodes(app).contains { $0.label.hasPrefix(rowTitle) }
+                || (explainer.exists && explainer.label == rowTitle)
+        })
         pause(1.2)
         // A tvOS `Menu`'s options surface as buttons on some runtimes and as menu items or cells on
         // others: take the first type that has the label.
@@ -10126,14 +10337,14 @@ extension NuvioTVUITests {
         var stageRestored = false
         defer {
             if !stageRestored, openSettingsCategory(app, named: "Home Screen") {
-                _ = try? chooseMenuOption(app, "Stage", what: "test101 restore")
+                _ = try? chooseMenuOption(app, "Stage", what: "test101 restore", onRow: "Home Layout")
             }
         }
         XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
         let explainer = app.staticTexts["settings_explainer_title"]
         XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
                       "the pane must open on the Home Layout row")
-        try chooseMenuOption(app, "Classic", what: "Home Layout picker")
+        try chooseMenuOption(app, "Classic", what: "Home Layout picker", onRow: "Home Layout")
         shot(app, "101a_picked_classic")
         XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
                       "after the pick focus must still be on Home Layout — explainer: \(explainer.exists ? explainer.label : "-")")
@@ -10148,7 +10359,7 @@ extension NuvioTVUITests {
         shot(app, "101b_home_classic")
 
         XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not reopen")
-        try chooseMenuOption(app, "Stage", what: "Home Layout picker")
+        try chooseMenuOption(app, "Stage", what: "Home Layout picker", onRow: "Home Layout")
         stageRestored = true
         openTab(app, named: "Home")
         pause(3)
@@ -10416,7 +10627,8 @@ extension NuvioTVUITests {
         guard focusSeededFolderTile(app) else {
             throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
         }
-        remote.press(.select)
+        // ui-legs: no Select here — `openSeededFolderRowsPage` presses it (verified); this extra one
+        // landed on whatever the folder page had focused.
         guard let opened = openSeededFolderRowsPage(app) else {
             XCTFail("the folder Rows page never appeared")
             return
@@ -10465,7 +10677,9 @@ extension NuvioTVUITests {
         pause(2.0)
         let chosen = tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") ?? "-"
         XCTAssertNotEqual(chosen, "-", "after the first move the folder stage must report the focused card")
-        remote.press(.select)
+        try pressVerified(app, "106_folder_card", when: {
+            chosen != "-" && tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") == chosen
+        })
         guard pollUntil(20, step: 0.5, { self.detailPageUp(app) }) else {
             XCTFail("Select on a folder card did not open its Detail page")
             return
@@ -10516,7 +10730,7 @@ extension NuvioTVUITests {
             pause(0.6)
         }
         XCTAssertTrue(seeAll.hasFocus, "could not focus row 0's See All tile")
-        remote.press(.select)
+        try pressVerified(app, "107_see_all", when: { seeAll.hasFocus })
         pause(3.0)
         shot(app, "107a_see_all")
         if let heading {
