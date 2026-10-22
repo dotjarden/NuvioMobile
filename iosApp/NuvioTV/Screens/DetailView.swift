@@ -2135,7 +2135,7 @@ struct DetailView: View {
                         actionButtonPadding(
                             actionLabel(
                                 model.isPlayEnabled ? "Play" : "Playback unavailable",
-                                systemImage: "play.fill",
+                                systemImage: DetailActionSymbol.play,
                                 primary: true
                             )
                             .font(Theme.Font.meta)
@@ -2170,9 +2170,9 @@ struct DetailView: View {
                         actionButtonPadding(
                             Group {
                                 if model.isPlayEnabled {
-                                    actionLabel(verbatim: action.label, systemImage: "play.fill", primary: true)
+                                    actionLabel(verbatim: action.label, systemImage: DetailActionSymbol.play, primary: true)
                                 } else {
-                                    actionLabel("Playback unavailable", systemImage: "play.fill", primary: true)
+                                    actionLabel("Playback unavailable", systemImage: DetailActionSymbol.play, primary: true)
                                 }
                             }
                             .font(Theme.Font.meta)
@@ -2223,7 +2223,7 @@ struct DetailView: View {
                         }
                     } label: {
                         actionButtonPadding(
-                            actionLabel("Watch Trailer", systemImage: "play.rectangle.fill")
+                            actionLabel("Watch Trailer", systemImage: DetailActionSymbol.trailer)
                                 .font(Theme.Font.meta),
                             horizontal: Theme.Spacing.md
                         )
@@ -2240,7 +2240,7 @@ struct DetailView: View {
                     actionButtonPadding(
                         actionLabel(
                             model.isWatched ? "Watched" : "Mark Watched",
-                            systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                            systemImage: model.isWatched ? DetailActionSymbol.watchedOn : DetailActionSymbol.watchedOff
                         )
                         .font(Theme.Font.meta)
                         // W3-17 (BUG-205): the active colour lives on the glyph, not on the glass
@@ -2261,7 +2261,7 @@ struct DetailView: View {
                     actionButtonPadding(
                         actionLabel(
                             model.isSaved ? "In Library" : "Add to Library",
-                            systemImage: model.isSaved ? "checkmark" : "plus"
+                            systemImage: model.isSaved ? DetailActionSymbol.libraryIn : DetailActionSymbol.libraryAdd
                         )
                         .font(Theme.Font.meta)
                         .detailActiveGlyph(active: model.isSaved),
@@ -2622,7 +2622,7 @@ struct DetailView: View {
                 }
             } label: {
                 actionButtonPadding(
-                    actionLabel("Start Over", systemImage: "arrow.counterclockwise")
+                    actionLabel("Start Over", systemImage: DetailActionSymbol.startOver)
                         .font(Theme.Font.meta),
                     horizontal: Theme.Spacing.md
                 )

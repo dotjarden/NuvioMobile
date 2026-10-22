@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import NuvioTV
 
@@ -11,9 +12,9 @@ final class DetailActionGlyphScaleTests: XCTestCase {
     }
 
     func testTheRingedCheckmarkIsTheReferenceAndTheBareGlyphsGrow() {
-        XCTAssertEqual(DetailActionGlyphScale.scale(for: "checkmark.circle"), 1, accuracy: 0.001)
-        XCTAssertGreaterThan(DetailActionGlyphScale.scale(for: "plus"), 1)
-        XCTAssertLessThan(DetailActionGlyphScale.scale(for: "play.rectangle.fill"), 1)
+        XCTAssertEqual(DetailActionGlyphScale.scale(for: DetailActionSymbol.watchedOff), 1, accuracy: 0.001)
+        XCTAssertGreaterThan(DetailActionGlyphScale.scale(for: DetailActionSymbol.libraryAdd), 1)
+        XCTAssertLessThan(DetailActionGlyphScale.scale(for: DetailActionSymbol.trailer), 1)
     }
 
     func testEveryFactorStaysWithinAVisibleButModestRange() {
@@ -24,9 +25,50 @@ final class DetailActionGlyphScaleTests: XCTestCase {
         }
     }
 
-    func testUnknownSymbolsAreLeftAlone() {
-        XCTAssertEqual(DetailActionGlyphScale.scale(for: "play.fill"), 1)
-        XCTAssertEqual(DetailActionGlyphScale.scale(for: "shuffle"), 1)
+    func testPlayAndUnknownSymbolsAreLeftAlone() {
+        XCTAssertEqual(DetailActionGlyphScale.scale(for: DetailActionSymbol.play), 1)
+        XCTAssertEqual(DetailActionGlyphScale.scale(for: "star.fill"), 1)
         XCTAssertEqual(DetailActionGlyphScale.scale(for: ""), 1)
+    }
+
+    // MARK: Coverage (review r3 P2-1): a glyph cannot ship unscaled
+
+    /// Every secondary icon-only symbol the action row can draw has a table entry.
+    func testEverySecondaryIconOnlySymbolHasATableEntry() {
+        for symbol in DetailActionSymbol.secondary {
+            XCTAssertNotNil(DetailActionGlyphScale.measured[symbol], "\(symbol) has no DetailActionGlyphScale entry")
+        }
+        XCTAssertEqual(Set(DetailActionSymbol.secondary).count, DetailActionSymbol.secondary.count, "duplicate in secondary")
+    }
+
+    /// The table holds nothing the row does not draw (a renamed symbol must not leave a stale entry).
+    func testTheTableHasNoStaleEntries() {
+        XCTAssertEqual(Set(DetailActionGlyphScale.measured.keys), Set(DetailActionSymbol.secondary))
+        XCTAssertNil(DetailActionGlyphScale.measured[DetailActionSymbol.play], "Play is primary and never scaled")
+    }
+
+    /// Every name is a real SF Symbol (a typo would draw nothing and still pass the table checks).
+    func testEveryActionSymbolIsARealSymbol() {
+        for symbol in DetailActionSymbol.secondary + [DetailActionSymbol.play] {
+            XCTAssertNotNil(UIImage(systemName: symbol), symbol)
+        }
+    }
+
+    /// The glyphs still waiting for a number from the box (owner's R0 session: a resumable film for
+    /// Start Over, In Library on, a series with Shuffle off and on). When one is measured, put its
+    /// optical size in `DetailActionGlyphScale.measured`, delete it from `unmeasured`, and from here.
+    func testUnmeasuredSymbolsAreExactlyTheListedFour() {
+        XCTAssertEqual(DetailActionGlyphScale.unmeasured,
+                       ["arrow.counterclockwise", "shuffle", "shuffle.circle.fill", "checkmark"])
+    }
+
+    /// An unmeasured entry is provisional: it carries the target (scale 1), so nothing is guessed.
+    func testUnmeasuredSymbolsAreProvisionalAtScaleOne() {
+        for symbol in DetailActionGlyphScale.unmeasured {
+            XCTAssertNotNil(DetailActionGlyphScale.measured[symbol], symbol)
+            XCTAssertEqual(DetailActionGlyphScale.measured[symbol], DetailActionGlyphScale.target, symbol)
+            XCTAssertEqual(DetailActionGlyphScale.scale(for: symbol), 1, symbol)
+        }
+        XCTAssertTrue(DetailActionGlyphScale.unmeasured.isSubset(of: Set(DetailActionSymbol.secondary)))
     }
 }

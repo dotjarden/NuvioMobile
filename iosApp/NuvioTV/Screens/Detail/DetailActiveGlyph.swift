@@ -77,8 +77,10 @@ nonisolated enum DetailActiveGlyph {
 
     /// Shuffle's state glyphs (review r1 P2-1): one `shuffle` symbol for both states carried no
     /// state under focus or in Cinematic's icon-only label.
-    static let shuffleOnGlyph = "shuffle.circle.fill"
-    static let shuffleOffGlyph = "shuffle"
+    /// (The names live in `DetailActionSymbol` with the rest of the action row's glyphs; FEAT-82's
+    /// optical-size table is keyed by them.)
+    static let shuffleOnGlyph = DetailActionSymbol.shuffleOn
+    static let shuffleOffGlyph = DetailActionSymbol.shuffleOff
 
     /// The glyph colour for one state. Focus wins outright (the platter is near-white, and the
     /// White theme's accent would vanish on it), then the accent for an active button at rest, else
