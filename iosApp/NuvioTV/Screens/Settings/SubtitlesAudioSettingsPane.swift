@@ -7,20 +7,8 @@ import SharedCore
 struct SubtitlesAudioSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
-    #if DEBUG
-    /// Sim evidence seam (FEAT-84): `-debug.fallbackAudioSeed <code>` binds Fallback Audio Language
-    /// to this in-memory value instead of the synced profile setting, so a UI test can open the
-    /// language page on a checked row far down the list without writing to the fixture profile.
-    @State private var debugFallbackAudio = UserDefaults.standard.string(forKey: "debug.fallbackAudioSeed")
-    #endif
-
     private var fallbackAudio: Binding<String> {
-        #if DEBUG
-        if debugFallbackAudio != nil {
-            return Binding(get: { debugFallbackAudio ?? "" }, set: { debugFallbackAudio = $0 })
-        }
-        #endif
-        return Binding(get: { model.secondaryPreferredAudioLanguage }, set: { model.setSecondaryPreferredAudioLanguage($0) })
+        Binding(get: { model.secondaryPreferredAudioLanguage }, set: { model.setSecondaryPreferredAudioLanguage($0) })
     }
 
     var body: some View {

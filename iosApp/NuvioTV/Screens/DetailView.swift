@@ -3235,7 +3235,8 @@ private struct DetailTrailersRow: View {
 /// No Zoom cells stay `.still(ringed:)`, byte-identical to before. `PlainLabelRing.lift` itself
 /// is untouched: `FolderTile` still resolves through it.
 ///
-/// Measured on the tvOS 27 simulator (`DetailLabelLiftMeasureUITests`, 2026-10-21): the system
+/// Measured on the tvOS 27 simulator (a one-off Wave 3b UI measurement leg, 2026-10-21, since
+/// removed from the tree; the readings are kept here): the system
 /// lift scales the 140 pt avatar ×1.32 (22.6 pt per side, symmetric), inside the cast row's 34 pt
 /// gap; its platter is a circle only because `castRow` sets `.buttonBorderShape(.circle)` on the
 /// link (the system takes the button's border shape, not the avatar's content shape). The same
@@ -3312,7 +3313,7 @@ struct CastCard: View {
                     Circle().strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
-            // BUG-200: the avatar's layout box for `DetailLabelLiftMeasureUITests` (DEBUG +
+            // BUG-200: the avatar's layout box for a geometry probe (DEBUG +
             // `-debug.cardGeometryProbe YES` only), as `company_artwork` is for the studio chip.
             .modifier(DebugAXIdentifier("cast_artwork"))
             .modifier(CardArtworkFocusLift(
