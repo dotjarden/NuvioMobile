@@ -645,9 +645,10 @@ struct SettingsListPickerRow: View {
                 SettingsTrailingValue(value: label(selection.wrappedValue))
             }
         }
-        // One chevron, inside the platter (see `SettingsLinkRow`).
+        // One chevron, inside the platter (see `SettingsLinkRow`). No `.accessibilityValue`:
+        // `SettingsTrailingValue` already renders the value as accessible text, so VoiceOver
+        // would read it twice (review r1 P3-4).
         .navigationLinkIndicatorVisibility(.hidden)
-        .accessibilityValue(label(selection.wrappedValue))
     }
 }
 
