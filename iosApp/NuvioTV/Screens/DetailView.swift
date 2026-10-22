@@ -386,15 +386,16 @@ private final class HitchCounter: NSObject, ObservableObject {
 ///     `.glass`/`.glassProminent` BUTTON styles are left alone — button styles are a different
 ///     swap from the chip backgrounds this leg targets.
 ///   - 3: both 1 and 2.
-///   - 4: leg 3, plus `actionRow`'s buttons swap `.glass`/`.glassProminent` for
-///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` becomes a plain `HStack` —
-///     the one piece of glass legs 2/3 deliberately left alone.
+///   - 4: leg 3, plus `actionRow`'s buttons swapped `.glass`/`.glassProminent` for
+///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` for a plain `HStack`.
+///     **D9 (BUG-206, 2026-10-22): that swap SHIPS** — the bordered row is the only action row now
+///     (`prominentActionButtonStyle` / `compactActionButtonStyle` / `actionRow` below), so leg 4
+///     reads exactly as leg 3. The value stays accepted because `DetailScrollProbeTests` pins the
+///     live-read contract on it and the Developer pane still offers it.
 enum DetailScrollAB {
     nonisolated static var leg: Int { UserDefaults.standard.integer(forKey: "debug.detailScrollAB") }
     nonisolated static var dimDisabled: Bool { leg == 1 || leg == 3 || leg == 4 }
     nonisolated static var glassDisabled: Bool { leg == 2 || leg == 3 || leg == 4 }
-    /// Leg 4 only — see the doc list above.
-    nonisolated static var buttonGlassDisabled: Bool { leg == 4 }
 }
 
 /// H9 (P4 §2.5): the hero button Detail's rail route captured when the rail armed. A reference box
@@ -1624,10 +1625,8 @@ struct DetailView: View {
     /// change) or replacing the system glass focus look. Mirrors `detailChipBackground`'s own
     /// condition; also folded into the `debug_ux6` diagnostic's `glass=` token.
     ///
-    /// Deliberately NOT unified with `actionRow`'s `GlassEffectContainer`/button-style swap
-    /// (`DetailScrollAB.buttonGlassDisabled`, leg 4 only): that enum's own doc comment records it
-    /// as an intentionally SEPARATE knob so legs 2/3 can isolate "chips only" from leg 4's "chips +
-    /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device.
+    /// Covers the chips and the panel only: the action row has no glass to flatten since D9
+    /// (BUG-206) made its bordered styles the shipped ones.
     private var chipGlassFlat: Bool {
         Self.chipGlassFlat(trailerActive: isTrailerActive, glassDisabled: DetailScrollAB.glassDisabled)
     }
@@ -1969,8 +1968,8 @@ struct DetailView: View {
     /// whenever a trailer is actually playing behind these chips (re-sampling a live video frame
     /// every render is real GPU work for a barely-visible effect) OR on `DetailScrollAB` leg 2/3/4
     /// (`chipGlassFlat`). The single swap point shared by `metaChip` and the parental-guide chips
-    /// below so the two don't duplicate the conditional. `actionRow`'s buttons/container are a
-    /// separate swap (leg 4 / `DetailScrollAB.buttonGlassDisabled`) and are untouched by this one.
+    /// below so the two don't duplicate the conditional. `actionRow`'s buttons are `.bordered`
+    /// outright since D9 (BUG-206) and have no part in this swap.
     ///
     /// BUG-41 (beta.18): the hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass
     /// as this page's RESTING-state material, so the swap back to glass when `chipGlassFlat` flips
@@ -2058,21 +2057,19 @@ struct DetailView: View {
         }
     }
 
-    /// BUG-41 leg 4 (`DetailScrollAB.buttonGlassDisabled`): the Play/series-primary button's style
-    /// swap, `.glassProminent` → `.borderedProminent`. `prominentAccentLabel()` inside the label
-    /// (already proven for `.borderedProminent` sites, BUG-4) covers both states either way, so the
-    /// swap is purely the button chrome.
-    /// FEAT-82: applied in both branches of both action styles below, so Start Over (a compact
-    /// button) and the BUG-41 leg-4 flat styles follow Corners too.
-    @ViewBuilder
+    /// The Play / series-primary button's style: `.borderedProminent`. It was `.glassProminent`
+    /// from rc8 (the teaser-glass work) until **D9 (BUG-206, 2026-10-22)**: on the Apple TV the
+    /// Liquid Glass action row (`.glass` buttons inside a `GlassEffectContainer`) was the Cinematic
+    /// page's largest single cost on Steven's walk (knob A/B, `docs/research/bug206-cause-hunt-
+    /// 2026-10-22.md` §9: 98 → 51 hitches, GPU p90 28.7 → 16.5 ms, offscreen passes 29 → 16), and
+    /// Christian chose to drop the glass on this row and keep the tile-lift shadow. The bordered
+    /// styles were BUG-41's leg 4 and are proven on hardware. `prominentAccentLabel()` inside the
+    /// label (BUG-4, BUG-14) covers both states, so the swap is purely the button chrome.
+    /// FEAT-82: `actionButtonBorderShape` keeps Start Over (a compact button) and the icon
+    /// buttons following Corners.
     private func prominentActionButtonStyle<Content: View>(_ content: Content) -> some View {
-        if DetailScrollAB.buttonGlassDisabled {
-            content.buttonStyle(.borderedProminent)
-                .buttonBorderShape(actionButtonBorderShape)
-        } else {
-            content.buttonStyle(.glassProminent)
-                .buttonBorderShape(actionButtonBorderShape)
-        }
+        content.buttonStyle(.borderedProminent)
+            .buttonBorderShape(actionButtonBorderShape)
     }
 
     /// FEAT-82: square with Corners = Square, the capsule otherwise.
@@ -2080,42 +2077,26 @@ struct DetailView: View {
         DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius) ? .roundedRectangle(radius: 0) : .capsule
     }
 
-    /// BUG-41 leg 4 companion to `prominentActionButtonStyle` — `.glass` → `.bordered` for the
-    /// compact action-row buttons (Watch Trailer, Mark Watched, Add to Library).
-    @ViewBuilder
+    /// `prominentActionButtonStyle`'s companion for the compact action-row buttons (Watch Trailer,
+    /// Mark Watched, Add to Library, Start Over, Shuffle): `.bordered`, `.glass` until D9.
     private func compactActionButtonStyle<Content: View>(_ content: Content) -> some View {
-        if DetailScrollAB.buttonGlassDisabled {
-            content.buttonStyle(.bordered)
-                .buttonBorderShape(actionButtonBorderShape)
-        } else {
-            content.buttonStyle(.glass)
-                .buttonBorderShape(actionButtonBorderShape)
-        }
+        content.buttonStyle(.bordered)
+            .buttonBorderShape(actionButtonBorderShape)
     }
 
-    /// Play + library/watched controls as one Liquid Glass cluster. The container lets the
-    /// individual glass shapes blend/morph as focus moves between them (mobile-reference look:
-    /// prominent Play pill next to compact glass buttons). BUG-41 leg 4: the container itself is
-    /// glass-only machinery (it coordinates `.glassEffect`/`.glass` morphing) — with every button
-    /// style flattened above, it has nothing left to do, so it's swapped for a plain `HStack`.
+    /// Play + library/watched controls in a plain `HStack`. Until D9 (BUG-206) this was a
+    /// `GlassEffectContainer` so the glass shapes could blend as focus moved between them; the
+    /// container is glass-only machinery and, with the bordered styles above, it had nothing left
+    /// to coordinate and cost the page its offscreen passes.
     private var actionRow: some View {
-        Group {
-            if DetailScrollAB.buttonGlassDisabled {
-                actionRowButtons
-            } else {
-                GlassEffectContainer(spacing: Theme.Spacing.md) {
-                    actionRowButtons
-                }
-            }
-        }
+        actionRowButtons
         // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
         // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
         // fragment vertical navigation between this row and the content around it.
     }
 
-    /// The actual button `HStack` shared by both `actionRow` branches (plain and
-    /// `GlassEffectContainer`-wrapped) — pulled out so BUG-41 leg 4 doesn't have to duplicate five
-    /// buttons' worth of logic across an `if`/`else`.
+    /// The button `HStack` behind `actionRow` (kept as its own property from the BUG-41 leg-4 days,
+    /// when two containers shared it).
     private var actionRowButtons: some View {
         HStack(spacing: Theme.Spacing.md) {
             if !isSeries {
