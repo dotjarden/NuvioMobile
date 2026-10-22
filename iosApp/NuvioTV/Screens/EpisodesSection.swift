@@ -70,7 +70,8 @@ struct EpisodesSection: View {
             return EpisodeGroupingCache.Grouping(
                 grouped: grouped,
                 seasons: grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) },
-                posterBySeason: Self.seasonPosters(grouped, meta: meta)
+                posterBySeason: Self.seasonPosters(grouped, meta: meta),
+                releasedSeasons: Self.seasonsWithReleasedEpisodes(meta)
             )
         }
         let grouped = grouping.grouped
@@ -102,6 +103,7 @@ struct EpisodesSection: View {
                         current: current,
                         meta: meta,
                         watchedEpisodeKeys: watchedEpisodeKeys,
+                        releasedSeasons: grouping.releasedSeasons,
                         onSelect: { selectedSeason = $0 }
                     )
                 } else {
@@ -116,10 +118,14 @@ struct EpisodesSection: View {
                                 }
                                 .buttonStyle(.chip(selected: season == current))
                                 // FEAT-83: the same season menu as the posters (titles without
-                                // season art get these chips instead).
+                                // season art get these chips instead). Attached unconditionally;
+                                // a season with nothing released has no content, so no menu
+                                // (review r1 P3-9, `releasedSeasons`).
                                 .contextMenu {
-                                    SeasonHoldMenuItems(meta: meta, season: season,
-                                                        watchedEpisodeKeys: watchedEpisodeKeys)
+                                    if grouping.releasedSeasons.contains(season) {
+                                        SeasonHoldMenuItems(meta: meta, season: season,
+                                                            watchedEpisodeKeys: watchedEpisodeKeys)
+                                    }
                                 }
                             }
                         }
@@ -410,6 +416,17 @@ struct EpisodesSection: View {
             if heldEpisodeId == id { heldEpisodeId = nil }
         }
     }
+
+    /// FEAT-83 (review r1 P3-9): the seasons, normalized like `groupedEpisodes`, that hold at least
+    /// one RELEASED episode in the shared list the season menu marks (`releasedPlayableEpisodes`,
+    /// which `releasedEpisodesForSeason` filters). A season outside it gets no menu content, so a
+    /// hold shows no menu at all, the device-verified behaviour of an empty `.contextMenu` (the
+    /// Detail Play button's hold with Auto-Play off is inert, Orivio pass 2026-10-01). Read once per
+    /// `MetaDetails` (`EpisodeGroupingCache`) with today's date: one shared sort per Detail visit.
+    nonisolated private static func seasonsWithReleasedEpisodes(_ meta: MetaDetails) -> Set<Int> {
+        let released = meta.releasedPlayableEpisodes(todayIsoDate: CurrentDateProvider.shared.todayIsoDate())
+        return Set(released.map { normalizeSeasonNumber($0.season) })
+    }
 }
 
 /// `KotlinInt` is an `NSNumber` subclass, whose `.intValue` Swift accessor is `Int32`. This converts
@@ -444,7 +461,12 @@ private struct EpisodeRoute: Identifiable {
 ///
 /// Everything is resolved in THIS body, which tvOS evaluates when it presents the menu — never in
 /// the shelf's body, which re-runs on every Left/Right (BUG-153): the previous-episodes list is a
-/// shared sort over every episode. The shared toggles are called with the state each LABEL was
+/// shared sort over every episode. Review r1 P3-10, confirmed from device consoles: the same
+/// shape's `[HoldMenu] menu built` line (`TitleHoldMenuItems`, a `.contextMenu` content body)
+/// logs once per hold, right before focus moves into `_UIContextMenuCell`, and never while rows of
+/// those cards render and scroll (`docs/research/rc5-promises-device-2026-10-17/console-a.log`:
+/// 2 builds in a 525-line Home walk; `bug170-device-2026-10-18/console-mpv.log`: 1). The shared
+/// toggles are called with the state each LABEL was
 /// built from (`DetailTileAction.labelState`), never a re-read of the live state; the watched keys
 /// refresh by themselves through `DetailViewModel`'s watched and progress watchers.
 private struct EpisodeHoldMenuItems: View {
@@ -492,7 +514,9 @@ private struct EpisodeHoldMenuItems: View {
 
 /// FEAT-83: a season poster's or season chip's hold menu — Mark Season Watched / Unwatched over
 /// the season's RELEASED episodes (`TitleHoldMenuPolicy.seasonActions`). Same presentation-time
-/// rule as `EpisodeHoldMenuItems`; empty for a season with nothing released yet.
+/// rule as `EpisodeHoldMenuItems`. The callers include it only for a season in
+/// `releasedSeasons`, so a season with nothing released has no menu (review r1 P3-9); should the
+/// date roll over mid-visit it is still empty here, never a dead item.
 private struct SeasonHoldMenuItems: View {
     let meta: MetaDetails
     /// `EpisodesSection`'s season number (specials normalized to 0, as the shared side does).
@@ -530,6 +554,8 @@ private struct SeasonPosterRow: View {
     /// FEAT-83: for the hold menu only (`SeasonHoldMenuItems` reads them when the menu opens).
     let meta: MetaDetails
     let watchedEpisodeKeys: Set<String>
+    /// FEAT-83 (review r1 P3-9): seasons with a released episode; the others get no menu.
+    let releasedSeasons: Set<Int>
     let onSelect: (Int) -> Void
 
     /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
@@ -558,10 +584,13 @@ private struct SeasonPosterRow: View {
                     .posterButtonShape()
                     .focused($focusedSeason, equals: season)
                     // FEAT-83 (GitHub #9 item 3): hold for Mark Season Watched / Unwatched;
-                    // attached unconditionally (an unreleased season shows an empty menu).
+                    // attached unconditionally, with no content (so no menu) for a season with
+                    // nothing released (review r1 P3-9).
                     .contextMenu {
-                        SeasonHoldMenuItems(meta: meta, season: season,
-                                            watchedEpisodeKeys: watchedEpisodeKeys)
+                        if releasedSeasons.contains(season) {
+                            SeasonHoldMenuItems(meta: meta, season: season,
+                                                watchedEpisodeKeys: watchedEpisodeKeys)
+                        }
                     }
                     // BUG-177: the lifted poster draws over its right neighbour.
                     // BUG-153 (Batch M): only when SwiftUI draws the lift.
@@ -844,6 +873,8 @@ final class EpisodeGroupingCache {
         let grouped: [Int: [MetaVideo]]
         let seasons: [Int]
         let posterBySeason: [Int: String?]
+        /// FEAT-83 (review r1 P3-9): see `EpisodesSection.seasonsWithReleasedEpisodes`.
+        let releasedSeasons: Set<Int>
     }
 
     private var source: MetaDetails?
