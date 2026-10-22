@@ -845,36 +845,29 @@ struct DetailView: View {
                 // row is the one move; anything else holds until the rung lands it or the viewer
                 // presses, and the request's own retire ends it regardless.
                 if let liveRow = popRestoreRow, let liveKey = popRestoreKey {
-                    focusMemory.popMoves += 1
                     let now = ProcessInfo.processInfo.systemUptime
                     let clock = ViewerInputClock.shared
                     // Row only (review r1 P3-1): the rung puts the right card on the row; a landing
                     // on the remembered row is the one move whatever card it hit. The restore ends
                     // on viewer input or at the request's retire (1.3 s), never on a landed window
                     // (review r1 P3-2: that window could not elapse before the retire).
-                    switch DetailPopGate.decide(focusedRow: row, focusedKey: row == liveRow ? liveKey : nil,
-                                                target: (liveRow, liveKey),
-                                                viewerInput: clock.hasInput(since: focusMemory.popStartedAt),
-                                                regrabs: focusMemory.popRegrabs, clockLive: clock.isLive) {
+                    // The move count, the decision and its bookkeeping (stray clock, held change,
+                    // re-grab budget) are `DetailFocusMemory.report`, shared with the tests (r3 P3-3).
+                    switch focusMemory.report(row: row, old: old, target: (liveRow, liveKey),
+                                              viewerInput: clock.hasInput(since: focusMemory.popStartedAt),
+                                              clockLive: clock.isLive, at: now) {
                     case .release:
                         endPopRestore(reason: "viewer")
                     case .landed:
-                        focusMemory.noteLanding(at: now)
                         logPopLanding(row: liveRow, key: liveKey, now: now)
-                        focusMemory.dropHeldFocusChange()
                     case .hold:
-                        focusMemory.noteStray(at: now)
                         logPopStray(to: row, now: now, regrab: false)
-                        focusMemory.holdFocusChange(old: old, new: row)
                         return
                     case .regrab:
                         // BUG-194 (Steven rc11): the engine's late restoration put focus on its
                         // default candidate (Play) right after the card landed. Same hold as above,
                         // and the card is taken back now instead of at the 0.8 s free rung.
-                        focusMemory.noteStray(at: now)
-                        focusMemory.popRegrabs += 1
                         logPopStray(to: row, now: now, regrab: true)
-                        focusMemory.holdFocusChange(old: old, new: row)
                         regrabPopTarget(row: liveRow, key: liveKey)
                         return
                     }
@@ -2502,8 +2495,9 @@ struct DetailView: View {
         let generation = memory.currentGeneration
         let n = memory.popRegrabs
         DispatchQueue.main.async {
-            guard memory.isCurrent(generation), memory.restoreLive,
-                  !ViewerInputClock.shared.hasInput(since: memory.popStartedAt) else { return }
+            guard DetailPopGate.regrabStillWanted(
+                current: memory.isCurrent(generation), restoreLive: memory.restoreLive,
+                inputSincePop: ViewerInputClock.shared.hasInput(since: memory.popStartedAt)) else { return }
             applyDetailFocusRung(row: row, key: key, force: true, via: "regrab-\(n)")
         }
     }

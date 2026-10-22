@@ -91,17 +91,46 @@ final class DetailFocusMemory {
     /// the pop's clock stamp, the landing stamp, the move counter for the probe, and the one focus
     /// change the gate held back so `endRestore` can hand it to the caller for a replay.
     var popStartedAt: TimeInterval = 0
-    var popLandedAt: TimeInterval?
-    var popMoves = 0
+    private(set) var popLandedAt: TimeInterval?
+    private(set) var popMoves = 0
     private(set) var heldFocusChange: (old: DetailRowID?, new: DetailRowID?)?
 
     /// BUG-194 (Steven rc11): re-grabs issued for the engine's stray landings (`DetailPopGate.Decision.regrab`),
     /// landings on the target row, and the time focus spent OFF the target after its first landing
     /// (what the viewer sees as the second move; the probe's `away=`).
-    var popRegrabs = 0
+    private(set) var popRegrabs = 0
     private(set) var popLandings = 0
     private(set) var popStrayAt: TimeInterval?
     private(set) var popAway: TimeInterval = 0
+
+    /// One `focusedRow` report during a live restore (review r3 P3-3): counts the move, asks
+    /// `DetailPopGate.decide`, and does the per-decision bookkeeping. `DetailView.onChange(of: focusedRow)`
+    /// and `DetailPopRegrabTests` both call this, so a test cannot pass while the view drops a step.
+    /// The caller owns what follows (`.release`: end the restore; `.regrab`: schedule the re-grab; the
+    /// probe lines). `target.key` is handed to the gate only when the reported row is the target row
+    /// (a landing is decided by the ROW, never by the card).
+    func report(row: DetailRowID?, old: DetailRowID?, target: (row: DetailRowID, key: String),
+                viewerInput: Bool, clockLive: Bool, at now: TimeInterval) -> DetailPopGate.Decision {
+        popMoves += 1
+        let decision = DetailPopGate.decide(focusedRow: row, focusedKey: row == target.row ? target.key : nil,
+                                            target: target, viewerInput: viewerInput,
+                                            regrabs: popRegrabs, clockLive: clockLive)
+        switch decision {
+        case .landed:
+            noteLanding(at: now)
+            dropHeldFocusChange()
+        case .hold:
+            noteStray(at: now)
+            holdFocusChange(old: old, new: row)
+        case .regrab:
+            noteStray(at: now)
+            popRegrabs += 1
+            holdFocusChange(old: old, new: row)
+        case .release:
+            break
+        }
+        return decision
+    }
 
     /// Focus landed on the target row: the first landing is `popLandedAt`; a landing after a stray
     /// stops the away clock.
@@ -183,16 +212,25 @@ nonisolated enum DetailPopGate {
     /// Viewer input wins, then a focus report on the target row (the caller passes the target key when the row matches) lands;
     /// anything else (the hero, another row, another card) is the engine's: re-grabbed while the viewer-input
     /// clock is live and `regrabs` is under `maxRegrabs`, else held for the late rungs (the pre-rc11 rule).
-    /// Positions and the input clock decide, never timestamps (Batch N). `regrabs` and `clockLive`
-    /// default to the pre-rc11 rule (no clock: hold).
+    /// Positions and the input clock decide, never timestamps (Batch N). `regrabs` and `clockLive` have no
+    /// defaults (review r3 P3-3): a new caller must say whether the clock is live, not silently get the
+    /// pre-rc11 hold (`clockLive: false`).
     static func decide(focusedRow: DetailRowID?, focusedKey: String?,
                        target: (row: DetailRowID, key: String), viewerInput: Bool,
-                       regrabs: Int = 0, clockLive: Bool = false) -> Decision {
+                       regrabs: Int, clockLive: Bool) -> Decision {
         if viewerInput { return .release }
         if focusedRow == target.row, focusedKey == target.key { return .landed }
         // Without a live clock the viewer's move cannot be told from the engine's: hold, as before.
         guard clockLive, regrabs < maxRegrabs else { return .hold }
         return .regrab
+    }
+
+    /// Whether a scheduled re-grab should still act when its run-loop turn comes (review r3 P3-3,
+    /// `DetailView.regrabPopTarget`): the restore it was scheduled for is still the newest (`current`),
+    /// still live (a retire or a viewer end stands it down), and the viewer has not pressed or swiped
+    /// since the pop. Pure, so the stand-down rule is tested without a view.
+    static func regrabStillWanted(current: Bool, restoreLive: Bool, inputSincePop: Bool) -> Bool {
+        current && restoreLive && !inputSincePop
     }
 
     /// Whether the landed hold is still running, `age` seconds after the landing.

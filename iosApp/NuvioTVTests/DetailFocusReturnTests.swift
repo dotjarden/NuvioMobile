@@ -137,22 +137,22 @@ final class DetailFocusReturnTests: XCTestCase {
     /// Focus on the hero holds, the target row AND card lands, viewer input releases.
     func testPopGateHoldsUntilTheCardLands() {
         let target: (row: DetailRowID, key: String) = (.cast, "3")
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: false), .hold)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "1", target: target, viewerInput: false), .hold,
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "1", target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
                        "right row, wrong card is not a landing")
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .moreLikeThis, focusedKey: "3", target: target, viewerInput: false), .hold,
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .moreLikeThis, focusedKey: "3", target: target, viewerInput: false, regrabs: 0, clockLive: false), .hold,
                        "right key, wrong row is not a landing")
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: false), .landed)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: true), .release)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: true), .release)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: false, regrabs: 0, clockLive: false), .landed)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .cast, focusedKey: "3", target: target, viewerInput: true, regrabs: 0, clockLive: false), .release)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: true, regrabs: 0, clockLive: false), .release)
     }
 
     /// The decision is a pure function of row, card and input: call order changes nothing.
     func testPopGateIgnoresTimestamps() {
         let target: (row: DetailRowID, key: String) = (.cast, "3")
         let inputs: [(DetailRowID?, String?, Bool)] = [(nil, nil, false), (.cast, "3", false), (.cast, "2", false), (.cast, "3", true)]
-        let forward = inputs.map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2) }
-        let backward = inputs.reversed().map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2) }
+        let forward = inputs.map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2, regrabs: 0, clockLive: false) }
+        let backward = inputs.reversed().map { DetailPopGate.decide(focusedRow: $0.0, focusedKey: $0.1, target: target, viewerInput: $0.2, regrabs: 0, clockLive: false) }
         XCTAssertEqual(forward, backward.reversed())
     }
 

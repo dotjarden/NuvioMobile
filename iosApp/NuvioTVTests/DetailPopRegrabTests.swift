@@ -54,52 +54,54 @@ final class DetailPopRegrabTests: XCTestCase {
                                             clockLive: true), .hold)
     }
 
-    /// Without a live clock a viewer's move cannot be told from the engine's: the pre-rc11 hold,
-    /// which is also what the defaults give.
+    /// Without a live clock a viewer's move cannot be told from the engine's: the pre-rc11 hold. (No
+    /// defaults on `decide`: every caller says whether the clock is live.)
     func testNoClockKeepsThePreRc11Hold() {
         XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target,
                                             viewerInput: false, regrabs: 0, clockLive: false), .hold)
-        XCTAssertEqual(DetailPopGate.decide(focusedRow: nil, focusedKey: nil, target: target, viewerInput: false), .hold)
+        XCTAssertEqual(DetailPopGate.decide(focusedRow: .logos, focusedKey: nil, target: target,
+                                            viewerInput: false, regrabs: 2, clockLive: false), .hold)
     }
 
-    /// Positions and inputs decide, never the order the reports came in.
-    func testRegrabDecisionIgnoresCallOrder() {
-        let inputs: [(DetailRowID?, String?, Bool, Int, Bool)] = [
-            (.cast, "1", false, 0, true), (nil, nil, false, 0, true), (nil, nil, false, 3, true),
-            (.logos, nil, true, 0, true), (nil, nil, false, 0, false),
-        ]
-        let decide = { (input: (DetailRowID?, String?, Bool, Int, Bool)) in
-            DetailPopGate.decide(focusedRow: input.0, focusedKey: input.1, target: self.target,
-                                 viewerInput: input.2, regrabs: input.3, clockLive: input.4)
+    // MARK: DetailPopGate.regrabStillWanted (review r3 P3-3)
+
+    /// A scheduled re-grab acts only for the newest restore, while it is live, with no input since the pop.
+    func testRegrabStillWantedOnlyForTheNewestLiveRestoreWithoutInput() {
+        XCTAssertTrue(DetailPopGate.regrabStillWanted(current: true, restoreLive: true, inputSincePop: false))
+        XCTAssertFalse(DetailPopGate.regrabStillWanted(current: false, restoreLive: true, inputSincePop: false), "a newer restore")
+        XCTAssertFalse(DetailPopGate.regrabStillWanted(current: true, restoreLive: false, inputSincePop: false), "retired or ended")
+        XCTAssertFalse(DetailPopGate.regrabStillWanted(current: true, restoreLive: true, inputSincePop: true), "the viewer acted")
+        XCTAssertFalse(DetailPopGate.regrabStillWanted(current: false, restoreLive: false, inputSincePop: true))
+    }
+
+    /// The same rule against the box, as `regrabPopTarget` reads it on the next turn: the retire and
+    /// a newer restore each stand a pending re-grab down.
+    func testPendingRegrabStandsDownOnRetireOrANewerRestore() {
+        let memory = DetailFocusMemory()
+        func wanted(_ generation: Int, input: Bool = false) -> Bool {
+            DetailPopGate.regrabStillWanted(current: memory.isCurrent(generation), restoreLive: memory.restoreLive,
+                                            inputSincePop: input)
         }
-        XCTAssertEqual(inputs.map(decide), inputs.reversed().map(decide).reversed())
-        XCTAssertEqual(inputs.map(decide), [.landed, .regrab, .hold, .release, .hold])
+        let first = memory.beginRestore()
+        memory.goLive(target, startedAt: 10)
+        XCTAssertTrue(wanted(first))
+        XCTAssertFalse(wanted(first, input: true))
+        memory.endRestore()
+        XCTAssertFalse(wanted(first), "the retire / viewer end")
+        let second = memory.beginRestore()
+        memory.goLive(target, startedAt: 20)
+        XCTAssertFalse(wanted(first), "an older restore's re-grab")
+        XCTAssertTrue(wanted(second))
     }
 
     // MARK: Steven's rc11 pop, replayed (rig log 2026-10-21, `console-r0-debug.log`)
 
-    /// Drives the gate and the box the way `DetailView.onChange(of: focusedRow)` does.
+    /// Drives the box through `DetailFocusMemory.report`, the call `DetailView.onChange(of: focusedRow)`
+    /// makes, so the move count, the stray clock, the held change and the re-grab budget are the
+    /// view's own code (review r3 P3-3).
     private func report(_ row: DetailRowID?, old: DetailRowID?, at time: TimeInterval,
-                        memory: DetailFocusMemory, clockLive: Bool) -> DetailPopGate.Decision {
-        memory.popMoves += 1
-        let decision = DetailPopGate.decide(focusedRow: row, focusedKey: row == target.row ? target.key : nil,
-                                            target: target, viewerInput: false,
-                                            regrabs: memory.popRegrabs, clockLive: clockLive)
-        switch decision {
-        case .landed:
-            memory.noteLanding(at: time)
-            memory.dropHeldFocusChange()
-        case .hold:
-            memory.noteStray(at: time)
-            memory.holdFocusChange(old: old, new: row)
-        case .regrab:
-            memory.noteStray(at: time)
-            memory.popRegrabs += 1
-            memory.holdFocusChange(old: old, new: row)
-        case .release:
-            break
-        }
-        return decision
+                        memory: DetailFocusMemory, clockLive: Bool, viewerInput: Bool = false) -> DetailPopGate.Decision {
+        memory.report(row: row, old: old, target: target, viewerInput: viewerInput, clockLive: clockLive, at: time)
     }
 
     /// rc11 with the fix: the card lands at +569 ms, the engine's stray to Play at ~+600 ms is
@@ -148,12 +150,65 @@ final class DetailPopRegrabTests: XCTestCase {
         let memory = DetailFocusMemory()
         let studios: (row: DetailRowID, key: String) = (.logos, "1")
         memory.goLive(studios, startedAt: 50)
-        let decision = DetailPopGate.decide(focusedRow: .logos, focusedKey: "1", target: studios,
-                                            viewerInput: false, regrabs: 0, clockLive: true)
+        let decision = memory.report(row: .logos, old: nil, target: studios, viewerInput: false,
+                                     clockLive: true, at: 50.589)
         XCTAssertEqual(decision, .landed)
-        memory.noteLanding(at: 50.589)
         XCTAssertEqual(memory.popLandings, 1)
+        XCTAssertEqual(memory.popMoves, 1)
+        XCTAssertEqual(memory.popRegrabs, 0)
         XCTAssertEqual(memory.awayTime(at: 51.3), 0)
+    }
+
+    // MARK: DetailFocusMemory.report (the view's bookkeeping, review r3 P3-3)
+
+    /// Each decision leaves the box as the view expects: `.hold` and `.regrab` start the stray clock
+    /// and keep the change for the replay (`.regrab` also spends the budget), `.landed` drops the
+    /// held change, `.release` touches nothing but the move count.
+    func testReportDoesTheBookkeepingPerDecision() {
+        let memory = DetailFocusMemory()
+        memory.goLive(target, startedAt: 10)
+        XCTAssertEqual(report(.cast, old: nil, at: 10.5, memory: memory, clockLive: true), .landed)
+        XCTAssertEqual(memory.popLandings, 1)
+        XCTAssertNil(memory.heldFocusChange)
+        XCTAssertEqual(report(nil, old: .cast, at: 10.6, memory: memory, clockLive: true), .regrab)
+        XCTAssertEqual(memory.popRegrabs, 1)
+        XCTAssertEqual(memory.popStrayAt ?? 0, 10.6, accuracy: 0.0001)
+        XCTAssertEqual(memory.heldFocusChange?.old, .cast)
+        XCTAssertNil(memory.heldFocusChange?.new)
+        XCTAssertEqual(report(.cast, old: nil, at: 10.62, memory: memory, clockLive: true), .landed)
+        XCTAssertNil(memory.heldFocusChange, "the re-landing drops the held stray")
+        XCTAssertNil(memory.popStrayAt)
+        XCTAssertEqual(memory.popMoves, 3)
+        // Without a clock the same stray is held, not re-grabbed.
+        XCTAssertEqual(report(.logos, old: .cast, at: 10.7, memory: memory, clockLive: false), .hold)
+        XCTAssertEqual(memory.popRegrabs, 1)
+        XCTAssertEqual(memory.heldFocusChange?.new, .logos)
+        // Viewer input releases without starting a stray or spending a re-grab.
+        let quiet = DetailFocusMemory()
+        quiet.goLive(target, startedAt: 30)
+        XCTAssertEqual(report(nil, old: nil, at: 30.2, memory: quiet, clockLive: true, viewerInput: true), .release)
+        XCTAssertEqual(quiet.popMoves, 1)
+        XCTAssertEqual(quiet.popRegrabs, 0)
+        XCTAssertNil(quiet.popStrayAt)
+        XCTAssertNil(quiet.heldFocusChange)
+    }
+
+    /// A stray that keeps coming back spends the three re-grabs, then the gate holds for the late
+    /// rungs: the budget is spent by `report`, not by the caller.
+    func testReportSpendsTheRegrabBudgetThenHolds() {
+        let memory = DetailFocusMemory()
+        memory.goLive(target, startedAt: 0)
+        var decisions: [DetailPopGate.Decision] = []
+        var time: TimeInterval = 0.5
+        for _ in 0...DetailPopGate.maxRegrabs {
+            decisions.append(report(.cast, old: nil, at: time, memory: memory, clockLive: true))
+            decisions.append(report(nil, old: .cast, at: time + 0.03, memory: memory, clockLive: true))
+            time += 0.1
+        }
+        XCTAssertEqual(decisions, [.landed, .regrab, .landed, .regrab, .landed, .regrab, .landed, .hold])
+        XCTAssertEqual(memory.popRegrabs, DetailPopGate.maxRegrabs)
+        XCTAssertEqual(memory.popMoves, 8)
+        XCTAssertNotNil(memory.heldFocusChange, "the last stray is held for the late rungs")
     }
 
     // MARK: DetailFocusMemory away clock
@@ -188,11 +243,15 @@ final class DetailPopRegrabTests: XCTestCase {
     func testGoLiveResetsTheRegrabBookkeeping() {
         let memory = DetailFocusMemory()
         memory.goLive(target, startedAt: 10)
-        memory.noteLanding(at: 10.5)
-        memory.noteStray(at: 10.6)
-        memory.popRegrabs = 2
+        _ = report(.cast, old: nil, at: 10.5, memory: memory, clockLive: true)
+        _ = report(nil, old: .cast, at: 10.6, memory: memory, clockLive: true)
+        _ = report(nil, old: nil, at: 10.7, memory: memory, clockLive: true)
+        XCTAssertEqual(memory.popRegrabs, 2)
+        XCTAssertEqual(memory.popMoves, 3)
         memory.goLive(target, startedAt: 20)
         XCTAssertEqual(memory.popRegrabs, 0)
+        XCTAssertEqual(memory.popMoves, 0)
+        XCTAssertNil(memory.heldFocusChange)
         XCTAssertEqual(memory.popLandings, 0)
         XCTAssertNil(memory.popStrayAt)
         XCTAssertNil(memory.popLandedAt)
