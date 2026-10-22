@@ -600,6 +600,146 @@ struct SettingsPickerRow<T: Hashable>: View {
     }
 }
 
+// MARK: - List picker (long lists)
+
+/// A choice row for a LONG list (the 75–80-entry language pickers): a `NavigationLink` row
+/// (`title`, `value ›`) that pushes `SettingsListPickerPage`, where the current value is checked
+/// and focused.
+///
+/// FEAT-84 sim check (`docs/research/wave3b-sim-2026-10-21/wb-5b-size-menu-open.png`): a tvOS
+/// `Menu { Picker }` opens with focus on its FIRST entry, not on the checked one (the Size menu,
+/// Medium checked, opened on Small). With Zulu checked in an 80-entry menu that is 79 presses
+/// back to it, so the language rows use this pushed page instead (the Custom Posters shape: a
+/// pushed `List` of kit rows). Short pickers stay `SettingsPickerRow`.
+struct SettingsListPickerRow: View {
+    let title: String
+    var subtitle: String?
+    let selection: Binding<String>
+    let options: [String]
+    var descriptionID: SettingsDescriptionID?
+    let label: (String) -> String
+
+    init(
+        title: String,
+        subtitle: String? = nil,
+        selection: Binding<String>,
+        options: [String],
+        descriptionID: SettingsDescriptionID? = nil,
+        label: @escaping (String) -> String
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.selection = selection
+        self.options = options
+        self.descriptionID = descriptionID
+        self.label = label
+    }
+
+    var body: some View {
+        NavigationLink {
+            SettingsListPickerPage(title: title, selection: selection, options: options, label: label)
+        } label: {
+            SettingsRowChrome {
+                SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
+            } trailing: {
+                SettingsTrailingValue(value: label(selection.wrappedValue))
+            }
+        }
+        // One chevron, inside the platter (see `SettingsLinkRow`).
+        .navigationLinkIndicatorVisibility(.hidden)
+        .accessibilityValue(label(selection.wrappedValue))
+    }
+}
+
+/// The pushed page behind `SettingsListPickerRow`: one kit row per option, the current one
+/// checked. Select stores the option and pops back to the row that pushed the page.
+///
+/// Focus starts on the checked row. The `List` is lazy, so a row far down the list does not exist
+/// until it is scrolled to, and focus alone cannot reach it (sim: with no scroll, focus opened on
+/// None). On appear the page scrolls the checked row into view (top rows: no scroll; middle rows:
+/// centred; the last half-screen: to the bottom; a `defaultScrollAnchor(.bottom)` start is ignored
+/// by a tvOS `List`), then claims focus one runloop later, with `.defaultFocus` at
+/// `.userInitiated` priority for the engine's own initial pick. The push transition can still hand
+/// initial focus to the first row in view after that claim (it did with Zulu), so the page looks
+/// again once the push has settled and re-claims if focus is elsewhere.
+///
+/// Sim evidence (`docs/research/wave3b-sim-2026-10-21/wb-10*`, `wb-11*`, `wb-12*`): the page
+/// opens focused on the checked row for None, English and Zulu. Known quirk, last half-screen
+/// only: from a row focused this way the FIRST Up jumps five or six rows (the focus engine's
+/// frames sit ~460 pt below where the rows are drawn until focus moves once), then every press
+/// moves one row. A walk down to Zulu by hand does not show it, and scrolling in passes,
+/// re-scrolling after focus lands, centring a higher row and stepping focus down to the row all
+/// left it in place. Device pass to confirm whether hardware shows it.
+struct SettingsListPickerPage: View {
+    let title: String
+    let selection: Binding<String>
+    let options: [String]
+    let label: (String) -> String
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: String?
+
+    /// About half a screen of rows (a kit row is ~93 pt of a 1080 pt screen).
+    private static let edgeRows = 6
+
+    /// Where the checked row sits in the list (see the type comment).
+    private enum Placement { case top, middle, end }
+
+    private func placement(of value: String) -> Placement {
+        let index = options.firstIndex(of: value) ?? 0
+        if index < Self.edgeRows { return .top }
+        if options.count - index <= Self.edgeRows { return .end }
+        return .middle
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List {
+                ForEach(options, id: \.self) { option in
+                    let isChecked = option == selection.wrappedValue
+                    Button {
+                        if !isChecked { selection.wrappedValue = option }
+                        dismiss()
+                    } label: {
+                        SettingsRowChrome {
+                            SettingsRowLabel(title: label(option))
+                        } trailing: {
+                            if isChecked {
+                                Image(systemName: "checkmark")
+                                    .font(SettingsRowFont.subtitle)
+                                    .fontWeight(.semibold)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .accessibilityAddTraits(isChecked ? .isSelected : [])
+                    .focused($focused, equals: option)
+                    .id(option)
+                }
+            }
+            .defaultFocus($focused, selection.wrappedValue, priority: .userInitiated)
+            .onAppear { claimCheckedRow(proxy, settleCheck: true) }
+        }
+        .navigationTitle(title)
+    }
+
+    /// Scrolls the checked row into view and focuses it; with `settleCheck`, looks again after the
+    /// push transition (0.45 s) and re-claims once if focus landed elsewhere.
+    private func claimCheckedRow(_ proxy: ScrollViewProxy, settleCheck: Bool) {
+        let current = selection.wrappedValue
+        switch placement(of: current) {
+        case .top: break
+        case .middle: proxy.scrollTo(current, anchor: .center)
+        case .end: proxy.scrollTo(current, anchor: .bottom)
+        }
+        DispatchQueue.main.async { focused = current }
+        guard settleCheck else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            if focused != current { claimCheckedRow(proxy, settleCheck: false) }
+        }
+    }
+}
+
 // MARK: - Value
 
 /// A read-only title/value row — stock `LabeledContent`. Not focusable by default (HIG: static

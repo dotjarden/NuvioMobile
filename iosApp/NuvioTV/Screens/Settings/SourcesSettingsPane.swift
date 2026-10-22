@@ -178,7 +178,9 @@ struct SourcesSettingsPane: View {
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
-                SettingsPickerRow(
+                // A pushed list page, not a Menu: 75 entries, and a tvOS Menu opens on its first
+                // entry (see `SettingsListPickerRow`).
+                SettingsListPickerRow(
                     title: String(localized: "Metadata Language"),
                     selection: Binding(
                         get: { model.tmdbLanguageSelection },

@@ -7,6 +7,22 @@ import SharedCore
 struct SubtitlesAudioSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
+    #if DEBUG
+    /// Sim evidence seam (FEAT-84): `-debug.fallbackAudioSeed <code>` binds Fallback Audio Language
+    /// to this in-memory value instead of the synced profile setting, so a UI test can open the
+    /// language page on a checked row far down the list without writing to the fixture profile.
+    @State private var debugFallbackAudio = UserDefaults.standard.string(forKey: "debug.fallbackAudioSeed")
+    #endif
+
+    private var fallbackAudio: Binding<String> {
+        #if DEBUG
+        if debugFallbackAudio != nil {
+            return Binding(get: { debugFallbackAudio ?? "" }, set: { debugFallbackAudio = $0 })
+        }
+        #endif
+        return Binding(get: { model.secondaryPreferredAudioLanguage }, set: { model.setSecondaryPreferredAudioLanguage($0) })
+    }
+
     var body: some View {
         SettingsSection(String(localized: "Subtitles")) {
             if let style = model.subtitleStyle {
@@ -32,22 +48,24 @@ struct SubtitlesAudioSettingsPane: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
             // FEAT-84: the shared 78-language list, A–Z in the app's language, sentinels on top
-            // (see `LanguageOptions`). Each primary picker has its fallback row under it.
-            SettingsPickerRow(
+            // (see `LanguageOptions`). Each primary picker has its fallback row under it. Pushed
+            // list pages, not Menus: a tvOS Menu opens on its first entry, not the checked one
+            // (see `SettingsListPickerRow`).
+            SettingsListPickerRow(
                 title: String(localized: "Audio"),
                 selection: Binding(get: { model.preferredAudioLanguage }, set: { model.setPreferredAudioLanguage($0) }),
                 options: LanguageOptions.codes(LanguageOptions.audioCodes, keeping: model.preferredAudioLanguage, pinned: 2),
                 descriptionID: .subtitlesAudioLanguage,
                 label: LanguageOptions.name(forCode:)
             )
-            SettingsPickerRow(
+            SettingsListPickerRow(
                 title: String(localized: "Fallback Audio Language"),
-                selection: Binding(get: { model.secondaryPreferredAudioLanguage }, set: { model.setSecondaryPreferredAudioLanguage($0) }),
-                options: LanguageOptions.codes(LanguageOptions.fallbackAudioCodes, keeping: model.secondaryPreferredAudioLanguage, pinned: 2),
+                selection: fallbackAudio,
+                options: LanguageOptions.codes(LanguageOptions.fallbackAudioCodes, keeping: fallbackAudio.wrappedValue, pinned: 2),
                 descriptionID: .subtitlesFallbackAudioLanguage,
                 label: LanguageOptions.name(forCode:)
             )
-            SettingsPickerRow(
+            SettingsListPickerRow(
                 title: String(localized: "Subtitles"),
                 selection: Binding(get: { model.preferredSubtitleLanguage }, set: { model.setPreferredSubtitleLanguage($0) }),
                 options: LanguageOptions.codes(LanguageOptions.subtitleCodes, keeping: model.preferredSubtitleLanguage, pinned: 2),
@@ -56,10 +74,11 @@ struct SubtitlesAudioSettingsPane: View {
             )
             // Off stays Off: with Subtitles = Off the players ignore the fallback
             // (`SubtitleFallbackGuard`), so the row is hidden then. Hidden, never disabled (a
-            // disabled row is skipped by focus and reads as broken); focus is on the Subtitles
-            // Menu when it goes, so nothing focused leaves the hierarchy.
+            // disabled row is skipped by focus and reads as broken); Off is picked on the pushed
+            // page, and the pop returns focus to the Subtitles row, so nothing focused leaves the
+            // hierarchy.
             if model.preferredSubtitleLanguage != SubtitleLanguageOption.shared.NONE {
-                SettingsPickerRow(
+                SettingsListPickerRow(
                     title: String(localized: "Fallback Subtitle Language"),
                     selection: Binding(get: { model.secondaryPreferredSubtitleLanguage }, set: { model.setSecondaryPreferredSubtitleLanguage($0) }),
                     options: LanguageOptions.codes(LanguageOptions.fallbackSubtitleCodes, keeping: model.secondaryPreferredSubtitleLanguage, pinned: 1),
