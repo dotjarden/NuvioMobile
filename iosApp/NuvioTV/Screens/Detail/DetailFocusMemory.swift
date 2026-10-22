@@ -71,10 +71,13 @@ final class DetailFocusMemory {
     /// The card a live restore is steering focus to; nil when no restore is live.
     private(set) var liveTarget: (row: DetailRowID, key: String)?
 
-    /// True from `goLive` until `endRestore`: the remembered card is the only default candidate.
+    /// True from `goLive` until `endRestore`: a pop restore is steering focus to `liveTarget` and the
+    /// page holds still for the engine's strays. Play is the only default focus candidate throughout
+    /// (the sentinel `.defaultFocus` is gone, Wave 1 pass); the card gets there by the forced rungs'
+    /// request and by the re-grab.
     var restoreLive: Bool { liveTarget != nil }
 
-    /// The pop's restore began; the card becomes the default focus target.
+    /// The pop's restore began: `target` is the card the rungs and the re-grab steer focus to.
     func goLive(_ target: (row: DetailRowID, key: String), startedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         liveTarget = target
         popStartedAt = startedAt
@@ -175,11 +178,14 @@ final class DetailFocusMemory {
 }
 
 /// BUG-194 (Steven rc10: back from a biography went up to Play, then down to the card). The same
-/// shape as BUG-156's Home pop and Batch N's fix: while a restore is live the remembered card is
-/// the ONLY default candidate (so the engine's late restoration lands on it, not Play), and the
-/// hold is decided by the ROW the engine landed on, never by timestamps (DetailView passes the
-/// target key only when the row matches, so the card never decides). Pure; `DetailView` owns
-/// the state (hunks in `agentC-pending-hunks.md`).
+/// shape as BUG-156's Home pop and Batch N's fix, with Play as the only default focus candidate:
+/// the forced rungs fall inside the pop transition and stick on neither turn, the request lands the
+/// card when the transition ends (~570 ms), and the engine's own late restoration then lands on
+/// Play ~30 ms later. While a restore is live the gate holds the page still for every report that
+/// is not the card (`hold`), takes the card back at once when the viewer-input clock is live
+/// (`regrab`), and decides by the ROW the engine landed on and by viewer input, never by timestamps
+/// (DetailView passes the target key only when the row matches, so the card never decides). Pure;
+/// `DetailView` owns the state and `DetailFocusMemory.report` the bookkeeping.
 nonisolated enum DetailPopGate {
     nonisolated enum Decision: Equatable, Sendable {
         /// Focus is not on the target yet; keep steering and keep the page still.
@@ -196,18 +202,9 @@ nonisolated enum DetailPopGate {
         case regrab
     }
 
-    /// Same constant as the Home uncover: counted from the landing.
-    static let landedWindow: TimeInterval = UncoverRestorePolicy.landedWindow
-
     /// Re-grabs per restore, Home's count with a live clock: Classic Home saw the engine fire its
     /// default-candidate restoration twice (0.59 s and 0.98 s after the pop).
     static let maxRegrabs: Int = UncoverRestorePolicy.maxRegrabs(clockLive: true)
-
-    /// The default focus target while a restore is live (the remembered card's row), else nil, which
-    /// leaves today's `.defaultFocus($heroFocus, .play)` in charge.
-    static func defaultTarget(restoreLive: Bool, target: (row: DetailRowID, key: String)?) -> DetailRowID? {
-        restoreLive ? target?.row : nil
-    }
 
     /// Viewer input wins, then a focus report on the target row (the caller passes the target key when the row matches) lands;
     /// anything else (the hero, another row, another card) is the engine's: re-grabbed while the viewer-input
@@ -232,9 +229,6 @@ nonisolated enum DetailPopGate {
     static func regrabStillWanted(current: Bool, restoreLive: Bool, inputSincePop: Bool) -> Bool {
         current && restoreLive && !inputSincePop
     }
-
-    /// Whether the landed hold is still running, `age` seconds after the landing.
-    static func landedHoldActive(age: TimeInterval) -> Bool { age < landedWindow }
 }
 
 /// BUG-187: a restore rung for a row that owns its own `FocusState` (Collection, More Like This).

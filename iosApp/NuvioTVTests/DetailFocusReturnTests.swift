@@ -156,19 +156,6 @@ final class DetailFocusReturnTests: XCTestCase {
         XCTAssertEqual(forward, backward.reversed())
     }
 
-    func testDefaultTargetOnlyWhileLive() {
-        let target: (row: DetailRowID, key: String) = (.cast, "3")
-        XCTAssertEqual(DetailPopGate.defaultTarget(restoreLive: true, target: target), .cast)
-        XCTAssertNil(DetailPopGate.defaultTarget(restoreLive: false, target: target))
-        XCTAssertNil(DetailPopGate.defaultTarget(restoreLive: true, target: nil))
-    }
-
-    func testLandedHoldUsesTheHomeWindow() {
-        XCTAssertEqual(DetailPopGate.landedWindow, UncoverRestorePolicy.landedWindow)
-        XCTAssertTrue(DetailPopGate.landedHoldActive(age: 1.4))
-        XCTAssertFalse(DetailPopGate.landedHoldActive(age: 1.5))
-    }
-
     // Review r2 P3-1: the held change keeps the first `old` and the latest `new`; a landing drops it;
     // `endRestore` hands it over exactly once.
     func testHeldFocusChangeKeepsFirstOldAndLatestNew() {

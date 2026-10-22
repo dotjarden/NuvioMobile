@@ -574,11 +574,12 @@ struct DetailView: View {
     /// fallback restore after a pop (`DetailFocusMemory`). A reference box: writes never invalidate.
     @State private var focusMemory = DetailFocusMemory()
     /// BUG-194 (Batch P): the row and card of a live pop restore (Back from a biography, a More Like
-    /// This title or a collection). While set, the remembered card is the default focus target and
-    /// the focus engine's stray first landing (Play, the hero) does not move the page: the page lands
-    /// on the card in one move. Ended on the landing, on viewer input, or when the request retires.
-    /// Only the row and key are view state (the default-focus modifiers read them); the counters,
-    /// the clock stamps and the held change live in `focusMemory` so they never re-evaluate the body.
+    /// This title or a collection). While set, the engine's stray landings (Play, the hero) do not
+    /// move the page: the forced rungs' request lands the card when the pop transition ends, the
+    /// engine's late restoration then lands on Play (the only default candidate), and the gate
+    /// re-grabs the card at once (`DetailPopGate.Decision.regrab`). Ended on viewer input or when
+    /// the request retires (1.3 s). Only the row and key are view state; the counters, the clock
+    /// stamps and the held change live in `focusMemory` so they never re-evaluate the body.
     @State private var popRestoreRow: DetailRowID?
     @State private var popRestoreKey: String?
     /// BUG-187: the restore rung handed to the rows that own their `FocusState` (Collection, More
