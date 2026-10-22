@@ -121,6 +121,9 @@ struct CustomPostersSettingsView: View {
                 }
             }
         }
+        // A pushed stack destination does not inherit the Settings root's background, so the
+        // screen draws its own (OLED True Black, the theme background; Wave 3b review r1 P2-1).
+        .background(Theme.Palette.background.ignoresSafeArea())
         .navigationTitle(String(localized: "Custom Posters"))
         .onAppear { model.start() }
         .onDisappear {

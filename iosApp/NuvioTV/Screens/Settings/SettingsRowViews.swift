@@ -720,6 +720,10 @@ struct SettingsListPickerPage: View {
             .defaultFocus($focused, selection.wrappedValue, priority: .userInitiated)
             .onAppear { claimCheckedRow(proxy, settleCheck: true) }
         }
+        // Pushed stack destinations do not inherit the root's background (`SettingsView`), so the
+        // page draws its own: OLED True Black and the theme background reach it (review r1 P2-1,
+        // the BUG-214 defect).
+        .background(Theme.Palette.background.ignoresSafeArea())
         .navigationTitle(title)
     }
 
