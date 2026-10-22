@@ -47,7 +47,8 @@ struct DetailEntryRoute {
         case failed(String)
     }
 
-    /// A title to search for and the meta type its card must carry (`movie` / `series`).
+    /// A title to search for and the meta type its card must carry (`movie` / `series`, or `any`
+    /// for a caller that only knows the title: the Top result or the first result row naming it).
     struct Target {
         let query: String
         let type: String
@@ -115,6 +116,24 @@ struct DetailEntryRoute {
                 XCTFail("Detail route: Search unavailable (\(reason)); hero fallback: \(why)")
                 return false
             }
+        }
+    }
+
+    /// Search only, for a caller that tolerates a title missing from the fixture's catalog: no
+    /// hero fallback, and no failure when no card names the query (noted, nothing pressed). A
+    /// content Select that opened no Detail page still fails. True once a Detail page opened.
+    @discardableResult
+    func openDetailBySearchIfFound(targets: [Target]) -> Bool {
+        switch openViaSearch(targets: targets) {
+        case .opened:
+            return true
+        case .failed(let reason):
+            shot("detail_route_failed")
+            XCTFail("Detail route (Search): \(reason)")
+            return false
+        case .unavailable(let reason):
+            note("detail_route_search_unavailable", reason)
+            return false
         }
     }
 
@@ -249,7 +268,7 @@ struct DetailEntryRoute {
             }
             let top = focusedSearchSpot()
             guard top.container == "search.topResult" else { return nil }
-            if names(top.label, query), names(top.label, target.typeWord) { return top.label }
+            if names(top.label, query), target.type == "any" || names(top.label, target.typeWord) { return top.label }
             note("detail_route_top_result", "Top result '\(top.label)' is not the \(target.type) '\(query)': on to its row")
         }
         // On down into the type's row (People and other rows are passed through).
@@ -276,6 +295,7 @@ struct DetailEntryRoute {
     /// `search.group.<addon>:<type>:<catalog>`.
     private func isRow(_ container: String?, of type: String) -> Bool {
         guard let container, container.hasPrefix("search.group.") else { return false }
+        if type == "any" { return true }
         return container.contains("type:\(type)") || container.contains(":\(type):")
     }
 

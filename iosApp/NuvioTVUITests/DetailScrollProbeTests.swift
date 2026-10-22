@@ -387,7 +387,7 @@ final class DetailScrollProbeTests: XCTestCase {
     /// empty results screen just means the following `ux6Probe`/screenshot in the caller shows
     /// "debug_ux6 MISSING" or a Search screen instead of a Detail one, which the report calls out
     /// explicitly rather than this helper asserting past it.
-    private func openFirstSearchResult(_ app: XCUIApplication, query: String) {
+    private func openFirstSearchResult(_ app: XCUIApplication, query: String, tolerant: Bool = false) {
         enterSearchResults(app) // out of the inline keyboard: Down (linear) / Right×7 (grid)
         // 2026-09-04 finding: default focus after one Down does NOT reliably land on the leftmost
         // cell — a query with exactly one real match + a "See All" tile landed on "See All"
@@ -400,14 +400,23 @@ final class DetailScrollProbeTests: XCTestCase {
             pause(0.3)
         }
         // ui-legs (2026-10-22): Select only on a result card naming the query, read focused here
-        // (FA87's tvOS 26.5 reports focus); anything else is reported, not pressed.
+        // (FA87's tvOS 26.5 reports focus). Since Search & Discover the Down + Lefts above stop on
+        // the suggestion chips or the keyboard (first full run: focus on the "b" key), so when no
+        // such card holds focus the shared, focus-verified route (`DetailEntryRoute`, any type)
+        // re-types the query and walks to it instead.
         let focused = focusedSearchResultLabel(app)
-        guard let label = focused, label.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil else {
-            shot(app, "unverified_search_result_\(query)")
-            XCTFail("no result card naming '\(query)' holds focus (focused result: \(focused ?? "none")) — not pressing Select")
-            return
+        if let label = focused, label.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            remote.press(.select)
+        } else {
+            shot(app, "search_result_not_focused_\(query)")
+            let route = DetailEntryRoute(test: self, app: app)
+            if tolerant {
+                // The repro leg notes a title missing from the fixture's catalog instead of failing.
+                guard route.openDetailBySearchIfFound(targets: [.init(query: query, type: "any")]) else { return }
+            } else {
+                guard route.openDetail(targets: [.init(query: query, type: "any")]) else { return }
+            }
         }
-        remote.press(.select)
         pause(10) // Detail page fetch + hero-trailer resolve chain settle
     }
 
@@ -453,7 +462,7 @@ final class DetailScrollProbeTests: XCTestCase {
                 continue
             }
             shot(app, "bug41_repro_\(title)_00_results")
-            openFirstSearchResult(app, query: title)
+            openFirstSearchResult(app, query: title, tolerant: true)
             shot(app, "bug41_repro_\(title)_01_detail_top")
             let onDetail = app.staticTexts["debug_ux6"].waitForExistence(timeout: 4)
             if !onDetail {
