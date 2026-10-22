@@ -700,15 +700,17 @@ final class HeroLogoFocusTests: XCTestCase {
         // in the buffer) only held for a one-visit walk and says nothing once this test walks a row
         // out and back; adjacency is the invariant that actually matters and is independent of how
         // far the walk goes — two commits for one item with no other item between them is the
-        // double-paint BUG-42/BUG-90 exist to prevent. The one legitimate exception is
-        // `backdrop=late`: `adoptLateBackdrop` deliberately re-commits the same item once when its
-        // artwork lands after a deadline miss that painted nothing.
+        // double-paint BUG-42/BUG-90 exist to prevent. The two legitimate exceptions are
+        // `backdrop=late` (`adoptLateBackdrop` deliberately re-commits the same item once when its
+        // artwork lands after a deadline miss that painted nothing) and, since UX-19, `logo=late`
+        // (`adoptLateLogo` re-presents the title on stage once when its logo lands after the deadline
+        // painted the text wordmark; the text swap phases it, so no two titles are ever up at once).
         for (index, line) in presentLines.enumerated() where index > 0 {
             guard let item = probeField(line, "item"),
                   let previous = probeField(presentLines[index - 1], "item"),
                   item == previous else { continue }
-            XCTAssertEqual(probeField(line, "backdrop"), "late",
-                           "\(item) presented twice with nothing between — only a late-backdrop adoption may do that: \(line)")
+            XCTAssertTrue(probeField(line, "backdrop") == "late" || probeField(line, "logo") == "late",
+                          "\(item) presented twice with nothing between — only a late-backdrop or late-logo adoption may do that: \(line)")
         }
 
         let restored = launchToHome(extraArguments: [])

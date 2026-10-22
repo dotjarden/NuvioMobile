@@ -24,16 +24,25 @@ import SwiftUI
 /// What the core swaps. `swapIdentity` decides "same title" (a silent gap-fill) vs "new title" (a
 /// swap). `HeroPresentation` in production; a plain struct in the tests.
 nonisolated protocol StageSwapPayload: Equatable {
+    /// The title: "same title" for the trailer's arming key (`resting`), the rows and the probes.
     var swapIdentity: String { get }
+    /// UX-19 (2026-10-22): what the TEXT phases on. A logo landing late for the title on stage
+    /// (`HeroArtResolver.adoptLateLogo`) is not a silent gap-fill: a same-key update would swap the
+    /// text wordmark for the bitmap in place, the Text→Image flash BUG-90 removed. Keyed on the
+    /// logo's presence it goes through the phased swap instead (text out, logo in while invisible,
+    /// text in), while the title, and so the trailer resting on it, is unchanged (review r1 P1: the
+    /// arming key must stay the plain identity, `StageController.armedIdentity` compares it with
+    /// the focused card's). Synopsis gap-fills and backdrop sharpens keep the logo state and stay silent.
+    var phaseKey: String { get }
+}
+
+extension StageSwapPayload {
+    var phaseKey: String { swapIdentity }
 }
 
 extension HeroPresentation: StageSwapPayload {
-    /// UX-19 (2026-10-22): a logo landing late for the title on stage (`HeroArtResolver.adoptLateLogo`)
-    /// is NOT a silent gap-fill. A same-identity update would swap the text wordmark for the bitmap
-    /// in place, the Text→Image flash BUG-90 removed; keyed on the logo's presence it goes through
-    /// the phased swap instead: the text fades out, the logo is swapped in while invisible, the
-    /// text fades in. Synopsis gap-fills and backdrop sharpens keep the logo state, so they stay silent.
-    var swapIdentity: String { logo == nil ? identity : identity + "+logo" }
+    var swapIdentity: String { identity }
+    var phaseKey: String { logo == nil ? identity : identity + "+logo" }
 }
 
 /// The curve for the core's latest opacity write.
@@ -137,9 +146,10 @@ nonisolated struct StageSwapCore<P: StageSwapPayload>: Equatable {
             resting = nil
             return
         }
-        if p.swapIdentity == current.swapIdentity {
-            // Same title: a silent gap-fill (a late synopsis, a sharpened backdrop). A swap that
-            // was on its way to another title is dropped, and hidden text comes back.
+        if p.phaseKey == current.phaseKey {
+            // Same title, same logo state: a silent gap-fill (a late synopsis, a sharpened
+            // backdrop). A swap that was on its way to another title is dropped, and hidden text
+            // comes back.
             pending = nil
             shown = p
             switch phase {
@@ -230,11 +240,17 @@ nonisolated struct StageSwapCore<P: StageSwapPayload>: Equatable {
     }
 
     /// The text is invisible (or Reduce Motion): replace it, then fade the newcomer in.
+    /// UX-19 (review r1 P2-2): the same TITLE gaining its logo is a phase of the text only: the
+    /// trailer resting on the title keeps playing (`resting` kept) and it is not a swap (S14 counts
+    /// one swap per Down, S03 swaps ≤ rests).
     private mutating func swap(now: TimeInterval) {
+        let sameTitle = pending?.swapIdentity == shown?.swapIdentity
         shown = pending
         pending = nil
-        swaps += 1
-        resting = nil
+        if !sameTitle {
+            swaps += 1
+            resting = nil
+        }
         if reduceMotion {
             textOpacity = 1
             fade = .instant

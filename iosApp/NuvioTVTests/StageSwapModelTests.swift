@@ -8,7 +8,10 @@ import XCTest
 private nonisolated struct SwapItem: StageSwapPayload {
     let id: String
     var rev: Int = 0
+    /// UX-19: the logo's presence; part of `phaseKey`, never of `swapIdentity`.
+    var logo: Bool = false
     var swapIdentity: String { id }
+    var phaseKey: String { logo ? id + "+logo" : id }
 }
 
 /// `TextSwapTiming.stage`, spelled out so the cases do not depend on the launch knobs.
@@ -317,6 +320,33 @@ final class StageSwapModelTests: XCTestCase {
         XCTAssertEqual(h.core.phase, .idle)
         XCTAssertEqual(h.core.swaps, 0)
         XCTAssertEqual(h.core.fade, .instant)
+    }
+
+    /// UX-19 (review r1 P1 / P2-2): the same title gaining its logo PHASES the text (fade-out, swap
+    /// while hidden, fade-in) but is not a swap of titles: `swaps` stays, and the trailer resting on
+    /// the title keeps its key (`resting` untouched), so the arming key still equals the focused card's.
+    func testSameTitleGainingItsLogoPhasesTheTextAndKeepsTheRest() {
+        var h = Harness()
+        h.at(0) { $0.focusActivity(now: 0) }
+        h.tick(0.45)
+        XCTAssertEqual(h.core.resting, "P0", "the title rests after the pause")
+        h.at(1.0) { $0.present(SwapItem(id: "P0", logo: true), now: 1.0) }
+        XCTAssertEqual(h.core.phase, .pausing, "a new phase key waits for the gate like a new title")
+        h.tick(1.0)
+        XCTAssertEqual(h.core.phase, .fadingOut, "the gate was long open: the text fades out at once")
+        XCTAssertEqual(h.core.textOpacity, 0)
+        h.tick(1.15)
+        XCTAssertEqual(h.core.shown, SwapItem(id: "P0", logo: true), "the logo payload is up once the text is hidden")
+        XCTAssertEqual(h.core.phase, .fadingIn)
+        XCTAssertEqual(h.core.swaps, 0, "not a swap of titles")
+        XCTAssertEqual(h.core.resting, "P0", "the trailer keeps resting on the title")
+        h.tick(1.35)
+        XCTAssertEqual(h.core.phase, .idle)
+        XCTAssertEqual(h.core.textOpacity, 1)
+        // A later synopsis gap-fill on the logo payload stays silent.
+        h.at(2.0) { $0.present(SwapItem(id: "P0", rev: 1, logo: true), now: 2.0) }
+        XCTAssertEqual(h.core.phase, .idle)
+        XCTAssertEqual(h.core.shown, SwapItem(id: "P0", rev: 1, logo: true))
     }
 
     func testSameIdentityDuringTheFadeOutBringsTheTextBack() {

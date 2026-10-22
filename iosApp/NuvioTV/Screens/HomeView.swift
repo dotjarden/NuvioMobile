@@ -4704,6 +4704,10 @@ final class HeroArtResolver: ObservableObject {
             if backdrop == nil || usedStandIn, let late = wait.lateBackdrop {
                 self.adoptLateBackdrop(late, identity: identity, startedAt: started, url: backdropURL)
             }
+            // UX-19 (review r1 P2-3): the logo's own hand-off race, the same shape.
+            if logo == nil, !isFolder, let late = wait.lateLogo, let lateURL = wait.lateLogoURL ?? logoURL {
+                self.adoptLateLogo(late, identity: identity, url: lateURL, origin: planLogoOrigin)
+            }
         }
     }
 
@@ -5188,7 +5192,8 @@ final class HeroArtResolver: ObservableObject {
         let inked = Self.inkedLogo(image, url: url)
         guard let logo = inked.logo else { return }
         logPresent(identity: identity,
-                   backdrop: presentedBackdropIsStandIn ? "small" : (live.backdrop != nil ? "cached" : "none"),
+                   backdrop: presentedBackdropIsStandIn ? "small"
+                       : (live.backdrop == nil ? "none" : (presentedBackdropURL == nil ? "poster" : "cached")),
                    logo: "late", logoOrigin: origin, logoInk: inked.ink, waitedMs: 0, same: false)
         presentedLogoURL = url
         presented = HeroPresentation(item: live.item, backdrop: live.backdrop, logo: logo,
@@ -5253,7 +5258,10 @@ final class HeroArtResolver: ObservableObject {
             guard let before, !before.isEmpty else { return false }
             return before != (after ?? "")
         }
-        if replaced(current.name, target.name) { return true }
+        // UX-19: a name that was the content id (`HeroTitleText`) was drawn as nothing, so the real
+        // name arriving is a fill, not a repaint.
+        let currentName = HeroTitleText.isIdentifier(current.name, id: current.id) ? "" : current.name
+        if replaced(currentName, target.name) { return true }
         if replaced(current.releaseInfo, target.releaseInfo) { return true }
         if replaced(current.description_, target.description_) { return true }
         // Genres are a LIST, and only the first three ever reach the meta line - a fourth genre
@@ -5263,6 +5271,9 @@ final class HeroArtResolver: ObservableObject {
         return false
     }
 
+    /// UX-19 (2026-10-22): `logo=late` is the one other same-item re-present besides
+    /// `backdrop=late`: `adoptLateLogo` re-presents the title on stage once when its logo lands
+    /// after the deadline painted the text wordmark (test62 accepts both).
     /// BUG-95 (beta.18): `frame=<w>x<h>|none` (append-only) is diagnostic —
     /// `HeroCrossfadeImage.lastReportedSize`, the container's own last-measured layout size, read
     /// here because the resolver has no view access of its own. Proof, photographable off the
@@ -5345,6 +5356,9 @@ final class HeroPresentArtWait {
     /// call that has already been superseded, and must not retain anything for a resolver that has
     /// moved on to a different target.
     private(set) var lateBackdrop: UIImage?
+    /// UX-19: the logo that landed inside the deadline hand-off (see `resolveLogo`).
+    private(set) var lateLogo: UIImage?
+    private(set) var lateLogoURL: URL?
 
     private var pendingBackdrop: Bool
     private var pendingLogo: Bool
@@ -5429,7 +5443,14 @@ final class HeroPresentArtWait {
     }
 
     func resolveLogo(_ image: UIImage?, url: URL? = nil) {
-        guard !finished else { return }
+        guard !finished else {
+            // UX-19 (review r1 P2-3): the same hand-off window as `resolveBackdrop`'s: the wait
+            // ended at the deadline and the commit has not run yet, so `adoptLateLogo` (which the
+            // fetch closure calls next) is rejected while `resolveTask` is still set. Kept for the
+            // one read after the commit.
+            if hitDeadline, let image { lateLogo = image; lateLogoURL = url }
+            return
+        }
         if let image {
             logo = image
             logoURL = url
@@ -7069,9 +7090,9 @@ struct HeroTextLayer: View {
     /// folder whose name is on screen.
     var folderRoutes: [String: FolderRoute]
 
-    // UX-19: keyed on `swapIdentity` (identity + the logo's presence), so a late logo goes through
+    // UX-19: keyed on `phaseKey` (identity + the logo's presence), so a late logo goes through
     // the phased swap on Classic too, never an in-place Text→Image flash.
-    @StateObject private var textSwap = HeroTextSwapModel(timing: .classic, identity: { $0.swapIdentity })
+    @StateObject private var textSwap = HeroTextSwapModel(timing: .classic, identity: { $0.phaseKey })
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// BUG-190: an explicit internal init, the one entry point Home (`HomeHeroTextSlot`) and the
@@ -7344,7 +7365,7 @@ struct HeroLogo: View {
                 // UX-19 (2026-10-22, the Apple TV): a Continue Watching item whose metadata had not
                 // resolved yet carried its IMDb id as its name, and the hero printed "tt3118958" as
                 // the title. An id is never a wordmark: the slot stays empty until a name arrives.
-                Text(HeroTitleText.isIdentifier(item.name) ? "" : item.name)
+                Text(HeroTitleText.isIdentifier(item.name, id: item.id) ? "" : item.name)
                     .font(Theme.Font.hero)
                     .foregroundStyle(Theme.Palette.textPrimary)
                     .lineLimit(2)

@@ -139,6 +139,27 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.0, y: 0.40), DetailScrim.cinematicShelfOpacity / 2, accuracy: 1e-9)
     }
 
+    /// UX-18 (review r1 P2-6): the baked shelf bitmap is the oracle sampled: spot pixels match
+    /// `cinematicShelfAlpha` within the 8-bit quantum, and the right half and the bands outside are clear.
+    func testShelfBitmapSamplesTheOracle() throws {
+        let image = DetailScrimShelf.image
+        let cg = try XCTUnwrap(image.cgImage)
+        XCTAssertEqual(cg.width, DetailScrimShelf.width)
+        XCTAssertEqual(cg.height, DetailScrimShelf.height)
+        var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                              bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        func alpha(col: Int, row: Int) -> Double { Double(pixels[(row * cg.width + col) * 4 + 3]) / 255 }
+        for (x, y) in [(0.0, 0.50), (0.25, 0.50), (0.10, 0.40), (0.10, 0.58), (0.60, 0.50), (0.10, 0.30), (0.10, 0.70)] {
+            let col = min(cg.width - 1, Int(x * Double(cg.width))), row = min(cg.height - 1, Int(y * Double(cg.height)))
+            let expected = DetailScrim.cinematicShelfAlpha(x: (Double(col) + 0.5) / Double(cg.width),
+                                                           y: (Double(row) + 0.5) / Double(cg.height))
+            XCTAssertEqual(alpha(col: col, row: row), expected, accuracy: 1.5 / 255, "x=\(x) y=\(y)")
+        }
+    }
+
     /// The art region above the bottom band (x 0.5–1, y 0–0.4, no poster layer) stays mostly clear:
     /// mean 0.031.
     func testArtRegionMostlyClear() {

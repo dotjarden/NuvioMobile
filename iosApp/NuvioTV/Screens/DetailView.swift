@@ -1851,28 +1851,15 @@ struct DetailView: View {
             // y ≈ 0.47 and 0.52, where the composite fell to ~0.32 and both lines vanished over The
             // Simpsons' yellow key art and a white trailer frame. A shelf under the text column
             // only: black at `cinematicShelfOpacity` on the left edge fading to clear by
-            // `cinematicShelfEndX` of the width, masked to y `cinematicShelfTop…Bottom` with
+            // `cinematicShelfEndX` of the width, inside y `cinematicShelfTop…Bottom` with
             // `cinematicShelfSoftEdge` ramps. No box, no text shadow; still under the Classic
             // ceiling above y = 0.4 and under build 284 everywhere the tests measure.
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(DetailScrim.cinematicShelfOpacity), location: 0),
-                    .init(color: .clear, location: DetailScrim.cinematicShelfEndX),
-                    .init(color: .clear, location: 1)
-                ],
-                startPoint: .leading, endPoint: .trailing
-            )
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: DetailScrim.cinematicShelfTop - DetailScrim.cinematicShelfSoftEdge),
-                        .init(color: .black, location: DetailScrim.cinematicShelfTop),
-                        .init(color: .black, location: DetailScrim.cinematicShelfBottom),
-                        .init(color: .clear, location: DetailScrim.cinematicShelfBottom + DetailScrim.cinematicShelfSoftEdge)
-                    ],
-                    startPoint: .top, endPoint: .bottom
-                )
-            )
+            // Review r1 (P2-6): drawn as ONE small bitmap baked once from `cinematicShelfAlpha`
+            // (the test oracle) and stretched, not a masked gradient: a `.mask` is a CALayer mask,
+            // an offscreen pass at native resolution every frame on the GPU-bound page (BUG-206).
+            Image(uiImage: DetailScrimShelf.image)
+                .resizable()
+                .interpolation(.medium)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -3728,6 +3715,35 @@ private struct HoldPlayChooseSourceMenu: ViewModifier {
 
 /// beta.18 verdict (BUG-127): Detail scrim stops + synopsis-panel constants, lifted out of
 /// `DetailView` so tests can pin them.
+/// UX-18 (review r1 P2-6): the Cinematic shelf as one bitmap, `DetailScrim.cinematicShelfAlpha`
+/// sampled on a 192 × 108 grid (a 20 px cell on the 3840 × 2160 box, well under the shelf's 0.04
+/// ramps) and rendered once per process; the overlay stretches it over the screen. A single texture
+/// draw where the masked pair of gradients cost an offscreen pass per frame.
+nonisolated enum DetailScrimShelf {
+    static let width = 192
+    static let height = 108
+
+    static let image: UIImage = {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cg = context.cgContext
+            for row in 0..<height {
+                let y = (Double(row) + 0.5) / Double(height)
+                for col in 0..<width {
+                    let x = (Double(col) + 0.5) / Double(width)
+                    let alpha = DetailScrim.cinematicShelfAlpha(x: x, y: y)
+                    guard alpha > 0 else { continue }
+                    cg.setFillColor(UIColor(white: 0, alpha: alpha).cgColor)
+                    cg.fill(CGRect(x: col, y: row, width: 1, height: 1))
+                }
+            }
+        }
+    }()
+}
+
 nonisolated enum DetailScrim {
     static let horizontalLeading: Double = 0.80
     static let horizontalMid: Double = 0.30
@@ -3822,7 +3838,7 @@ nonisolated enum DetailScrim {
         return 1 - (1 - horizontal) * (1 - vertical) * (1 - radial) * (1 - cinematicShelfAlpha(x: x, y: y))
     }
 
-    /// UX-18: the shelf's own alpha at (x, y), as the masked gradient draws it.
+    /// UX-18: the shelf's own alpha at (x, y); `DetailScrimShelf.image` is this function sampled.
     static func cinematicShelfAlpha(x: Double, y: Double) -> Double {
         let tx = min(max(x, 0), 1)
         let horizontal = tx >= cinematicShelfEndX ? 0 : cinematicShelfOpacity * (1 - tx / cinematicShelfEndX)
