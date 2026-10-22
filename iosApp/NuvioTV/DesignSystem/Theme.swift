@@ -64,18 +64,29 @@ enum Theme {
             background = Color(hex: enabled ? 0x000000 : 0x0D0D0D)
         }
 
+        /// The luminance above which a colour counts as LIGHT: strictly above it, a fill takes dark
+        /// ink (`onColor(forFillHex:)`) and an accent reads as the resting label colour
+        /// (`DetailActiveGlyph.isLight`). One threshold for both, so a future accent between the old
+        /// 0.75 and 0.8 cannot get dark ink on its fills yet an undimmed inactive label (wave3c
+        /// review r2 P3-3). Same scale as `luminance(fromHexString:)`: Rec. 709 weights over the
+        /// gamma-encoded sRGB components. It sits well above the brightest saturated accent (Amber,
+        /// ~0.6) and well below the near-white one (White, ~0.96), so only White crosses it.
+        /// `nonisolated` so `DetailActiveGlyph` (a nonisolated type) reads it directly.
+        nonisolated static let lightAccentLuminance: Double = 0.75
+
         /// Picks a legible text/icon color for a solid fill, by simple relative-luminance
         /// threshold: dark text for light fills (e.g. the White theme's near-white accent), the
         /// app's light `textPrimary` otherwise. Not full WCAG contrast math — just enough to keep
-        /// text readable against any of the app's accent colors. Threshold sits well above the
-        /// brightest saturated accent (Amber, ~0.6) so every existing theme keeps its current
-        /// light text; only near-white fills (the White theme, ~0.96) cross it.
+        /// text readable against any of the app's accent colors. The threshold
+        /// (`lightAccentLuminance`) sits well above the brightest saturated accent (Amber, ~0.6) so
+        /// every existing theme keeps its current light text; only near-white fills (the White
+        /// theme, ~0.96) cross it.
         static func onColor(forFillHex hex: UInt32) -> Color {
             let r = Double((hex >> 16) & 0xFF) / 255.0
             let g = Double((hex >> 8) & 0xFF) / 255.0
             let b = Double(hex & 0xFF) / 255.0
             let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-            return luminance > 0.75 ? Color(hex: 0x0D0D0D) : textPrimary
+            return luminance > lightAccentLuminance ? Color(hex: 0x0D0D0D) : textPrimary
         }
 
         /// Relative luminance (0–1, Rec. 709 weights) of a `#RGB`/`#RRGGBB`/`#RRGGBBAA` hex

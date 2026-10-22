@@ -25,9 +25,10 @@ import SwiftUI
 /// (`Color.primary`, `#FFFFFF` on the dark scheme) are the same white on the glass, so with the
 /// colour rule alone active and inactive looked identical at rest, and under focus both are the ink.
 /// Two halves close it:
-/// - colour: an accent whose luminance is at least `lightAccentLuminance` (White only; Amber, the
-///   brightest saturated accent, is about 0.6) dims the INACTIVE label to the secondary colour, so
-///   the active accent stands out at rest. Every other accent keeps the rule above unchanged;
+/// - colour: an accent whose luminance is above `Theme.Palette.lightAccentLuminance` (White only;
+///   Amber, the brightest saturated accent, is about 0.6) dims the INACTIVE label to the secondary
+///   colour, so the active accent stands out at rest. Every other accent keeps the rule above
+///   unchanged;
 /// - shape: every one of the three buttons carries its state in its glyph too, so the cue survives
 ///   focus (where both states are the ink). Watched (`checkmark.circle` / `.fill`) and Library
 ///   (`plus` / `checkmark`) already swap; Shuffle drew one `shuffle` for both states and is
@@ -66,12 +67,6 @@ nonisolated enum DetailActiveGlyph {
     /// usable from a nonisolated context.
     static let dimmedRestingLabel = Color.secondary
 
-    /// Review r1 P2-1: the luminance at and above which an accent counts as LIGHT (it reads as the
-    /// resting label itself). Same scale as `Theme.Palette.luminance(fromHexString:)` and
-    /// `onColor(forFillHex:)`: Rec. 709 weights over the gamma-encoded sRGB components. White
-    /// (`#F5F5F5`) is about 0.96; Amber, the brightest saturated accent, about 0.6; Ocean about 0.47.
-    static let lightAccentLuminance: Double = 0.8
-
     /// Shuffle's state glyphs (review r1 P2-1): one `shuffle` symbol for both states carried no
     /// state under focus or in Cinematic's icon-only label.
     static let shuffleOnGlyph = "shuffle.circle.fill"
@@ -94,9 +89,12 @@ nonisolated enum DetailActiveGlyph {
         active ? onGlyph : offGlyph
     }
 
-    /// Whether `accent` is light enough to read as the resting label (`lightAccentLuminance`).
+    /// Whether `accent` is light enough to read as the resting label: its luminance is above
+    /// `Theme.Palette.lightAccentLuminance`, the same threshold (and the same strict comparison)
+    /// `Theme.Palette.onColor(forFillHex:)` uses to give a fill dark ink (review r2 P3-3). White
+    /// (`#F5F5F5`) is about 0.96; Amber, the brightest saturated accent, about 0.6; Ocean about 0.47.
     static func isLight(_ accent: Color) -> Bool {
-        luminance(of: accent) >= lightAccentLuminance
+        luminance(of: accent) > Theme.Palette.lightAccentLuminance
     }
 
     /// `accent`'s luminance on `Theme.Palette.luminance(fromHexString:)`'s scale, from its resolved

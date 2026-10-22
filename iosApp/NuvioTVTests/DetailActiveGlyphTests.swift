@@ -134,6 +134,68 @@ final class DetailActiveGlyphTests: XCTestCase {
         XCTAssertNotEqual(DetailActiveGlyph.shuffleOnGlyph, DetailActiveGlyph.shuffleOffGlyph)
     }
 
+    // MARK: - One light-accent threshold (review r2 P3-3)
+
+    /// `DetailActiveGlyph.isLight` and `Theme.Palette.onColor(forFillHex:)` read the one shared
+    /// threshold with the same strict comparison, so across every grey level (luminance = level /
+    /// 255, the weights sum to 1) a fill gets dark ink exactly when an accent of that grey counts
+    /// as light, and the flip sits at the threshold.
+    func testTheGlyphDimAndTheFillInkShareOneLightThreshold() {
+        XCTAssertEqual(Theme.Palette.lightAccentLuminance, 0.75)
+        let ink = Color(hex: 0x0D0D0D)
+        var lightLevels: [Int] = []
+        for level in 0...255 {
+            let hex = UInt32(level << 16 | level << 8 | level)
+            let darkInk = Theme.Palette.onColor(forFillHex: hex) == ink
+            let isLight = DetailActiveGlyph.isLight(Color(hex: hex))
+            XCTAssertEqual(darkInk, isLight, "grey \(level)")
+            XCTAssertEqual(isLight, Double(level) / 255.0 > Theme.Palette.lightAccentLuminance, "grey \(level)")
+            if isLight { lightLevels.append(level) }
+        }
+        // 191/255 = 0.749 is below 0.75; 192/255 = 0.753 is above it.
+        XCTAssertEqual(lightLevels.first, 192)
+        XCTAssertEqual(lightLevels.last, 255)
+    }
+
+    /// The seven swatches resolve exactly as they did with the two separate thresholds (0.8 and
+    /// 0.75): only White is light, so only White dims an inactive label at rest and takes dark ink
+    /// on its fills; the other six keep the normal label colour and `textPrimary`. Driven through
+    /// `applyTheme(named:)`, the only door a swatch has into `Theme.Palette.accent`.
+    func testEverySwatchResolvesTheSameOnAndOffAsBefore() {
+        let saved = (Theme.Palette.accent, Theme.Palette.accentFocus,
+                     Theme.Palette.accentText, Theme.Palette.accentFocusHex)
+        defer {
+            Theme.Palette.accent = saved.0
+            Theme.Palette.accentFocus = saved.1
+            Theme.Palette.accentText = saved.2
+            Theme.Palette.accentFocusHex = saved.3
+        }
+        let swatches: [(name: String, hex: UInt32, light: Bool)] = [
+            ("CRIMSON", 0xE53935, false), ("OCEAN", 0x1E88E5, false), ("VIOLET", 0x8E24AA, false),
+            ("EMERALD", 0x43A047, false), ("AMBER", 0xFB8C00, false), ("ROSE", 0xD81B60, false),
+            ("WHITE", 0xF5F5F5, true),
+        ]
+        for swatch in swatches {
+            Theme.Palette.applyTheme(named: swatch.name)
+            let accent = Theme.Palette.accent
+            XCTAssertEqual(accent, Color(hex: swatch.hex), swatch.name)
+            XCTAssertEqual(DetailActiveGlyph.isLight(accent), swatch.light, swatch.name)
+            // On at rest: the accent. Focused, on or off: the ink. Off at rest: the normal label
+            // colour, dimmed beside the one light accent.
+            XCTAssertEqual(DetailActiveGlyph.color(active: true, focused: false, accent: accent), accent, swatch.name)
+            XCTAssertEqual(DetailActiveGlyph.color(active: true, focused: true, accent: accent),
+                           DetailActiveGlyph.inkOnPlatter, swatch.name)
+            XCTAssertEqual(DetailActiveGlyph.color(active: false, focused: true, accent: accent),
+                           DetailActiveGlyph.inkOnPlatter, swatch.name)
+            XCTAssertEqual(DetailActiveGlyph.color(active: false, focused: false, accent: accent),
+                           swatch.light ? DetailActiveGlyph.dimmedRestingLabel : DetailActiveGlyph.restingLabel,
+                           swatch.name)
+            // Ink on the accent fill: dark on White, `textPrimary` on the rest.
+            XCTAssertEqual(Theme.Palette.accentText,
+                           swatch.light ? Color(hex: 0x0D0D0D) : Theme.Palette.textPrimary, swatch.name)
+        }
+    }
+
     // MARK: - Helpers
 
     /// WCAG contrast of two label colours composited over the app background (`#0D0D0D`), both
