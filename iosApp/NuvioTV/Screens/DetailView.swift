@@ -3479,7 +3479,8 @@ private struct CompanyChip: View {
             // row gap; see `PlainLabelRing.smallLabelScaleCeiling`'s doc comment for the math.
             rise: CompanyChipMetrics.focusRise,
             // BUG-200: the black platter + shadow in ring mode only; the default cell scales the
-            // capsule alone (no dark slab behind a white chip).
+            // capsule alone (the platter is a black capsule of the chip's own shape that greys
+            // the 0.92-white fill and adds a shadow; whether scale alone reads is a device look).
             focusShadow: PlainLabelRing.smallLabelPlatter(accentFocusRing: accentFocusRing,
                                                           noZoomOnFocus: noZoomOnFocus)
         ))

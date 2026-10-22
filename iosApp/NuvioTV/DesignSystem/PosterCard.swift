@@ -154,8 +154,10 @@ private struct RingCardButtonStyle: ButtonStyle {
 ///   (DetailView). Those last two draw their ring INSIDE their own artwork frame
 ///   (`PlainLabelRing`), and rc9 device photos showed the native `.borderless` lift raising the
 ///   artwork while the ring stayed at base geometry — the FEAT-14 graveyard's third entry verbatim,
-///   on the two labels that had been left on that lift. They now own the lift too
-///   (`PlainLabelRing.lift`), so ring and picture are one SwiftUI layer on every card class.
+///   on the two labels that had been left on that lift. They now own the lift too (`FolderTile`
+///   through `PlainLabelRing.lift`; `CastCard`, since BUG-200, through `DetailLabelLift`, which
+///   answers the same in ring and No Zoom and `.systemLift` in the default cell), so ring and
+///   picture are one SwiftUI layer on every card class.
 /// - `.plain` - the label owns no manual treatment: the four `TileFocusLift` tiles
 ///   (`TrailerThumbCard`, `SeeAllCard`, `SeasonPosterCard`, `EpisodeThumbCard`). Their zoom-on
 ///   branch is a system hover effect, and an overlay under one of those is known to render beneath
@@ -459,8 +461,9 @@ enum PlainLabelRing: Equatable {
 
     /// BUG-200: whether a `smallLabelLift` label's manual lift draws `CardArtworkFocusLift`'s black
     /// platter + 22 pt shadow (`focusShadow`). Ring mode only, where the chip has always worn it;
-    /// the default cell scales the label alone, so no dark slab stands behind a white capsule in
-    /// the mode whose contract is the system look (no platter of its own).
+    /// the default cell scales the label alone, so the black capsule-shaped platter does not grey
+    /// the chip's 0.92-white fill in the mode whose contract is the system look (no platter of its
+    /// own).
     static func smallLabelPlatter(accentFocusRing: Bool, noZoomOnFocus: Bool) -> Bool {
         accentFocusRing && !noZoomOnFocus
     }

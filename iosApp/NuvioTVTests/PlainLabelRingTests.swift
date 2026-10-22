@@ -4,7 +4,9 @@ import SwiftUI
 
 /// BUG-102 (rc9, 2026-09-10): the ring verdict for labels that draw their own ring inside the
 /// artwork frame (`FolderTile`, `CastCard`). The tester's report was the zoom-on + accent-ring-on
-/// cell drawing nothing; every other cell must keep what it did before.
+/// cell drawing nothing; every other cell must keep what it did before. `PlainLabelRing.lift` is
+/// `FolderTile`'s lift; `CastCard`'s is `DetailLabelLift` since BUG-200 (`DetailLabelLiftTests`),
+/// which equals it everywhere but the default cell.
 final class PlainLabelRingTests: XCTestCase {
     func testUnfocusedDrawsNothingInEveryMode() {
         for accent in [false, true] {
@@ -84,13 +86,18 @@ final class PlainLabelRingTests: XCTestCase {
                                                    lift: .plain), .borderless)
     }
 
-    /// Default mode is byte-identical for every label class — the BUG-93/BUG-108 regression gate.
+    /// Default mode is byte-identical for the system-lift label classes — the BUG-93/BUG-108
+    /// regression gate. `.manual` (BUG-200, `CompanyChip`) is the one exception by design: it
+    /// draws its own lift with zoom on, so its default cell is `.ring` (`CompanyChipLiftTests`).
     func testDefaultModeIsBareBorderlessForEveryLabelClass() {
         for lift in [CardButtonLift.card, .plain] {
             XCTAssertEqual(CardButtonStyleKind.resolve(noZoomOnFocus: false,
                                                        accentFocusRing: false,
                                                        lift: lift), .borderless)
         }
+        XCTAssertEqual(CardButtonStyleKind.resolve(noZoomOnFocus: false,
+                                                   accentFocusRing: false,
+                                                   lift: .manual), .ring)
     }
 
     /// The only cross-file coupling: the pinned row's clip budget charges the same constant the

@@ -53,7 +53,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var preferredSubtitleLanguage = "none"
     /// FEAT-84: the fallback track languages (shared `secondaryPreferred*Language`, synced per
     /// profile, the values mobile's dialogs set). "" is None: the shared state carries nil, and the
-    /// pane's `SettingsPickerRow` needs a non-optional value.
+    /// pane's `SettingsListPickerRow` needs a non-optional value.
     @Published private(set) var secondaryPreferredAudioLanguage = ""
     @Published private(set) var secondaryPreferredSubtitleLanguage = ""
     /// Poster card style (size in dp, corner radius in dp, hide titles, landscape catalog rows).
