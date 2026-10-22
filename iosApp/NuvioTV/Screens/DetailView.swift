@@ -1846,6 +1846,33 @@ struct DetailView: View {
                     endRadius: geo.size.width * DetailScrim.cinematicRadialEndRadiusFraction
                 )
             }
+            // UX-18 (design review 2026-10-22): the meta line (year · runtime · genres · rating) and
+            // the ratings line sit ABOVE the synopsis block the Batch C band was tuned for, at
+            // y ≈ 0.47 and 0.52, where the composite fell to ~0.32 and both lines vanished over The
+            // Simpsons' yellow key art and a white trailer frame. A shelf under the text column
+            // only: black at `cinematicShelfOpacity` on the left edge fading to clear by
+            // `cinematicShelfEndX` of the width, masked to y `cinematicShelfTop…Bottom` with
+            // `cinematicShelfSoftEdge` ramps. No box, no text shadow; still under the Classic
+            // ceiling above y = 0.4 and under build 284 everywhere the tests measure.
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(DetailScrim.cinematicShelfOpacity), location: 0),
+                    .init(color: .clear, location: DetailScrim.cinematicShelfEndX),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .leading, endPoint: .trailing
+            )
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: DetailScrim.cinematicShelfTop - DetailScrim.cinematicShelfSoftEdge),
+                        .init(color: .black, location: DetailScrim.cinematicShelfTop),
+                        .init(color: .black, location: DetailScrim.cinematicShelfBottom),
+                        .init(color: .clear, location: DetailScrim.cinematicShelfBottom + DetailScrim.cinematicShelfSoftEdge)
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -3759,6 +3786,17 @@ nonisolated enum DetailScrim {
     static let cinematicRadialOpacity: Double = 0.50
     /// The radial's end radius as a fraction of the screen WIDTH.
     static let cinematicRadialEndRadiusFraction: Double = 0.62
+    /// UX-18 (2026-10-22): the shelf under the meta and ratings lines (see `cinematicScrimOverlay`).
+    /// Chosen on the composite grid: the meta band (x 0.03–0.30, y 0.44–0.54) goes from a mean of
+    /// 0.473 / minimum 0.323 to 0.594 / 0.417, the synopsis block and the art region do not move,
+    /// and no grid point exceeds the Classic ceiling (y ≤ 0.4) or build 284 (`DetailScrimCinematicTests`).
+    static let cinematicShelfOpacity: Double = 0.35
+    /// The shelf is clear from this fraction of the width rightward.
+    static let cinematicShelfEndX: Double = 0.50
+    static let cinematicShelfTop: Double = 0.42
+    static let cinematicShelfBottom: Double = 0.56
+    /// Linear ramps of this height above the top and below the bottom.
+    static let cinematicShelfSoftEdge: Double = 0.04
     /// The aspect the composite math measures radial distance in (the tvOS screen).
     static let compositeAspectWidth: Double = 1920
     static let compositeAspectHeight: Double = 1080
@@ -3781,7 +3819,21 @@ nonisolated enum DetailScrim {
         let endRadius = cinematicRadialEndRadiusFraction * compositeAspectWidth
         let distance = (dx * dx + dy * dy).squareRoot()
         let radial = cinematicRadialOpacity * max(0, 1 - distance / endRadius)
-        return 1 - (1 - horizontal) * (1 - vertical) * (1 - radial)
+        return 1 - (1 - horizontal) * (1 - vertical) * (1 - radial) * (1 - cinematicShelfAlpha(x: x, y: y))
+    }
+
+    /// UX-18: the shelf's own alpha at (x, y), as the masked gradient draws it.
+    static func cinematicShelfAlpha(x: Double, y: Double) -> Double {
+        let tx = min(max(x, 0), 1)
+        let horizontal = tx >= cinematicShelfEndX ? 0 : cinematicShelfOpacity * (1 - tx / cinematicShelfEndX)
+        let ty = min(max(y, 0), 1)
+        let top = cinematicShelfTop, bottom = cinematicShelfBottom, soft = cinematicShelfSoftEdge
+        let vertical: Double
+        if ty < top - soft || ty > bottom + soft { vertical = 0 }
+        else if ty < top { vertical = (ty - (top - soft)) / soft }
+        else if ty <= bottom { vertical = 1 }
+        else { vertical = 1 - (ty - bottom) / soft }
+        return horizontal * vertical
     }
 
     /// Piecewise-linear through three equally spaced stops (x = 0, 0.5, 1), as `LinearGradient`

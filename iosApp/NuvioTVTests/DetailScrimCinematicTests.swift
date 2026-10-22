@@ -120,6 +120,25 @@ final class DetailScrimCinematicTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(block.min, 0.30, "a point under the text block fell below the legibility floor")
     }
 
+    /// UX-18 (2026-10-22): the meta and ratings lines (x 0.03–0.30, y 0.44–0.54) sit above the
+    /// synopsis block and had no floor of their own (mean 0.473, minimum 0.323 before the shelf).
+    func testMetaLineFloor() {
+        let band = stats(x: 0.03...0.30, y: 0.44...0.54, overPoster: false)
+        XCTAssertGreaterThanOrEqual(band.mean, 0.55, "the meta band's mean darkness fell below the legibility floor")
+        XCTAssertGreaterThanOrEqual(band.min, 0.40, "a point under the meta line fell below the legibility floor")
+    }
+
+    /// UX-18: the shelf is confined to the text column; it is zero right of the midline and outside
+    /// its band, and the synopsis block's floor (`testTextBlockFloor`) is unchanged by it.
+    func testShelfStaysUnderTheTextColumn() {
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.5, y: 0.5), 0, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.0, y: 0.30), 0, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.0, y: 0.70), 0, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.0, y: 0.50), DetailScrim.cinematicShelfOpacity, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.25, y: 0.50), DetailScrim.cinematicShelfOpacity / 2, accuracy: 1e-9)
+        XCTAssertEqual(DetailScrim.cinematicShelfAlpha(x: 0.0, y: 0.40), DetailScrim.cinematicShelfOpacity / 2, accuracy: 1e-9)
+    }
+
     /// The art region above the bottom band (x 0.5–1, y 0–0.4, no poster layer) stays mostly clear:
     /// mean 0.031.
     func testArtRegionMostlyClear() {
