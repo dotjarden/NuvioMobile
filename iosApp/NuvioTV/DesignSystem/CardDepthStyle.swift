@@ -443,8 +443,14 @@ extension View {
     /// keep the white rail. The modifier still reads no `@AppStorage`: the card passes the tint in.
     /// W3-13: the rail is stroked white and tinted by `.colorMultiply` (rail only), so the colour
     /// landing after the image does not re-fill a gradient.
-    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil) -> some View {
-        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint))
+    ///
+    /// Review r1 P2-2: `animatesSize` (default `false`) marks a surface whose depth-carrying frame
+    /// animates (the inline trailer tile's morph). Variant 2 (`-debug.cardDepthRender 2`) keys its
+    /// bitmaps on the FINAL layout size and SwiftUI stretches them into the interpolated frame, so
+    /// such a surface takes variant 1 instead, which re-strokes at every interpolated size. Variants
+    /// 0 and 1 ignore it. Every other call site keeps the default.
+    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil, animatesSize: Bool = false) -> some View {
+        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize))
     }
 }
 
@@ -455,6 +461,8 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     var artworkPresent: Bool = true
     /// beta.18 verdict: see `nuvioCardDepth` — forwarded to `CardDepthOverlay` unchanged.
     var railTint: Color?
+    /// Review r1 P2-2: see `nuvioCardDepth` — forwarded to `CardDepthOverlay` unchanged.
+    var animatesSize: Bool = false
     @Environment(\.cardDepthStyle) private var style
     /// BUG-110: reflects the nearest focusable ancestor's focus state (the same pattern `PosterCard`,
     /// `SagaCard` and others already use to read a Button's focus from a nested modifier). rc14
@@ -468,7 +476,7 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
         // W2-5 knob: `-debug.homeNoCardDepth YES` (`HomePerfKnobs`, launch-latched, Release too)
         // returns the plain content on every surface; the profile-synced setting is left untouched.
         if !HomePerfKnobs.noCardDepth, style.isEnabled(for: surface) {
-            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent, railTint: railTint) }
+            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize) }
         } else {
             content
         }
@@ -499,7 +507,9 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 ///   SwiftUI layers (today's raster), 1 the same layers inside one `.drawingGroup()` (Metal, one
 ///   offscreen texture per card), 2 white rail and sheen bitmaps from `CardDepthRasterCache`,
 ///   rendered once per key and shared by every card of the same size and setting. A shape the cache
-///   cannot key (none today: cards pass `RoundedRectangle`, the cast avatar `Circle`) falls back to 1.
+///   cannot key (none today: cards pass `RoundedRectangle`, the cast avatar `Circle`) falls back to 1,
+///   and so does a surface whose frame animates (`animatesSize`, review r1 P2-2: the inline trailer
+///   tile), whose bitmaps would otherwise stretch through the morph.
 ///
 /// Whatever the variant, the root carries `DebugAXIdentifier("card_depth_rail")` OUTSIDE any
 /// `drawingGroup`, so test50 still reads the rail's rect as the artwork's.
@@ -518,6 +528,10 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): rail colour override, nil = white.
     /// W3-13: applied by `.colorMultiply` over the white rail.
     var railTint: Color?
+    /// Review r1 P2-2: the surface's frame animates (the inline trailer tile's morph). Variant 2's
+    /// bitmaps are keyed on the final layout size and would stretch into the interpolated frame (the
+    /// side rails thickening by the width ratio, the corners elongating), so it takes variant 1.
+    var animatesSize: Bool = false
     /// W3-13 variant 2: the cached bitmaps are keyed on, and rendered at, the screen's pixel scale.
     @Environment(\.displayScale) private var displayScale
 
@@ -568,8 +582,10 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             liveLayers(p).drawingGroup()
         case .rasterCache:
             // The bitmaps carry no halo (inert since rc14: `railHaloSpread` is 0); a revived halo, or
-            // a shape the cache has no kind for, takes variant 1 instead of drawing a wrong rail.
-            if p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
+            // a shape the cache has no kind for, takes variant 1 instead of drawing a wrong rail. So
+            // does a surface whose frame animates (`animatesSize`, review r1 P2-2): a bitmap keyed on
+            // the final size would stretch through the animation; the live layers re-stroke.
+            if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
                 cachedLayers(p, kind: kind)
             } else {
                 liveLayers(p).drawingGroup()

@@ -2622,8 +2622,11 @@ struct InlineTrailerCard: View {
                     .frame(width: geometry.rect.width, height: geometry.rect.height)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
+                    // Review r1 P2-2: the morph animates this frame, so variant 2's bitmaps would
+                    // stretch through it; `animatesSize` routes this surface to variant 1.
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: geometry.radius),
-                                    surface: .posters, railTint: depthRailTintResolved)
+                                    surface: .posters, railTint: depthRailTintResolved,
+                                    animatesSize: true)
             } else if model.tileVisible, !fadesBaseCard {
                 // No art arrived inside `artAwaitDeadline` and the poster was not in memory either:
                 // a flat surface, never a shimmer. Black poster (Steven rc3): only where the base
