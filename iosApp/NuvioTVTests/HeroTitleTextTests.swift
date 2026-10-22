@@ -21,7 +21,7 @@ final class HeroTitleTextTests: XCTestCase {
     /// whatever its shape, including a `:season:episode` head.
     func testNameEqualToTheItemsIdIsAnIdentifier() {
         XCTAssertTrue(HeroTitleText.isIdentifier("abc-custom-9", id: "abc-custom-9"))
-        XCTAssertTrue(HeroTitleText.isIdentifier("tt1:1:7", id: "tt1"))
+        XCTAssertTrue(HeroTitleText.isIdentifier("tt1:1:7", id: "tt1"), "the id shape covers the episode form")
         XCTAssertTrue(HeroTitleText.isIdentifier("tt1", id: "tt1:1:7"))
         XCTAssertFalse(HeroTitleText.isIdentifier("1917", id: "tt0000001"))
         XCTAssertFalse(HeroTitleText.isIdentifier("Lost: Season 1", id: "lost"))

@@ -203,9 +203,9 @@ extension HeroArtResolverLateBackdropTests {
                        "a resolve in flight commits its own")
     }
 
-    /// The text swap keys on the logo's presence, so a late logo is a phased swap and a synopsis
-    /// gap-fill is not.
-    func testSwapIdentityFollowsTheLogo() {
+    /// The text swaps key on `phaseKey` (the logo's presence), so a late logo is a phased swap and a
+    /// synopsis gap-fill is not; `swapIdentity` stays the title, the trailer's arming key.
+    func testPhaseKeyFollowsTheLogoAndSwapIdentityDoesNot() {
         let item = MetaPreview(
             id: "tt1", type: "movie", name: "A",
             poster: nil, banner: nil, logo: nil,
@@ -221,7 +221,8 @@ extension HeroArtResolverLateBackdropTests {
         let text = HeroPresentation(item: item, backdrop: nil, logo: nil, identity: "movie:tt1")
         let withLogo = HeroPresentation(item: item, backdrop: nil, logo: UIImage(), identity: "movie:tt1")
         XCTAssertEqual(text.swapIdentity, "movie:tt1")
-        XCTAssertEqual(withLogo.swapIdentity, "movie:tt1+logo")
-        XCTAssertNotEqual(text.swapIdentity, withLogo.swapIdentity)
+        XCTAssertEqual(withLogo.swapIdentity, "movie:tt1", "the title key never changes with the logo")
+        XCTAssertEqual(text.phaseKey, "movie:tt1")
+        XCTAssertEqual(withLogo.phaseKey, "movie:tt1+logo")
     }
 }
