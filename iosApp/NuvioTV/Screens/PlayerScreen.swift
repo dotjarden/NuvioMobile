@@ -169,12 +169,49 @@ struct PlayerScreen: View {
             // timeout sends the film to mpv with no visible sign. One dedicated line tells a cap hit
             // (the probe ran out the clock) from a probe that failed early (unreachable, unreadable), so a
             // tester's "every HDR film opens in mpv" can be read off the log. Routing is unchanged.
+            // Review r1 P3-2: a cap hit inside the P7 RPU scan returns a probe (elKind `.missing`), not
+            // nil, so it never reaches this line; `MediaProbe.scanP7ELKind` logs that one itself. The
+            // host is redacted to its top-level domain in Release (`PlayerRouterLog.host`). `print`
+            // stays: the rig's console stream carries it (a tester's sysdiagnose does not).
             let capMs = Int(probeTimeoutSec * 1000)
-            let kind = probeMs >= capMs - 50 ? "probe cap hit" : "probe failed early"
-            print("[PlayerRouter] \(kind) after \(probeMs)ms (cap \(capMs)ms) host=\(url.host ?? "-") → mpv — \(context.title)")
+            let kind = PlayerRouterLog.probeOutcome(ms: probeMs, capMs: capMs)
+            print("[PlayerRouter] \(kind) after \(probeMs)ms (cap \(capMs)ms) host=\(PlayerRouterLog.host(url)) → mpv — \(context.title)")
         }
         print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
         probe = probeResult
         decision = result
+    }
+}
+
+/// Review r1 P3-2 (W3-19): the `[PlayerRouter]` probe lines' pure parts.
+nonisolated enum PlayerRouterLog {
+    /// `-debug.playerRouterHosts YES` (launch-latched, Release-readable) prints the full host on the
+    /// rig. Rig console logs fall under the staging rule: a self-hosted add-on, proxy or home-server
+    /// host is private, so Release prints the top-level domain only unless the rig asks. DEBUG
+    /// builds always print the host.
+    static let revealHostsKey = "debug.playerRouterHosts"
+    static let revealsHosts: Bool = {
+        #if DEBUG
+        return true
+        #else
+        return UserDefaults.standard.bool(forKey: revealHostsKey)
+        #endif
+    }()
+
+    /// The probe ran out the clock (within 50 ms of the cap) or failed early.
+    static func probeOutcome(ms: Int, capMs: Int) -> String {
+        ms >= capMs - 50 ? "probe cap hit" : "probe failed early"
+    }
+
+    /// `url`'s host for a log line: the full host when `reveal`, else `<redacted>.<tld>`
+    /// (`<redacted>` for an IP literal or a dotless name). `-` when the URL has no host.
+    static func host(_ url: URL, reveal: Bool = revealsHosts) -> String {
+        guard let host = url.host, !host.isEmpty else { return "-" }
+        if reveal { return host }
+        let isIPLiteral = host.contains(":") || host.allSatisfy { $0.isNumber || $0 == "." }
+        guard !isIPLiteral, let dot = host.lastIndex(of: "."), host.index(after: dot) < host.endIndex else {
+            return "<redacted>"
+        }
+        return "<redacted>." + host[host.index(after: dot)...]
     }
 }

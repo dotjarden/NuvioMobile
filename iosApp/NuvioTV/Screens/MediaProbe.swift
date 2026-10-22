@@ -188,6 +188,12 @@ nonisolated enum MediaProbe {
                 return kind
             }
         }
+        // Review r1 P3-2 (W3-19): a deadline cut here still returns a probe (`.missing`, which routes
+        // a P7 file to mpv), so `PlayerScreen`'s nil-probe cap line never sees it. Log it here, in
+        // the same `[PlayerRouter]` voice. `ProbeResult` carries no field for it.
+        if deadline.expired {
+            print("[PlayerRouter] probe cap hit in the P7 RPU scan after \(reads) reads (\(videoPackets) video packets) → elKind missing → mpv")
+        }
         return .missing
     }
 
