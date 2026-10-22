@@ -13,8 +13,10 @@ nonisolated enum HeroTitleText {
         guard !trimmed.isEmpty else { return false }
         let base = trimmed.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
         let head = String(base[0]).lowercased()
-        if head.hasPrefix("tt"), head.count > 2, head.dropFirst(2).allSatisfy(\.isNumber) { return true }
-        if head.allSatisfy(\.isNumber) { return true }
+        // A season/episode suffix (`:1:7`) or nothing; "2001: A Space Odyssey" is a title.
+        let tailIsEpisode = base.count == 1 || (!base[1].isEmpty && base[1].allSatisfy { $0.isNumber || $0 == ":" })
+        if head.hasPrefix("tt"), head.count > 2, head.dropFirst(2).allSatisfy(\.isNumber) { return tailIsEpisode }
+        if head.allSatisfy(\.isNumber) { return tailIsEpisode }
         let prefixes = ["tmdb", "trakt", "kitsu", "mal", "anilist", "simkl", "imdb", "tvdb"]
         if base.count == 2, prefixes.contains(head) {
             let tail = base[1]
