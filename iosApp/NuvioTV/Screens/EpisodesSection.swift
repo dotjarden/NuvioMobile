@@ -14,7 +14,8 @@ struct EpisodesSection: View {
     /// (from `DetailViewModel.episodeRatingsVisibility`). `hideEpisodes` drops every badge;
     /// `hideUnwatchedEpisodes` keeps only watched episodes' badges.
     var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
-    /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
+    /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`;
+    /// `TitleHoldMenuPolicy.episodeKey`, a missing number is -1).
     var watchedEpisodeKeys: Set<String> = []
     /// P5 B22: a post-play More Like This pick from an episode's player; called from the picker
     /// cover's `onDismiss` so the host pushes only after the cover is gone.
@@ -390,8 +391,9 @@ struct EpisodesSection: View {
     }
 
     private func isWatched(_ episode: MetaVideo) -> Bool {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
-        return watchedEpisodeKeys.contains("\(s):\(e)")
+        // Review r1 P3-8: the shared key form, so an episode with only one number reads watched.
+        guard let key = EpisodeHoldMenuItems.key(episode) else { return false }
+        return watchedEpisodeKeys.contains(key)
     }
 }
 

@@ -234,11 +234,15 @@ enum TitleHoldMenuPolicy {
         return [.season(seasonLabel: seasonLabel, isWatched: isSeasonWatched)]
     }
 
-    /// The "season:episode" key `DetailViewModel.watchedEpisodeKeys` uses; nil for an entry
-    /// without both numbers, which can never read as watched (`EpisodesSection.isWatched`'s rule).
+    /// The "season:episode" key `DetailViewModel.watchedEpisodeKeys` uses, in the shared
+    /// `watchedKey` form: a missing number is -1, so an entry with only one number ("-1:5", "2:-1")
+    /// reads as watched once the shared toggle has marked it (it stores the same nil there; review
+    /// r1 P3-8). Nil for an entry with neither number: the shared key for that is the title's own
+    /// mark, never an episode, and no episode list (`groupedEpisodes`, the shared released lists)
+    /// keeps such an entry.
     nonisolated static func episodeKey(season: Int?, episode: Int?) -> String? {
-        guard let season, let episode else { return nil }
-        return "\(season):\(episode)"
+        guard season != nil || episode != nil else { return nil }
+        return "\(season ?? -1):\(episode ?? -1)"
     }
 
     /// Mobile's `areEpisodesWatchedForActions`: a non-empty list whose every entry is watched.

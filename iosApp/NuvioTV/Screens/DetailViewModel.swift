@@ -828,23 +828,34 @@ final class DetailViewModel: ObservableObject {
         )
     }
 
-    /// "season:episode" keys for every episode that is explicitly marked watched or whose watch
-    /// progress is effectively complete. Pure in-memory lookups against the shared repositories.
+    /// "season:episode" keys (`TitleHoldMenuPolicy.episodeKey`) for every episode that is
+    /// explicitly marked watched or whose watch progress is effectively complete. Pure in-memory
+    /// lookups against the shared repositories. An episode with only one number counts too (review
+    /// r1 P3-8): the shared toggle marks it with the other number nil, which is what is read here.
     private func computeWatchedEpisodeKeys() -> Set<String> {
         guard let meta, EpisodesSection.isSeriesLike(meta) else { return [] }
         var keys: Set<String> = []
         for episode in meta.videos {
-            guard let s = episode.season?.value, let e = episode.episode?.value else { continue }
-            let season = KotlinInt(int: Int32(s))
-            let number = KotlinInt(int: Int32(e))
+            let s = episode.season?.value, e = episode.episode?.value
+            guard let key = TitleHoldMenuPolicy.episodeKey(season: s, episode: e) else { continue }
+            let season = s.map { KotlinInt(int: Int32($0)) }
+            let number = e.map { KotlinInt(int: Int32($0)) }
             let marked = WatchedRepository.shared.isWatched(id: id, type: type, season: season, episode: number)
+            // The shared `buildPlaybackVideoId` rule: "id:s:e" with both numbers, else the video's
+            // own id (else the title's).
+            let videoId: String
+            if let s, let e {
+                videoId = "\(id):\(s):\(e)"
+            } else {
+                videoId = episode.id.isEmpty ? id : episode.id
+            }
             let completed = WatchProgressRepository.shared.progressForVideo(
-                videoId: "\(id):\(s):\(e)",
+                videoId: videoId,
                 parentMetaId: id,
                 seasonNumber: season,
                 episodeNumber: number
             )?.isEffectivelyCompleted == true
-            if marked || completed { keys.insert("\(s):\(e)") }
+            if marked || completed { keys.insert(key) }
         }
         return keys
     }

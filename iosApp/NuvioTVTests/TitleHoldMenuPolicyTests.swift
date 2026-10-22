@@ -1,4 +1,5 @@
 import XCTest
+import SharedCore
 @testable import NuvioTV
 
 /// Orivio batch, item 3: the poster hold menu's wording, glyph, ordering and state decisions.
@@ -223,7 +224,7 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
         XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", "1:2", "1:4"], watchedKeys: watched))
         // No released episode: never "watched" (mobile's `episodes.isNotEmpty() && …`).
         XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: [], watchedKeys: watched))
-        // An entry without both numbers can never read as watched.
+        // An entry with neither number has no episode key and never reads as watched.
         XCTAssertFalse(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", nil], watchedKeys: watched))
         // Unaired episodes are not in the released list, so they never hold the label at "Watched".
         XCTAssertTrue(TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: ["1:1", "1:2"], watchedKeys: watched))
@@ -239,8 +240,27 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
     func testEpisodeKeyMatchesTheWatchedEpisodeKeysFormat() {
         XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: 2, episode: 5), "2:5")
         XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: 0, episode: 1), "0:1")
-        XCTAssertNil(TitleHoldMenuPolicy.episodeKey(season: nil, episode: 5))
-        XCTAssertNil(TitleHoldMenuPolicy.episodeKey(season: 2, episode: nil))
+        // Review r1 P3-8: one number is enough, the missing one is -1 as in the shared key.
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: nil, episode: 5), "-1:5")
+        XCTAssertEqual(TitleHoldMenuPolicy.episodeKey(season: 2, episode: nil), "2:-1")
+        XCTAssertNil(TitleHoldMenuPolicy.episodeKey(season: nil, episode: nil))
+        // So an episode with one number can read as watched, and its menu label flips.
+        XCTAssertTrue(TitleHoldMenuPolicy.areAllWatched(
+            keys: [TitleHoldMenuPolicy.episodeKey(season: nil, episode: 5)], watchedKeys: ["-1:5"]))
+    }
+
+    /// The tvOS key is the shared `watchedKey`'s season/episode tail, so the two can never disagree
+    /// about which stored mark an entry reads.
+    func testEpisodeKeyIsTheSharedWatchedKeyTail() {
+        let cases: [(Int?, Int?)] = [(2, 5), (0, 1), (nil, 5), (2, nil)]
+        for (season, episode) in cases {
+            let shared = WatchingPoliciesKt.watchedKey(
+                content: WatchingContentRef(type: "series", id: "tt1"),
+                seasonNumber: season.map { KotlinInt(int: Int32($0)) },
+                episodeNumber: episode.map { KotlinInt(int: Int32($0)) }
+            )
+            XCTAssertEqual(shared, "series:tt1:" + (TitleHoldMenuPolicy.episodeKey(season: season, episode: episode) ?? ""))
+        }
     }
 
     @MainActor
