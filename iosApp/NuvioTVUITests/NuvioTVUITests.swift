@@ -3413,8 +3413,16 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         if before != on {
-            // ui-legs: the walk's post-condition is checked here, not assumed: Select only on the row.
-            try pressVerified(app, "toggle_\(labelPrefix)", when: { focusedButton(app)?.label.hasPrefix(labelPrefix) == true })
+            // ui-legs: the walk's post-condition is checked here, not assumed: Select only on the
+            // row. The walk can finish one row past the target onto a picker row whose focused Cell
+            // has no label (first full run: on "Edge" under Card Depth), so nudge toward the row by
+            // frame, one press at a time, reading focus after each.
+            for _ in 0..<4 {
+                guard let direction = settingsRowNudge(app, labelPrefix) else { break }
+                remote.press(direction)
+                pause(0.7)
+            }
+            try pressVerified(app, "toggle_\(labelPrefix)", when: { settingsRowHasFocus(app, labelPrefix) })
             pause(1.5)
         }
         guard let after = readState() else {
@@ -3422,6 +3430,43 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         XCTAssertEqual(after, on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF") (was \(before)) — candidates: \(describeCandidates())")
+    }
+
+    /// The deepest focused element and the control of the Settings row whose label starts with
+    /// `labelPrefix` (a Cell, Button, Switch or Toggle; section headers are text and never match),
+    /// from one snapshot.
+    private func settingsRowFrames(_ app: XCUIApplication, _ labelPrefix: String) -> (focused: XCUIElementSnapshot?, row: XCUIElementSnapshot?) {
+        guard let root = try? app.snapshot() else { return (nil, nil) }
+        var focused: XCUIElementSnapshot?
+        var row: XCUIElementSnapshot?
+        let rowTypes: [XCUIElement.ElementType] = [.cell, .button, .switch, .toggle]
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused = node }
+            if row == nil, rowTypes.contains(node.elementType), node.label.hasPrefix(labelPrefix), node.frame.height > 0 { row = node }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return (focused, row)
+    }
+
+    /// ui-legs: whether the Settings row `labelPrefix` holds focus — the deepest focused element's
+    /// label starts with it, or that element sits on the row (same vertical centre ±14 pt; a row's
+    /// focus can sit on a Cell with no label).
+    private func settingsRowHasFocus(_ app: XCUIApplication, _ labelPrefix: String) -> Bool {
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused else { return false }
+        if focused.label.hasPrefix(labelPrefix) { return true }
+        guard let row = frames.row else { return false }
+        return abs(focused.frame.midY - row.frame.midY) < 14
+    }
+
+    /// ui-legs: the D-pad press that moves focus toward the Settings row `labelPrefix` (Up when focus
+    /// sits below it), or nil when it already holds focus or either frame is unreadable.
+    private func settingsRowNudge(_ app: XCUIApplication, _ labelPrefix: String) -> XCUIRemote.Button? {
+        if settingsRowHasFocus(app, labelPrefix) { return nil }
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused, let row = frames.row else { return nil }
+        return focused.frame.midY > row.frame.midY ? .up : .down
     }
 
     // MARK: - Home "Upcoming" row (next airing episodes of followed shows)
@@ -7496,8 +7541,9 @@ final class NuvioTVUITests: XCTestCase {
             forceFreshLaunch: true
         )
         // ui-legs (2026-10-22): Detail-page entry by the shared, focus-verified Search route; the
-        // hero-CTA Select here was blind (the CTA's existence was checked, never its focus).
-        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
+        // hero-CTA Select here was blind (the CTA's existence was checked, never its focus). No
+        // settle wait: the bridge must still read idle before the 4 s auto-play fires.
+        guard DetailEntryRoute(test: self, app: app).openDetail(settle: false) else { return }
         shot(app, "51a_detail")
 
         // Watch Trailer only renders once the hero trailer resolved, which is auto-play's
@@ -9475,8 +9521,12 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Home Layout row")
         XCTAssertNotEqual(rowBody, summary, "the explainer body still shows the Home Screen summary on a focused row")
         shot(app, "82b_home_layout")
+        // ui-legs (2026-10-22): Batch F put Collections Layout directly under Home Layout in both
+        // layouts (HomeScreenSettingsPane.layoutSection), one row above Upcoming Episodes.
         press(.down, times: 1)
-        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Home Layout must move the explainer to Upcoming Episodes (Ambient Background is Stage only)")
+        XCTAssertEqual(titleBecomes(["Collections Layout"]), "Collections Layout", "Classic: Down from Home Layout must move the explainer to Collections Layout (Ambient Background is Stage only)")
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collections Layout must move the explainer to Upcoming Episodes")
         shot(app, "82b2_home_upcoming")
         press(.down, times: 1)
         let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
@@ -9498,7 +9548,9 @@ final class NuvioTVUITests: XCTestCase {
         }
         XCTAssertEqual(stageTitleBecomes("Home Layout"), "Home Layout", "Stage: the pane's first row must be Home Layout")
         press(.down, times: 1)
-        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Home Layout must reach Ambient Background")
+        XCTAssertEqual(stageTitleBecomes("Collections Layout"), "Collections Layout", "Stage: Down from Home Layout must reach Collections Layout (Batch F)")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Collections Layout must reach Ambient Background")
         shot(stage, "82c2_stage_ambient")
 
         // Minimal style: no explainer column at the root.
@@ -9704,10 +9756,12 @@ extension NuvioTVUITests {
         let groups = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'search.group.'"))
         searchNote("94_groups", groups.allElementsBoundByIndex.map(\.identifier).joined(separator: ", "))
 
+        // ui-legs (2026-10-22): since FEAT-72 (Batch B wave 1) the Top result card carries title,
+        // year and type only ("Dune, Movie · 2021" on FA87) and the ROWS keep "Found in …"
+        // (SearchView: `cardFootnote`), so the caption is asserted on the Movies row, one Down on.
         press(.down, times: 2, gap: 1.0)
         pause(1.0)
         let foundIn = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).firstMatch
-        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×2 (chips → Top result) must put a 'Found in …' caption on screen")
         searchNote("94_found_in_top", foundIn.exists ? foundIn.label : "<none>")
         shot(app, "search-topresult-foundin")
 
@@ -9716,6 +9770,7 @@ extension NuvioTVUITests {
         let footnote = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).count
         searchNote("94_movies_row", "focused=\(focusedLabels) foundInLabels=\(footnote)")
         shot(app, "94_movies_row_footnote")
+        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×3 (chips → Top result → Movies row) must put a 'Found in …' caption on screen")
 
         let people = app.descendants(matching: .any)["search.people"].firstMatch
         if people.exists {

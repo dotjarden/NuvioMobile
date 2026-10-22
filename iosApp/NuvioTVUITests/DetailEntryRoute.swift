@@ -98,8 +98,12 @@ struct DetailEntryRoute {
 
     /// From anywhere past the profile picker: Search first, the verified hero CTA second.
     @discardableResult
-    func openDetail(targets: [Target] = defaultTargets) -> Bool {
-        switch openViaSearch(targets: targets) {
+    ///
+    /// `settle: false` hands the page over as soon as `detail_action_play` exists, for a leg that
+    /// must read a probe before Detail's own timers run (test51 reads the trailer bridge idle
+    /// before the 4 s auto-play fires; the settle wait outlasted it).
+    func openDetail(targets: [Target] = defaultTargets, settle: Bool = true) -> Bool {
+        switch openViaSearch(targets: targets, settle: settle) {
         case .opened:
             return true
         case .failed(let reason):
@@ -108,7 +112,7 @@ struct DetailEntryRoute {
             return false
         case .unavailable(let reason):
             note("detail_route_search_unavailable", reason)
-            switch openViaHomeHero() {
+            switch openViaHomeHero(settle: settle) {
             case .opened:
                 return true
             case .unavailable(let why), .failed(let why):
@@ -195,7 +199,7 @@ struct DetailEntryRoute {
 
     // MARK: - Search route
 
-    private func openViaSearch(targets: [Target]) -> Outcome {
+    private func openViaSearch(targets: [Target], settle: Bool = true) -> Outcome {
         guard openTab("Search") else {
             return .unavailable("could not put verified focus on the Search tab (focused: \(focusedLabels()))")
         }
@@ -230,7 +234,7 @@ struct DetailEntryRoute {
             }
             note("detail_route_select", "Select on the focused result '\(label)' (\(target.type) '\(query)')")
             remote.press(.select)
-            if waitForDetail() { return .opened }
+            if waitForDetail(settle: settle) { return .opened }
             return .failed("no detail_action_play 30 s after selecting '\(label)' "
                 + "(keyboards=\(app.keyboards.count), focused: \(focusedLabels()))")
         }
@@ -364,7 +368,7 @@ struct DetailEntryRoute {
 
     // MARK: - Verified Home-hero fallback
 
-    private func openViaHomeHero() -> Outcome {
+    private func openViaHomeHero(settle: Bool = true) -> Outcome {
         guard openTab("Home") else {
             return .unavailable("could not put verified focus on the Home tab (focused: \(focusedLabels()))")
         }
@@ -379,7 +383,7 @@ struct DetailEntryRoute {
         }
         note("detail_route_hero_select", "fallback: Select on the focused hero CTA '\(cta)'")
         remote.press(.select)
-        return waitForDetail() ? .opened : .failed("no detail_action_play 30 s after selecting the hero CTA '\(cta)'")
+        return waitForDetail(settle: settle) ? .opened : .failed("no detail_action_play 30 s after selecting the hero CTA '\(cta)'")
     }
 
     // MARK: - Tabs and rail
@@ -486,11 +490,15 @@ struct DetailEntryRoute {
     /// each launch (FA87 run 2026-10-22: 268.8 vs 374.5). Waits (≤15 s) for a meta-gated section
     /// heading, then for Play's label and frame to hold for 2 s (≤8 s). The old blind route's
     /// `pause(6)` after Select did the same job by luck.
-    private func waitForDetail() -> Bool {
+    private func waitForDetail(settle: Bool = true) -> Bool {
         let play = app.buttons["detail_action_play"]
         guard play.waitForExistence(timeout: 30) else {
             shot("detail_route_no_play")
             return false
+        }
+        guard settle else {
+            note("detail_route_opened_unsettled", "play: \(play.label) \(play.frame)")
+            return true
         }
         let metaHeading = app.staticTexts
             .matching(NSPredicate(format: "label IN %@", ["Cast", "Parental Guide", "Details", "More Like This"])).firstMatch
