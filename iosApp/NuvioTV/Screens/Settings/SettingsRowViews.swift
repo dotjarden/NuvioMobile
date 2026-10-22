@@ -663,13 +663,20 @@ struct SettingsListPickerRow: View {
 /// initial focus to the first row in view after that claim (it did with Zulu), so the page looks
 /// again once the push has settled and re-claims if focus is elsewhere.
 ///
+/// The page scrolls ONCE, before any focus lands. The settle check does nothing when the checked
+/// row already has focus, and when it re-claims it only moves focus: the row is still on screen
+/// from the first scroll, so the list never moves under a committed focus. It scrolls again only
+/// if the checked row has left the realized range (`checkedRowOnScreen`), the one case focus
+/// alone cannot reach.
+///
 /// Sim evidence (`docs/research/wave3b-sim-2026-10-21/wb-10*`, `wb-11*`, `wb-12*`): the page
-/// opens focused on the checked row for None, English and Zulu. Known quirk, last half-screen
-/// only: from a row focused this way the FIRST Up jumps five or six rows (the focus engine's
-/// frames sit ~460 pt below where the rows are drawn until focus moves once), then every press
-/// moves one row. A walk down to Zulu by hand does not show it, and scrolling in passes,
-/// re-scrolling after focus lands, centring a higher row and stepping focus down to the row all
-/// left it in place. Device pass to confirm whether hardware shows it.
+/// opens focused on the checked row for None, English and Zulu. Known quirk before review r1,
+/// last half-screen only: from a row focused this way the FIRST Up jumped five or six rows (the
+/// focus engine's frames sat ~460 pt below where the rows are drawn until focus moved once), then
+/// every press moved one row. A walk down to Zulu by hand did not show it. Zulu was the case where
+/// the transition took the first claim, so focus arrived through the re-claim, which then scrolled
+/// the end-clamped list a second time under it; review r1 P3-1 dropped that second scroll. Not yet
+/// re-checked: sim leg wb-10 and the device pass settle whether the jump is gone.
 struct SettingsListPickerPage: View {
     let title: String
     let selection: Binding<String>
@@ -678,6 +685,9 @@ struct SettingsListPickerPage: View {
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: String?
+    /// Whether the checked row's cell is realized (between its `onAppear` and `onDisappear`); only
+    /// that one row writes it, so the page body is not re-evaluated as other rows scroll by.
+    @State private var checkedRowOnScreen = false
 
     /// About half a screen of rows (a kit row is ~93 pt of a 1080 pt screen).
     private static let edgeRows = 6
@@ -715,10 +725,12 @@ struct SettingsListPickerPage: View {
                     .accessibilityAddTraits(isChecked ? .isSelected : [])
                     .focused($focused, equals: option)
                     .id(option)
+                    .onAppear { if isChecked { checkedRowOnScreen = true } }
+                    .onDisappear { if isChecked { checkedRowOnScreen = false } }
                 }
             }
             .defaultFocus($focused, selection.wrappedValue, priority: .userInitiated)
-            .onAppear { claimCheckedRow(proxy, settleCheck: true) }
+            .onAppear { claimCheckedRow(proxy) }
         }
         // Pushed stack destinations do not inherit the root's background (`SettingsView`), so the
         // page draws its own: OLED True Black and the theme background reach it (review r1 P2-1,
@@ -727,19 +739,30 @@ struct SettingsListPickerPage: View {
         .navigationTitle(title)
     }
 
-    /// Scrolls the checked row into view and focuses it; with `settleCheck`, looks again after the
-    /// push transition (0.45 s) and re-claims once if focus landed elsewhere.
-    private func claimCheckedRow(_ proxy: ScrollViewProxy, settleCheck: Bool) {
+    /// Scrolls the checked row into view, then focuses it one runloop later. After the push
+    /// transition (0.45 s) it looks once more: nothing to do when the checked row has focus;
+    /// otherwise focus moves to it WITHOUT a second scroll (see the type comment), unless the row
+    /// is no longer realized.
+    private func claimCheckedRow(_ proxy: ScrollViewProxy) {
         let current = selection.wrappedValue
-        switch placement(of: current) {
-        case .top: break
-        case .middle: proxy.scrollTo(current, anchor: .center)
-        case .end: proxy.scrollTo(current, anchor: .bottom)
-        }
+        scrollIntoView(current, proxy)
         DispatchQueue.main.async { focused = current }
-        guard settleCheck else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            if focused != current { claimCheckedRow(proxy, settleCheck: false) }
+            guard focused != current else { return }
+            if checkedRowOnScreen {
+                focused = current
+            } else {
+                scrollIntoView(current, proxy)
+                DispatchQueue.main.async { focused = current }
+            }
+        }
+    }
+
+    private func scrollIntoView(_ value: String, _ proxy: ScrollViewProxy) {
+        switch placement(of: value) {
+        case .top: break
+        case .middle: proxy.scrollTo(value, anchor: .center)
+        case .end: proxy.scrollTo(value, anchor: .bottom)
         }
     }
 }
