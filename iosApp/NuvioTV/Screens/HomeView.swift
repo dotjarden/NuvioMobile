@@ -6571,8 +6571,9 @@ struct HomeHeroForeground: View {
     /// FRAME, and the rows' plan, never change (BUG-87/89: the rows never pay): this only moves
     /// height between the logo, the frame's unused slack and the synopsis.
     private var longSynopsis: PinnedRowGeometry.LongSynopsis.Grant? {
-        // Review r1 (P3): folders are excluded only in the carousel (its merged folder box); the
-        // Show Hero OFF panel draws a folder's description in the same column, so it follows Long.
+        // Review r1 (P3): the carousel's merged folder box has nothing to lengthen. Since W3-14 /
+        // BUG-211 the panel draws the same box, but its grant only moves height between slots whose
+        // sum the box reads, so the panel keeps the title hero's grant path unchanged.
         guard !(isCollectionHero(item) && showsCTA) else { return nil }
         let grant: PinnedRowGeometry.LongSynopsis.Grant
         if compact && usesNuvioLayout {
@@ -6622,9 +6623,9 @@ struct HomeHeroForeground: View {
     /// the beta.17 reading he asked to keep, where the drain-synopsis-first order gave 2. Carousel
     /// and collection-folder heroes are numerically unchanged at every compression.
     /// rc14 (BUG-119, review r1 P3): the folder-hero split (synopsis slot drained first, logo
-    /// unbounded) only applies where the folder hero is DRAWN as the merged logo-only box — the
-    /// carousel. The panel renders a folder through the three-slot column with real text in the
-    /// synopsis slot now, so it takes the title hero's floors.
+    /// unbounded) applies in the carousel only. W3-14 / BUG-211 (2026-10-21) made the panel draw
+    /// the merged box as well, but the panel keeps the title hero's floors on purpose: the box only
+    /// reads the three slots' SUM, so `PinnedRowGeometryTests`' panel numbers stay as pinned.
     private var splitsAsFolderHero: Bool { isCollectionHero(item) && showsCTA }
 
     private var synopsisSlotGive: CGFloat {
