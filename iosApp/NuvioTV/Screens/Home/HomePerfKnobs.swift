@@ -9,6 +9,7 @@ import Foundation
 ///   `-debug.homeNoCardDepth YES`      `CardDepthModifier` draws no overlay (every surface).
 ///   `-debug.cardDepthRender 0|1|2`    W3-13: how `CardDepthOverlay` rasterises Card Depth
 ///                                     (`CardDepthRender`); 0 or any other value = today's live layers.
+///                                     Any value passed, 0 included, logs one line.
 ///
 /// W3-13's knob exists for the R1 rig walks only: the owner picks the shipping variant from them,
 /// then deletes the knob and the losing variants (W3-2's pattern).
@@ -17,11 +18,13 @@ nonisolated enum HomePerfKnobs {
     static let cardDepthRenderKey = "debug.cardDepthRender"
 
     static let noCardDepth: Bool = resolve(noCardDepthKey)
-    /// Logs one `[HomePerfKnobs] cardDepthRender=<n>` line when a rig launch picks a non-default
-    /// variant, so a walk's console proves which variant it measured.
+    /// Logs one `[HomePerfKnobs] cardDepthRender=<n>` line whenever the launch passes the knob, 0
+    /// included (review r1 P3-4), so a walk's console proves which variant it measured: a walk at 0
+    /// passes `-debug.cardDepthRender 0` and gets its line, and a mistyped argument (no line, or a
+    /// flagged value) no longer reads like a clean 0. See `cardDepthRenderLogLine`.
     static let cardDepthRender: CardDepthRender = {
         let variant = resolveCardDepthRender(cardDepthRenderKey)
-        if variant != .live { NSLog("[HomePerfKnobs] cardDepthRender=%ld", variant.rawValue) }
+        if let line = cardDepthRenderLogLine(cardDepthRenderKey) { NSLog("%@", line) }
         return variant
     }()
 
@@ -48,5 +51,17 @@ nonisolated enum HomePerfKnobs {
     /// live layers for an absent, unparsable or out-of-range value.
     static func resolveCardDepthRender(_ key: String, defaults: UserDefaults = .standard) -> CardDepthRender {
         CardDepthRender(rawValue: defaults.integer(forKey: key)) ?? .live
+    }
+
+    /// The knob's launch line: nil when `key` is absent; else `[HomePerfKnobs] cardDepthRender=<n>`
+    /// with the variant actually resolved, plus ` (unparsed value "<raw>")` when the raw value is
+    /// not exactly that variant's number (`YES`, `abc`, `5`, `2.5`), so a typo is visible in the
+    /// walk's console rather than silently measuring variant 0.
+    static func cardDepthRenderLogLine(_ key: String, defaults: UserDefaults = .standard) -> String? {
+        guard let raw = defaults.object(forKey: key) else { return nil }
+        let variant = resolveCardDepthRender(key, defaults: defaults)
+        let text = "\(raw)".trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = Int(text).flatMap(CardDepthRender.init(rawValue:)) == variant
+        return "[HomePerfKnobs] cardDepthRender=\(variant.rawValue)" + (clean ? "" : " (unparsed value \"\(text)\")")
     }
 }
