@@ -1,3 +1,4 @@
+import SharedCore
 import XCTest
 @testable import NuvioTV
 import UIKit
@@ -176,5 +177,51 @@ final class HeroArtResolverLateBackdropTests: XCTestCase {
         XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: -0.2), HeroArtResolver.commitCrossfadeSpan)
         XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .nan), HeroArtResolver.commitCrossfadeSpan)
         XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .infinity), HeroArtResolver.commitCrossfadeSpan)
+    }
+}
+
+// MARK: - UX-19: late logo adoption
+
+extension HeroArtResolverLateBackdropTests {
+    /// The late logo is adopted only for the identity still targeted AND on screen, only when that
+    /// commit had no logo, and only once the resolve that committed it is gone.
+    func testLateLogoAdoptionGuards() {
+        let logo = UIImage()
+        XCTAssertTrue(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                          presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:b", presentedIdentity: "movie:a",
+                                                           presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"),
+                       "the target moved on")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:b",
+                                                           presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"),
+                       "another hero is on screen")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                           presentedLogo: logo, resolveTaskIsNil: true, identity: "movie:a"),
+                       "a logo is already up: nothing to adopt, nothing to swap")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                           presentedLogo: nil, resolveTaskIsNil: false, identity: "movie:a"),
+                       "a resolve in flight commits its own")
+    }
+
+    /// The text swap keys on the logo's presence, so a late logo is a phased swap and a synopsis
+    /// gap-fill is not.
+    func testSwapIdentityFollowsTheLogo() {
+        let item = MetaPreview(
+            id: "tt1", type: "movie", name: "A",
+            poster: nil, banner: nil, logo: nil,
+            posterShape: .landscape,
+            description: nil, releaseInfo: nil, rawReleaseDate: nil,
+            popularity: nil, voteCount: nil, imdbRating: nil,
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
+        )
+        let text = HeroPresentation(item: item, backdrop: nil, logo: nil, identity: "movie:tt1")
+        let withLogo = HeroPresentation(item: item, backdrop: nil, logo: UIImage(), identity: "movie:tt1")
+        XCTAssertEqual(text.swapIdentity, "movie:tt1")
+        XCTAssertEqual(withLogo.swapIdentity, "movie:tt1+logo")
+        XCTAssertNotEqual(text.swapIdentity, withLogo.swapIdentity)
     }
 }

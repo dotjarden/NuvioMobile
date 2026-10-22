@@ -28,7 +28,12 @@ nonisolated protocol StageSwapPayload: Equatable {
 }
 
 extension HeroPresentation: StageSwapPayload {
-    var swapIdentity: String { identity }
+    /// UX-19 (2026-10-22): a logo landing late for the title on stage (`HeroArtResolver.adoptLateLogo`)
+    /// is NOT a silent gap-fill. A same-identity update would swap the text wordmark for the bitmap
+    /// in place, the Text→Image flash BUG-90 removed; keyed on the logo's presence it goes through
+    /// the phased swap instead: the text fades out, the logo is swapped in while invisible, the
+    /// text fades in. Synopsis gap-fills and backdrop sharpens keep the logo state, so they stay silent.
+    var swapIdentity: String { logo == nil ? identity : identity + "+logo" }
 }
 
 /// The curve for the core's latest opacity write.

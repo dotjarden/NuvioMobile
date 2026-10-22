@@ -4045,9 +4045,10 @@ struct HeroPresentation: Equatable {
 /// on screen — never a blank, never a poster stand-in — while both fetches race a deadline, and
 /// whatever has landed when the deadline (or the second fetch) fires is committed, once.
 ///
-/// Late arrivals are dropped on purpose. A logo that resolves after its item was committed with the
-/// text wordmark would be exactly the Text→Image swap this class exists to remove (BUG-90); the item
-/// picks it up from cache the next time it is presented.
+/// Late backdrops are adopted only over a stand-in (`adoptLateBackdrop`). A logo that resolves after
+/// its item was committed with the text wordmark used to be dropped (the Text→Image swap this class
+/// exists to remove, BUG-90); since UX-19 it is adopted through the text swap's PHASED path
+/// (`adoptLateLogo`, `HeroPresentation.swapIdentity`), never in place.
 ///
 /// FEAT-42: which of four places the currently PRESENTED logo bitmap came from (or `.none` for no
 /// logo / the text wordmark) — see `presentedLogoSource` and `HeroLogoPlan`.
@@ -4584,6 +4585,12 @@ final class HeroArtResolver: ObservableObject {
                 // it BEFORE the wait sees the bitmap, so the commit reads the memo (`inkedLogo`).
                 if let image { _ = await HeroLogoInk.prepare(image, url: logoURL.absoluteString) }
                 wait.resolveLogo(image, url: logoURL)
+                // UX-19 (2026-10-22): past the deadline `resolveLogo` is a no-op and the item was
+                // committed with the text wordmark; the bitmap reaching here is adopted for the
+                // title still on stage (`adoptLateLogo`, titles only).
+                if wait.hitDeadline, !isFolder, let image {
+                    self?.adoptLateLogo(image, identity: identity, url: logoURL, origin: planLogoOrigin)
+                }
                 // FEAT-42 repair: metahub is a synthesized GUESS (BUG-17) — a miss here does not
                 // mean the item has no logo, only that this guess was wrong. Kick a real
                 // `TitleLogoStore` lookup so the item's NEXT presentation can use step 3 of
@@ -4598,7 +4605,7 @@ final class HeroArtResolver: ObservableObject {
             // first, then fetch whatever it resolves to. Past `deadline` this is a no-op the same
             // way every other late arrival in this class is: `wait.resolveLogo` guards on
             // `!finished` and drops it.
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let resolvedURLString = await TitleLogoStore.shared.awaitLogoURL(for: target),
                       let resolvedURL = URL(string: resolvedURLString) else {
                     wait.resolveLogo(nil)
@@ -4609,6 +4616,10 @@ final class HeroArtResolver: ObservableObject {
                 // the URL the store resolved (handed to the wait so the commit can read the memo).
                 if let image { _ = await HeroLogoInk.prepare(image, url: resolvedURL.absoluteString) }
                 wait.resolveLogo(image, url: resolvedURL)
+                // UX-19: see the `.url` path above.
+                if wait.hitDeadline, !isFolder, let image {
+                    self?.adoptLateLogo(image, identity: identity, url: resolvedURL, origin: .tmdb)
+                }
             }
         }
         // Concurrent with the primary, deliberately, so the fallback costs the commit no extra
@@ -5155,6 +5166,44 @@ final class HeroArtResolver: ObservableObject {
         guard targetIdentity == identity else { return false }
         guard presentedIdentity == identity else { return false }
         guard presentedBackdrop == nil || presentedIsSmallStandIn else { return false }
+        guard resolveTaskIsNil else { return false }
+        return true
+    }
+
+    /// UX-19 (design review 2026-10-22, D-6): a logo that lands after its item was committed with the
+    /// text wordmark used to be dropped for the rest of that hero's display ("the item picks it up
+    /// from cache the next time it is presented"), so a cold launch showed "Lizzie Borden Took an Ax"
+    /// as text under the hero trailer where the next visit shows the lockup. It is adopted now, for
+    /// the title still on stage, as a same-identity update that the text swap PHASES rather than
+    /// gap-fills (`HeroPresentation.swapIdentity` keys on the logo's presence): the text fades out,
+    /// the logo is swapped in while invisible, the text fades in, so the BUG-90 Text→Image flash
+    /// cannot recur. The artwork is untouched (no commit serial, no sharpen re-arm, no cross-fade).
+    /// Titles only: a folder's logo has its own stops in `logoPlan`, and test55 counts one paint per
+    /// folder present. A `.blank` verdict stays text, as at commit time.
+    private func adoptLateLogo(_ image: UIImage, identity: String, url: URL, origin: HeroLogoSource) {
+        guard HeroArtResolver.shouldAdoptLateLogo(
+            targetIdentity: targetIdentity, presentedIdentity: presented?.identity,
+            presentedLogo: presented?.logo, resolveTaskIsNil: resolveTask == nil, identity: identity
+        ), let live = presented else { return }
+        let inked = Self.inkedLogo(image, url: url)
+        guard let logo = inked.logo else { return }
+        logPresent(identity: identity,
+                   backdrop: presentedBackdropIsStandIn ? "small" : (live.backdrop != nil ? "cached" : "none"),
+                   logo: "late", logoOrigin: origin, logoInk: inked.ink, waitedMs: 0, same: false)
+        presentedLogoURL = url
+        presented = HeroPresentation(item: live.item, backdrop: live.backdrop, logo: logo,
+                                     identity: identity, logoInk: inked.ink)
+        presentedLogoSource = origin
+    }
+
+    /// Pure predicate behind `adoptLateLogo`: the same identity is still the target and on screen,
+    /// it was committed without a logo, and no resolve is running (a running one commits its own).
+    nonisolated static func shouldAdoptLateLogo(targetIdentity: String?, presentedIdentity: String?,
+                                                presentedLogo: UIImage?, resolveTaskIsNil: Bool,
+                                                identity: String) -> Bool {
+        guard targetIdentity == identity else { return false }
+        guard presentedIdentity == identity else { return false }
+        guard presentedLogo == nil else { return false }
         guard resolveTaskIsNil else { return false }
         return true
     }
@@ -7020,7 +7069,9 @@ struct HeroTextLayer: View {
     /// folder whose name is on screen.
     var folderRoutes: [String: FolderRoute]
 
-    @StateObject private var textSwap = HeroTextSwapModel(timing: .classic, identity: { $0.identity })
+    // UX-19: keyed on `swapIdentity` (identity + the logo's presence), so a late logo goes through
+    // the phased swap on Classic too, never an in-place Text→Image flash.
+    @StateObject private var textSwap = HeroTextSwapModel(timing: .classic, identity: { $0.swapIdentity })
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// BUG-190: an explicit internal init, the one entry point Home (`HomeHeroTextSlot`) and the
@@ -7290,7 +7341,10 @@ struct HeroLogo: View {
                         alignment: .bottomLeading
                     )
             } else {
-                Text(item.name)
+                // UX-19 (2026-10-22, the Apple TV): a Continue Watching item whose metadata had not
+                // resolved yet carried its IMDb id as its name, and the hero printed "tt3118958" as
+                // the title. An id is never a wordmark: the slot stays empty until a name arrives.
+                Text(HeroTitleText.isIdentifier(item.name) ? "" : item.name)
                     .font(Theme.Font.hero)
                     .foregroundStyle(Theme.Palette.textPrimary)
                     .lineLimit(2)
