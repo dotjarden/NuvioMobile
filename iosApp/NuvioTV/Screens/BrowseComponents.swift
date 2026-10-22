@@ -1033,13 +1033,32 @@ extension PinnedRowTitle {
                                              moving: Bool, restPending: Bool,
                                              focused: Bool, inBand: Bool,
                                              holding: Bool) -> SlideHoldVerdict {
+        slideHoldDecision(target: target, current: current, moving: moving, restPending: restPending,
+                          focused: focused, inBand: inBand, holding: holding).verdict
+    }
+
+    /// Review r1 P3-5 (BUG-209): the verdict plus which rule produced it, so the probe's `exempt=`
+    /// flag reads the decision rather than restating its predicate. `exempt` is true exactly when
+    /// the W3-14 focused in-band exemption returned the verdict (`.track` while moving, `.apply`
+    /// at rest).
+    nonisolated struct SlideHoldDecision: Equatable, Sendable {
+        let verdict: SlideHoldVerdict
+        let exempt: Bool
+    }
+
+    /// `slideHoldVerdict`'s rules (documented there), returning the rule as well as the verdict.
+    /// `commitSlide` runs this; `slideHoldVerdict` is its `.verdict`.
+    nonisolated static func slideHoldDecision(target: CGFloat, current: CGFloat,
+                                              moving: Bool, restPending: Bool,
+                                              focused: Bool, inBand: Bool,
+                                              holding: Bool) -> SlideHoldDecision {
         if target == 0 {
-            return (moving && current != 0) ? .snapToZero : .apply
+            return SlideHoldDecision(verdict: (moving && current != 0) ? .snapToZero : .apply, exempt: false)
         }
         if focused, inBand, !holding {
-            return moving ? .track : .apply
+            return SlideHoldDecision(verdict: moving ? .track : .apply, exempt: true)
         }
-        return (moving || restPending) ? .hold : .apply
+        return SlideHoldDecision(verdict: (moving || restPending) ? .hold : .apply, exempt: false)
     }
 
     /// rc14: "moving" = the rows scroll's own stamp or this title's frame changed inside this
@@ -1554,9 +1573,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
         let focused = tracking.isFocused
         let inBand = PinnedRowTitle.slideInBand(target: target, clearances: reading.clearances)
         let holding = tracking.pendingSlide != nil
-        switch PinnedRowTitle.slideHoldVerdict(target: target, current: slide,
-                                               moving: motion.moving, restPending: restPending,
-                                               focused: focused, inBand: inBand, holding: holding) {
+        let decision = PinnedRowTitle.slideHoldDecision(target: target, current: slide,
+                                                        moving: motion.moving, restPending: restPending,
+                                                        focused: focused, inBand: inBand, holding: holding)
+        switch decision.verdict {
         case .snapToZero:
             // beta.18 verdict (BUG-87/89, R1): round 4 F2 already never HELD a 0 target, but it
             // eased it over 0.22s while the row still travelled, so the title visibly detached
@@ -1587,13 +1607,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
             tracking.pendingSlide = nil
             tracking.slideHoldToken &+= 1
             applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
-                             animated: false, exempt: true, restPending: restPending)
+                             animated: false, exempt: decision.exempt, restPending: restPending)
         case .apply:
             tracking.pendingSlide = nil
             tracking.slideHoldToken &+= 1
+            // Review r1 P3-5: `exempt=` is the decision's own rule, not a restatement of it.
             applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
-                             exempt: target != 0 && focused && inBand && !holding,
-                             restPending: restPending)
+                             exempt: decision.exempt, restPending: restPending)
         }
     }
 
