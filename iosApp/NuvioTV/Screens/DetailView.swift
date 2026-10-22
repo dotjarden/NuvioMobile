@@ -79,6 +79,9 @@ private final class ScrollDimModel: ObservableObject {
     /// on every scroll frame and must not invalidate anything (the BUG-41 rule).
     var contentInsetTop: CGFloat = 0
     var lastContentOffset: CGFloat = 0
+    /// W3-15 (BUG-153): the duration the last anchor / hero glide started with; the verify sleeps
+    /// wait at least this long plus a slack so a 0.45 s verify never restarts a longer glide mid-way.
+    var anchorGlideSeconds: TimeInterval = DetailRowAnchor.anchorDurationFloor
     /// BUG-96 diagnostic sample (plain field); published into `scrollGeoNote` by the anchor pass.
     var geometrySample: String = "-"
     /// BUG-96 blend: armed with the just-focused row the instant `focusedRow` changes, and the
@@ -1502,7 +1505,7 @@ struct DetailView: View {
             // fired: one verify pass. A card whose thumbnails land after the settle
             // makes the engine re-reveal it and undo the rest. Re-issue once, never
             // loop.
-            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay(for: dimModel.anchorGlideSeconds) * 1_000_000_000))
             _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
             // Publish the geometry sample once, AT REST, for the probe (never per
             // frame).
@@ -1524,7 +1527,7 @@ struct DetailView: View {
                 dimModel.awaitingHeroReturn = false
                 guard heroTopPass("hero-return-fallback") else { return }
             }
-            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay(for: dimModel.anchorGlideSeconds) * 1_000_000_000))
             _ = heroTopPass("hero-return-reissued", onlyIfDrifted: true)
             try? await Task.sleep(nanoseconds: 350_000_000)
             if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
@@ -1544,12 +1547,17 @@ struct DetailView: View {
         if onlyIfDrifted, DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset, contentInsetTop: inset) {
             return true
         }
+        // W3-15 (BUG-153): the glide's duration scales with its travel (0.3 s up to 380 pt, ~0.6 s
+        // for the ~766 pt hero return), so press 1 no longer starts at twice the engine's speed.
+        let glide = reduceMotion ? 0 : DetailRowAnchor.anchorDuration(
+            travel: DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset) - dimModel.lastContentOffset)
+        dimModel.anchorGlideSeconds = glide
         if reduceMotion {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
         } else {
-            withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
+            withAnimation(.easeOut(duration: glide)) { detailScrollPosition.scrollTo(y: target) }
         }
         if DetailScrollProbe.enabled {
             dimModel.anchorNote = "hero-return y=0 \(note)"
@@ -1566,12 +1574,15 @@ struct DetailView: View {
         let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
         let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
         if onlyIfDrifted, abs(dimModel.lastContentOffset - expected) <= DetailRowAnchor.verifyTolerance { return true }
+        // W3-15 (BUG-153): distance-scaled glide; see `heroTopPass`.
+        let glide = reduceMotion ? 0 : DetailRowAnchor.anchorDuration(travel: expected - dimModel.lastContentOffset)
+        dimModel.anchorGlideSeconds = glide
         if reduceMotion {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
         } else {
-            withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
+            withAnimation(.easeOut(duration: glide)) { detailScrollPosition.scrollTo(y: target) }
         }
         lastAnchored = (row, rowTop)
         if DetailScrollProbe.enabled {
@@ -2213,12 +2224,14 @@ struct DetailView: View {
                             model.isWatched ? "Watched" : "Mark Watched",
                             systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
                         )
-                        .font(Theme.Font.meta),
+                        .font(Theme.Font.meta)
+                        // W3-17 (BUG-205): the active colour lives on the glyph, not on the glass
+                        // tint, so focus leaving the button restores at the same speed as its neighbours.
+                        .detailActiveGlyph(active: model.isWatched),
                         horizontal: Theme.Spacing.md
                     )
                 }
             )
-            .tint(model.isWatched ? Theme.Palette.accent : nil)
             // Review r1 #2: identity only (a move between hero buttons is user input).
             .focused($heroFocus, equals: .watched)
             .accessibilityIdentifier("detail_action_watched")
@@ -2232,18 +2245,19 @@ struct DetailView: View {
                             model.isSaved ? "In Library" : "Add to Library",
                             systemImage: model.isSaved ? "checkmark" : "plus"
                         )
-                        .font(Theme.Font.meta),
+                        .font(Theme.Font.meta)
+                        .detailActiveGlyph(active: model.isSaved),
                         horizontal: Theme.Spacing.md
                     )
                 }
             )
-            .tint(model.isSaved ? Theme.Palette.accent : nil)
             .focused($heroFocus, equals: .library)
             .accessibilityIdentifier("detail_action_library")
 
             // Episode shuffle: series only, and only while the global switch is on. Last in the
-            // row so the existing buttons keep their positions. Accent tint = on for this show,
-            // the same active treatment as Watched / In Library.
+            // row so the existing buttons keep their positions. On for this show = the accent on
+            // the glyph plus the filled shuffle symbol (W3-17), the same active treatment as
+            // Watched / In Library.
             if model.shuffleOffered {
                 compactActionButtonStyle(
                     Button {
@@ -2256,14 +2270,16 @@ struct DetailView: View {
                         actionButtonPadding(
                             actionLabel(
                                 model.shuffleSettings.enabled ? "Shuffle On" : "Shuffle",
-                                systemImage: "shuffle"
+                                systemImage: DetailActiveGlyph.glyph(active: model.shuffleSettings.enabled,
+                                                                     onGlyph: DetailActiveGlyph.shuffleOnGlyph,
+                                                                     offGlyph: DetailActiveGlyph.shuffleOffGlyph)
                             )
-                            .font(Theme.Font.meta),
+                            .font(Theme.Font.meta)
+                            .detailActiveGlyph(active: model.shuffleSettings.enabled),
                             horizontal: Theme.Spacing.md
                         )
                     }
                 )
-                .tint(model.shuffleSettings.enabled ? Theme.Palette.accent : nil)
                 .focused($heroFocus, equals: .shuffle)
                 .accessibilityIdentifier("detail_action_shuffle")
             }
