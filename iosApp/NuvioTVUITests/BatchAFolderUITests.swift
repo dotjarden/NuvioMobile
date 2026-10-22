@@ -363,8 +363,9 @@ final class BatchAFolderUITests: XCTestCase {
     ///  2. they rest at the folder-tile size, `style.width × 16/9` × `style.width` (233.97 pt tall
     ///     at the leg's Medium+ = 134 dp override), not the poster height (D16);
     ///  3. the heading → art gap equals the portrait row's (the art is top-aligned in its slot);
-    ///  4. the trailer tile reaches `.wide` at the poster height × 16/9 (`debug_trailerTile outer=`),
-    ///     its top on the rest card's top (it grows DOWN, the heading never moves);
+    ///  4. the trailer tile reaches `.wide` AT THE REST SIZE (`debug_trailerTile outer=` = ` base=`),
+    ///     its top on the rest card's top (Steven's rc6 follow-up, rc8: no enlargement while the
+    ///     trailer plays; the heading never moves);
     ///  5. once `event=play host=card`, the tile region MOVES between two screenshots (BUG-163: the
     ///     audio played under a still picture). YouTube extraction can be blocked from this Mac
     ///     (`LOGIN_REQUIRED`); then 4/5 are recorded as device-owed, not failed.
@@ -457,7 +458,7 @@ final class BatchAFolderUITests: XCTestCase {
         let gap = headingGap(above: focused)
         note("landscape-1-row", "focused=\(focused) rest=\(rest) portrait=\(String(describing: portraitFrame)) gap=\(String(describing: gap)) portraitGap=\(String(describing: portraitGap)) tile=\(tileLabel ?? "-")")
         guard tileLabel != nil else {
-            note("landscape-video", "DEVICE-OWED: no trailer tile within 20 s (extraction unavailable on this host?): the rest size and the grow are unverified here")
+            note("landscape-video", "DEVICE-OWED: no trailer tile within 20 s (extraction unavailable on this host?): the rest size and the wide stage are unverified here")
             XCTAssertGreaterThan(focused.width / max(focused.height, 1), 1.0, "BUG-157: the landscape-shape card's slot is not wider than tall (\(focused))")
             return
         }
@@ -488,7 +489,11 @@ final class BatchAFolderUITests: XCTestCase {
             XCTAssertLessThan(gap, 48, "BUG-162: the row heading floats \(gap) pt above the landscape cards")
         }
 
-        // 4. The tile: reaches `.wide` at the poster height, growing down from the rest card's top.
+        // 4. The tile reaches `.wide` AT THE REST SIZE. Steven's rc6 follow-up (2026-10-18 19:47Z,
+        //    `457a38d34`, shipped rc8, confirmed rc9: "wide posters without enlargement") reversed
+        //    D16's grow: a shape-landscape card plays its trailer inside the folder-tile-sized card,
+        //    so the wide tile's outer size is the rest size and its top stays on the rest card's
+        //    top. This leg kept rc6's grow expectation until the UI legs' first full run (2026-10-22).
         for _ in 0..<40 {
             if readTile(), tileLabel?.contains("stage=wide") == true { break }
             pause(0.5)
@@ -496,7 +501,7 @@ final class BatchAFolderUITests: XCTestCase {
         if tileLabel?.contains("stage=wide") != true { tileLabel = nil }
         note("landscape-2-tile", (tileLabel ?? "debug_trailerTile <no wide stage>; morph=\(probe(app, "debug_trailerMorph"))") + " frame=\(tileFrame)")
         guard let tileLabel else {
-            note("landscape-video", "DEVICE-OWED: no wide trailer tile within 20 s (extraction unavailable on this host?) — the grow is unverified here")
+            note("landscape-video", "DEVICE-OWED: no wide trailer tile within 20 s (extraction unavailable on this host?) — the wide stage is unverified here")
             return
         }
         shot("landscape-2-wide")
@@ -505,8 +510,8 @@ final class BatchAFolderUITests: XCTestCase {
             let parts = outer.split(separator: "x").compactMap { Double($0) }
             if parts.count == 2 { grown = CGSize(width: parts[0], height: parts[1]) }
         }
-        XCTAssertEqual(grown.height, styleHeight, accuracy: 3, "D16: the wide tile is not the poster height (\(tileLabel))")
-        XCTAssertEqual(grown.width, styleHeight * 16 / 9, accuracy: 3, "D16: the wide tile is not 16:9 at the poster height (\(tileLabel))")
+        XCTAssertEqual(grown.height, styleWidth, accuracy: 3, "BUG-162 (rc8): the wide tile grew off the rest height (\(tileLabel))")
+        XCTAssertEqual(grown.width, styleWidth * 16 / 9, accuracy: 3, "BUG-162 (rc8): the wide tile is not 16:9 at the rest height (\(tileLabel))")
         // The probe text is a top-leading overlay on the tile: its top is the tile's top.
         XCTAssertEqual(tileFrame.minY, rest.minY, accuracy: 3,
                        "D16: the tile's top (\(tileFrame.minY)) moved off the rest card's top (\(rest.minY)): the row breathed")
