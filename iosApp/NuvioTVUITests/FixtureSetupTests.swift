@@ -45,6 +45,12 @@ final class FixtureSetupTests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = true
+        // ui-legs (2026-10-22): these legs WRITE the fixture's profile-synced Poster Size / Hide
+        // Titles through Settings, and a whole-class run applies them in alphabetical order (ending
+        // on Medium+ with Hide Titles ON), so a blind full-suite run must not run them. Opt-in only.
+        guard ProcessInfo.processInfo.environment["NUVIO_FIXTURE_SETUP"] == "1" else {
+            throw XCTSkip("fixture setup/restore (writes synced Poster Size / Hide Titles) — set TEST_RUNNER_NUVIO_FIXTURE_SETUP=1 and pick ONE leg with -only-testing")
+        }
     }
 
     // MARK: - Helpers (trimmed copies — see type doc for why these are duplicated, not shared)
@@ -77,8 +83,8 @@ final class FixtureSetupTests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app

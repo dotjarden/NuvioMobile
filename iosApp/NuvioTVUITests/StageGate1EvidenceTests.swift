@@ -57,12 +57,8 @@ final class StageGate1EvidenceTests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
         if chris.exists {
-            // Default focus is the first profile; Left is a no-op there, Right would hit Add Profile.
-            remote.press(.left)
-            pause(0.5)
-            remote.press(.left)
-            pause(0.5)
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         return app
     }
@@ -292,7 +288,13 @@ final class StageGate1EvidenceTests: XCTestCase {
     /// sharp edge at x = 160. The oracle compares two 16 pt strips either side of that edge in the
     /// empty band above the stage text (left of the tab bar): the art mask's own ramp moves less than
     /// 4 levels across them, so a step of 8 or more is the bar.
-    func testOledBarEvidence() {
+    func testOledBarEvidence() throws {
+        // ui-legs (2026-10-22): `-amoled_enabled_N` is a SYNCED theme key (TvOsThemeSettingsStore
+        // exports it from NSUserDefaults, argument domain included), so a settings push during a
+        // leg would carry it to the signed-in fixture's account. Opt-in only.
+        guard ProcessInfo.processInfo.environment["NUVIO_SYNCED_LAUNCH_ARGS"] == "1" else {
+            throw XCTSkip("launches with the synced key -amoled_enabled_1 — set TEST_RUNNER_NUVIO_SYNCED_LAUNCH_ARGS=1 on a throwaway fixture")
+        }
         let legs: [(name: String, args: [String], checked: Bool)] = [
             ("oled-on", ["-home_layout", "stage", "-amoled_enabled_1", "YES"], true),
             ("oled-off", ["-home_layout", "stage", "-amoled_enabled_1", "NO"], true),
