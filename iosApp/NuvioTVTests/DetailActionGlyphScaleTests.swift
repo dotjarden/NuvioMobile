@@ -55,11 +55,15 @@ final class DetailActionGlyphScaleTests: XCTestCase {
     }
 
     /// The glyphs still waiting for a number from the box (owner's R0 session: a resumable film for
-    /// Start Over, In Library on, a series with Shuffle off and on). When one is measured, put its
+    /// In Library on, a series with Shuffle off and on). When one is measured, put its
     /// optical size in `DetailActionGlyphScale.measured`, delete it from `unmeasured`, and from here.
-    func testUnmeasuredSymbolsAreExactlyTheListedFour() {
-        XCTAssertEqual(DetailActionGlyphScale.unmeasured,
-                       ["arrow.counterclockwise", "shuffle", "shuffle.circle.fill", "checkmark"])
+    func testUnmeasuredSymbolsAreExactlyTheListedThree() {
+        XCTAssertEqual(DetailActionGlyphScale.unmeasured, ["shuffle", "shuffle.circle.fill", "checkmark"])
+    }
+
+    /// Start Over was measured on the box on 2026-10-22 (26 pt box): it scales down a little.
+    func testStartOverIsMeasuredAndScalesDown() {
+        XCTAssertEqual(DetailActionGlyphScale.scale(for: DetailActionSymbol.startOver), 25.0 / 26.0, accuracy: 0.001)
     }
 
     /// An unmeasured entry is provisional: it carries the target (scale 1), so nothing is guessed.

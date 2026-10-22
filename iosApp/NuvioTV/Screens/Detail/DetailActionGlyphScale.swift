@@ -45,7 +45,7 @@ nonisolated enum DetailActionGlyphScale {
     /// Optical size (the longer side of the drawn glyph's bounding box) per symbol, pt, keyed by
     /// `DetailActionSymbol`. Entries in `unmeasured` carry `target` (scale 1) until the box gives a
     /// number: replace the value, delete the symbol from `unmeasured`, and update
-    /// `testUnmeasuredSymbolsAreExactlyTheListedFour`.
+    /// `testUnmeasuredSymbolsAreExactlyTheListedThree`.
     static let measured: [String: CGFloat] = [
         DetailActionSymbol.trailer: 28,
         DetailActionSymbol.watchedOff: 25,
@@ -59,14 +59,14 @@ nonisolated enum DetailActionGlyphScale {
         // MEASURE: Shuffle on `shuffle.circle.fill` (same series, Shuffle on; ringed like
         // `checkmark.circle`, so likely ~25).
         DetailActionSymbol.shuffleOn: target,
-        // MEASURE: Start Over `arrow.counterclockwise` (a resumable film, Cinematic).
-        DetailActionSymbol.startOver: target,
+        // Start Over, measured 2026-10-22 on the box (Animals after an mpv session, Cinematic,
+        // Steven's config): 21.5 × 26 pt → the 26 pt box is the optical size.
+        DetailActionSymbol.startOver: 26,
     ]
 
     /// The `measured` entries that are still the provisional `target` (scale 1), not a box reading.
     static let unmeasured: Set<String> = [
-        DetailActionSymbol.libraryIn, DetailActionSymbol.shuffleOff,
-        DetailActionSymbol.shuffleOn, DetailActionSymbol.startOver,
+        DetailActionSymbol.libraryIn, DetailActionSymbol.shuffleOff, DetailActionSymbol.shuffleOn,
     ]
 
     /// The scale factor for `symbol`; 1 for anything not in the table (`play.fill`, a new symbol).
