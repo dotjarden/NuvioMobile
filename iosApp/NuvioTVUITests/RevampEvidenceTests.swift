@@ -38,6 +38,36 @@ final class RevampEvidenceTests: XCTestCase {
         }
     }
 
+    /// ui-legs (2026-10-22): whether an element with `identifier` holds focus, from one snapshot.
+    private func focusedIdentifier(_ app: XCUIApplication, _ identifier: String) -> Bool {
+        guard let root = try? app.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool {
+            (node.hasFocus && node.identifier == identifier) || node.children.contains(where: walk)
+        }
+        return walk(root)
+    }
+
+    /// ui-legs: Select only when `isTarget()` holds on a focus read made right here; otherwise a
+    /// screenshot, a failure naming what was focused, and no press.
+    @discardableResult
+    private func selectIfFocused(_ app: XCUIApplication, _ what: String, when isTarget: () -> Bool) -> Bool {
+        if isTarget() {
+            remote.press(.select)
+            return true
+        }
+        shot("unverified-\(what)")
+        var focused: [String] = []
+        if let root = try? app.snapshot() {
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.hasFocus { focused.append(node.label.isEmpty ? "<\(node.identifier)>" : node.label) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+        }
+        XCTFail("\(what): focus is not on the intended element (focused: \(focused)) — not pressing Select")
+        return false
+    }
+
     @discardableResult
     private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
@@ -46,9 +76,9 @@ final class RevampEvidenceTests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
         if chris.exists {
-            // Default focus is the first profile; Left is a no-op there, Right would hit Add Profile.
-            press(.left, times: 2, gap: 0.5)
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused; a blind
+            // Right here would hit Add Profile).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         return app
     }
@@ -93,8 +123,9 @@ final class RevampEvidenceTests: XCTestCase {
         press(.up)
         pause(1)
         shot("detail-teaser-focused")
-        if app.buttons["detail_synopsis_teaser"].exists || app.descendants(matching: .any)["detail_synopsis_teaser"].exists {
-            remote.press(.select)
+        if app.buttons["detail_synopsis_teaser"].exists || app.descendants(matching: .any)["detail_synopsis_teaser"].exists,
+           // ui-legs: the teaser must hold focus (a Select on Play opens the player).
+           selectIfFocused(app, "teaser", when: { focusedIdentifier(app, "detail_synopsis_teaser") }) {
             pause(2)
             shot("detail-synopsis-sheet")
             tree(app, "detail-synopsis-sheet-tree")
@@ -116,7 +147,7 @@ final class RevampEvidenceTests: XCTestCase {
             remote.press(.right)
             pause(0.5)
         }
-        remote.press(.select)
+        guard selectIfFocused(app, "settings-tab", when: { settings.exists && settings.hasFocus }) else { return }
         pause(3)
         press(.down)
         pause(1.5)
@@ -124,7 +155,7 @@ final class RevampEvidenceTests: XCTestCase {
         tree(app, "settings-root-tree")
         press(.down, times: 3, gap: 0.8)
         shot("settings-root-homescreen-focused")
-        remote.press(.select)
+        guard selectIfFocused(app, "home-screen-row", when: { focusedIdentifier(app, "settings_category_homeScreen") }) else { return }
         pause(2.5)
         shot("settings-pane-homescreen")
         press(.down, times: 2, gap: 0.8)
@@ -135,23 +166,25 @@ final class RevampEvidenceTests: XCTestCase {
         shot("settings-after-pop")
     }
 
-    private func openSettings(_ app: XCUIApplication) {
+    @discardableResult
+    private func openSettings(_ app: XCUIApplication) -> Bool {
         let settings = app.buttons["Settings"]
         press(.up, times: 6, gap: 0.4)
         for _ in 0..<8 where !(settings.exists && settings.hasFocus) {
             remote.press(.right)
             pause(0.5)
         }
-        remote.press(.select)
+        guard selectIfFocused(app, "settings-tab", when: { settings.exists && settings.hasFocus }) else { return false }
         pause(3)
         press(.down)
         pause(1.5)
+        return true
     }
 
     func testSettingsEveryPane() {
         let app = launch([])
         pause(8)
-        openSettings(app)
+        guard openSettings(app) else { return }
         // Anchor on the first category, then walk the fixed root order.
         // Up×12 parks focus on the tab bar; one Down lands on the first category.
         press(.up, times: 12, gap: 0.3)
@@ -160,8 +193,19 @@ final class RevampEvidenceTests: XCTestCase {
         shot("settings-root-top")
         let names = ["account", "services", "appearance", "homescreen", "detailpage",
                      "player", "sources", "subtitles", "about", "developer"]
+        // ui-legs (2026-10-22): each Select goes only to the root row it names (read by its
+        // `settings_category_<raw>` identifier), and the Account & Profiles pane is not opened on
+        // the signed-in fixture (its rows include Sign Out and Switch Profile): stepped past.
+        let raws = ["accountProfiles", "services", "appearance", "homeScreen", "detailPage",
+                    "player", "sources", "subtitlesAudio", "about", "developer"]
         for (index, name) in names.enumerated() {
-            remote.press(.select)
+            if raws[index] == "accountProfiles" {
+                shot("pane-\(index)-\(name)-not-opened")
+                press(.down)
+                pause(0.8)
+                continue
+            }
+            guard selectIfFocused(app, "root-row-\(raws[index])", when: { focusedIdentifier(app, "settings_category_\(raws[index])") }) else { return }
             pause(2.5)
             shot("pane-\(index)-\(name)-top")
             press(.down, times: 2, gap: 0.8)
@@ -188,7 +232,7 @@ final class RevampEvidenceTests: XCTestCase {
         press(.up)
         pause(1.5)
         shot("motion-teaser-focused")
-        remote.press(.select)
+        guard selectIfFocused(app, "motion-teaser", when: { focusedIdentifier(app, "detail_synopsis_teaser") }) else { return }
         pause(2.5)
         shot("motion-synopsis-sheet")
         remote.press(.menu)

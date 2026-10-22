@@ -29,7 +29,8 @@ final class DetailSynopsisSheetUITests: XCTestCase {
         app.launch()
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         if chris.waitForExistence(timeout: 90) {
-            remote.press(.left); pause(0.5); remote.press(.left); pause(0.5); remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         // Review r2 P3-4: the teaser id sits on both the truncated BUTTON and the plain text; only
         // the button proves the synopsis is truncated (Select on plain text would land on Play).
@@ -42,6 +43,13 @@ final class DetailSynopsisSheetUITests: XCTestCase {
         for _ in 0..<4 {
             remote.press(.up)
             pause(0.8)
+        }
+        // ui-legs (2026-10-22): Select only once the teaser BUTTON reads focused (FA87's tvOS 26.5
+        // reports focus); a Select on Play would open the player instead of the sheet.
+        guard teaser.hasFocus else {
+            shot("bug193-teaser-not-focused")
+            XCTFail("the synopsis teaser never read focused after four Ups — not pressing Select")
+            return
         }
         remote.press(.select)
         let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
