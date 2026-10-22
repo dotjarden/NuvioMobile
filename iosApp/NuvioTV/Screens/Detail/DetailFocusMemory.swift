@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// BUG-187 (Steven rc9: "back from a cast member, focus goes back to Play"). The main fix keeps
 /// the rows mounted across the reload (`DetailMetaAdoption`), so the focus engine can restore the
@@ -62,6 +63,9 @@ final class DetailFocusMemory {
 
     func isCurrent(_ generation: Int) -> Bool { generation == self.generation }
 
+    /// The live restore's generation, for a re-grab scheduled from a focus change (BUG-194, rc11).
+    var currentGeneration: Int { generation }
+
     // MARK: Pop gate (Batch P, P7 / BUG-194)
 
     /// The card a live restore is steering focus to; nil when no restore is live.
@@ -76,6 +80,10 @@ final class DetailFocusMemory {
         popStartedAt = startedAt
         popLandedAt = nil
         popMoves = 0
+        popRegrabs = 0
+        popLandings = 0
+        popStrayAt = nil
+        popAway = 0
         heldFocusChange = nil
     }
 
@@ -86,6 +94,37 @@ final class DetailFocusMemory {
     var popLandedAt: TimeInterval?
     var popMoves = 0
     private(set) var heldFocusChange: (old: DetailRowID?, new: DetailRowID?)?
+
+    /// BUG-194 (Steven rc11): re-grabs issued for the engine's stray landings (`DetailPopGate.Decision.regrab`),
+    /// landings on the target row, and the time focus spent OFF the target after its first landing
+    /// (what the viewer sees as the second move; the probe's `away=`).
+    var popRegrabs = 0
+    private(set) var popLandings = 0
+    private(set) var popStrayAt: TimeInterval?
+    private(set) var popAway: TimeInterval = 0
+
+    /// Focus landed on the target row: the first landing is `popLandedAt`; a landing after a stray
+    /// stops the away clock.
+    func noteLanding(at now: TimeInterval) {
+        popLandings += 1
+        if popLandedAt == nil { popLandedAt = now }
+        if let strayAt = popStrayAt {
+            popAway += max(0, now - strayAt)
+            popStrayAt = nil
+        }
+    }
+
+    /// Focus left the target (or landed elsewhere). Starts the away clock only after a landing: before
+    /// it, focus has not been on the card yet, so nothing visible moved off it.
+    func noteStray(at now: TimeInterval) {
+        guard popLandedAt != nil, popStrayAt == nil else { return }
+        popStrayAt = now
+    }
+
+    /// Time off the target since the first landing, counting a stray still running at `now`.
+    func awayTime(at now: TimeInterval) -> TimeInterval {
+        popAway + (popStrayAt.map { max(0, now - $0) } ?? 0)
+    }
 
     /// Keeps the FIRST `old` of a run of held changes and the latest `new`.
     func holdFocusChange(old: DetailRowID?, new: DetailRowID?) {
@@ -120,10 +159,20 @@ nonisolated enum DetailPopGate {
         case landed
         /// The viewer moved focus: stand down at once.
         case release
+        /// BUG-194 (Steven rc11, his config and the Wave 1 config alike: `moves=3`): focus went off the
+        /// target with no viewer input since the pop. That is the engine's late pop restoration onto
+        /// its default candidate (Play, `.defaultFocus($heroFocus, .play)`), ~30 ms after the forced
+        /// rung's request landed the card at the end of the transition (~570 ms). Hold the page AND
+        /// take the card back now; the 0.8 s free rung used to leave Play focused for ~230 ms.
+        case regrab
     }
 
     /// Same constant as the Home uncover: counted from the landing.
     static let landedWindow: TimeInterval = UncoverRestorePolicy.landedWindow
+
+    /// Re-grabs per restore, Home's count with a live clock: Classic Home saw the engine fire its
+    /// default-candidate restoration twice (0.59 s and 0.98 s after the pop).
+    static let maxRegrabs: Int = UncoverRestorePolicy.maxRegrabs(clockLive: true)
 
     /// The default focus target while a restore is live (the remembered card's row), else nil, which
     /// leaves today's `.defaultFocus($heroFocus, .play)` in charge.
@@ -132,12 +181,18 @@ nonisolated enum DetailPopGate {
     }
 
     /// Viewer input wins, then a focus report on the target row (the caller passes the target key when the row matches) lands;
-    /// anything else (the hero, another row, another card) holds.
+    /// anything else (the hero, another row, another card) is the engine's: re-grabbed while the viewer-input
+    /// clock is live and `regrabs` is under `maxRegrabs`, else held for the late rungs (the pre-rc11 rule).
+    /// Positions and the input clock decide, never timestamps (Batch N). `regrabs` and `clockLive`
+    /// default to the pre-rc11 rule (no clock: hold).
     static func decide(focusedRow: DetailRowID?, focusedKey: String?,
-                       target: (row: DetailRowID, key: String), viewerInput: Bool) -> Decision {
+                       target: (row: DetailRowID, key: String), viewerInput: Bool,
+                       regrabs: Int = 0, clockLive: Bool = false) -> Decision {
         if viewerInput { return .release }
         if focusedRow == target.row, focusedKey == target.key { return .landed }
-        return .hold
+        // Without a live clock the viewer's move cannot be told from the engine's: hold, as before.
+        guard clockLive, regrabs < maxRegrabs else { return .hold }
+        return .regrab
     }
 
     /// Whether the landed hold is still running, `age` seconds after the landing.
@@ -158,7 +213,11 @@ struct DetailFocusRestoreRequest: Equatable {
 /// BUG-187: the pure halves of the fallback restore.
 enum DetailFocusRestore {
     /// FEAT-79's rungs: two forced at once and after the first layout, then two late ones for the
-    /// engine's own restoration (0.55–0.98 s late on hardware, Batch A).
+    /// engine's own restoration (0.55–0.98 s late on hardware, Batch A). On hardware the two forced
+    /// rungs fall inside the pop transition and neither sticks on its own turn (both log `applied`);
+    /// the request lands the card when the transition ends (~570 ms). Since rc11 the engine's stray
+    /// landing right after that is re-grabbed at once (`DetailPopGate.Decision.regrab`); the late
+    /// rungs stay as the fallback (no input clock, re-grab limit, a dropped write).
     nonisolated static let rungs: [(delay: Double, force: Bool)] = [(0, true), (0.35, true), (0.8, false), (1.1, false)]
     /// When the request is retired, after the last rung.
     nonisolated static let retireDelay: Double = 1.3
@@ -180,7 +239,21 @@ enum DetailFocusRestore {
 }
 
 /// BUG-187: `-debug.detailFocusProbe YES` mounts the DEBUG `debug_detail_focus row= idx=` label
-/// the UI leg reads (the tvOS 27 simulator never reports `hasFocus`). Launch-latched.
+/// the UI leg reads (the tvOS 27 simulator never reports `hasFocus`). Launch-latched. The
+/// `[DetailPop]` console lines (BUG-194) log under the same flag in every build, Release included.
 enum DetailFocusProbe {
     nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.detailFocusProbe")
+
+    /// BUG-194 (rc11): what UIKit focus sits on now, for the `[DetailPop] stray` line: the item's
+    /// runtime type and its window-space origin (Play is a responder item in the hero; BUG-188's
+    /// lazy-row stand-in is a `UIKitFocusableFillerItem`). Probe-only; "-" when there is none.
+    static func focusedItemSummary() -> String {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        guard let window, let item = UIFocusSystem.focusSystem(for: window)?.focusedItem else { return "-" }
+        let name = String(describing: type(of: item))
+        guard let space = item.parentFocusEnvironment?.focusItemContainer?.coordinateSpace else { return name }
+        let frame = space.convert(item.frame, to: window.coordinateSpace)
+        return "\(name)@\(Int(frame.minX)),\(Int(frame.minY))"
+    }
 }
