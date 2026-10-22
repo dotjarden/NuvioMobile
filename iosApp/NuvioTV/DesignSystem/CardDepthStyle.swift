@@ -582,11 +582,20 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// stretch through the animation; the live layers re-stroke.
     @ViewBuilder
     private func rendered(_ p: Params) -> some View {
-        if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
-            cachedLayers(p, kind: kind)
-        } else {
-            liveLayers(p).drawingGroup()
-        }
+        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV): the raster-cache rendering
+        // (`cachedLayers`, the W3-13 pick) crashed the app within three seconds of Home on every
+        // launch, Stage and Classic, Debug and Release, once Continue Watching differed between the
+        // local snapshot and the pull: `SwiftUICore/DynamicContainer.swift:651: Fatal error` from
+        // `DynamicContainerInfo.tryRemovingItem` under `_AspectRatioLayout.effectiveRatio` inside a
+        // `LazyHStack` row (crash logs `NuvioTV-2026-10-22-1210*.ips`). Card Depth off does not crash,
+        // and making the cached ZStack's structure independent of the cache's answer did not help, so
+        // the GeometryReader-driven overlay is the trigger. The live layers, the rendering every
+        // device pass validated through rc11, ship unchanged (no `.drawingGroup()`: that adds an
+        // offscreen pass per card on the GPU-bound Detail page, BUG-206). `cachedLayers` and
+        // `CardDepthRasterCache` stay for Wave 4 with the device repro (Test 2, Trakt progress, a
+        // title played since the last launch); `animatesSize` and `haloSpread` keep their meaning
+        // for that revival.
+        liveLayers(p)
     }
 
     /// The fallback: the SwiftUI layers (the sheen gradient and the stroked rail), which
@@ -618,22 +627,26 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     private func cachedLayers(_ p: Params, kind: CardDepthRasterCache.ShapeKind) -> some View {
         GeometryReader { proxy in
             let size = proxy.size
+            // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV): the two layers used to sit
+            // behind `if let` on the cache lookup, so the ZStack's STRUCTURE depended on the layout
+            // size (nil for a zero proposal and for a failed render). A horizontal row that drops a
+            // card while its cards are measured (`_AspectRatioLayout` reading the card's size runs
+            // this body) then added or removed a child inside the layout pass, and SwiftUI's dynamic
+            // container asserted (`DynamicContainerInfo.tryRemovingItem`, `SwiftUICore/
+            // DynamicContainer.swift:651: Fatal error`) within three seconds of Home on every launch
+            // once Continue Watching changed between the local snapshot and the pull. The structure
+            // now depends on the settings only (`p.sheen`, `p.edge`, both fixed per body); a missing
+            // bitmap draws an empty image, which is what a zero-size card shows anyway.
             ZStack(alignment: .topLeading) {
-                if p.sheen > 0,
-                   let sheen = CardDepthRasterCache.shared.image(
-                       for: .sheen(size: size, scale: displayScale, shape: kind, sheen: p.sheen)) {
-                    Image(uiImage: sheen)
-                        .resizable()
-                        .frame(width: size.width, height: size.height)
+                if p.sheen > 0 {
+                    bitmap(CardDepthRasterCache.shared.image(
+                        for: .sheen(size: size, scale: displayScale, shape: kind, sheen: p.sheen)), size: size)
                 }
-                if p.edge > 0,
-                   let rail = CardDepthRasterCache.shared.image(
-                       for: .rail(size: size, scale: displayScale, shape: kind,
-                                  lineWidth: p.width, stops: p.stops, coverage: p.coverage)) {
+                if p.edge > 0 {
                     railVisibility(
-                        Image(uiImage: rail)
-                            .resizable()
-                            .frame(width: size.width, height: size.height)
+                        bitmap(CardDepthRasterCache.shared.image(
+                            for: .rail(size: size, scale: displayScale, shape: kind,
+                                       lineWidth: p.width, stops: p.stops, coverage: p.coverage)), size: size)
                             .colorMultiply(CardDepthStyle.railColor(tint: railTint))
                     )
                 }
@@ -641,6 +654,15 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .accessibilityHidden(true)
         }
+    }
+
+    /// One bitmap layer whose presence never depends on the cache's answer (BUG-221): a nil image
+    /// (zero-size proposal before the first layout, a failed render) draws an empty `UIImage` in the
+    /// same frame instead of removing the layer from the ZStack.
+    private func bitmap(_ image: UIImage?, size: CGSize) -> some View {
+        Image(uiImage: image ?? UIImage())
+            .resizable()
+            .frame(width: size.width, height: size.height)
     }
 
     /// W3-13 (1), value not structure: the rail is always in the tree and focus only flips its
