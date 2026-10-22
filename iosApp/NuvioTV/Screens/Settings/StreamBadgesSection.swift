@@ -14,8 +14,22 @@ import SharedCore
 /// is one focus target (the BUG-197 diagnosis), so the controls highlighted as one block. Each is
 /// now two List rows built from the settings kit: a pack row that sets the pack active and a
 /// separate Delete row; a URL field row and a separate Import row.
+///
+/// Review r1 P3-7: Delete Badge Pack takes its focused row and its pack row out together, so it
+/// hands focus on, one runloop late as `ClaimsFocusAfterSwap` does: to the next pack's row (it
+/// slides into the vacated slot), else to the URL field below. Not `ClaimsFocusAfterSwap` itself:
+/// that claims from `onAppear`, and both targets are already on screen.
 struct StreamBadgesSection: View {
     @ObservedObject var badges: BadgeSettingsViewModel
+    @FocusState private var focusedPack: String?
+    @FocusState private var urlFieldFocused: Bool
+
+    /// The pack row that takes focus when `url`'s pack is deleted: the next one down; nil for the
+    /// last pack (and an unknown url), whose hand-off goes to the URL field.
+    nonisolated static func packFocusAfterDeleting(_ url: String, in urls: [String]) -> String? {
+        guard let index = urls.firstIndex(of: url), index + 1 < urls.count else { return nil }
+        return urls[index + 1]
+    }
 
     var body: some View {
         Text("Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL \u{2014} packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Account & Profiles) lets you paste the URL from a phone browser.")
@@ -71,17 +85,22 @@ struct StreamBadgesSection: View {
                         )
                     }
                 }
+                .focused($focusedPack, equals: pack.sourceUrl)
                 SettingsDestructiveRow(
                     title: String(localized: "Delete Badge Pack"),
                     systemImage: "trash",
                     descriptionID: .appearanceBadgePack
                 ) {
+                    let next = Self.packFocusAfterDeleting(pack.sourceUrl, in: badges.imports.map(\.sourceUrl))
                     badges.deletePack(pack.sourceUrl)
+                    DispatchQueue.main.async {
+                        if let next { focusedPack = next } else { urlFieldFocused = true }
+                    }
                 }
             }
         }
 
-        BadgeUrlEntryRow(isImporting: badges.isImporting) { badges.importPack(url: $0) }
+        BadgeUrlEntryRow(isImporting: badges.isImporting, fieldFocused: $urlFieldFocused) { badges.importPack(url: $0) }
 
         if let status = badges.statusMessage {
             Text(status)
@@ -98,9 +117,10 @@ struct StreamBadgesSection: View {
 /// (HIG hybrid contract: glass is floating chrome).
 private struct BadgeUrlEntryRow: View {
     let isImporting: Bool
+    /// Owned by `StreamBadgesSection`, which hands focus here after the last pack is deleted.
+    var fieldFocused: FocusState<Bool>.Binding
     let onImport: (String) -> Void
     @State private var url = ""
-    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         Group {
@@ -111,10 +131,10 @@ private struct BadgeUrlEntryRow: View {
                 TextField("Badge pack JSON URL", text: $url)
                     .textFieldStyle(.plain)
                     .font(SettingsRowFont.title)
-                    .focused($fieldFocused)
+                    .focused(fieldFocused)
             }
-            .modifier(SettingsRestPlatter(explicitFocus: fieldFocused))
-            .settingsDescription(.appearanceBadgeImport, title: String(localized: "Badge pack JSON URL"), systemImage: "tag", focused: fieldFocused)
+            .modifier(SettingsRestPlatter(explicitFocus: fieldFocused.wrappedValue))
+            .settingsDescription(.appearanceBadgeImport, title: String(localized: "Badge pack JSON URL"), systemImage: "tag", focused: fieldFocused.wrappedValue)
 
             // Not `.disabled(isImporting)`: the pressed button lost focus. Guarded in the action,
             // and the label stays the same row while importing (the spinner rides in `trailing`).
