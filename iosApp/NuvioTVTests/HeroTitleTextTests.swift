@@ -24,6 +24,7 @@ final class HeroTitleTextTests: XCTestCase {
         XCTAssertTrue(HeroTitleText.isIdentifier("tt1:1:7", id: "tt1"))
         XCTAssertTrue(HeroTitleText.isIdentifier("tt1", id: "tt1:1:7"))
         XCTAssertFalse(HeroTitleText.isIdentifier("1917", id: "tt0000001"))
+        XCTAssertFalse(HeroTitleText.isIdentifier("Lost: Season 1", id: "lost"))
         XCTAssertFalse(HeroTitleText.isIdentifier("Animals", id: "tt3118958"))
     }
 }

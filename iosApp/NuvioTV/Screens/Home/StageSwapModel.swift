@@ -530,7 +530,8 @@ final class StageSwapDriver: ObservableObject {
         return StageFeedItem(item: item, identity: identity, washFallback: fallback)
     }
 
-    /// `[StageStrip] swap phase=out|in|cancel|idle id= sinceAct=<ms> pageEnd=<ms|timeout>`.
+    /// `[StageStrip] swap phase=out|in|logo|cancel|idle id= sinceAct=<ms> pageEnd=<ms|timeout>`
+    /// (`logo` since UX-19: the same title's text phased for its late logo, no swap counted).
     private func logTransition(from before: StageSwapCore<HeroPresentation>, now t: TimeInterval) {
         guard StageStripProbe.enabled else { return }
         let after = core
@@ -539,6 +540,9 @@ final class StageSwapDriver: ObservableObject {
             token = "cancel"
         } else if after.swaps != before.swaps {
             token = "in"
+        } else if after.phase == .fadingIn && before.phase == .fadingOut {
+            // UX-19: the same title's logo phase (no swap counted) still closes its `out`.
+            token = "logo"
         } else if after.phase == .fadingOut && before.phase != .fadingOut {
             token = "out"
         } else if after.phase == .idle && before.phase != .idle {

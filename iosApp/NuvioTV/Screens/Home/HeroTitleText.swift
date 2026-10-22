@@ -16,7 +16,9 @@ nonisolated enum HeroTitleText {
         guard !trimmed.isEmpty else { return false }
         if let id, !id.isEmpty {
             let lower = trimmed.lowercased(), idLower = id.lowercased()
-            if lower == idLower || lower == head(of: idLower) || head(of: lower) == head(of: idLower) { return true }
+            // The fallbacks set the name to the id or to the id's head; a looser match ("Lost: Season 1"
+            // against a slug id "lost") would blank a real title (review r2 P3).
+            if lower == idLower || lower == head(of: idLower) || head(of: lower) == idLower { return true }
         }
         let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false).map { String($0).lowercased() }
         guard let first = parts.first else { return false }

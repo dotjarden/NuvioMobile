@@ -53,6 +53,11 @@ final class StageSwapModelTests: XCTestCase {
                 XCTAssertTrue(before.textOpacity == 0 || after.reduceMotion,
                               "I1: swapped while the text was visible", file: file, line: line)
             }
+            // I1 (UX-19): the same for the phase key: a logo never lands on visible text.
+            if let was = before.shown?.phaseKey, let isNow = after.shown?.phaseKey, was != isNow {
+                XCTAssertTrue(before.textOpacity == 0 || after.reduceMotion,
+                              "I1: the phase key changed while the text was visible", file: file, line: line)
+            }
             // I2: the gate never opens before the pause has run.
             if let gate = after.gateTime() {
                 XCTAssertGreaterThanOrEqual(gate, after.lastActivity + after.timing.pause,
@@ -331,9 +336,8 @@ final class StageSwapModelTests: XCTestCase {
         h.tick(0.45)
         XCTAssertEqual(h.core.resting, "P0", "the title rests after the pause")
         h.at(1.0) { $0.present(SwapItem(id: "P0", logo: true), now: 1.0) }
-        XCTAssertEqual(h.core.phase, .pausing, "a new phase key waits for the gate like a new title")
-        h.tick(1.0)
-        XCTAssertEqual(h.core.phase, .fadingOut, "the gate was long open: the text fades out at once")
+        XCTAssertEqual(h.core.phase, .fadingOut, "the gate was long open: a new phase key goes straight out, like a new title")
+        XCTAssertEqual(h.core.stepDue, 1.15)
         XCTAssertEqual(h.core.textOpacity, 0)
         h.tick(1.15)
         XCTAssertEqual(h.core.shown, SwapItem(id: "P0", logo: true), "the logo payload is up once the text is hidden")
