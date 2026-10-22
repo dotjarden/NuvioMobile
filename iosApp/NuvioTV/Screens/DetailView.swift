@@ -846,20 +846,36 @@ struct DetailView: View {
                 // presses, and the request's own retire ends it regardless.
                 if let liveRow = popRestoreRow, let liveKey = popRestoreKey {
                     focusMemory.popMoves += 1
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let clock = ViewerInputClock.shared
                     // Row only (review r1 P3-1): the rung puts the right card on the row; a landing
                     // on the remembered row is the one move whatever card it hit. The restore ends
                     // on viewer input or at the request's retire (1.3 s), never on a landed window
                     // (review r1 P3-2: that window could not elapse before the retire).
                     switch DetailPopGate.decide(focusedRow: row, focusedKey: row == liveRow ? liveKey : nil,
                                                 target: (liveRow, liveKey),
-                                                viewerInput: ViewerInputClock.shared.hasInput(since: focusMemory.popStartedAt)) {
+                                                viewerInput: clock.hasInput(since: focusMemory.popStartedAt),
+                                                regrabs: focusMemory.popRegrabs, clockLive: clock.isLive) {
                     case .release:
-                        endPopRestore()
+                        endPopRestore(reason: "viewer")
                     case .landed:
-                        if focusMemory.popLandedAt == nil { focusMemory.popLandedAt = ProcessInfo.processInfo.systemUptime }
+                        focusMemory.noteLanding(at: now)
+                        logPopLanding(row: liveRow, key: liveKey, now: now)
                         focusMemory.dropHeldFocusChange()
                     case .hold:
+                        focusMemory.noteStray(at: now)
+                        logPopStray(to: row, now: now, regrab: false)
                         focusMemory.holdFocusChange(old: old, new: row)
+                        return
+                    case .regrab:
+                        // BUG-194 (Steven rc11): the engine's late restoration put focus on its
+                        // default candidate (Play) right after the card landed. Same hold as above,
+                        // and the card is taken back now instead of at the 0.8 s free rung.
+                        focusMemory.noteStray(at: now)
+                        focusMemory.popRegrabs += 1
+                        logPopStray(to: row, now: now, regrab: true)
+                        focusMemory.holdFocusChange(old: old, new: row)
+                        regrabPopTarget(row: liveRow, key: liveKey)
                         return
                     }
                 }
@@ -1080,7 +1096,7 @@ struct DetailView: View {
         // BUG-194 (review r1 P2-1): a press that stays inside the held row never changes
         // `focusedRow`, so the live restore also ends on any recorded viewer input.
         .onReceive(NotificationCenter.default.publisher(for: ViewerInputClock.didRecord)) { _ in
-            if popRestoreRow != nil { endPopRestore() }
+            if popRestoreRow != nil { endPopRestore(reason: "viewer") }
         }
         // FEAT-35 (correction F18): land on Play/Resume, not on the Cinematic synopsis teaser above
         // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
@@ -1090,8 +1106,10 @@ struct DetailView: View {
         // priority with a sentinel value is NOT inert. The engine honours it, finds no card and
         // falls to the first focusable item, which on a long synopsis is the teaser above Play
         // (FEAT-35 regressed; proven by an A/B against the pre-batch build). The restore needs no
-        // default: the forced rung at +32 ms puts cast focus back (`[DetailPop] rung applied`),
-        // and the studios row lands by itself (`moves=1`). Only Play's default stays here.
+        // default: the forced rungs' request lands the card when the pop transition ends (~570 ms),
+        // and the studios row lands by itself (`moves=1`). Only Play's default stays here. BUG-194
+        // (Steven rc11): ~30 ms after the card lands, the engine's late restoration lands on THIS
+        // default (Play); the pop gate re-grabs the card at once (`DetailPopGate.Decision.regrab`).
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
@@ -2457,38 +2475,56 @@ struct DetailView: View {
         memory.goLive((target.row, target.key), startedAt: started)
         popRestoreRow = target.row
         popRestoreKey = target.key
-        #if DEBUG
-        // Device-pass probe (Test 2 reads the console, not the label): the restore went live.
+        // Device-pass probe (Test 2 reads the console, not the label), every build: the restore went live.
         if DetailFocusProbe.enabled { NSLog("[DetailPop] live row=%@ key=%@", "\(target.row)", target.key) }
-        #endif
         for rung in DetailFocusRestore.rungs {
             DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
                 guard memory.isCurrent(generation),
                       !ViewerInputClock.shared.hasInput(since: started) else { return }
-                applyDetailFocusRung(row: target.row, key: target.key, force: rung.force)
+                applyDetailFocusRung(row: target.row, key: target.key, force: rung.force, via: "ladder")
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + DetailFocusRestore.retireDelay) {
             guard memory.isCurrent(generation) else { return }
             detailFocusRestore = .none
-            endPopRestore()
+            endPopRestore(reason: "retire")
+        }
+    }
+
+    /// BUG-194 (Steven rc11; his config and the Wave 1 config both logged `moves=3`): the engine's
+    /// late pop restoration took focus off the card with no viewer input since the pop
+    /// (`DetailPopGate.Decision.regrab`). Take the card back on the next runloop turn, once the rows'
+    /// own focus state has caught up with the move, instead of at the 0.8 s free rung: the stray
+    /// now lasts a frame or two, not ~230 ms on Play. The late rungs stay as the fallback for a
+    /// dropped write; a viewer input or a newer restore in between stands this down.
+    private func regrabPopTarget(row: DetailRowID, key: String) {
+        let memory = focusMemory
+        let generation = memory.currentGeneration
+        let n = memory.popRegrabs
+        DispatchQueue.main.async {
+            guard memory.isCurrent(generation), memory.restoreLive,
+                  !ViewerInputClock.shared.hasInput(since: memory.popStartedAt) else { return }
+            applyDetailFocusRung(row: row, key: key, force: true, via: "regrab-\(n)")
         }
     }
 
     /// BUG-194: the live pop restore is over; the page anchors normally again. A focus change the
     /// gate held is replayed now, but only when focus is still where that change left it (a later
     /// change has already run the handler for itself).
-    private func endPopRestore() {
+    /// `reason`: `retire` (the request's 1.3 s retire) or `viewer` (a recorded viewer input), for the probe.
+    private func endPopRestore(reason: String) {
         guard popRestoreRow != nil || focusMemory.restoreLive else { return }
-        #if DEBUG
+        // Every build (BUG-194 rc11): `regrabs=` stray landings re-grabbed, `away=` ms focus spent off
+        // the card after its first landing (the "second move"; ~230 ms before the re-grab).
         if DetailFocusProbe.enabled {
-            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d focused=%@ idx=%@",
+            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d regrabs=%d away=%d via=%@ focused=%@ idx=%@",
                   popRestoreRow.map { "\($0)" } ?? "-", popRestoreKey ?? "-", focusMemory.popMoves,
                   focusMemory.heldFocusChange == nil ? 0 : 1,
                   focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1,
-                  focusedRow.map { "\($0)" } ?? "-", detailFocusProbeKey)
+                  focusMemory.popRegrabs,
+                  Int(focusMemory.awayTime(at: ProcessInfo.processInfo.systemUptime) * 1000), reason,
+                  focusedRow.map { "\($0)" } ?? "-", popProbeFocusedKey)
         }
-        #endif
         let held = focusMemory.endRestore()
         popRestoreRow = nil
         popRestoreKey = nil
@@ -2497,30 +2533,72 @@ struct DetailView: View {
 
     /// BUG-187: one rung. Cast and Studios focus states live here; Collection and More Like This
     /// own theirs, so they get the request and apply the same rule (`DetailFocusRestore.shouldApply`).
-    private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool) {
+    /// `via`: `ladder` (the timed rungs) or `regrab-<n>` (BUG-194 rc11, the gate's re-grab), for the probe.
+    private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool, via: String) {
         switch row {
         case .cast:
             guard let index = Int(key),
                   DetailFocusRestore.shouldApply(force: force, current: focusedCastIndex.map(String.init),
                                                  target: key) else { return }
-            #if DEBUG
-            if DetailFocusProbe.enabled {
-                NSLog("[DetailPop] rung applied row=cast key=%@ force=%d t=%d", key, force ? 1 : 0,
-                      Int((ProcessInfo.processInfo.systemUptime - focusMemory.popStartedAt) * 1000))
-            }
-            #endif
+            logPopRung("applied", row: row, key: key, force: force, via: via)
             focusedCastIndex = index
         case .logos:
             guard let index = Int(key),
                   DetailFocusRestore.shouldApply(force: force, current: focusedCompanyIndex.map(String.init),
                                                  target: key) else { return }
+            logPopRung("applied", row: row, key: key, force: force, via: via)
             focusedCompanyIndex = index
         case .collection, .moreLikeThis:
+            // The row applies it (or not) with the same rule; logged only when focus is not already
+            // on that card, where the row would apply nothing.
+            if !(focusedRow == row && focusMemory.row == row && focusMemory.key == key) {
+                logPopRung("sent", row: row, key: key, force: force, via: via)
+            }
             detailFocusRestore = DetailFocusRestoreRequest(row: row, key: key, force: force,
                                                            generation: detailFocusRestore.generation + 1)
         default:
             break
         }
+    }
+
+    // MARK: BUG-194 `[DetailPop]` probe lines (`-debug.detailFocusProbe YES`, every build)
+
+    /// Milliseconds since the pop: every line's `t=`.
+    private func popProbeMs(_ now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Int {
+        Int((now - focusMemory.popStartedAt) * 1000)
+    }
+
+    /// The focused card's key in the focused row, read from the rows' own focus state (the DEBUG
+    /// label's `detailFocusProbeKey` is never written in Release).
+    private var popProbeFocusedKey: String {
+        switch focusedRow {
+        case .cast: focusedCastIndex.map(String.init) ?? "-"
+        case .logos: focusedCompanyIndex.map(String.init) ?? "-"
+        case .collection, .moreLikeThis: (focusMemory.row == focusedRow ? focusMemory.key : nil) ?? "-"
+        default: "-"
+        }
+    }
+
+    private func logPopRung(_ verb: String, row: DetailRowID, key: String, force: Bool, via: String) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] rung %@ row=%@ key=%@ force=%d t=%d via=%@", verb, "\(row)", key, force ? 1 : 0,
+              popProbeMs(), via)
+    }
+
+    /// A landing on the target row: `n=` counts landings, `away=` is the time off the card so far.
+    private func logPopLanding(row: DetailRowID, key: String, now: TimeInterval) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] land row=%@ key=%@ t=%d n=%d away=%d", "\(row)", key, popProbeMs(now),
+              focusMemory.popLandings, Int(focusMemory.awayTime(at: now) * 1000))
+    }
+
+    /// Focus went off the target: where (`to=` the row, `hero`, or `-` outside the page's rows; `item=`
+    /// the UIKit item and its window origin), whether the card had landed, and whether it is re-grabbed.
+    private func logPopStray(to row: DetailRowID?, now: TimeInterval, regrab: Bool) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] stray to=%@ item=%@ t=%d landed=%d regrab=%d n=%d",
+              row.map { "\($0)" } ?? (heroHasFocus ? "hero" : "-"), DetailFocusProbe.focusedItemSummary(),
+              popProbeMs(now), focusMemory.popLandedAt == nil ? 0 : 1, regrab ? 1 : 0, focusMemory.popRegrabs)
     }
 
     /// FEAT-35: Start Over sits in the row only in Cinematic, and only when there is a saved
