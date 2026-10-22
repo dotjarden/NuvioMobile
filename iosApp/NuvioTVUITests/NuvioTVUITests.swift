@@ -223,6 +223,25 @@ final class NuvioTVUITests: XCTestCase {
         return false
     }
 
+    /// The `settings_category_<raw>` of the focused Settings ROOT row, language-independent: the
+    /// identifier on the deepest focused element or inside its subtree (a List row's focus sits on
+    /// its Cell, which carries the localized label but not the identifier — first full run, test05).
+    private func focusedRootCategoryRaw(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var focused: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused.append(node) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        func search(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier.hasPrefix("settings_category_") { return String(node.identifier.dropFirst("settings_category_".count)) }
+            for child in node.children { if let hit = search(child) { return hit } }
+            return nil
+        }
+        return focused.last.flatMap(search)
+    }
+
     /// The deepest focused element's label when focus sits on a content card in a Home row: not a
     /// tab-bar button and not the hero's CTA ("Go to …", "Open Folder"). nil otherwise.
     private func focusedHomeCardLabel(_ app: XCUIApplication) -> String? {
@@ -877,7 +896,11 @@ final class NuvioTVUITests: XCTestCase {
         // between speaker.slash.fill and speaker.wave.2.fill. (Audio itself is device-only.)
         // ui-legs: Play/Pause and the closing Select go only to the Home card this walk dwelt on,
         // read here (a tab, the hero CTA or an unreadable focus gets no press).
-        let dwellCard = focusedHomeCardLabel(app)
+        // The card's composed label carries a live trailer readout ("debug_trailerTile … stage=…,
+        // <title>"), so the card is matched by its title, the part after the last ", ".
+        func cardTitle(_ label: String?) -> String? { label?.components(separatedBy: ", ").last }
+        let dwellCard = cardTitle(focusedHomeCardLabel(app))
+        NSLog("[test01] dwell card: \(dwellCard ?? "none")")
         try pressVerified(app, "01_mute_on_card", button: .playPause, when: { dwellCard != nil })
         pause(2)
         shot(app, "01i_after_playpause")
@@ -902,7 +925,7 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "01n_refocus_cache_hit")
 
         // Select → Detail: inline player must tear down, Detail loads (⇒ focus was never lost).
-        try pressVerified(app, "01_card_to_detail", when: { dwellCard != nil && focusedHomeCardLabel(app) == dwellCard })
+        try pressVerified(app, "01_card_to_detail", when: { dwellCard != nil && cardTitle(focusedHomeCardLabel(app)) == dwellCard })
         pause(4)
         shot(app, "01o_detail_from_card")
         XCTAssertTrue(app.state == .runningForeground, "app should survive card → detail push")
@@ -1098,9 +1121,8 @@ final class NuvioTVUITests: XCTestCase {
         // ui-legs: Select only on a Settings root category row, never Account & Profiles (the
         // row identifiers are language-independent).
         try pressVerified(app, "05_settings_category_de", when: {
-            focusedNodes(app).contains {
-                $0.identifier.hasPrefix("settings_category_") && $0.identifier != "settings_category_accountProfiles"
-            }
+            guard let raw = focusedRootCategoryRaw(app) else { return false }
+            return raw != "accountProfiles"
         })
         pause(1.5)
         shot(app, "05b_settings_de_category")
@@ -1230,11 +1252,13 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "09b_corners_after_square_defocused")
 
-        let depthToggle = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Card Depth'")).firstMatch
-        _ = moveFocus(.down, until: depthToggle, max: 24)
+        // ui-legs: walked by tree index with the landing verified (the old Down walk keyed on a
+        // `Card Depth` match that never reported focus and ran on to "Import Badge Pack" — first
+        // full run); Select only on the Card Depth row.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Card Depth", sidebarMaxX: 0, category: "Appearance")
         pause(1)
         shot(app, "09c_depth_before_press")
-        try pressVerified(app, "09_card_depth_toggle", when: { depthToggle.exists && depthToggle.hasFocus })
+        try pressVerified(app, "09_card_depth_toggle", when: { focusedButton(app)?.label.hasPrefix("Card Depth") == true })
         pause(4)
         shot(app, "09d_depth_4s_after_press")
 
