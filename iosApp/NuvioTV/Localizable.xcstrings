@@ -17315,6 +17315,74 @@
         }
       }
     },
+    "Fallback Audio Language": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alternative Audiosprache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de audio alternativo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue audio de secours"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua audio alternativa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngôn ngữ âm thanh dự phòng"
+          }
+        }
+      }
+    },
+    "Fallback Subtitle Language": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alternative Untertitelsprache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de subtítulos alternativo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue de sous-titres de secours"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua sottotitoli alternativa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngôn ngữ phụ đề dự phòng"
+          }
+        }
+      }
+    },
     "Falls back to TMDB when the selected account isn't connected.": {
       "localizations": {
         "de": {
@@ -20649,6 +20717,74 @@
         }
       }
     },
+    "If no subtitle track is in your Subtitles language, picks one in this language instead. None by default. Hidden while Subtitles is Off, which always stays off.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wählt stattdessen eine Untertitelspur in dieser Sprache, wenn keine in der unter Untertitel eingestellten Sprache vorhanden ist. Standardmäßig keine. Ausgeblendet, solange Untertitel auf Aus steht; Aus bleibt immer aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si ninguna pista de subtítulos está en el idioma de Subtítulos, elige una en este idioma en su lugar. Ninguno por defecto. Se oculta mientras Subtítulos está en Desactivado, que siempre se mantiene desactivado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si aucune piste de sous-titres n’existe dans la langue réglée sous Sous-titres, en choisit une dans cette langue à la place. Aucune par défaut. Masqué quand Sous-titres est sur Désactivé, qui reste toujours désactivé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se nessuna traccia dei sottotitoli è nella lingua impostata in Sottotitoli, ne sceglie una in questa lingua. Nessuna per impostazione predefinita. Nascosta mentre Sottotitoli è su Off, che resta sempre disattivato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nếu không có bản phụ đề nào bằng ngôn ngữ ở mục Phụ đề, chọn bản phụ đề bằng ngôn ngữ này thay thế. Mặc định không có. Bị ẩn khi Phụ đề đang Tắt; Tắt luôn được giữ nguyên."
+          }
+        }
+      }
+    },
+    "If the video has no audio track in your Audio language, picks one in this language instead. None by default.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wählt stattdessen eine Audiospur in dieser Sprache, wenn das Video keine in der unter Audio eingestellten Sprache hat. Standardmäßig keine."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si el vídeo no tiene pista de audio en el idioma de Audio, elige una en este idioma en su lugar. Ninguno por defecto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si la vidéo n’a aucune piste audio dans la langue réglée sous Audio, en choisit une dans cette langue à la place. Aucune par défaut."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se il video non ha una traccia audio nella lingua impostata in Audio, ne sceglie una in questa lingua. Nessuna per impostazione predefinita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nếu video không có bản âm thanh bằng ngôn ngữ ở mục Âm thanh, chọn bản bằng ngôn ngữ này thay thế. Mặc định không có."
+          }
+        }
+      }
+    },
     "Import Badge Pack": {
       "localizations": {
         "de": {
@@ -23471,6 +23607,108 @@
         }
       }
     },
+    "Mark %@ Unwatched": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ als ungesehen markieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marcar como no visto: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marquer comme non vu : %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Segna come non visto: %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đánh dấu %@ chưa xem"
+          }
+        }
+      }
+    },
+    "Mark %@ Watched": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ als gesehen markieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marcar como visto: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marquer comme vu : %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Segna come visto: %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đánh dấu %@ đã xem"
+          }
+        }
+      }
+    },
+    "Mark Episode Unwatched": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Folge als ungesehen markieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marcar episodio como no visto"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marquer l’épisode comme non vu"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Segna episodio come non visto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đánh dấu tập chưa xem"
+          }
+        }
+      }
+    },
     "Mark Episode Watched": {
       "localizations": {
         "de": {
@@ -23501,6 +23739,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đánh dấu tập đã xem"
+          }
+        }
+      }
+    },
+    "Mark Previous Episodes Unwatched": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorherige Folgen als ungesehen markieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marcar episodios anteriores como no vistos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marquer les épisodes précédents comme non vus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Segna episodi precedenti come non visti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đánh dấu các tập trước chưa xem"
+          }
+        }
+      }
+    },
+    "Mark Previous Episodes Watched": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vorherige Folgen als gesehen markieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marcar episodios anteriores como vistos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marquer les épisodes précédents comme vus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Segna episodi precedenti come visti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đánh dấu các tập trước đã xem"
           }
         }
       }
@@ -25951,6 +26257,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa có số đo trailer nào — mở một tựa đề và để trailer của nó phát."
+          }
+        }
+      }
+    },
+    "None": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguno"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có"
           }
         }
       }
@@ -52459,6 +52799,48 @@
     },
     "selected": {
       "shouldTranslate": false
+    },
+    "settings.language.original": {
+      "comment": "Audio language choice: play the title's original-language audio track. Not the sort order.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originalton"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma original"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version originale"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua originale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngôn ngữ gốc"
+          }
+        }
+      }
     },
     "stage text slot": {
       "shouldTranslate": false
