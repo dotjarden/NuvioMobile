@@ -30,6 +30,9 @@ struct EpisodesSection: View {
     /// Marking the next-up episode moves `nextUpId` while the menu still holds focus
     /// (`focusedEpisodeId == nil`), and the shelf would then scroll to the new next-up under the
     /// returning focus (and `.defaultFocus` would offer it); while this is set, neither happens.
+    /// Review r1 P3-2: cleared by the first `focusedEpisodeId` change after it is armed, whatever
+    /// the new value, and by a 1 s backstop, so it can never stay armed (the action can run after
+    /// focus is already back on the card, or focus may never leave the card while the menu is up).
     @State private var heldEpisodeId: String?
     /// BUG-153 (Batch M): gates the episode row's `zIndex` (`DetailTileFocus.raisedZIndex`).
     @Environment(\.focusAppearance) private var focusAppearance
@@ -172,7 +175,7 @@ struct EpisodesSection: View {
                             .contextMenu {
                                 EpisodeHoldMenuItems(meta: meta, episode: episode,
                                                      watchedEpisodeKeys: watchedEpisodeKeys,
-                                                     willAct: { heldEpisodeId = episode.id })
+                                                     willAct: { armHeldEpisode(episode.id) })
                             }
                             .id(episode.id)
                             // BUG-177: the lifted card draws over its right neighbour.
@@ -227,9 +230,11 @@ struct EpisodesSection: View {
             // focus coming back from the menu is never redirected to a next-up that just moved.
             .defaultFocus($focusedEpisodeId, heldEpisodeId ?? nextUpId, priority: .userInitiated)
             .focusSection()
-            .onChange(of: focusedEpisodeId) { _, focused in
-                // FEAT-83: focus is back on the shelf (on the held card, or the user moved on).
-                if focused != nil, heldEpisodeId != nil { heldEpisodeId = nil }
+            .onChange(of: focusedEpisodeId) { _, _ in
+                // FEAT-83: focus moved after the action (back to the held card, on along the
+                // shelf, or anywhere else): the hold is over. Any change, not only a return to
+                // the shelf (review r1 P3-2).
+                if heldEpisodeId != nil { heldEpisodeId = nil }
             }
 
             focusedOverviewPanel(episodes: episodes)
@@ -394,6 +399,16 @@ struct EpisodesSection: View {
         // Review r1 P3-8: the shared key form, so an episode with only one number reads watched.
         guard let key = EpisodeHoldMenuItems.key(episode) else { return false }
         return watchedEpisodeKeys.contains(key)
+    }
+
+    /// FEAT-83: arms `heldEpisodeId` before a hold-menu action, with a 1 s backstop (review r1
+    /// P3-2) in case no focus change follows to clear it. The backstop leaves a newer arm alone.
+    private func armHeldEpisode(_ id: String) {
+        heldEpisodeId = id
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if heldEpisodeId == id { heldEpisodeId = nil }
+        }
     }
 }
 
