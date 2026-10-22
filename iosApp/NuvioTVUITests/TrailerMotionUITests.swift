@@ -87,8 +87,8 @@ final class TrailerMotionUITests: XCTestCase {
         let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app

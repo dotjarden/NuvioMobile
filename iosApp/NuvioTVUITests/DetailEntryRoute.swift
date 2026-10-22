@@ -122,25 +122,56 @@ struct DetailEntryRoute {
 
     /// Selects the "Chris" tile only once it reads focused (Left, then Right, one press at a time).
     func enterChrisProfile() -> Bool {
-        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
-        guard chris.waitForExistence(timeout: 90) else {
+        guard let selected = Self.selectChrisTile(test, app) else {
             XCTFail("profile picker never appeared — is the sim session still signed in?")
             return false
         }
-        pause(1)
-        guard moveFocus(.left, until: chris, max: 4) || moveFocus(.right, until: chris, max: 6) else {
-            shot("detail_route_profile_unverified")
-            XCTFail("the \"Chris\" tile never read focused on the profile picker (focused: \(focusedLabels())) — not pressing Select")
-            return false
-        }
-        note("detail_route_profile", "Select on '\(chris.label)' (hasFocus)")
-        remote.press(.select)
+        guard selected else { return false }
         let home = app.buttons["Home"]
         let rail = app.descendants(matching: .any)["rail_state"].firstMatch
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline, !home.exists, !rail.exists { pause(0.5) }
         pause(8) // add-on manifests + catalog fan-out (Search reads the same add-ons)
         return true
+    }
+
+    /// The one profile-picker Select every UI test file uses (ui-legs, 2026-10-22: each file used
+    /// to press Select after a blind "Left ×2/×3", and a blind Select on this fixture once created
+    /// real profiles). Waits for the "Chris" tile, walks Left then Right one press at a time until
+    /// the tile reads `hasFocus`, and only then presses Select. The picker's tile labels are logged
+    /// on every call (`profile_picker_tiles`), so a run shows the account's profile list never
+    /// changed. Returns nil when no "Chris" tile appeared within `timeout` (nothing pressed; the
+    /// caller decides), true after the Select. When the tile never reads focused it records the
+    /// focused labels, fails and STOPS the test (`continueAfterFailure = false`): nothing after it
+    /// may press on a picker whose focus is unknown.
+    @discardableResult
+    static func selectChrisTile(_ test: XCTestCase, _ app: XCUIApplication, timeout: TimeInterval = 90) -> Bool? {
+        let route = DetailEntryRoute(test: test, app: app)
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        guard chris.waitForExistence(timeout: timeout) else { return nil }
+        route.pause(1)
+        route.note("profile_picker_tiles", route.pickerTileLabels().joined(separator: " | "))
+        guard route.moveFocus(.left, until: chris, max: 4) || route.moveFocus(.right, until: chris, max: 6) else {
+            route.shot("profile_picker_unverified")
+            test.continueAfterFailure = false
+            XCTFail("the \"Chris\" tile never read focused on the profile picker (focused: \(route.focusedLabels())) — not pressing Select")
+            return false
+        }
+        route.note("profile_select", "Select on '\(chris.label)' (hasFocus)")
+        XCUIRemote.shared.press(.select)
+        return true
+    }
+
+    /// The profile picker's button labels (its tiles, Add Profile included), from one snapshot.
+    private func pickerTileLabels() -> [String] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [String] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.elementType == .button, !node.label.isEmpty { out.append(node.label) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
     }
 
     // MARK: - Search route
