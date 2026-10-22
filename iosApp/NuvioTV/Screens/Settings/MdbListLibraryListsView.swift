@@ -148,6 +148,9 @@ struct MdbListLibraryListsView: View {
                 }
             }
         }
+        // A pushed Settings destination does not inherit the root's background (`SettingsView`), so
+        // the page draws its own: OLED True Black and the theme background reach it (review r2 P3-4).
+        .background(Theme.Palette.background.ignoresSafeArea())
         .navigationTitle(String(localized: "Library lists"))
         .onAppear { model.start() }
         .onDisappear { model.stop() }
