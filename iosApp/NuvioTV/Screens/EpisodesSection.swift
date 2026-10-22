@@ -516,8 +516,9 @@ private struct EpisodeHoldMenuItems: View {
 /// FEAT-83: a season poster's or season chip's hold menu — Mark Season Watched / Unwatched over
 /// the season's RELEASED episodes (`TitleHoldMenuPolicy.seasonActions`). Same presentation-time
 /// rule as `EpisodeHoldMenuItems`. The callers include it only for a season in
-/// `releasedSeasons`, so a season with nothing released has no menu (review r1 P3-9); should the
-/// date roll over mid-visit it is still empty here, never a dead item.
+/// `releasedSeasons`, so a season with nothing released has no menu (review r1 P3-9). That set is
+/// cached per `MetaDetails`: a season whose first episode airs during the visit gets no menu until
+/// `meta` is republished (never a dead item, at worst a missing one).
 private struct SeasonHoldMenuItems: View {
     let meta: MetaDetails
     /// `EpisodesSection`'s season number (specials normalized to 0, as the shared side does).

@@ -89,7 +89,7 @@ final class PlainLabelRingTests: XCTestCase {
     /// Default mode is byte-identical for the system-lift label classes — the BUG-93/BUG-108
     /// regression gate. `.manual` (BUG-200, `CompanyChip`) is the one exception by design: it
     /// draws its own lift with zoom on, so its default cell is `.ring` (`CompanyChipLiftTests`).
-    func testDefaultModeIsBareBorderlessForEveryLabelClass() {
+    func testDefaultModeIsBareBorderlessForTheSystemLiftLabelClasses() {
         for lift in [CardButtonLift.card, .plain] {
             XCTAssertEqual(CardButtonStyleKind.resolve(noZoomOnFocus: false,
                                                        accentFocusRing: false,

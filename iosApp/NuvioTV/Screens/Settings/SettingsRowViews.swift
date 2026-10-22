@@ -677,7 +677,7 @@ struct SettingsListPickerRow: View {
 /// every press moved one row. A walk down to Zulu by hand did not show it. Zulu was the case where
 /// the transition took the first claim, so focus arrived through the re-claim, which then scrolled
 /// the end-clamped list a second time under it; review r1 P3-1 dropped that second scroll. Not yet
-/// re-checked: sim leg wb-10 and the device pass settle whether the jump is gone.
+/// re-checked: the device pass settles whether the jump is gone.
 struct SettingsListPickerPage: View {
     let title: String
     let selection: Binding<String>
