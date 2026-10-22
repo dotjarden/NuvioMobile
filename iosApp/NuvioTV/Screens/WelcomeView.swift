@@ -59,8 +59,8 @@ struct WelcomeView: View {
                 }
 
                 VStack(spacing: Theme.Spacing.xl) {
-                    // Liquid Glass, same as the Detail action row: prominent accent glass for the
-                    // primary action, plain glass for the secondary ones. Plain `.glass` pills
+                    // Liquid Glass: prominent accent glass for the primary action, plain glass
+                    // for the secondary ones (the Detail action row went `.bordered` in D9). Plain `.glass` pills
                     // below are left to the system (see StreamPicker's `.glass` note) — but this
                     // one is `.glassProminent` + an accent tint, and the "verified on a sim" claim
                     // this comment used to make only held for the *focused* state (glass's focus

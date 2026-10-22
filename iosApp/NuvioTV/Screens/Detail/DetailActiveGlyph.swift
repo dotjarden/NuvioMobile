@@ -2,19 +2,19 @@ import SwiftUI
 
 /// W3-17 (BUG-205, Steven rc11: "the Watched icon returns to its rest colour later than its
 /// neighbours"): the on/off state of Detail's compact action buttons (Mark Watched, Add to Library,
-/// Shuffle) is carried by the GLYPH, not by an accent tint on the glass.
+/// Shuffle) is carried by the GLYPH, not by an accent tint on the button.
 ///
-/// Why. Those three buttons share one `.glass` style, padding, label and font with Trailer/Start
-/// Over, inside one `GlassEffectContainer`; the only difference between them is
-/// `.tint(isActive ? accent : nil)`. A tinted system glass restores its resting fill more slowly
-/// once focus leaves (and Steven's accent is White, which makes the tinted glass bright and the
-/// crossfade easy to see). A foreground colour keyed on the focus environment flips with the
+/// Why. Those three buttons share one style (`.glass` when this was written, `.bordered` since
+/// D9 / BUG-206), padding, label and font with Trailer/Start Over; the only difference between
+/// them was `.tint(isActive ? accent : nil)`. A tinted system platter restores its resting fill
+/// more slowly once focus leaves (and Steven's accent is White, which makes the tinted platter
+/// bright and the crossfade easy to see). A foreground colour keyed on the focus environment flips with the
 /// platter and has no crossfade of its own.
 ///
 /// The mechanism is `ProminentAccentLabel`'s (FlatControlStyles.swift): an explicit
 /// `foregroundStyle` disables the system's automatic label flip, so BOTH states are set by hand,
 /// keyed on `\.isFocused`, which is proven inside system button styles (`.glass`,
-/// `.glassProminent`, `.borderedProminent`):
+/// `.glassProminent`, `.borderedProminent`, and `.bordered` since D9: see the 2026-10-22 D9 walk shots):
 ///
 /// - focused: the on-platter ink (`#0D0D0D`, `ProminentAccentLabel`'s dark), active or not;
 /// - at rest and active: the accent colour;

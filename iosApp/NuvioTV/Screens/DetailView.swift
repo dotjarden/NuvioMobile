@@ -295,7 +295,7 @@ enum DetailScrollProbe {
 }
 
 /// FEAT-82 (Steven rc9, D4): the Detail action buttons (Play/Resume, Start Over, Trailer and the
-/// compact glass buttons) go square when Poster › Corners is Square (radius 0); Rounded and Round
+/// compact bordered buttons) go square when Poster › Corners is Square (radius 0); Rounded and Round
 /// keep capsules. Chips stay as they are.
 enum DetailActionShape {
     nonisolated static func isSquare(cornerRadius: CGFloat) -> Bool {
@@ -382,9 +382,8 @@ private final class HitchCounter: NSObject, ObservableObject {
 ///   - 1: dim disabled — the `.onScrollGeometryChange` `of:` closure that feeds `dimModel` always
 ///     returns 0, so the UX-6 overlay never darkens past its first frame.
 ///   - 2: glass off in the top block — `metaChip` and the parental-guide chips fall back to a
-///     plain translucent capsule fill instead of `.glassEffect`. `actionRow`'s
-///     `.glass`/`.glassProminent` BUTTON styles are left alone — button styles are a different
-///     swap from the chip backgrounds this leg targets.
+///     plain translucent capsule fill instead of `.glassEffect`. `actionRow`'s BUTTON styles
+///     were left alone (none to flatten since D9: they are `.bordered` outright).
 ///   - 3: both 1 and 2.
 ///   - 4: leg 3, plus `actionRow`'s buttons swapped `.glass`/`.glassProminent` for
 ///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` for a plain `HStack`.
@@ -620,7 +619,7 @@ struct DetailView: View {
     /// the row that lost focus, real or nil, with no separate bookkeeping needed.
     @FocusState private var focusedRow: DetailRowID?
     /// FEAT-35: lets `.defaultFocus` land on Play/Resume (the Cinematic teaser above it can be
-    /// focusable). Bound on both Play buttons in `actionRowButtons`.
+    /// focusable). Bound on both Play buttons in `actionRow`.
     @FocusState private var heroFocus: DetailHeroFocus?
     /// FEAT-35: true while focus is anywhere inside the Cinematic hero (read by the hero-return
     /// scroll in W2-A, so a focus loss to a push or cover never scrolls the page).
@@ -2061,8 +2060,9 @@ struct DetailView: View {
     /// from rc8 (the teaser-glass work) until **D9 (BUG-206, 2026-10-22)**: on the Apple TV the
     /// Liquid Glass action row (`.glass` buttons inside a `GlassEffectContainer`) was the Cinematic
     /// page's largest single cost on Steven's walk (knob A/B, `docs/research/bug206-cause-hunt-
-    /// 2026-10-22.md` §9: 98 → 51 hitches, GPU p90 28.7 → 16.5 ms, offscreen passes 29 → 16), and
-    /// Christian chose to drop the glass on this row and keep the tile-lift shadow. The bordered
+    /// 2026-10-22.md` §9, leg 4 = this swap + chips flat + dim off: 98 → 51 hitches; this swap
+    /// alone, `docs/research/d9-walks-2026-10-22/`: 99 → 70 / 69 on the same walk), and Christian
+    /// chose to drop the glass on this row and keep the tile-lift shadow. The bordered
     /// styles were BUG-41's leg 4 and are proven on hardware. `prominentAccentLabel()` inside the
     /// label (BUG-4, BUG-14) covers both states, so the swap is purely the button chrome.
     /// FEAT-82: `actionButtonBorderShape` keeps Start Over (a compact button) and the icon
@@ -2088,28 +2088,22 @@ struct DetailView: View {
     /// `GlassEffectContainer` so the glass shapes could blend as focus moved between them; the
     /// container is glass-only machinery and, with the bordered styles above, it had nothing left
     /// to coordinate and cost the page its offscreen passes.
+    /// BUG-44: not its own `.focusSection()` — folded into `topBlock`'s single top-of-page section
+    /// (header/metaLine/actionRow/genres/overview/info) so the section boundary can't fragment
+    /// vertical navigation between this row and the content around it.
     private var actionRow: some View {
-        actionRowButtons
-        // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
-        // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
-        // fragment vertical navigation between this row and the content around it.
-    }
-
-    /// The button `HStack` behind `actionRow` (kept as its own property from the BUG-41 leg-4 days,
-    /// when two containers shared it).
-    private var actionRowButtons: some View {
         HStack(spacing: Theme.Spacing.md) {
             if !isSeries {
                 prominentActionButtonStyle(
                     Button {
                         showStreams = true
                     } label: {
-                        // BUG-14: `.glassProminent`'s unfocused fill is the raw accent tint (not
+                        // BUG-14: a prominent style's unfocused fill is the raw accent tint (not
                         // lifted/inverted the way focus is), so on the White theme that fill is
                         // near-white and an unmanaged label defaults to unreadable white-on-white.
-                        // `prominentAccentLabel()` (already proven for `.borderedProminent` sites,
-                        // BUG-4) covers both states: accent-contrasting text unfocused, dark text
-                        // on the near-white focus lift.
+                        // `prominentAccentLabel()` (proven for `.borderedProminent` sites, BUG-4;
+                        // the row's style since D9) covers both states: accent-contrasting text
+                        // unfocused, dark text on the near-white focus lift.
                         // beta.19-rc1 verdict (D1, BUG-137): both labels are localized
                         // (`actionLabel` takes a `LocalizedStringResource`); "Play" used to be a
                         // bare String literal, which `Label` never looks up.
@@ -2228,7 +2222,7 @@ struct DetailView: View {
                             systemImage: model.isWatched ? DetailActionSymbol.watchedOn : DetailActionSymbol.watchedOff
                         )
                         .font(Theme.Font.meta)
-                        // W3-17 (BUG-205): the active colour lives on the glyph, not on the glass
+                        // W3-17 (BUG-205): the active colour lives on the glyph, not on a button
                         // tint, so focus leaving the button restores at the same speed as its neighbours.
                         .detailActiveGlyph(active: model.isWatched),
                         horizontal: Theme.Spacing.md

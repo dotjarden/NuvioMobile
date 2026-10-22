@@ -7,8 +7,8 @@ import SwiftUI
 /// change can equalise them; a fixed frame can.
 ///
 /// The frame goes on the padded LABEL, not the Button: a fixed outer frame on the Button did not
-/// size the `.glass` platter on hardware (device pass 2026-10-20), while the style always wraps the
-/// label in the same insets. So the chrome is measured once, off Play (its button size minus its
+/// size the style's platter on hardware (`.glass` then, device pass 2026-10-20; `.bordered` since
+/// D9), while the style always wraps the label in the same insets. So the chrome is measured once, off Play (its button size minus its
 /// padded label size), and the label is cut to `labelSize(side:playLabel:playButton:)`.
 ///
 /// Rounded and Round, and Classic with text labels, never see a side (nil) and keep today's layout.
