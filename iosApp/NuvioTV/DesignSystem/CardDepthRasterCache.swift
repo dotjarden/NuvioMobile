@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// W3-13 (UX-16 / BUG-153 remainder), render variant 2 of `-debug.cardDepthRender`
-/// (`HomePerfKnobs.CardDepthRender.rasterCache`): Card Depth's two gradient layers as bitmaps,
+/// W3-13 (UX-16 / BUG-153 remainder), the Card Depth rendering since Wave 3 (picked by the
+/// `-debug.cardDepthRender` A/B on the Apple TV; the knob is gone): the two gradient layers as bitmaps,
 /// rendered ONCE per key with `UIGraphicsImageRenderer` and shared by every card drawing the same
 /// key, instead of CoreGraphics re-filling both gradients on the CPU for every card mount
 /// (`argb32_shade_axial_RGB` in Wave 0's Time Profiler).
@@ -32,7 +32,7 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
 
     /// The shapes a bitmap can be keyed on. Every `nuvioCardDepth` call site passes one of these
     /// (the cards a `RoundedRectangle` with BUG-91's inner radius, Detail's cast avatar a `Circle`).
-    /// Any other shape has no kind and `CardDepthOverlay` draws variant 1 for it.
+    /// Any other shape has no kind and `CardDepthOverlay` draws the live layers under `drawingGroup` for it.
     nonisolated enum ShapeKind: Hashable, Sendable {
         /// Corner size in pt ×100 (width, height) and whether the corners are `.continuous`.
         case roundedRect(cornerWidthX100: Int, cornerHeightX100: Int, continuous: Bool)
