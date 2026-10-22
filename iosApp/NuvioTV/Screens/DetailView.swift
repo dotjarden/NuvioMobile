@@ -2580,11 +2580,19 @@ struct DetailView: View {
     /// title kept for VoiceOver).
     @ViewBuilder
     private func actionLabelBody(_ title: String, systemImage: String, primary: Bool) -> some View {
-        let label = Label(title, systemImage: systemImage)
         if usesIconOnlyLabel(primary: primary) {
-            label.labelStyle(.iconOnly).accessibilityLabel(Text(title))
+            // FEAT-82: icon-only secondary glyphs are scaled to one optical size (see
+            // `DetailActionGlyphScale`); a `scaleEffect` changes no layout, so the platters stay.
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: systemImage)
+                    .scaleEffect(DetailActionGlyphScale.scale(for: systemImage))
+            }
+            .labelStyle(.iconOnly)
+            .accessibilityLabel(Text(title))
         } else {
-            label
+            Label(title, systemImage: systemImage)
         }
     }
 
