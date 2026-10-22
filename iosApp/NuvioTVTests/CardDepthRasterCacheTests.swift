@@ -8,7 +8,7 @@ import UIKit
 ///   poster colour by `.colorMultiply`, which must paint what `railColor(tint).opacity(stop)` painted
 ///   at every stop (`CardDepthStyle.multipliedRailStop` vs `tintedRailStop`, the latter checked
 ///   against SwiftUI's own colour resolution).
-/// - `CardDepthRasterCache` (render variant 2): a key per width, alpha, radius, shape, size, scale
+/// - `CardDepthRasterCache` (the raster-cache rendering): a key per width, alpha, radius, shape, size, scale
 ///   and coverage, so no two rails that differ on screen can share a bitmap (test60's three levels
 ///   stay three bitmaps), and bitmaps that match the live layers' geometry and stops.
 @MainActor
@@ -189,7 +189,7 @@ final class CardDepthRasterCacheTests: XCTestCase {
         XCTAssertEqual(Cache.ShapeKind(RoundedRectangle(cornerSize: CGSize(width: 6, height: 9))),
                        .roundedRect(cornerWidthX100: 600, cornerHeightX100: 900, continuous: true))
         XCTAssertEqual(Cache.ShapeKind(Circle()), .circle)
-        XCTAssertNil(Cache.ShapeKind(Capsule()), "an unkeyed shape must fall back to variant 1")
+        XCTAssertNil(Cache.ShapeKind(Capsule()), "an unkeyed shape must fall back to the drawingGroup path")
         XCTAssertNil(Cache.ShapeKind(Rectangle()))
     }
 

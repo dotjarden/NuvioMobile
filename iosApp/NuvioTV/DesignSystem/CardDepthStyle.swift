@@ -445,10 +445,10 @@ extension View {
     /// landing after the image does not re-fill a gradient.
     ///
     /// Review r1 P2-2: `animatesSize` (default `false`) marks a surface whose depth-carrying frame
-    /// animates (the inline trailer tile's morph). Variant 2 (`-debug.cardDepthRender 2`) keys its
-    /// bitmaps on the FINAL layout size and SwiftUI stretches them into the interpolated frame, so
-    /// such a surface takes variant 1 instead, which re-strokes at every interpolated size. Variants
-    /// 0 and 1 ignore it. Every other call site keeps the default.
+    /// animates (the inline trailer tile's morph). The raster cache keys its bitmaps on the FINAL
+    /// layout size and SwiftUI stretches them into the interpolated frame, so such a surface takes
+    /// the `.drawingGroup()` fallback instead, which re-strokes at every interpolated size. Every
+    /// other call site keeps the default.
     func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil, animatesSize: Bool = false) -> some View {
         modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize))
     }
@@ -491,7 +491,7 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 /// W3-13 (UX-16 / BUG-153 remainder). Wave 0's Time Profiler put this overlay's cost in
 /// `argb32_shade_axial_RGB`, CoreGraphics filling the gradients on the CPU (a gradient-filled stroke
 /// cannot be a solid shape layer); in Wave 2, Card Depth off removed 18 % of hitches and 10 of 11
-/// stalls ≥ 100 ms. That raster was paid three ways, and two of them are gone at every variant:
+/// stalls ≥ 100 ms. That raster was paid three ways, and all three are gone:
 /// - **Per focus move.** The rail was a structural `if !railSuppressed` branch on `\.isFocused`, so
 ///   the card gaining focus tore its rail down and the card losing it rasterised a fresh one. The
 ///   rail is now always built and hidden with `.opacity(0)`, animations off (`railVisibility`): a
@@ -502,17 +502,20 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 ///   sheen. White × tint equals the tinted stop at every stop (`CardDepthStyle.multipliedRailStop`,
 ///   checked against SwiftUI's own `.opacity` in `CardDepthRasterCacheTests`), so the colour
 ///   landing is a colour change, not a redraw.
-/// - **Per mount.** What is left is chosen by the launch-latched, Release-readable
-///   `-debug.cardDepthRender` (`HomePerfKnobs.CardDepthRender`) for the rig A/B: 0 draws the live
-///   SwiftUI layers (today's raster), 1 the same layers inside one `.drawingGroup()` (Metal, one
-///   offscreen texture per card), 2 white rail and sheen bitmaps from `CardDepthRasterCache`,
-///   rendered once per key and shared by every card of the same size and setting. A shape the cache
-///   cannot key (none today: cards pass `RoundedRectangle`, the cast avatar `Circle`) falls back to 1,
-///   and so does a surface whose frame animates (`animatesSize`, review r1 P2-2: the inline trailer
-///   tile), whose bitmaps would otherwise stretch through the morph.
+/// - **Per mount.** The white rail and sheen are bitmaps from `CardDepthRasterCache`, rendered once
+///   per key and shared by every card of the same size and setting, so only the first card of a key
+///   pays the CPU gradient rasterisation, not every mount and focus move. This is the rendering since Wave 3: the owner's
+///   rig A/B on the Apple TV (Release, Classic Home, 20 down / 20 up) measured 95 / 89 hitches for
+///   the live layers, 84 / 85 for the same layers inside one `.drawingGroup()` and 85 for the
+///   raster cache (Card Depth off: 46-72), and the `-debug.cardDepthRender` knob and the live-layer
+///   variant were deleted with that decision. A shape the cache cannot key (none today: cards pass
+///   `RoundedRectangle`, the cast avatar `Circle`), a revived halo, and a surface whose frame
+///   animates (`animatesSize`, review r1 P2-2: the inline trailer tile, whose bitmaps would
+///   otherwise stretch through the morph) take the fallback: the same SwiftUI layers inside one
+///   `.drawingGroup()` (`liveLayers`).
 ///
-/// Whatever the variant, the root carries `DebugAXIdentifier("card_depth_rail")` OUTSIDE any
-/// `drawingGroup`, so test50 still reads the rail's rect as the artwork's.
+/// The root carries `DebugAXIdentifier("card_depth_rail")` OUTSIDE any `drawingGroup`, so test50
+/// still reads the rail's rect as the artwork's.
 private struct CardDepthOverlay<S: InsettableShape>: View {
     let shape: S
     let style: CardDepthStyle
@@ -528,11 +531,12 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): rail colour override, nil = white.
     /// W3-13: applied by `.colorMultiply` over the white rail.
     var railTint: Color?
-    /// Review r1 P2-2: the surface's frame animates (the inline trailer tile's morph). Variant 2's
+    /// Review r1 P2-2: the surface's frame animates (the inline trailer tile's morph). The cached
     /// bitmaps are keyed on the final layout size and would stretch into the interpolated frame (the
-    /// side rails thickening by the width ratio, the corners elongating), so it takes variant 1.
+    /// side rails thickening by the width ratio, the corners elongating), so it takes the
+    /// `.drawingGroup()` fallback.
     var animatesSize: Bool = false
-    /// W3-13 variant 2: the cached bitmaps are keyed on, and rendered at, the screen's pixel scale.
+    /// W3-13: the cached bitmaps are keyed on, and rendered at, the screen's pixel scale.
     @Environment(\.displayScale) private var displayScale
 
     /// Every number the layers draw from, resolved once per body.
@@ -567,33 +571,26 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
             // picture" against real geometry instead of hunting a 1-3pt hairline in a screenshot.
             // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift). W3-13: kept
-            // here, outside every variant's `drawingGroup`.
+            // here, outside the fallback's `drawingGroup`.
             .modifier(DebugAXIdentifier("card_depth_rail"))
     }
 
-    /// W3-13 (3): the raster variant. `HomePerfKnobs.cardDepthRender` is latched at launch, so this
-    /// switch never changes for the life of the process.
+    /// W3-13 (3): the cached bitmaps, the rendering since Wave 3. The bitmaps carry no halo (inert
+    /// since rc14: `railHaloSpread` is 0); a revived halo, or a shape the cache has no kind for,
+    /// takes the `.drawingGroup()` fallback instead of drawing a wrong rail. So does a surface whose
+    /// frame animates (`animatesSize`, review r1 P2-2): a bitmap keyed on the final size would
+    /// stretch through the animation; the live layers re-stroke.
     @ViewBuilder
     private func rendered(_ p: Params) -> some View {
-        switch HomePerfKnobs.cardDepthRender {
-        case .live:
-            liveLayers(p)
-        case .drawingGroup:
+        if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
+            cachedLayers(p, kind: kind)
+        } else {
             liveLayers(p).drawingGroup()
-        case .rasterCache:
-            // The bitmaps carry no halo (inert since rc14: `railHaloSpread` is 0); a revived halo, or
-            // a shape the cache has no kind for, takes variant 1 instead of drawing a wrong rail. So
-            // does a surface whose frame animates (`animatesSize`, review r1 P2-2): a bitmap keyed on
-            // the final size would stretch through the animation; the live layers re-stroke.
-            if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
-                cachedLayers(p, kind: kind)
-            } else {
-                liveLayers(p).drawingGroup()
-            }
         }
     }
 
-    /// Variants 0 and 1: the SwiftUI layers.
+    /// The fallback: the SwiftUI layers (the sheen gradient and the stroked rail), which
+    /// `rendered` draws inside one `.drawingGroup()`.
     private func liveLayers(_ p: Params) -> some View {
         ZStack {
             if p.sheen > 0 {
@@ -614,7 +611,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
         }
     }
 
-    /// Variant 2: the same two layers as shared white bitmaps (`CardDepthRasterCache`). The size
+    /// The same two layers as shared white bitmaps (`CardDepthRasterCache`). The size
     /// comes from a `GeometryReader` (a layout pass, no state write); the rail takes the tint by
     /// multiply and the focus by opacity exactly as the live rail does. The bitmaps are decorative,
     /// so they stay out of the accessibility tree (the root's `DebugAXIdentifier` is outside).
