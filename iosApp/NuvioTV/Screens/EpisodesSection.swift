@@ -463,10 +463,11 @@ private struct EpisodeRoute: Identifiable {
 /// the shelf's body, which re-runs on every Left/Right (BUG-153): the previous-episodes list is a
 /// shared sort over every episode. Review r1 P3-10, confirmed from device consoles: the same
 /// shape's `[HoldMenu] menu built` line (`TitleHoldMenuItems`, a `.contextMenu` content body)
-/// logs once per hold, right before focus moves into `_UIContextMenuCell`, and never while rows of
-/// those cards render and scroll (`docs/research/rc5-promises-device-2026-10-17/console-a.log`:
-/// 2 builds in a 525-line Home walk; `bug170-device-2026-10-18/console-mpv.log`: 1). The shared
-/// toggles are called with the state each LABEL was
+/// logs only around a hold, as the menu presents (just before focus moves into
+/// `_UIContextMenuCell`) and once more while it is open, and never while rows of those cards
+/// render and scroll (`docs/research/rc5-promises-device-2026-10-17/console-a.log`: 2 builds in a
+/// 525-line Home walk; `bug170-device-2026-10-18/console-mpv.log`: 1). The shared toggles are
+/// called with the state each LABEL was
 /// built from (`DetailTileAction.labelState`), never a re-read of the live state; the watched keys
 /// refresh by themselves through `DetailViewModel`'s watched and progress watchers.
 private struct EpisodeHoldMenuItems: View {
