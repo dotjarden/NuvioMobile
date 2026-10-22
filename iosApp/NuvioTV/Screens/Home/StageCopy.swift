@@ -17,8 +17,9 @@ extension StageCopy {
     /// the folder Rows page): Classic's meta line (`HomeHeroForeground.metaLine`: release · up to
     /// three genres) and the item's description. A collection folder's preview carries its
     /// collection title as `releaseInfo` and, with Show Catalog Details in Headings on (B1,
-    /// `HeadingDetailsSetting`), `HomeView.folderHeroDescription` as its description, so a folder
-    /// reads through the same three slots; with it off (the default) the synopsis slot is empty.
+    /// `HeadingDetailsSetting`), `HomeView.folderHeroDescription` as its description, so on Stage a
+    /// folder reads through the meta line and the synopsis; with it off (the default) the synopsis is
+    /// empty. (Classic's hero forms draw a folder through the merged logo box, W3-14 / BUG-211.)
     ///
     /// W2-A, Continue-Watching-aware: with `progress`, the meta line is
     /// `S1 E3 · <episode title> · 45m left` (each part only when it is known; nothing known falls
@@ -32,8 +33,11 @@ extension StageCopy {
     /// shown item was reported from (`StageCopySource.rowHeading(for:)`); a folder preview whose
     /// meta line reads the same as that heading gets an empty meta line, so the name shows once (the
     /// logo, or the folder's name, still fills the logo slot). The rule is here and not in
-    /// `HomeRowPreviews.folder`, because Classic's hero-OFF panel draws the same preview and needs
-    /// that line (rc14 BUG-119). nil (the folder Rows page intro, whose row headings are catalogs,
+    /// `HomeRowPreviews.folder`, because the repeat depends on the row the preview was reported
+    /// from, not on the preview: only a strip row's heading repeats it. (rc14's BUG-119 reason, that
+    /// Classic's hero-OFF panel draws the line, is gone: since W3-14 / BUG-211 the panel draws the
+    /// merged logo box and keeps the old column's total height only.) nil (the folder Rows page
+    /// intro, whose row headings are catalogs,
     /// and Discover) keeps the line. Only folder previews are matched: a title whose release text
     /// happens to equal its row's heading is untouched.
     nonisolated static func make(item: MetaPreview, progress: WatchProgressEntry?,

@@ -13,19 +13,22 @@ enum HomeRowPreviews {
     /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), and `poster`
     /// the cover (the backdrop chain's last fallback). `type` is the `collectionHeroType`
     /// sentinel the trailer, enrichment and CTA gates key on. `releaseInfo` carries the parent
-    /// collection's title (read by `HeroLogo`'s text fallback and kept for rc14's BUG-119 history;
-    /// since W3-14 / BUG-211 both hero forms draw the merged logo box, which ignores it) and
-    /// `description` the folder's line for that box; H-2's "no caption under the wordmark"
-    /// (2026-08-22) holds unless Show Catalog Details is on. `genres` is empty for a folder
+    /// collection's title, which feeds Stage's meta line (`StageCopy.make` → `classicMeta`) and
+    /// BUG-173's de-duplication against the strip heading there; Classic's hero no longer draws it
+    /// (since W3-14 / BUG-211 both hero forms draw a folder through the merged logo box, whose text
+    /// fallback is `HeroLogo`'s `item.name`, the folder title). `description` is the folder's line
+    /// for that box; H-2's "no caption under the wordmark" (2026-08-22) holds unless Show Catalog
+    /// Details is on. `genres` is empty for a folder
     /// preview. Nil when the folder carries neither a backdrop nor a logo — such a folder has
     /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
     /// poster-shaped cover across the backdrop.
     ///
     /// B1 (BUG-145 + BUG-159 + FEAT-67, Steven's rc4 no-go on "Aventure · 8 sources"): the
     /// `description` line rides `showsDetails` (Show Catalog Details in Headings,
-    /// `HeadingDetailsSetting`, default off). Off, it is nil: the hero-ON folder box keeps the
-    /// full-height wordmark and the hero-OFF panel's synopsis slot stays empty; the meta line
-    /// (`releaseInfo`, the collection title) is unchanged either way.
+    /// `HeadingDetailsSetting`, default off). Off, it is nil: both hero forms' merged folder box
+    /// (carousel and, since W3-14 / BUG-211, the hero-OFF panel) keeps the full-height wordmark,
+    /// and Stage's synopsis is empty; Stage's meta line (`releaseInfo`, the collection title) is
+    /// unchanged either way.
     static func folder(collection: NuvioCollection, folder: CollectionFolder, showsDetails: Bool) -> MetaPreview? {
         let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -46,10 +49,12 @@ enum HomeRowPreviews {
             logo: (logo?.isEmpty ?? true) ? nil : logo,
             posterShape: .poster,
             // rc14 (BUG-119): the PANEL form once drew a folder hero through the three-slot
-            // column (`HomeHeroForeground.nuvioLayout`), which needed this text. W3-14 / BUG-211
-            // (rc11 verdict, 2026-10-21): the panel draws the merged logo box again, so the
-            // collection title is only `HeroLogo`'s text fallback now. B1 (rc4 verdict,
-            // 2026-10-16): the source-count line is behind `showsDetails`.
+            // column (`HomeHeroForeground.nuvioLayout`), which drew this as its meta line. W3-14 /
+            // BUG-211 (rc11 verdict, 2026-10-21): the panel draws the merged logo box again, and
+            // only keeps the title hero's slot split so the box's total height (the column's sum)
+            // is unchanged; neither Classic form draws the collection title now. It still feeds
+            // Stage's meta line (`StageCopy.make`) and BUG-173's de-duplication, so it stays. B1
+            // (rc4 verdict, 2026-10-16): the source-count line is behind `showsDetails`.
             description: showsDetails ? HomeView.folderHeroDescription(collection: collection, folder: folder) : nil,
             releaseInfo: collection.title.trimmingCharacters(in: .whitespacesAndNewlines),
             rawReleaseDate: nil,
