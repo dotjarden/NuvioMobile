@@ -61,11 +61,12 @@ struct SubtitlesAudioSettingsPane: View {
                 label: LanguageOptions.name(forCode:)
             )
             // Off stays Off: with Subtitles = Off the players ignore the fallback
-            // (`SubtitleFallbackGuard`), so the row is hidden then. Hidden, never disabled (a
+            // (`SubtitleFallbackGuard`), so the row is hidden then, by the guard's own rule (a
+            // normalized value, blank counts as Off; review r1 P3-3). Hidden, never disabled (a
             // disabled row is skipped by focus and reads as broken); Off is picked on the pushed
             // page, and the pop returns focus to the Subtitles row, so nothing focused leaves the
             // hierarchy.
-            if model.preferredSubtitleLanguage != SubtitleLanguageOption.shared.NONE {
+            if !SubtitleFallbackGuard.isOff(primary: model.preferredSubtitleLanguage) {
                 SettingsListPickerRow(
                     title: String(localized: "Fallback Subtitle Language"),
                     selection: Binding(get: { model.secondaryPreferredSubtitleLanguage }, set: { model.setSecondaryPreferredSubtitleLanguage($0) }),

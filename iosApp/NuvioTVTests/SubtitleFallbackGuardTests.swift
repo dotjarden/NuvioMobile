@@ -20,6 +20,19 @@ final class SubtitleFallbackGuardTests: XCTestCase {
         XCTAssertEqual(SubtitleFallbackGuard.effectiveSecondary(primary: SubtitleLanguageOption.shared.FORCED, secondary: "en"), "en")
     }
 
+    /// The Settings pane hides the Fallback Subtitle Language row with `isOff`, the same rule the
+    /// players apply through `effectiveSecondary` (review r1 P3-3).
+    func testIsOffMatchesTheGuard() {
+        for primary in [SubtitleLanguageOption.shared.NONE, " NONE ", "None", "", "   "] {
+            XCTAssertTrue(SubtitleFallbackGuard.isOff(primary: primary), "\(primary.debugDescription) is Off")
+            XCTAssertNil(SubtitleFallbackGuard.effectiveSecondary(primary: primary, secondary: "en"))
+        }
+        for primary in [SubtitleLanguageOption.shared.DEVICE, SubtitleLanguageOption.shared.FORCED, "en", "pt-br"] {
+            XCTAssertFalse(SubtitleFallbackGuard.isOff(primary: primary), "\(primary) is not Off")
+            XCTAssertEqual(SubtitleFallbackGuard.effectiveSecondary(primary: primary, secondary: "en"), "en")
+        }
+    }
+
     func testNilStaysNil() {
         XCTAssertNil(SubtitleFallbackGuard.effectiveSecondary(primary: "en", secondary: nil))
         XCTAssertNil(SubtitleFallbackGuard.effectiveSecondary(primary: SubtitleLanguageOption.shared.NONE, secondary: nil))

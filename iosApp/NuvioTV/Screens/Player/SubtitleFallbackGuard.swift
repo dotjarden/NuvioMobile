@@ -10,7 +10,9 @@ import SharedCore
 /// native `resolveLanguagePlan`): with the primary Off it is nil, the target list is empty, and
 /// both engines treat an empty plan as subtitles off (mpv: `MPVSubtitleAutoSelectGate`'s
 /// `noTargets`; native: `subtitlesOff`). The rule mirrors the shared one: the primary is
-/// normalized, and a blank primary counts as `none`.
+/// normalized, and a blank primary counts as `none`. `isOff` is that rule on its own; the
+/// Settings pane hides the Fallback Subtitle Language row with it, so the row and the players
+/// can never disagree about Off.
 ///
 /// Not covered, by design: the raw secondary still reaches the list filter and ordering helpers
 /// (`filterAddonSubtitlesForSettings` / `preferredSubtitleTargetsForSettings` in the mpv add-on
@@ -22,10 +24,16 @@ import SharedCore
 /// The shared NONE + secondary behaviour is an upstream-report candidate; mobile is unchanged
 /// and there is no shared Kotlin change here.
 nonisolated enum SubtitleFallbackGuard {
-    /// The subtitle secondary to hand the shared target resolver: nil when `primary` is Off.
-    static func effectiveSecondary(primary: String, secondary: String?) -> String? {
+    /// Whether the stored primary Subtitles value means Off: normalized like the shared rule, and
+    /// a blank value counts as `none`.
+    static func isOff(primary: String) -> Bool {
         let normalized = PlayerLanguagePreferencesKt.normalizeLanguageCode(language: primary)
             ?? SubtitleLanguageOption.shared.NONE
-        return normalized == SubtitleLanguageOption.shared.NONE ? nil : secondary
+        return normalized == SubtitleLanguageOption.shared.NONE
+    }
+
+    /// The subtitle secondary to hand the shared target resolver: nil when `primary` is Off.
+    static func effectiveSecondary(primary: String, secondary: String?) -> String? {
+        isOff(primary: primary) ? nil : secondary
     }
 }
