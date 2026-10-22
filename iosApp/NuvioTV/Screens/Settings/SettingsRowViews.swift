@@ -1151,7 +1151,16 @@ nonisolated enum LanguageOptions {
     static let uiLocale = Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en")
 
     private static let device: Option = (String(localized: "Device"), AudioLanguageOption.shared.DEVICE)
-    private static let original: Option = (String(localized: "Original"), AudioLanguageOption.shared.ORIGINAL)
+    /// Its own catalog key (review r1 P3-5): the bare "Original" key is the TMDB sort order's
+    /// ("Ordre original" in French), not a language.
+    private static let original: Option = (
+        String(
+            localized: "settings.language.original",
+            defaultValue: "Original",
+            comment: "Audio language choice: play the title's original-language audio track. Not the sort order."
+        ),
+        AudioLanguageOption.shared.ORIGINAL
+    )
     private static let off: Option = (String(localized: "Off"), SubtitleLanguageOption.shared.NONE)
     private static let none: Option = (String(localized: "None"), "")
 

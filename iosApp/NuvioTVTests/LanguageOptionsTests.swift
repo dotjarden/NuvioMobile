@@ -143,7 +143,11 @@ final class LanguageOptionsTests: XCTestCase {
         XCTAssertEqual(LanguageOptions.name(forCode: ""), String(localized: "None"))
         XCTAssertEqual(LanguageOptions.name(forCode: "none"), String(localized: "Off"))
         XCTAssertEqual(LanguageOptions.name(forCode: "device"), String(localized: "Device"))
-        XCTAssertEqual(LanguageOptions.name(forCode: "original"), String(localized: "Original"))
+        // Its own catalog key (review r1 P3-5): bare "Original" is the TMDB sort order.
+        XCTAssertEqual(
+            LanguageOptions.name(forCode: "original"),
+            String(localized: "settings.language.original", defaultValue: "Original")
+        )
         // Values mobile can sync that tvOS offers no row for: labelled, not shown raw.
         XCTAssertEqual(LanguageOptions.name(forCode: "default"), String(localized: "Default"))
         XCTAssertEqual(LanguageOptions.name(forCode: "forced"), String(localized: "Forced"))
