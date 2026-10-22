@@ -488,9 +488,12 @@ struct DetailView: View {
     /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
     /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
     @State private var startOverMovie = false
-    /// FEAT-82 (Batch P): Play's measured height, the side of the equal square icon buttons when
-    /// Poster > Corners = Square. Rounded to whole points and written only on change (BUG-41).
-    @State private var playButtonHeight: CGFloat = 0
+    /// FEAT-82 (Batch P): Play's measured padded label and whole button, from which the equal
+    /// square icon buttons are cut when Poster > Corners = Square (side = the button's height, the
+    /// style's insets = button minus label; `DetailActionSquare.labelSize`). Whole points, written
+    /// only on change (BUG-41).
+    @State private var playLabelSize: CGSize = .zero
+    @State private var playButtonSize: CGSize = .zero
 
     /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
     /// fades the background player back out to the still backdrop without ever touching
@@ -2143,6 +2146,8 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
+                                  action: { playButtonSize = $0 })
                 .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
@@ -2180,6 +2185,8 @@ struct DetailView: View {
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
+                                  action: { playButtonSize = $0 })
                 .accessibilityIdentifier("detail_action_play")
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
@@ -2713,31 +2720,37 @@ struct DetailView: View {
     /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
     /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
 
-    /// FEAT-82: the fixed square side for a SECONDARY icon-only button (Corners = Square and Play
-    /// measured), else nil. Play never takes it (it is the measure), and Classic's text labels never
-    /// do (review r1 P1: a square frame on "Watch Trailer" squashed it).
-    private var squareSide: CGFloat? {
-        let side = DetailActionSquare.side(playHeight: playButtonHeight)
-        return DetailActionSquare.applies(isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
-                                          iconOnly: usesIconOnlyLabel(primary: false), side: side) ? side : nil
+    /// FEAT-82: the fixed label frame for a SECONDARY icon-only button (Corners = Square and Play
+    /// measured), else nil; the style's insets around it make the button a square as tall as Play.
+    /// Play never takes it (it is the measure), and Classic's text labels never do (review r1 P1: a
+    /// square frame on "Watch Trailer" squashed it).
+    private var squareLabelSize: CGSize? {
+        guard let side = DetailActionSquare.side(playHeight: playButtonSize.height),
+              DetailActionSquare.applies(isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
+                                         iconOnly: usesIconOnlyLabel(primary: false), side: side) else { return nil }
+        return DetailActionSquare.labelSize(side: side, playLabel: playLabelSize, playButton: playButtonSize)
     }
-    @ViewBuilder
     private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
-        if usesIconOnlyLabel(primary: primary) {
-            // FEAT-82 device pass (2026-10-20): the square is the LABEL (icon + padding), sized to
-            // Play's padded label, so the button style adds the same insets to every button and the
-            // secondaries come out equal and as tall as Play. A fixed frame on the Button itself
-            // did not do that on hardware: the style drew its platter outside the frame, so the
-            // squares overlapped their gaps and sat shorter than Play.
-            content.padding(Theme.Spacing.md)
-                .modifier(DetailActionSquareLabel(side: primary ? nil : squareSide))
-                .onGeometryChange(for: CGFloat.self, of: { primary ? $0.size.height.rounded() : 0 },
-                                  action: { if primary { playButtonHeight = $0 } })
-        } else {
-            content
-                .padding(.horizontal, horizontal)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
+        Group {
+            if usesIconOnlyLabel(primary: primary) {
+                // FEAT-82 device pass (2026-10-20): the square is cut on the LABEL (icon + padding),
+                // so the button style adds the same insets to every button and the secondaries come
+                // out equal and as tall as Play. A fixed frame on the Button itself did not do that
+                // on hardware: the style drew its platter outside the frame, so the squares
+                // overlapped their gaps and sat shorter than Play.
+                content.padding(Theme.Spacing.md)
+                    .modifier(DetailActionSquareLabel(size: primary ? nil : squareLabelSize))
+            } else {
+                content
+                    .padding(.horizontal, horizontal)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
         }
+        // FEAT-82 (wave3 UI leg, 2026-10-22): Play's padded label is measured in BOTH branches.
+        // Cinematic's Play is a text label, never icon-only; measured only in the icon-only branch
+        // (rc11, 3cf873994), it was never read there, so the squares never applied in Cinematic.
+        .onGeometryChange(for: CGSize.self, of: { primary ? DetailActionSquare.whole($0.size) : .zero },
+                          action: { if primary { playLabelSize = $0 } })
     }
 
     @ViewBuilder

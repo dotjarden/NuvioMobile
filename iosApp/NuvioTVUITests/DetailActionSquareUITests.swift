@@ -31,31 +31,48 @@ final class DetailActionSquareUITests: XCTestCase {
     private static let iconIDs = ["detail_start_over", "detail_action_trailer", "detail_action_watched",
                                   "detail_action_library", "detail_action_shuffle"]
 
-    private func frames(_ app: XCUIApplication) -> (play: CGRect?, icons: [(String, CGRect)]) {
+    /// A focused button's XCUI frame includes the focus effect's outset (FA87, 2026-10-22: +4 pt a
+    /// side, so a 72 pt square reads 80 × 80 at 4 pt above its neighbours). Frames compared across
+    /// focus states may differ by up to this much; frames in the same state must match to 1 pt.
+    private static let focusLift: CGFloat = 12
+
+    private func frames(_ app: XCUIApplication) -> (play: CGRect?, icons: [(String, CGRect, Bool)]) {
         let play = app.buttons["detail_action_play"]
         let playFrame: CGRect? = play.waitForExistence(timeout: 20) ? play.frame : nil
-        var icons: [(String, CGRect)] = []
+        var icons: [(String, CGRect, Bool)] = []
         for id in Self.iconIDs {
             let element = app.buttons[id]
-            if element.exists { icons.append((id, element.frame)) }
+            if element.exists { icons.append((id, element.frame, element.hasFocus)) }
         }
         return (playFrame, icons)
     }
 
     /// Square corners: every icon button is width == height == Play's height (+-1), and all equal.
+    /// The one focused button (Play, or the first enabled icon when Play is disabled, as on the
+    /// FA87 fixture's "Playback unavailable" series) reads lifted by the focus outset, so it is
+    /// held to square plus the lift; buttons in the same focus state as Play match it to 1 pt.
     func testSquareIconButtonsMatchPlayHeight() throws {
         let app = launchToDetail(extraArguments: ["-debug.posterCornersOverride", "square"])
         let (play, icons) = frames(app)
+        let playFocused = app.buttons["detail_action_play"].hasFocus
         shot("fe82_square")
         let playFrame = try XCTUnwrap(play, "Play button never appeared on Detail")
         XCTAssertFalse(icons.isEmpty, "no icon-only action buttons found")
-        for (id, frame) in icons {
-            print("[FEAT82] \(id) \(frame) play \(playFrame)")
+        for (id, frame, focused) in icons {
+            print("[FEAT82] \(id) \(frame) focused=\(focused) play \(playFrame) playFocused=\(playFocused)")
             XCTAssertEqual(frame.width, frame.height, accuracy: 1, "\(id) is not square")
-            XCTAssertEqual(frame.width, playFrame.height, accuracy: 1, "\(id) side != Play's height")
+            let delta = frame.width - playFrame.height
+            if focused == playFocused {
+                XCTAssertEqual(delta, 0, accuracy: 1, "\(id) side != Play's height")
+            } else if focused {
+                XCTAssertTrue((-1...Self.focusLift).contains(delta), "\(id) (focused) side \(frame.width) vs Play \(playFrame.height)")
+            } else {
+                XCTAssertTrue((-Self.focusLift...1).contains(delta), "\(id) side \(frame.width) vs focused Play \(playFrame.height)")
+            }
         }
-        if let first = icons.first {
-            for (id, frame) in icons {
+        let resting = icons.filter { !$0.2 }
+        if let first = resting.first {
+            for (id, frame, _) in resting {
                 XCTAssertEqual(frame.width, first.1.width, accuracy: 1, "\(id) width differs from \(first.0)")
             }
         }
