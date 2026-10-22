@@ -94,4 +94,66 @@ final class PlayerEngineRouterTests: XCTestCase {
         XCTAssertFalse(PlayerEngineRouter.mpvNeedsGpuNext(probe: sample(dv: nil)))
         XCTAssertFalse(PlayerEngineRouter.mpvNeedsGpuNext(probe: nil))
     }
+
+    // MARK: - W3-19 (wave3c review r1 P3-2 / r2 P3-2): the `[PlayerRouter]` probe lines' pure parts
+
+    /// The probe "ran out the clock" when it finished within 50 ms of the cap; anything quicker
+    /// failed early (unreachable, unreadable).
+    func testProbeOutcomeSplitsACapHitFromAnEarlyFailureAtFiftyMsBelowTheCap() {
+        XCTAssertEqual(PlayerRouterLog.probeOutcome(ms: 3949, capMs: 4000), "probe failed early")
+        XCTAssertEqual(PlayerRouterLog.probeOutcome(ms: 3950, capMs: 4000), "probe cap hit")
+        XCTAssertEqual(PlayerRouterLog.probeOutcome(ms: 4000, capMs: 4000), "probe cap hit")
+        XCTAssertEqual(PlayerRouterLog.probeOutcome(ms: 4210, capMs: 4000), "probe cap hit")
+        XCTAssertEqual(PlayerRouterLog.probeOutcome(ms: 0, capMs: 4000), "probe failed early")
+    }
+
+    /// The privacy guard: Release prints the top-level domain only, so a self-hosted add-on, proxy
+    /// or home-server host never reaches a rig console log (the rig logs fall under the staging rule).
+    func testHostIsRedactedToItsTopLevelDomain() throws {
+        func redacted(_ string: String) throws -> String {
+            PlayerRouterLog.host(try XCTUnwrap(URL(string: string), string), reveal: false)
+        }
+        XCTAssertEqual(try redacted("https://a.b.example.com/x"), "<redacted>.com")
+        XCTAssertEqual(try redacted("https://example.org:8443/stream.mkv?token=abc"), "<redacted>.org")
+        XCTAssertEqual(try redacted("https://media.home-server.example.co.uk/v"), "<redacted>.uk")
+    }
+
+    /// An IP literal or a dotless name says nothing a log should keep, and has no top-level domain
+    /// to show; a trailing dot has none either.
+    func testHostIsFullyRedactedForAnIPLiteralADotlessNameAndATrailingDot() throws {
+        func redacted(_ string: String) throws -> String {
+            PlayerRouterLog.host(try XCTUnwrap(URL(string: string), string), reveal: false)
+        }
+        XCTAssertEqual(try redacted("http://192.168.1.10:8080/"), "<redacted>")
+        XCTAssertEqual(try redacted("http://10.0.0.2/x.mkv"), "<redacted>")
+        XCTAssertEqual(try redacted("http://[fe80::1]/"), "<redacted>")
+        XCTAssertEqual(try redacted("http://[2001:db8::7]:8096/"), "<redacted>")
+        XCTAssertEqual(try redacted("http://nas/"), "<redacted>")
+        XCTAssertEqual(try redacted("http://localhost:32400/"), "<redacted>")
+        XCTAssertEqual(try redacted("http://example.com./"), "<redacted>")
+    }
+
+    /// The reveal path (DEBUG builds, or `-debug.playerRouterHosts YES` in Release) prints the host
+    /// whole, IP literals and dotless names included.
+    func testHostIsFullWhenRevealed() throws {
+        func revealed(_ string: String) throws -> String {
+            PlayerRouterLog.host(try XCTUnwrap(URL(string: string), string), reveal: true)
+        }
+        XCTAssertEqual(try revealed("https://a.b.example.com/x"), "a.b.example.com")
+        XCTAssertEqual(try revealed("http://192.168.1.10:8080/"), "192.168.1.10")
+        XCTAssertEqual(try revealed("http://nas/"), "nas")
+        XCTAssertEqual(PlayerRouterLog.revealHostsKey, "debug.playerRouterHosts")
+        #if DEBUG
+        XCTAssertTrue(PlayerRouterLog.revealsHosts, "DEBUG builds always print the host")
+        XCTAssertEqual(PlayerRouterLog.host(try XCTUnwrap(URL(string: "https://a.b.example.com/x"))),
+                       "a.b.example.com", "the default argument is the latched reveal setting")
+        #endif
+    }
+
+    /// A URL with no host prints `-`, revealed or not.
+    func testHostIsADashWhenTheURLHasNone() throws {
+        let file = try XCTUnwrap(URL(string: "file:///tmp/x.mkv"))
+        XCTAssertEqual(PlayerRouterLog.host(file, reveal: false), "-")
+        XCTAssertEqual(PlayerRouterLog.host(file, reveal: true), "-")
+    }
 }
