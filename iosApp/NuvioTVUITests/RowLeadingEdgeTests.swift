@@ -130,6 +130,40 @@ final class RowLeadingEdgeTests: XCTestCase {
         return found
     }
 
+    /// harness-w4 (2026-10-23): the bleed the app ALLOWS past the row's leading edge, mirroring
+    /// `RowLeadingEdgeClip.rowAllowance` (BUG-164; this target cannot import the app). No Zoom opens
+    /// for the still focus shadow's visible reach only: `shadowReach()` = ceil(22 × 2) = 44 pt. Zoom
+    /// on opens for the lifted 16:9 tile plus the shadow radius: ceil(16/9 × h × (2 × 20 / h) / 2) +
+    /// 22 = ceil(35.6) + 22 = 58 pt, the same at every poster size (accent ring off here, else +4).
+    /// Anything the first card draws INSIDE that opening is by design; the leg judges what lands
+    /// past it.
+    private static func leadingEdgeAllowance(noZoom: Bool) -> CGFloat {
+        noZoom ? 44 : 58
+    }
+
+    /// The row's leading edge (card #1's layout x), from one snapshot taken with card #1 focused at
+    /// rest: the unfocused cards in the focused card's band are evenly pitched, so card #1 sits one
+    /// pitch left of card #2. Read from the unfocused cards because a focused card's frame can carry
+    /// its lift. nil when fewer than two unfocused cards are readable.
+    private func rowLeadingEdge(_ app: XCUIApplication, focusedBand: CGRect) -> CGFloat? {
+        guard let root = try? app.snapshot() else { return nil }
+        var frames: [CGRect] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            let f = node.frame
+            if node.elementType == .button, !node.hasFocus, f.width >= 100, f.height >= 150,
+               abs(f.midY - focusedBand.midY) < 40, f.minX > focusedBand.minX {
+                frames.append(f)
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        let xs = frames.map(\.minX).sorted()
+        guard xs.count >= 2 else { return nil }
+        let pitch = xs[1] - xs[0]
+        guard pitch > 100 else { return nil }
+        return xs[0] - pitch
+    }
+
     /// Polls up to 8 s for `debug_trailerTile` (the dwell + `InlineTrailerCardModel.morphAnimation`'s
     /// ~0.35 s) and returns its `x=` field: the focused tile's leading edge in `.global` space.
     private func pollTileOriginX(_ app: XCUIApplication, tag: String) throws -> CGFloat {
@@ -232,13 +266,18 @@ final class RowLeadingEdgeTests: XCTestCase {
     ///     Delay at 3 s, until the hero has followed it: two at-rest captures 0.6 s apart, both
     ///     before `debug_trailerTile` exists (the tile has not expanded).
     ///  2. The tile expands (`debug_trailerTile`, its `x=` is the tile's leading edge) and settles.
-    ///  3. The column is the 60 pt left of that edge, over the focused card's rows. The two at-rest
-    ///     captures must agree there (the backdrop has settled; otherwise the leg skips, it cannot
-    ///     judge), and the expanded capture is compared against the second one: same title focused,
-    ///     same backdrop, so any difference is something the expanded tile drew past the row's
-    ///     leading edge (its shadow, its corners, its picture).
-    /// The focus-only treatment (still mode's shadow, the system lift) is present in both states and
-    /// is not judged here; the tile's expansion is what BUG-92 reported.
+    ///  3. The column is the 60 pt just past the clip the row opens for its first card: the row's
+    ///     leading edge (card #1's layout x, one pitch left of card #2, read at rest) minus the
+    ///     allowance `RowLeadingEdgeClip.rowAllowance` grants since BUG-164 (No Zoom 44 pt: the
+    ///     still shadow's reach; zoom on 58 pt: the lifted tile plus its shadow), less 2 pt of
+    ///     antialiasing slack. Inside that opening the first card is ALLOWED to draw (first run of
+    ///     this rewrite measured the still shadow fading out by x ≈ 90 and the lifted tile reaching
+    ///     x ≈ 102 with its shadow to x ≈ 78, against clips at 96 / 82). The two at-rest captures
+    ///     must agree in the column (the backdrop has settled; otherwise the leg skips, it cannot
+    ///     judge), and the expanded capture is compared against the second one: same title
+    ///     focused, same backdrop, so any difference is something drawn past the clip.
+    /// The focus-only treatment (still shadow, system lift) is present in both states; it is judged
+    /// only through the same column (it must not reach past the clip either).
     private func assertNoBleedPastLeadingEdge(noZoom: Bool, tag: String) throws {
         let app = launchToHome(extraArguments: launchArguments(noZoom: noZoom))
         let probeText = app.staticTexts["debug_trailerTile"]
@@ -248,6 +287,8 @@ final class RowLeadingEdgeTests: XCTestCase {
         pause(0.6)
         let secondRest = XCUIScreen.main.screenshot().image
         let expandedBeforeRest = probeText.exists
+        let restFocus = focusedButtonFrame(app)
+        let leading = restFocus.flatMap { rowLeadingEdge(app, focusedBand: $0) }
         shot(app, "\(tag)_00b_at_rest")
         guard !expandedBeforeRest else {
             throw XCTSkip("\(tag): the trailer tile had already expanded at the at-rest captures (Trailer Start Delay not honoured?) — no unexpanded reference")
@@ -266,13 +307,18 @@ final class RowLeadingEdgeTests: XCTestCase {
         // point is that a card's height never changes across the morph, only its width does — so
         // the vertical band below is trustworthy even though `buttonFrame.minX`/`.width` are not
         // used for anything.
+        guard let leading else {
+            throw XCTSkip("\(tag): the row's leading edge could not be read at rest (fewer than two unfocused cards in the focused row's band) — no column to judge")
+        }
+        let allowance = Self.leadingEdgeAllowance(noZoom: noZoom)
         let columnWidth: CGFloat = 60
-        let column = CGRect(x: originX - columnWidth, y: buttonFrame.minY, width: columnWidth, height: buttonFrame.height)
+        let clipX = leading - allowance - 2
+        let column = CGRect(x: clipX - columnWidth, y: buttonFrame.minY, width: columnWidth, height: buttonFrame.height)
         let windowSize = app.frame.size
 
         let backdropDrift = try maxChannelDelta(firstRest, secondRest, pointRect: column, windowSize: windowSize)
         let delta = try maxChannelDelta(secondRest, expanded, pointRect: column, windowSize: windowSize)
-        let report = XCTAttachment(string: "\(tag): column \(column) tile x=\(originX) backdrop drift at rest=\(backdropDrift)/255 expanded vs rest=\(delta)/255 (tolerance \(Self.noiseTolerance))")
+        let report = XCTAttachment(string: "\(tag): row leading edge=\(leading) allowance=\(allowance) column \(column) tile x=\(originX) backdrop drift at rest=\(backdropDrift)/255 expanded vs rest=\(delta)/255 (tolerance \(Self.noiseTolerance))")
         report.name = "\(tag)_04_column"
         report.lifetime = .keepAlways
         add(report)
@@ -281,7 +327,7 @@ final class RowLeadingEdgeTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(
             delta, Self.noiseTolerance,
-            "\(tag): the 60pt column left of the first card's leading edge (x=\(originX)) differs by up to \(delta)/255 between card #1 at rest and its expanded tile (same title focused, same backdrop) — BUG-92 bleed past the row's leading edge"
+            "\(tag): the 60 pt column past the row's leading-edge clip (leading \(leading) − allowance \(allowance); tile x=\(originX)) differs by up to \(delta)/255 between card #1 at rest and its expanded tile (same title focused, same backdrop) — BUG-92 bleed past the clip"
         )
         XCTAssertTrue(app.state == .runningForeground, "\(tag): app must survive the leading-edge check")
     }
