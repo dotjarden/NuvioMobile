@@ -375,23 +375,28 @@ enum DetailScrollMotion {
 }
 
 /// Attach to each detail row at its call site: gives it a scroll id, reports whether focus is
-/// inside it, and measures its height (rarely changing, so no per-frame invalidation — the BUG-41
-/// rule) for the anchor math.
+/// inside it, and measures its top and height (rarely changing, so no per-frame invalidation — the
+/// BUG-41 rule) for the anchor math and D-3's compact-logo band (`DetailCompactLogoBand`).
 struct DetailRowAnchored: ViewModifier {
     let id: DetailRowID
     let focusedRow: FocusState<DetailRowID?>.Binding
     /// Each row's top, in the scroll CONTENT's own coordinate space (`DetailRowAnchor.contentSpace`):
     /// content coordinates do not move as the page scrolls, so this changes only on layout.
     let offsets: Binding<[DetailRowID: CGFloat]>
+    /// D-3: each row's laid-out height, same cadence as `offsets` (one geometry read feeds both).
+    let heights: Binding<[DetailRowID: CGFloat]>?
 
     func body(content: Content) -> some View {
         content
             .id(id)
             .focused(focusedRow, equals: id)
-            .onGeometryChange(for: CGFloat.self,
-                              of: { $0.frame(in: .named(DetailRowAnchor.contentSpace)).minY },
-                              action: { top in
-                if offsets.wrappedValue[id] != top { offsets.wrappedValue[id] = top }
+            .onGeometryChange(for: CGRect.self,
+                              of: { $0.frame(in: .named(DetailRowAnchor.contentSpace)) },
+                              action: { frame in
+                if offsets.wrappedValue[id] != frame.minY { offsets.wrappedValue[id] = frame.minY }
+                if let heights, heights.wrappedValue[id] != frame.height {
+                    heights.wrappedValue[id] = frame.height
+                }
             })
     }
 }
@@ -399,7 +404,8 @@ struct DetailRowAnchored: ViewModifier {
 extension View {
     func detailRowAnchored(_ id: DetailRowID,
                            focusedRow: FocusState<DetailRowID?>.Binding,
-                           offsets: Binding<[DetailRowID: CGFloat]>) -> some View {
-        modifier(DetailRowAnchored(id: id, focusedRow: focusedRow, offsets: offsets))
+                           offsets: Binding<[DetailRowID: CGFloat]>,
+                           heights: Binding<[DetailRowID: CGFloat]>? = nil) -> some View {
+        modifier(DetailRowAnchored(id: id, focusedRow: focusedRow, offsets: offsets, heights: heights))
     }
 }

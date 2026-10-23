@@ -57,6 +57,10 @@ private final class ScrollDimModel: ObservableObject {
     /// FEAT-60: the Cinematic hero, action row included, has scrolled off the top (drives
     /// `DetailCompactLogo`). Bool, so it publishes only on the crossing.
     @Published var heroGone: Bool = false
+    /// D-3: a row's heading or chips sit inside the compact logo's band, so the logo steps aside
+    /// (`DetailCompactLogoBand`). Published only on the crossing, from the same observer as
+    /// `heroGone`; false while the hero is still on screen.
+    @Published var logoBandBlocked: Bool = false
 
     /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
     /// instant a scroll-geometry change is observed, false again ~150ms after the last one
@@ -201,7 +205,7 @@ private struct DetailTopScrim: View {
 /// "focus is in the rows" alone showed the logo beside the dimmed action row; it now also waits
 /// for the whole hero to have scrolled off (`ScrollDimModel.heroGone`).
 private struct DetailCompactLogo: View {
-    static let slotHeight: CGFloat = 72
+    static let slotHeight: CGFloat = DetailCompactLogoBand.slotHeight
     /// How far past the hero-exit rest the page must scroll (that rest sits at about
     /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, and leaves the dimmed
     /// action row on screen), so the logo waits for the next row down.
@@ -212,7 +216,11 @@ private struct DetailCompactLogo: View {
     let inRows: Bool
     let reduceMotion: Bool
 
-    private var visible: Bool { inRows && model.heroGone }
+    /// D-3: also steps aside while a row's heading or chips cross its band (`model.logoBandBlocked`).
+    private var visible: Bool {
+        DetailCompactLogoBand.shows(inRows: inRows,
+                                    gate: .init(heroGone: model.heroGone, bandBlocked: model.logoBandBlocked))
+    }
 
     var body: some View {
         TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
@@ -226,7 +234,7 @@ private struct DetailCompactLogo: View {
             .allowsHitTesting(false)
             .accessibilityHidden(!visible)
             .accessibilityIdentifier("detail_compact_logo")
-            .padding(.top, 36)
+            .padding(.top, DetailCompactLogoBand.topPadding)
             .ignoresSafeArea(edges: .top)
     }
 }
@@ -249,6 +257,9 @@ private struct ScrollDimOverlay: View {
     /// the `debug_ux6` probe, or the page has two matching elements while the cover is up
     /// (test17 "Multiple matching elements found").
     var showsProbe: Bool = true
+    /// D-3 probe only: the compact logo is mounted and focus is in the rows (Cinematic, knob off,
+    /// `bridgePhase == .idle`) — the `inRows` half of its visibility; the model carries the rest.
+    var compactLogoInRows: Bool = false
 
     var body: some View {
         ZStack {
@@ -267,7 +278,7 @@ private struct ScrollDimOverlay: View {
             // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
             // BUG-41 item 3) is the newest token, appended last for the same reason.
             if showsProbe {
-            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote)")
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote) compactLogo=\(compactLogoShown ? "shown" : "hidden") logoBand=\(model.logoBandBlocked ? "blocked" : "clear")")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
@@ -275,6 +286,14 @@ private struct ScrollDimOverlay: View {
             #endif
         }
     }
+
+    #if DEBUG
+    /// D-3: the compact logo's visibility, the same rule `DetailCompactLogo` renders.
+    private var compactLogoShown: Bool {
+        DetailCompactLogoBand.shows(inRows: compactLogoInRows,
+                                    gate: .init(heroGone: model.heroGone, bandBlocked: model.logoBandBlocked))
+    }
+    #endif
 }
 
 /// Runtime knob for DetailView's scroll-diagnostic probes (the BUG-41 body-eval counter and the
@@ -637,6 +656,9 @@ struct DetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
     @State private var detailRowOffsets: [DetailRowID: CGFloat] = [:]
+    /// D-3: each row's height, same cadence as `detailRowOffsets`; with it the hero-exit observer
+    /// knows where each row's lead sits against the compact logo's band (`DetailCompactLogoBand`).
+    @State private var detailRowHeights: [DetailRowID: CGFloat] = [:]
     /// BUG-96: the vertical scroll view's position, driven the way Home's corrector drives its rows.
     @State private var detailScrollPosition = ScrollPosition()
     /// BUG-96: the pending anchor move; a newer focus change cancels the previous one.
@@ -680,6 +702,21 @@ struct DetailView: View {
         postPlayRoute = TitleRoute(preview: pick)
     }
 
+    /// FEAT-60: focus is in the rows and no trailer bridge is running — the `inRows` half of the
+    /// compact logo's visibility (the D-3 probe reads it too).
+    private var compactLogoInRows: Bool { focusedRow != nil && bridgePhase == .idle }
+
+    /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, captured by the hero-exit
+    /// observer. Both maps change on layout only, so this is rebuilt only when the body is anyway.
+    /// Cinematic only (Classic has no compact logo). A row hidden after it was measured keeps a stale
+    /// entry, the `detailRowOffsets` caveat above; sections only toggle in Settings, a fresh page.
+    private var compactLogoBandRows: [DetailCompactLogoBand.Row] {
+        guard detailLayout == .cinematic else { return [] }
+        return detailRowOffsets.compactMap { id, top in
+            detailRowHeights[id].map { DetailCompactLogoBand.Row(top: top, height: $0) }
+        }
+    }
+
     var body: some View {
         // BUG-41 measurement probe, gated at runtime by `DetailScrollProbe.enabled` (see above).
         let _ = Self.logBodyEval()
@@ -721,7 +758,9 @@ struct DetailView: View {
             }
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
-            ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
+            ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat,
+                             compactLogoInRows: compactLogoInRows && detailLayout == .cinematic
+                                 && !DetailBug153Knobs.noCompactLogo)
             // FEAT-32: the hero dims to black under the fading chrome before the cover presents, so
             // the trailer cuts in from black. Cleared with no animation on return (hard cut to the
             // still, as in Nuvio), the settle above does the rest.
@@ -739,11 +778,11 @@ struct DetailView: View {
                         // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
                         if sectionStudioLogos {
                             companyLogosRow
-                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         if sectionParentalGuide {
                             parentalGuideSection
-                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
@@ -757,24 +796,24 @@ struct DetailView: View {
                         // A discrete focus region: vertical D-pad moves must land here instead of
                         // geometrically skipping from the info/network chips down to the cast row.
                         .focusSection()
-                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                     }
                     Group {
                         if sectionCast {
                             castRow
-                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         if sectionCollection {
                             collectionRow
-                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         if sectionTrailers {
                             trailersRow
-                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         if sectionMoreLikeThis {
                             moreLikeThisRow
-                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
                         // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
@@ -789,13 +828,13 @@ struct DetailView: View {
                         // before any anchor decision runs.
                         if sectionComments {
                             commentsSection
-                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                         // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
                         // not a Comments-style bail).
                         if detailLayout == .cinematic && sectionAbout {
                             DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
-                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
                         }
                     }
                 }
@@ -818,7 +857,7 @@ struct DetailView: View {
             .overlay(alignment: .top) {
                 if detailLayout == .cinematic, !DetailBug153Knobs.noCompactLogo {
                     DetailCompactLogo(title: title, logoUrl: logoUrl, model: dimModel,
-                                      inRows: focusedRow != nil && bridgePhase == .idle,
+                                      inRows: compactLogoInRows,
                                       reduceMotion: reduceMotion)
                 }
             }
@@ -926,14 +965,21 @@ struct DetailView: View {
             // FEAT-60: the compact logo waits for the whole hero, action row included, to leave.
             // The first Down only reveals the next row (BUG-99), which leaves the dimmed action row
             // at the top, so the dim ceiling alone was too early (device pass 2026-10-18).
-            .onScrollGeometryChange(for: Bool.self, of: { [isCinematic = detailLayout == .cinematic,
-                                                           heroHeight = cinematicHeroHeight] geo in
-                guard isCinematic, heroHeight > 0 else { return false }
-                return DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
-                                                  contentInsetTop: geo.contentInsets.top)
+            // D-3: the same observer decides whether a row's heading or chips sit in the logo's band
+            // (`DetailCompactLogoBand`), from the rows' layout-only frames — no second observer, no
+            // per-row preference traffic; `action:` fires only when either half flips.
+            .onScrollGeometryChange(for: DetailCompactLogoBand.Gate.self, of: { [isCinematic = detailLayout == .cinematic,
+                                                                                 heroHeight = cinematicHeroHeight,
+                                                                                 bandRows = compactLogoBandRows] geo in
+                guard isCinematic, heroHeight > 0 else { return DetailCompactLogoBand.Gate() }
+                let heroGone = DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
+                                                          contentInsetTop: geo.contentInsets.top)
                     >= heroHeight + geo.contentInsets.top + DetailCompactLogo.heroClearance
-            }, action: { _, gone in
-                dimModel.heroGone = gone
+                return DetailCompactLogoBand.gate(heroGone: heroGone, rows: bandRows,
+                                                  contentOffset: geo.contentOffset.y)
+            }, action: { _, gate in
+                if dimModel.heroGone != gate.heroGone { dimModel.heroGone = gate.heroGone }
+                if dimModel.logoBandBlocked != gate.bandBlocked { dimModel.logoBandBlocked = gate.bandBlocked }
             })
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
