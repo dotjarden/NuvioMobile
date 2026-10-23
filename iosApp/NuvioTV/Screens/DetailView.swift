@@ -278,7 +278,7 @@ private struct ScrollDimOverlay: View {
             // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
             // BUG-41 item 3) is the newest token, appended last for the same reason.
             if showsProbe {
-            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote) compactLogo=\(compactLogoShown ? "shown" : "hidden") logoBand=\(model.logoBandBlocked ? "blocked" : "clear")")
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote) compactLogo=\(compactLogoShown ? "shown" : "hidden") logoBand=\(!model.heroGone ? "hero" : model.logoBandBlocked ? "blocked" : "clear")")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")

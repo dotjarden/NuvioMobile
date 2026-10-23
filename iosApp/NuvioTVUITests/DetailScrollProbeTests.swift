@@ -289,7 +289,8 @@ final class DetailScrollProbeTests: XCTestCase {
 
     // MARK: - D-3: the compact logo steps aside for rows in its band
 
-    /// `debug_ux6`'s D-3 tokens as strings: `compactLogo=shown|hidden`, `logoBand=clear|blocked`.
+    /// `debug_ux6`'s D-3 tokens as strings: `compactLogo=shown|hidden`, `logoBand=hero|clear|blocked`
+    /// (`hero` = FEAT-60's hero clearance not yet passed, so the band is not evaluated).
     private func compactLogoTokens(_ app: XCUIApplication, _ name: String) -> (logo: String, band: String) {
         let probe = app.staticTexts["debug_ux6"]
         let text = probe.waitForExistence(timeout: 4) ? probe.label : ""
@@ -306,13 +307,15 @@ final class DetailScrollProbeTests: XCTestCase {
         return (logo, band)
     }
 
-    /// D-3 (design review 2026-10-22): walking down a content-rich Cinematic Detail page one press
-    /// at a time, the compact logo (FEAT-60) must never read shown while the band is blocked, and
-    /// must still show somewhere on the walk (the band rule must not retire it). Whether a row ever
-    /// blocks the band depends on the title's rows, so a walk with no `blocked` is a note, not a
-    /// failure; the screenshots at each press are the visual check.
+    /// D-3 (design review 2026-10-22): walking down a Cinematic Detail page one press at a time, the
+    /// compact logo (FEAT-60) must never read shown while the band is blocked, and once the walk is
+    /// past the hero (`logoBand != hero`) it must show at least once (the band rule must not retire
+    /// it). Whether the page scrolls past the hero, and whether a row ever blocks the band, depends
+    /// on the title's rows (TMDB on for cast/trailers/more-like-this), so those are notes, not
+    /// failures; the screenshots at each press are the visual check.
     func testCompactLogoStepsAsideForRowsInItsBand() throws {
-        let app = launchToHome(extraArguments: detailScrollProbeLaunchArguments())
+        let app = launchToHome(extraArguments: detailScrollProbeLaunchArguments()
+                                   + ["-debug.tmdbEnabledOverride", "YES"])
         openDeterministicContentRichDetail(app)
         var trail: [(logo: String, band: String)] = []
         for step in 1...10 {
@@ -324,8 +327,12 @@ final class DetailScrollProbeTests: XCTestCase {
             XCTAssertFalse(tokens.logo == "shown" && tokens.band == "blocked",
                            "the compact logo must not show while a row's lead is in its band (step \(step))")
         }
-        XCTAssertTrue(trail.contains { $0.logo == "shown" },
-                      "the compact logo never showed on a 10-press walk: the band rule hid it everywhere")
+        if trail.contains(where: { $0.band != "hero" }) {
+            XCTAssertTrue(trail.contains { $0.logo == "shown" },
+                          "past the hero, the compact logo never showed on a 10-press walk: the band rule hid it everywhere")
+        } else {
+            add(XCTAttachment(string: "NOTE: the page never scrolled past FEAT-60's hero clearance on this title; the band was not evaluated."))
+        }
         if !trail.contains(where: { $0.band == "blocked" }) {
             add(XCTAttachment(string: "NOTE: no step rested a row's lead in the band on this title; the fade itself was not exercised."))
         }
