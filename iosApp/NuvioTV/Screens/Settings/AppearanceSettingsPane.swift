@@ -576,6 +576,12 @@ private struct SwatchLabel: View {
                         lineWidth: isSelected ? 4 : 3
                     )
                 )
+                // D-8 (design review 2026-10-22): with White selected, the focused and the selected
+                // swatch read alike at TV distance (both wear a ring). The W3-5 subtitle-swatch
+                // treatment: focus also lifts the circle (x1.2 + a shadow), which holds whether or
+                // not the swatch is the selected one. `.borderless` lifts only images, so a plain
+                // circle gets no system cue on the Apple TV.
+                .modifier(ThemeSwatchFocusLift())
             Text(label)
                 .font(Theme.Font.caption)
                 // BUG-58 (beta.11 regression from the BUG-50 sweep, device-verified from
@@ -594,6 +600,21 @@ private struct SwatchLabel: View {
         .animation(.easeOut(duration: 0.15), value: isFocused)
         // All seven swatches share one id/title, so walking them publishes to the explainer once.
         .settingsDescription(.appearanceTheme, title: String(localized: "Theme"), systemImage: "paintpalette")
+    }
+}
+
+/// D-8: focus lift for the theme swatches, a copy of `SubtitleSwatchFocusLift` (W3-5). At 56 pt the
+/// x1.2 scale grows each side by 5.6 pt, inside the swatch's `Spacing.sm` padding; the animation is
+/// dropped under Reduce Motion (the scale and shadow still apply, instantly).
+private struct ThemeSwatchFocusLift: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isFocused ? 1.2 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.55 : 0), radius: isFocused ? 14 : 0, y: isFocused ? 8 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 }
 
