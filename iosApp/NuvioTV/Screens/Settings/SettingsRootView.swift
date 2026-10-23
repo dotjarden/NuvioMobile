@@ -174,8 +174,11 @@ struct SettingsRootView: View {
         // BUG-215 (GitHub #10, reopened 2026-10-23 with a screenshot): in the Default style the
         // focused row's lifted platter grew past the List's leading edge and the List clipped it to
         // a hard vertical cut (simulator shot `ced48ec6`). The lift may draw into the HStack's
-        // `Spacing.xl` gap instead; nothing else sits there.
+        // `Spacing.xl` gap instead; nothing else sits there. Re-review P2-C: the List's own clip is
+        // lifted and replaced by one that is open on the SIDES only, so rows scrolled off the top
+        // never draw over the "Settings" title above (the `RowLeadingEdgeClip` pattern).
         .scrollClipDisabled()
+        .clipShape(SettingsListSideOpenClip())
         .environment(\.settingsUsesNativeList, true)
         .accessibilityIdentifier("settings_root_list")
     }
@@ -207,5 +210,13 @@ private struct SettingsRootExplainer: View {
             title: model.category.title,
             text: Text(model.category.summary)
         )
+    }
+}
+
+/// BUG-215: the Settings root List's clip, open on both sides (a focused row's lift may bleed into
+/// the column gap) and closed top and bottom (scrolled-off rows never cover the title above).
+private struct SettingsListSideOpenClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX - 200, y: rect.minY, width: rect.width + 400, height: rect.height))
     }
 }

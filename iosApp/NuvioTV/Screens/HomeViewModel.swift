@@ -233,6 +233,9 @@ final class HomeViewModel: ObservableObject {
     /// ready manifests declare. Read at rebuild time by `settleCatalogSeedIfDue`.
     private var addonBootstrapSettled = false
     private var addonCatalogCount = 0
+    /// Re-review P2-B: an enabled add-on still fetching its manifest can still bring a catalog row,
+    /// so neither no-catalog verdict may fire while this is true.
+    private var addonManifestsPending = false
 
     /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
     /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
@@ -454,6 +457,7 @@ final class HomeViewModel: ObservableObject {
         // BUG-223 review P2-1: profile-scoped too; a switch must not reuse the last profile's count.
         addonBootstrapSettled = false
         addonCatalogCount = 0
+        addonManifestsPending = false
         didSeed = false
         seedFailed = false
         seedAttempt += 1
@@ -1199,9 +1203,14 @@ final class HomeViewModel: ObservableObject {
         // extras such as search, rows disabled in Home Rows, empty catalogs), so a Home with every
         // catalog row hidden would wait the backstop every launch. A finished load with no catalog
         // row (`isLoading` false after a refresh ran) is the no-catalog verdict too.
-        let loadFinishedEmpty = !isLoading && !lastManifestSignature.isEmpty
+        // Re-review P2-A: the repository's own flag, which `refresh` flips synchronously under its
+        // lock; the mirrored `isLoading` arrives a hop later through the watcher and read stale
+        // (false) on the settings-flow rebuild that precedes the first fan-out. P2-B: nothing may
+        // settle while an enabled add-on is still fetching its manifest.
+        let repositoryLoading = HomeRepository.shared.currentUiState.isLoading
+        let loadFinishedEmpty = !addonManifestsPending && !repositoryLoading && !lastManifestSignature.isEmpty
         guard HomeCatalogSeedSettle.settles(hasCatalogRow: hasCatalogRow,
-                                            addonsSettled: addonBootstrapSettled,
+                                            addonsSettled: addonBootstrapSettled && !addonManifestsPending,
                                             addonCatalogCount: addonCatalogCount,
                                             loadFinishedEmpty: loadFinishedEmpty) else { return }
         catalogRowsSettledAfterGateOpen = true
@@ -1409,6 +1418,7 @@ final class HomeViewModel: ObservableObject {
             // the seed has had its say (it either landed, in which case the list is no longer
             // empty, or failed).
             addonCatalogCount = 0
+            addonManifestsPending = false
             addonBootstrapSettled = state.isInitialized && seedFailed
             if bootstrap == .openRowsNoSources {
                 openRowsForNoSourcesBootstrap()
@@ -1429,6 +1439,9 @@ final class HomeViewModel: ObservableObject {
                                                    // and has nothing left to say here.
                                                    seedPending: false,
                                                    hasRefreshed: !lastManifestSignature.isEmpty)
+        // Re-review P2-B: stored for `settleCatalogSeedIfDue`, on every route (a stream-only add-on
+        // that is ready first reads count 0 while a second add-on still fetches).
+        addonManifestsPending = manifestsPending
         if ready.isEmpty {
             addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
             // BUG-223 review P2-1: all add-ons disabled or every manifest failed; nothing will
