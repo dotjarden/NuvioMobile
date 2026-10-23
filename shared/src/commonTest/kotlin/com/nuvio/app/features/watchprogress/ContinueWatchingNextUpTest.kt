@@ -352,4 +352,43 @@ class ContinueWatchingNextUpTest {
         )
         assertEquals(4, result.single().episodeNumber)
     }
+
+    @Test
+    fun progressSignatureIgnoresPlaybackPositionOnly() {
+        val playing = progress("tt1", 1, 4, t0, completed = false)
+        val later = playing.copy(lastPositionMs = 900_000L, lastUpdatedEpochMs = t0 + 10_000)
+        assertEquals(nextUpProgressSignature(listOf(playing)), nextUpProgressSignature(listOf(later)))
+    }
+
+    @Test
+    fun progressSignatureChangesWhenARowFinishesAppearsOrGoes() {
+        val playing = progress("tt1", 1, 4, t0, completed = false)
+        val base = nextUpProgressSignature(listOf(playing))
+        assertNotEquals(base, nextUpProgressSignature(listOf(progress("tt1", 1, 4, t0 + 1, completed = true))))
+        assertNotEquals(base, nextUpProgressSignature(listOf(playing, progress("tt2", 1, 1, t0, completed = false))))
+        assertNotEquals(base, nextUpProgressSignature(emptyList()))
+        // A finished row re-finished later moves its seed time, so the signature moves too.
+        val done = progress("tt1", 1, 3, t0, completed = true)
+        assertNotEquals(nextUpProgressSignature(listOf(done)), nextUpProgressSignature(listOf(done.copy(lastUpdatedEpochMs = t0 + 1))))
+    }
+
+    @Test
+    fun theTwoStagesMatchTheOneCallSeedBuilder() {
+        val entries = listOf(
+            progress("a", 1, 3, t0, completed = true),
+            progress("b", 2, 2, t0 + 1_000, completed = true),
+            progress("c", 1, 1, t0 + 2_000, completed = true),
+            progress("c", 1, 2, t0 + 3_000, completed = false),
+        )
+        val dismissed = setOf(nextUpDismissKey("a", 1, 3))
+        val oneCall = seeds(entries = entries, dismissed = dismissed, dropped = setOf("b"))
+        val staged = filterNextUpSeedCandidates(
+            candidates = buildNextUpSeedCandidates(entries, emptyList(), { it.shouldUseAsCompletedSeedForContinueWatching() }, true),
+            isDroppedShow = { it == "b" },
+            recencyCutoffEpochMs = null,
+            dismissedNextUpKeys = dismissed,
+        )
+        assertEquals(oneCall, staged)
+        assertTrue(staged.isEmpty())
+    }
 }

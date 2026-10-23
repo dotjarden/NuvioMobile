@@ -127,6 +127,7 @@ val WatchProgressEntry.isContinueWatchingNextUp: Boolean
 
 /**
  * Pure seed selection (unit-tested). Returns at most [limit] series, most recently completed first.
+ * The two stages below, split so a refresh can reuse stage 1 (review P3-2).
  */
 fun buildContinueWatchingNextUpSeeds(
     progressEntries: List<WatchProgressEntry>,
@@ -137,6 +138,24 @@ fun buildContinueWatchingNextUpSeeds(
     preferFurthestEpisode: Boolean,
     dismissedNextUpKeys: Set<String>,
     limit: Int = ContinueWatchingNextUpResolveLimit,
+): List<ContinueWatchingNextUpSeed> = filterNextUpSeedCandidates(
+    candidates = buildNextUpSeedCandidates(progressEntries, watchedItems, isProgressSeed, preferFurthestEpisode),
+    isDroppedShow = isDroppedShow,
+    recencyCutoffEpochMs = recencyCutoffEpochMs,
+    dismissedNextUpKeys = dismissedNextUpKeys,
+    limit = limit,
+)
+
+/**
+ * Stage 1, the O(entries) part: the latest finished episode per series, minus the series whose
+ * in-progress episode is at least as recent. Depends only on progress, history, the provider's
+ * seed rule and "furthest episode".
+ */
+fun buildNextUpSeedCandidates(
+    progressEntries: List<WatchProgressEntry>,
+    watchedItems: List<WatchedItem>,
+    isProgressSeed: (WatchProgressEntry) -> Boolean,
+    preferFurthestEpisode: Boolean,
 ): List<ContinueWatchingNextUpSeed> {
     val markers = buildList {
         progressEntries.forEach { entry ->
@@ -171,20 +190,69 @@ fun buildContinueWatchingNextUpSeeds(
     return markers
         .groupBy { seed -> seed.contentId }
         .mapNotNull { (_, seeds) -> seeds.maxWithOrNull(ordering) }
-        .filterNot { seed -> isDroppedShow(seed.contentId) }
-        .filter { seed -> recencyCutoffEpochMs == null || seed.markedAtEpochMs >= recencyCutoffEpochMs }
         // Mobile's `shouldTreatAsActiveInProgressForNextUpSuppression`: `>=`, so a tie keeps the
         // in-progress card.
         .filterNot { seed ->
             val inProgressAt = latestInProgressBySeries[seed.contentId] ?: return@filterNot false
             inProgressAt >= seed.markedAtEpochMs
         }
-        .filterNot { seed ->
-            nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber) in dismissedNextUpKeys
-        }
-        .sortedByDescending { seed -> seed.markedAtEpochMs }
-        .take(limit)
 }
+
+/**
+ * Stage 2, per series only: the provider's hidden shows and recency window, the synced
+ * dismissals, newest first, capped. Runs on every refresh, so a hidden-show or dismissal change
+ * always applies even when stage 1 was reused.
+ */
+fun filterNextUpSeedCandidates(
+    candidates: List<ContinueWatchingNextUpSeed>,
+    isDroppedShow: (contentId: String) -> Boolean,
+    recencyCutoffEpochMs: Long?,
+    dismissedNextUpKeys: Set<String>,
+    limit: Int = ContinueWatchingNextUpResolveLimit,
+): List<ContinueWatchingNextUpSeed> = candidates
+    .filterNot { seed -> isDroppedShow(seed.contentId) }
+    .filter { seed -> recencyCutoffEpochMs == null || seed.markedAtEpochMs >= recencyCutoffEpochMs }
+    .filterNot { seed ->
+        nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber) in dismissedNextUpKeys
+    }
+    .sortedByDescending { seed -> seed.markedAtEpochMs }
+    .take(limit)
+
+/**
+ * Review P3-2: what stage 1 reads from one progress row. Playback position and an in-progress
+ * row's timestamp are left out, so the saves Home sees every few seconds while it sits under the
+ * player do not rebuild the seeds. Leaving the timestamp out is safe: an in-progress row only
+ * ever moves forward in time, and when it overtakes a finished episode the merge
+ * ([mergeContinueWatchingWithNextUp], newer card wins) already shows the in-progress card.
+ * A row appearing, disappearing or finishing changes the signature.
+ */
+data class NextUpProgressSignature(
+    val parentMetaId: String,
+    val parentMetaType: String,
+    val videoId: String,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
+    val source: String,
+    val isCompleted: Boolean,
+    /** The completion time for a finished row; 0 for any other. */
+    val completedAtEpochMs: Long,
+)
+
+/** Pure (unit-tested): the stage-1 signature of a progress list. */
+fun nextUpProgressSignature(entries: List<WatchProgressEntry>): List<NextUpProgressSignature> =
+    entries.map { entry ->
+        val completed = entry.isEffectivelyCompleted
+        NextUpProgressSignature(
+            parentMetaId = entry.parentMetaId,
+            parentMetaType = entry.parentMetaType,
+            videoId = entry.videoId,
+            seasonNumber = entry.seasonNumber,
+            episodeNumber = entry.episodeNumber,
+            source = entry.source,
+            isCompleted = completed,
+            completedAtEpochMs = if (completed) entry.lastUpdatedEpochMs else 0L,
+        )
+    }
 
 /**
  * Pure merge (unit-tested), mobile's `buildHomeContinueWatchingItems` rule: one card per series,
@@ -315,6 +383,22 @@ object ContinueWatchingNextUp {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /**
+     * Review P3-2: the inputs stage 1 last ran on. `watchedItems` compares as a list, which is
+     * cheap when it is the same `WatchedRepository` snapshot (the usual case: progress saves do
+     * not touch history) because Kotlin list equality checks identity first.
+     */
+    private data class SeedStageOneKey(
+        val profileId: Int,
+        val source: WatchProgressSource,
+        val preferFurthestEpisode: Boolean,
+        val minuteBucket: Long,
+        val progress: List<NextUpProgressSignature>,
+        val watchedItems: List<WatchedItem>,
+    )
+
+    private var lastStageOne: Pair<SeedStageOneKey, List<ContinueWatchingNextUpSeed>>? = null
+
     /** Bumped by [clearLocalState]; a refresh that started before it does not write back. */
     private var generation = 0L
 
@@ -422,16 +506,35 @@ object ContinueWatchingNextUp {
         val source = inputs.source
         val entries = inputs.entries
         val watchedItems = inputs.watchedItems
-        val seeds = buildContinueWatchingNextUpSeeds(
-            progressEntries = entries,
+        // Review P3-2: stage 1 is rebuilt only when what it reads changed. The provider's Trakt
+        // playback seed rule is time-bound (minutes), so under Trakt the key also carries the
+        // minute.
+        val stageOneKey = SeedStageOneKey(
+            profileId = profileId,
+            source = source,
+            preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
+            minuteBucket = if (source == WatchProgressSource.TRAKT) now / 60_000L else 0L,
+            progress = nextUpProgressSignature(entries),
             watchedItems = watchedItems,
-            isProgressSeed = inputs::isProgressSeed,
+        )
+        val cachedStageOne = synchronized(lock) { lastStageOne }
+        val candidates = if (cachedStageOne != null && cachedStageOne.first == stageOneKey) {
+            cachedStageOne.second
+        } else {
+            buildNextUpSeedCandidates(
+                progressEntries = entries,
+                watchedItems = watchedItems,
+                isProgressSeed = inputs::isProgressSeed,
+                preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
+            ).also { built -> synchronized(lock) { lastStageOne = stageOneKey to built } }
+        }
+        val seeds = filterNextUpSeedCandidates(
+            candidates = candidates,
             isDroppedShow = { contentId -> WatchProgressRepository.isDroppedShow(contentId) },
             recencyCutoffEpochMs = WatchProgressRepository.activeProviderContinueWatchingCutoffEpochMs(
                 daysCap = TraktSettingsRepository.uiState.value.continueWatchingDaysCap,
                 nowEpochMs = now,
             ),
-            preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
             dismissedNextUpKeys = prefs.dismissedNextUpKeys,
             limit = limit,
         )
@@ -558,6 +661,7 @@ object ContinueWatchingNextUp {
             resolvedByKey = emptyMap()
             dismissKeysByVideoId = emptyMap()
             recentTraktMarks = emptyList()
+            lastStageOne = null
             lastSummary = null
         }
     }
