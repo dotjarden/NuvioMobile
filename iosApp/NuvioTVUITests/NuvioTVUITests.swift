@@ -5090,250 +5090,140 @@ final class NuvioTVUITests: XCTestCase {
     /// reliance (the tvOS 27.0 runtime never reports it), loud prerequisite `XCTSkip`/`XCTFail`
     /// rather than a silent vacuous pass.
     func test46StillModeRiseIsZero() throws {
-        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
+        // harness-w4 (2026-10-23): the measurement reads the ARTWORK's own pixels, never an edge.
+        // The edge finder this replaced compared the focused card's strongest top-edge step with an
+        // unfocused neighbour's; in still mode the focused card's strongest step is the
+        // `stillHighlight` ring drawn around the artwork, not the artwork (first full run: the
+        // ring's outer edge at 526.5 against the neighbour's artwork top at 535.5, a phantom 9 pt
+        // "rise", with the accent ring off). The method now:
+        //  1. `-debug.cardGeometryProbe YES` publishes every card's INSET artwork box
+        //     (`poster_artwork`): the picture itself, inside the ring band, in layout coordinates.
+        //  2. The SAME card is captured focused, then unfocused (one Left hands focus to its left
+        //     neighbour); it is found again by its label in the same row, and both captures' boxes
+        //     must sit at the same height (|ΔminY| < 2 pt), so the row did not move vertically.
+        //  3. Only pixels INSIDE that card's artwork box are read: the middle 60 % of its width, a
+        //     window from 8 pt under the box top over 45 % of its height (clear of the ring band,
+        //     the shadow, the row title and the backdrop). The focused capture's row-luma profile
+        //     is matched against the unfocused one at every vertical shift within ±24 pt
+        //     (normalised correlation); the best shift is how far the picture moved on focus.
+        //  4. Still mode must not move the picture: rise = that shift, asserted 0 ± 2 pt. A system
+        //     lift or a manual scale (≈ 20 pt at the top edge) moves the content and fails.
+        // `-accent_focus_ring NO` pins the ring-less still mode (a device-local key; the argument
+        // domain shadows it for this launch only).
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES", "-accent_focus_ring", "NO",
+                                                "-debug.cardGeometryProbe", "YES"], forceFreshLaunch: true)
         openTab(app, named: "Home")
         press(.down, times: 3)
         press(.left, times: 6, gap: 0.3)
-        // 2026-08-30 failure (rise = -39.5pt, physically impossible in still mode): the edge
-        // scan caught the PINNED ROW TITLE's white glyphs instead of an artwork top. The title is
-        // overlaid at the shelf's top-LEADING corner and is wide enough to cover the first card or
-        // two, and it renders INSIDE the card's accessibility frame — the reach band the pinned
-        // rows put above every card's artwork is exactly where the title lives — so no scan window
-        // anchored on `frame.minY` can exclude it by geometry alone. Worse, title pollution and a
-        // real system lift both raise a reading, so they cannot be told apart after the fact.
-        //
-        // The fix is to stop measuring under the title at all: two rights off the leading edge puts
-        // the focused card (and its right-hand neighbour, the first rest candidate) clear of the
-        // title's horizontal band. `press(.left, times: 6)` alone parked focus on card #1, directly
-        // beneath it. test44 uses the same leading-edge walk and carries the same exposure — it has
-        // simply not been unlucky yet; worth the same change next time it is touched.
+        // Two Rights off the leading edge: the focused card AND its left neighbour (where focus goes
+        // for the unfocused capture) both sit clear of the pinned row title's band.
         press(.right, times: 2, gap: 0.3)
         pause(2)
-        guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
+
+        /// Every button's label, frame and focus flag, from one snapshot.
+        func cards() -> [(label: String, frame: CGRect, focused: Bool)] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [(label: String, frame: CGRect, focused: Bool)] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.elementType == .button { out.append((node.label, node.frame, node.hasFocus)) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+        func artwork(in card: CGRect) -> CGRect? {
+            artworkFrames(app).first { card.contains(CGPoint(x: $0.midX, y: $0.midY)) }
+        }
+
+        guard let focusedCard = cards().last(where: { $0.focused && $0.frame.width > 80 && $0.frame.height > $0.frame.width }) else {
             throw XCTSkip("no focused poster card reported (the 27.0 runtime never reports hasFocus)")
         }
-        let f = card.frame
-        let shot = XCUIScreen.main.screenshot()
-        let attachment = XCTAttachment(screenshot: shot)
-        attachment.name = "46a_still_mode"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-
-        let artH = f.width * 1.5
-
-        // 2026-08-30 device rerun #2: rise read 4.0pt EXACTLY, not a real lift. In still mode
-        // EVERY card's artwork is inset by the reserved ring band (BUG-64 / 2026-08-30 no-zoom
-        // investigation — see `ringInset` in PosterCard.swift), but only the FOCUSED card actually
-        // draws the neutral `stillHighlight` ring (`Color.white.opacity(0.85)`) into that band —
-        // an unfocused neighbour's band stays transparent, so its detected top-edge step is its
-        // ARTWORK's own top (outer+ringWidth). The focused card's STRONGEST step is instead the
-        // bright ring itself, right at the card's OUTER bounds (outer+0) — so a raw edge-to-edge
-        // comparison reads a phantom `ringWidth`pt "rise" that has nothing to do with lift.
-        // `ringWidth` itself lives in PosterCard.swift, which this UI test target cannot see (no
-        // `@testable import` — it drives the app as a black box) — duplicated here as a literal,
-        // matching PosterCard.swift's own `let ringWidth: CGFloat = 4`. Shared by both the rise
-        // measurement below and the left-edge check further down, which has the identical
-        // ring-vs-artwork ambiguity.
-        let ringWidthPt: CGFloat = 4
-        // Composited near-white (`Color.white.opacity(0.85)` over whatever's behind the card, i.e.
-        // the row/page background) reads far brighter than ordinary poster artwork at this
-        // resolution — a generous-but-honest cut, not tuned to any one poster.
-        let ringBrightness = 0.6
-
-        /// Mean of `profile` immediately AFTER `edgeIndex`, over a `ringWidthPt`-wide band
-        /// (converted to pixels via `ptPerPx`) — used to tell whether a detected step is the
-        /// bright still-mode ring or an ordinary (possibly dark) artwork edge. Generic over rows
-        /// or columns, same as `topEdgeIndex` itself.
-        func bandLumaAfter(_ profile: [Double], edgeIndex: Int, ptPerPx: CGFloat) -> Double {
-            let bandPixels = max(1, Int((ringWidthPt / ptPerPx).rounded()))
-            let start = edgeIndex + 1
-            let end = min(profile.count, start + bandPixels)
-            guard start < end else { return 0 }
-            let slice = profile[start..<end]
-            return slice.reduce(0, +) / Double(slice.count)
+        guard let focusedArt = artwork(in: focusedCard.frame) else {
+            XCTFail("no `poster_artwork` box inside the focused card \(focusedCard.frame) — `-debug.cardGeometryProbe YES` did not arm `DebugAXIdentifier`, or this is a Release build")
+            return
         }
+        let focusedShot = XCUIScreen.main.screenshot()
+        let focusedAttachment = XCTAttachment(screenshot: focusedShot)
+        focusedAttachment.name = "46a_still_mode_focused"
+        focusedAttachment.lifetime = .keepAlways
+        add(focusedAttachment)
 
-        /// Top edge at a single column centred on `centreX`, within a card whose own top sits at
-        /// `topY` (not always `f.minY` — a rest candidate can be a different card in the row).
-        /// Same strip geometry as test44's local `topEdge`, kept as its own copy here rather than
-        /// shared because test44's closes over that test's own `f`/`artH`/`shot`/`app`. Also
-        /// reports the brightness of the band right after the step (`bandLumaAfter` above), so
-        /// callers can tell a bright ring edge from an ordinary artwork edge.
-        func topEdge(centreX: CGFloat, topY: CGFloat) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            // 2026-08-30: the window used to open `artH * 0.25` (≈101pt at Large) ABOVE the card's
-            // own accessibility frame, which reaches into whatever the PREVIOUS row is drawing.
-            // Anchor it just above the card instead — 12pt is enough headroom for
-            // `topEdgeIndex`'s 3-row gradient window plus a little AX/render slack, and the
-            // remaining `artH * 0.5` of height still comfortably contains the artwork's top edge
-            // at every Poster Size (Large: window ends ~189pt below the frame top, artwork top is
-            // ~88pt below it in pinned mode, 0pt in classic).
-            let scanTop = topY - 12
-            let strip = CGRect(
-                x: centreX - f.width * 0.2, y: scanTop,
-                width: f.width * 0.4, height: artH * 0.5
-            )
-            guard strip.minX > 0, strip.maxX < app.frame.maxX, strip.minY > 0 else { return nil }
-            guard let (rows, ptPerPx) = try? rowLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size) else { return nil }
-            guard let edge = topEdgeIndex(rows) else { return nil }
-            let band = bandLumaAfter(rows, edgeIndex: edge.index, ptPerPx: ptPerPx)
-            return (strip.minY + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        press(.left, times: 1)
+        pause(1.5)
+        let unfocusedShot = XCUIScreen.main.screenshot()
+        let unfocusedAttachment = XCTAttachment(screenshot: unfocusedShot)
+        unfocusedAttachment.name = "46b_still_mode_unfocused"
+        unfocusedAttachment.lifetime = .keepAlways
+        add(unfocusedAttachment)
+        let after = cards()
+        guard let sameCard = after.first(where: {
+            $0.label == focusedCard.label && !$0.focused && abs($0.frame.minY - focusedCard.frame.minY) < 15
+        }), let unfocusedArt = artwork(in: sameCard.frame) else {
+            throw XCTSkip("the card '\(focusedCard.label)' was not found unfocused in its row after one Left (focused now: \(after.filter(\.focused).map(\.label))) — rerun")
         }
+        // Layout: the box itself must not move with focus (a layout lift would show here).
+        XCTAssertEqual(unfocusedArt.minY, focusedArt.minY, accuracy: 2,
+                       "the artwork box moved with focus (focused \(focusedArt), unfocused \(unfocusedArt)) — still mode must not lift the card's layout")
+        XCTAssertEqual(unfocusedArt.height, focusedArt.height, accuracy: 2,
+                       "the artwork box changed size with focus (focused \(focusedArt), unfocused \(unfocusedArt))")
 
-        /// 2026-08-30 device rerun: the fixture skipped with "focused 0.808, rest 0.026" — the
-        /// single centred column on the REST card landed on near-black artwork (The Hunting
-        /// Party's poster has a black top) and read as no edge at all, even though the card's
-        /// true top edge was perfectly detectable a few points either side. Sample several evenly
-        /// spaced columns across `frame`'s own width (relative fractions of `frame.width`, so this
-        /// keeps working at any Poster Size — Large, Medium, whatever the fixture is running) and
-        /// keep the strongest, the same "take the best step" idea `topEdgeIndex` already applies
-        /// within one column's row profile, one dimension out.
-        func bestTopEdge(in frame: CGRect) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            let sampleCount = 6
-            var best: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
-            for i in 0..<sampleCount {
-                // Middle 70% of the card's width — the outer margins are where a strip can clip
-                // the card's own rounded corner, a weaker step than the flat top just inboard.
-                let t = (CGFloat(i) + 0.5) / CGFloat(sampleCount)
-                let centreX = frame.minX + frame.width * (0.15 + 0.7 * t)
-                guard let candidate = topEdge(centreX: centreX, topY: frame.minY) else { continue }
-                if best == nil || candidate.strength > best!.strength { best = candidate }
+        // Pixels: the picture's row profile, focused vs unfocused, best vertical alignment.
+        let margin: CGFloat = 24
+        let windowTop = max(focusedArt.minY, unfocusedArt.minY) + 8
+        let windowHeight = min(focusedArt.height, unfocusedArt.height) * 0.45
+        func profile(_ image: UIImage, art: CGRect) throws -> (rows: [Double], ptPerPx: CGFloat) {
+            let strip = CGRect(x: art.minX + art.width * 0.2, y: windowTop - margin,
+                               width: art.width * 0.6, height: windowHeight + 2 * margin)
+            return try rowLuma(in: image, pointRect: strip, windowSize: app.frame.size)
+        }
+        let focusedProfile = try profile(focusedShot.image, art: focusedArt)
+        let unfocusedProfile = try profile(unfocusedShot.image, art: unfocusedArt)
+        let ptPerPx = focusedProfile.ptPerPx
+        let count = min(focusedProfile.rows.count, unfocusedProfile.rows.count)
+        let marginPx = Int((margin / ptPerPx).rounded())
+        let windowPx = count - 2 * marginPx
+        guard windowPx > 20 else { throw XCTSkip("artwork window too small to compare (\(windowPx) px)") }
+        /// Normalised correlation of two equal-length samples; nil when either is flat.
+        func correlation(_ a: ArraySlice<Double>, _ b: ArraySlice<Double>) -> Double? {
+            let n = Double(a.count)
+            let meanA = a.reduce(0, +) / n, meanB = b.reduce(0, +) / n
+            var cov = 0.0, varA = 0.0, varB = 0.0
+            for (x, y) in zip(a, b) {
+                cov += (x - meanA) * (y - meanB)
+                varA += (x - meanA) * (x - meanA)
+                varB += (y - meanB) * (y - meanB)
             }
-            return best
+            guard varA > 1e-6, varB > 1e-6 else { return nil }
+            return cov / (varA * varB).squareRoot()
         }
-
-        guard let focusedTopRaw = bestTopEdge(in: f) else {
-            throw XCTSkip("no usable top edge anywhere on the focused card — cannot measure still-mode rise")
+        let focusedWindow = focusedProfile.rows[marginPx..<(marginPx + windowPx)]
+        let windowMean = focusedWindow.reduce(0, +) / Double(windowPx)
+        let windowSpread = (focusedWindow.map { ($0 - windowMean) * ($0 - windowMean) }.reduce(0, +) / Double(windowPx)).squareRoot()
+        guard windowSpread > 0.01 else {
+            throw XCTSkip("the focused card's artwork is flat in the compared window (luma spread \(windowSpread)) — no structure to align; rerun on another card")
         }
-        guard focusedTopRaw.strength > 0.05 else {
-            throw XCTSkip("top-edge step too weak on the focused card itself (\(focusedTopRaw.strength)) — dark artwork, rerun")
+        // focused(y) == unfocused(y + s) when the focused picture sits s px HIGHER (a positive rise).
+        var best: (shift: Int, score: Double)?
+        for shift in -marginPx...marginPx {
+            let start = marginPx + shift
+            guard start >= 0, start + windowPx <= count,
+                  let score = correlation(focusedWindow, unfocusedProfile.rows[start..<(start + windowPx)]) else { continue }
+            if best == nil || score > best!.score { best = (shift, score) }
         }
-        // The ring-aware adjustment: if the strongest step found on the focused card is the bright
-        // still-mode ring rather than the artwork itself, the artwork's true top is `ringWidthPt`
-        // further down — the same band `ringInset` reserved for it. Honest either way: a card with
-        // NO ring drawn here (e.g. a zoom-ON regression where this setting silently stopped
-        // applying) has an ordinary, non-bright band and is compared RAW/unadjusted, so a real
-        // system lift (~20pt+) still fails loudly instead of being "corrected" away.
-        let focusedIsRingEdge = focusedTopRaw.bandLumaAfter > ringBrightness
-        let focusedArtworkY = focusedIsRingEdge ? focusedTopRaw.y + ringWidthPt : focusedTopRaw.y
-
-        // Rest baseline: try the immediate neighbour first (cheap, matches test44's own idiom),
-        // then fall back to every OTHER unfocused poster-shaped button visible on screen — read
-        // from the accessibility tree the same way `focusedButton`/`buttonSnapshots` already find
-        // cards elsewhere in this suite, nearest to the focused card first. Only a card that never
-        // yields a usable edge anywhere skips; a single dark column on one candidate no longer
-        // does.
-        let gapGuess = f.width * 0.18
-        var restCandidates: [(label: String, frame: CGRect)] = [
-            ("immediate neighbour (guessed)", CGRect(x: f.maxX + gapGuess, y: f.minY, width: f.width, height: f.height))
-        ]
-        let otherCards = buttonSnapshots(app)
-            .filter { !$0.hasFocus && $0.frame.width > 80 && $0.frame.height > $0.frame.width }
-            // Same row only — an accessibility frame's TOP is a layout property, unaffected by any
-            // paint-time focus transform, so every poster in this row shares `f.minY` regardless
-            // of which one is focused.
-            .filter { abs($0.frame.minY - f.minY) < 15 }
-            .filter { $0.frame != f }
-            .sorted { abs($0.frame.midX - f.midX) < abs($1.frame.midX - f.midX) }
-        for (i, snap) in otherCards.enumerated() {
-            restCandidates.append(("AX-tree card #\(i) at x=\(Int(snap.frame.minX))", snap.frame))
-        }
-
-        // Backstop for the same 2026-08-30 pollution class on the REST side, where it IS
-        // separable: an unfocused card's artwork can never sit ABOVE the focused card's in still
-        // mode (that is the definition of zero rise), so a rest edge measurably higher than the
-        // focused one is not a rest edge at all — it is the row title, or some other artefact
-        // above the artwork. One-sided ON PURPOSE: rejecting only edges that read HIGHER than the
-        // focused card can never mask the regression this test exists to catch, which shows up as
-        // the focused card reading higher (a POSITIVE rise). Rejected candidates fall through to
-        // the next card along, which is further from the title's leading-edge band.
-        let implausibleRiseCutoff: CGFloat = -12
-        var restTop: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
-        var triedStrengths: [String] = []
-        for candidate in restCandidates {
-            guard let edge = bestTopEdge(in: candidate.frame) else {
-                triedStrengths.append("\(candidate.label)=none")
-                continue
-            }
-            let candidateRise = edge.y - focusedArtworkY
-            if candidateRise < implausibleRiseCutoff {
-                triedStrengths.append(
-                    "\(candidate.label)=REJECTED(rise=\(String(format: "%.1f", candidateRise))pt above the focused card — row-title glyphs, not an artwork edge)")
-                continue
-            }
-            triedStrengths.append("\(candidate.label)=\(String(format: "%.3f", edge.strength))")
-            if edge.strength > 0.05 {
-                restTop = edge
-                break
-            }
-        }
-        guard let restTop else {
-            throw XCTSkip("no rest card yielded a usable top edge after trying \(restCandidates.count) candidate(s): \(triedStrengths.joined(separator: ", ")) — dark artwork, or every candidate sat under the row title (see the REJECTED notes); rerun")
-        }
-        // A rest candidate is UNFOCUSED (filtered by `hasFocus` above), so it never draws the
-        // still ring — its detected step is already its artwork's own top, no adjustment needed.
-        // Comparing it against `focusedArtworkY` (not the raw, possibly-ring `focusedTopRaw.y`) is
-        // what removes the phantom `ringWidthPt` reading.
-        let rise = restTop.y - focusedArtworkY
-        let report = XCTAttachment(string: "still mode focusedRaw=\(focusedTopRaw) focusedIsRingEdge=\(focusedIsRingEdge) focusedArtworkY=\(focusedArtworkY) restTop=\(restTop) rise=\(rise)pt artH=\(artH) frame=\(f) candidates=[\(triedStrengths.joined(separator: ", "))]")
-        report.name = "46b_edges"
+        guard let best else { throw XCTSkip("no usable alignment between the two captures") }
+        let rise = CGFloat(best.shift) * ptPerPx
+        let report = XCTAttachment(string: "still mode: card '\(focusedCard.label)' focusedArt=\(focusedArt) unfocusedArt=\(unfocusedArt) window y=\(windowTop)…\(windowTop + windowHeight) best shift=\(best.shift) px (\(rise) pt) correlation=\(String(format: "%.3f", best.score)) spread=\(String(format: "%.3f", windowSpread))")
+        report.name = "46c_artwork_alignment"
         report.lifetime = .keepAlways
         add(report)
-        NSLog("[BUG64] still mode rise=%.2fpt artH=%.1f ringEdge=%d strengths=%.3f/%.3f", rise, artH, focusedIsRingEdge ? 1 : 0, focusedTopRaw.strength, restTop.strength)
-
-        // The core assertion: still mode must not raise the focused card at all. Any measurable
-        // rise here means the button style (or something else) reintroduced a scale/lift — exactly
-        // what the beta report described ("posters continue to zoom in" with the setting on).
-        XCTAssertEqual(
-            rise, 0, accuracy: 2,
-            "still mode raised the focused card by \(rise)pt — 'No Zoom on Focus' must produce zero rise"
-        )
-
-        // Cheap layout-regression guard, same screenshot: the still ring's reserved band (BUG-64 /
-        // 2026-08-30 no-zoom investigation — see `ringInset` in PosterCard.swift) must not have
-        // shifted the artwork's LEFT edge by more than the band itself plus a point of slack. Not
-        // an equality check — the point is to catch a broken inset (e.g. a sign error, or the
-        // shrink applied at several times the intended width) breaking layout, not to pin the
-        // exact geometry. `columnLuma`/`topEdgeIndex` are the horizontal cousins of the vertical
-        // scan above (`topEdgeIndex` is a generic step-finder — it doesn't care whether the 1-D
-        // profile it's given came from rows or columns). Same ring-vs-artwork ambiguity as the
-        // rise measurement above applies here too: the focused card's strongest LEFT step can be
-        // the bright ring at the true outer edge rather than the inset artwork, so this is
-        // adjusted with the same `bandLumaAfter` technique (to the right of the step, not below).
-        func leftEdge(nearX: CGFloat) throws -> (x: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            let strip = CGRect(
-                x: nearX - artH * 0.15, y: f.midY - f.width * 0.1,
-                width: artH * 0.3, height: f.width * 0.2
-            )
-            guard strip.minX > 0, strip.maxY < app.frame.maxY, let cgWidth = shot.image.cgImage?.width, cgWidth > 0 else { return nil }
-            let cols = try columnLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size)
-            guard let edge = topEdgeIndex(cols) else { return nil }
-            let ptPerPx = app.frame.width / CGFloat(cgWidth)
-            let band = bandLumaAfter(cols, edgeIndex: edge.index, ptPerPx: ptPerPx)
-            return (strip.minX + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        NSLog("[BUG64] still mode rise=%.2fpt (artwork alignment, corr %.3f) card=%@", rise, best.score, focusedCard.label)
+        guard best.score > 0.8 else {
+            throw XCTSkip("the focused and unfocused captures of '\(focusedCard.label)' do not align (best correlation \(best.score)): the artwork changed between them (a late image load?) — rerun")
         }
-        if let left = try leftEdge(nearX: f.minX), left.strength > 0.05 {
-            let leftIsRingEdge = left.bandLumaAfter > ringBrightness
-            let artworkX = leftIsRingEdge ? left.x + ringWidthPt : left.x
-            let shift = artworkX - f.minX
-            NSLog("[BUG64] still mode left-edge shift=%.2fpt (measured=%.2f ringEdge=%d frameMinX=%.2f)", shift, left.x, leftIsRingEdge ? 1 : 0, f.minX)
-            // 2026-09-04: DROPPED as an assertion, kept as a logged diagnostic only. The BUTTON's
-            // accessibility frame (`f`) is wider than the card box it wraps, because the focus
-            // treatments' drop shadow (radius 22 — test50's own finding) is part of the button's
-            // painted bounds, about 10.5pt per side in still mode. That makes `f.minX` the wrong
-            // reference for the artwork's true left edge: it reads a false ~14.8pt "shift" that
-            // has nothing to do with the ring inset this sub-check exists to catch. The correct
-            // reference is `poster_card` under `-debug.cardGeometryProbe YES` (see test49/test50),
-            // which this test does not launch with; the rise assertion above stays this test's
-            // real gate.
-            let diag = XCTAttachment(string: "still mode left-edge shift=\(shift)pt (diagnostic only, not asserted — see the 2026-09-04 comment above) measured=\(left.x) ringEdge=\(leftIsRingEdge) frameMinX=\(f.minX)")
-            diag.name = "46c_left_edge_diagnostic"
-            diag.lifetime = .keepAlways
-            add(diag)
-        }
-        // No `else`/skip here on purpose: a weak or unlocatable left-edge step is common (a bright
-        // poster edge next to a bright neighbour, or an off-screen strip near the row's leading
-        // edge) and this sub-check is explicitly the cheap, best-effort one — the rise assertion
-        // above is this test's real gate.
+
+        // The core assertion: still mode must not move the focused card's picture at all.
+        XCTAssertEqual(rise, 0, accuracy: 2,
+                       "still mode moved the focused card's artwork up by \(rise) pt — 'No Zoom on Focus' must produce zero rise")
     }
 
     // MARK: - BUG-93 (beta.17): ring mode's rise, and the platter that should not be there
@@ -8690,8 +8580,9 @@ final class NuvioTVUITests: XCTestCase {
     /// - at rest, trailing edge: 310 pt from the bezel Soft equals Off; 180 pt from it Soft
     ///   differs (alpha ≈ 0.86); the 4 pt column is reported only (the Home hero's art can sit
     ///   behind the row at the right edge, so "≈ background" has no fixed colour there);
-    /// - after 12 Rights, leading edge: the 4 pt column is plain background; 140 pt in is partly
-    ///   faded (alpha ≈ 0.61, darker than Off); 280 pt in equals Off;
+    /// - after 12 Rights, leading edge: the card artwork within 24 pt of the bezel is (almost)
+    ///   fully faded (its fade alpha, estimated from the artwork's own pixels, ≤ 0.35); 140 pt in is
+    ///   partly faded (alpha ≈ 0.61, darker than Off); 280 pt in equals Off;
     /// - both states: the row band from 260 pt to 1660 pt equals Off, and (when this runtime
     ///   reports focus) the focused card's crop equals Off apart from its outer 20 pt.
     ///
@@ -8970,6 +8861,51 @@ final class NuvioTVUITests: XCTestCase {
         let restD4Soft = try bandColumnMax(soft.rest, x: w - 4)
         let restD4Off = try bandColumnMax(off.rest, x: w - 4)
         // After 12 Rights, leading edge.
+        // harness-w4 (2026-10-23): the bezel check reads the CARD ARTWORK, not the row band's x = 4
+        // column. That column is mostly the Home backdrop behind the row band (first full run: the
+        // blue foliage of the hero art, max channel 62 > 28, while the card itself faded). Inside an
+        // artwork box, Soft = a·Art + (1 − a)·B, where Art is the card's picture (Off's pixel there)
+        // and B whatever the faded card reveals (the backdrop: another picture, unrelated to this
+        // card). So the per-pixel regression slope of Soft's luma on Off's, cov(Soft, Off) / var(Off),
+        // estimates the fade alpha `a` without knowing B. The fade reaches the bezel when the
+        // artwork within 24 pt of it reads a ≤ 0.35 (the ramp's eased alpha there is ≈ 0); the same
+        // estimate at d140 / d280 is reported as a calibration (≈ 0.6 / ≈ 1).
+        /// Fade alpha over the artwork inside `region` (slope of Soft luma on Off luma, per pixel),
+        /// with the pixel count and Off's luma variance; nil when no artwork falls inside `region`
+        /// or Off's art there is too flat to regress on.
+        func fadeAlpha(region: CGRect, art: [CGRect]) throws -> (alpha: Double, pixels: Int, varOff: Double)? {
+            var softLuma: [Double] = []
+            var offLuma: [Double] = []
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let a = try rgbaPixels(soft.scrolled, pointRect: r, windowSize: window)
+                let b = try rgbaPixels(off.scrolled, pointRect: r, windowSize: window)
+                guard a.count == b.count else { continue }
+                var i = 0
+                while i + 2 < a.count {
+                    softLuma.append((0.2126 * Double(a[i]) + 0.7152 * Double(a[i + 1]) + 0.0722 * Double(a[i + 2])) / 255)
+                    offLuma.append((0.2126 * Double(b[i]) + 0.7152 * Double(b[i + 1]) + 0.0722 * Double(b[i + 2])) / 255)
+                    i += 4
+                }
+            }
+            guard offLuma.count >= 50 else { return nil }
+            let n = Double(offLuma.count)
+            let meanSoft = softLuma.reduce(0, +) / n, meanOff = offLuma.reduce(0, +) / n
+            var cov = 0.0, varOff = 0.0
+            for (x, y) in zip(offLuma, softLuma) {
+                cov += (x - meanOff) * (y - meanSoft)
+                varOff += (x - meanOff) * (x - meanOff)
+            }
+            varOff /= n
+            guard varOff > 1e-3 else { return nil }
+            return (cov / n / varOff, offLuma.count, varOff)
+        }
+        let bezelRegion = CGRect(x: 0, y: rowBand.minY, width: 24, height: rowBand.height)
+        let bezelArtGap = scrolledArt.map(\.minX).min() ?? .greatestFiniteMagnitude
+        let scrolledD4Alpha = try fadeAlpha(region: bezelRegion, art: scrolledArt)
+        let scrolledD140Alpha = try fadeAlpha(region: strip(140), art: scrolledArt)
+        let scrolledD280Alpha = try fadeAlpha(region: strip(280), art: scrolledArt)
         let scrolledD4Soft = try bandColumnMax(soft.scrolled, x: 4)
         let scrolledD140 = try stripArtDiff(soft.scrolled, off.scrolled, x: 140, art: scrolledArt)
         let scrolledD140SoftLuma = try artLuma(soft.scrolled, region: strip(140), art: scrolledArt)
@@ -8992,7 +8928,8 @@ final class NuvioTVUITests: XCTestCase {
         let report = XCTAttachment(string: """
             row top=\(top) band=\(rowBand) method=\(method) art boxes rest=\(restArt.count) scrolled=\(scrolledArt.count)
             rest trailing: d310 diff=\(fmt(restD310)) d180 diff=\(fmt(restD180)) d4 max soft=\(restD4Soft) off=\(restD4Off)
-            scrolled leading: d4 max soft=\(scrolledD4Soft) d140 diff=\(fmt(scrolledD140)) luma soft=\(fmt(scrolledD140SoftLuma)) off=\(fmt(scrolledD140OffLuma)) d280 diff=\(fmt(scrolledD280))
+            scrolled leading: d4 band max soft=\(scrolledD4Soft) (backdrop, reported only) bezel art alpha=\(fmt(scrolledD4Alpha?.alpha)) px=\(scrolledD4Alpha?.pixels ?? 0) varOff=\(fmt(scrolledD4Alpha?.varOff)) nearest art minX=\(bezelArtGap) | alpha d140=\(fmt(scrolledD140Alpha?.alpha)) d280=\(fmt(scrolledD280Alpha?.alpha))
+            scrolled leading: d140 diff=\(fmt(scrolledD140)) luma soft=\(fmt(scrolledD140SoftLuma)) off=\(fmt(scrolledD140OffLuma)) d280 diff=\(fmt(scrolledD280))
             middle diff rest=\(fmt(restMiddle)) scrolled=\(fmt(scrolledMiddle)) focusedCard=\(fmt(focusedCard))
             """)
         report.name = "bug118-soft-vs-off"
@@ -9011,7 +8948,15 @@ final class NuvioTVUITests: XCTestCase {
         if let v = value(restD180, "d180 at rest") {
             XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 180 pt from the trailing bezel must be faded (alpha ≈ 0.86), so differ from Off; diff \(v)")
         }
-        XCTAssertLessThanOrEqual(scrolledD4Soft, 28, "[soft] the leading edge column (x=4) still carries artwork after scrolling (max channel \(scrolledD4Soft)); the fade does not reach the bezel")
+        // The bezel: judged on the card artwork there (see `fadeAlpha`). With no artwork within 24 pt
+        // of the bezel (a card gap), or a flat poster there, the check cannot run: it is skipped at
+        // the END of the leg (every other check still runs), never passed.
+        var bezelSkip: String?
+        if let bezel = scrolledD4Alpha {
+            XCTAssertLessThanOrEqual(bezel.alpha, 0.35, "[soft] the card artwork within 24 pt of the leading bezel is still drawn after scrolling (fade alpha ≈ \(bezel.alpha) over \(bezel.pixels) px); the fade does not reach the bezel")
+        } else {
+            bezelSkip = "no card artwork with structure within 24 pt of the leading bezel after 12 Rights (nearest artwork minX \(bezelArtGap)) — the bezel fade could not be judged; every other check ran"
+        }
         if let v = value(scrolledD140, "d140 after scrolling") {
             XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 140 pt from the leading bezel must be partly faded (alpha ≈ 0.61), so differ from Off; diff \(v)")
         }
@@ -9030,6 +8975,7 @@ final class NuvioTVUITests: XCTestCase {
         if let focusedCard {
             XCTAssertLessThan(focusedCard, tolerance, "[soft] the focused card (apart from its outer 20 pt) must equal Off; diff \(focusedCard)")
         }
+        if let bezelSkip { throw XCTSkip(bezelSkip) }
     }
 
     /// beta.19-rc1 verdict (F, Gate 2 rerun): every card artwork box on screen, published by

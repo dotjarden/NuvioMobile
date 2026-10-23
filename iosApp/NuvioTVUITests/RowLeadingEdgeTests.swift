@@ -92,9 +92,12 @@ final class RowLeadingEdgeTests: XCTestCase {
             "-trailer_playback_location", "poster",
             "-no_zoom_on_focus", noZoom ? "YES" : "NO",
             "-accent_focus_ring", "NO",
-            // beta.19-rc1 verdict (M3/M4): pin the legacy ~1 s-from-focus start (the gate is rest
-            // based now; a fixed N counts from focus, never before the rows stop).
-            "-trailer_start_delay", "1",
+            // harness-w4 (2026-10-23): a fixed 3 s from focus (never before the rows stop), the
+            // longest Trailer Start Delay, so the at-rest captures fit between the hero settling on
+            // card #1 and the tile expanding (see `assertNoBleedPastLeadingEdge`).
+            "-trailer_start_delay", "3",
+            // No hero trailer: the backdrop behind the measured column must hold still.
+            "-hero_trailer_autoplay", "NO",
         ]
     }
 
@@ -127,23 +130,17 @@ final class RowLeadingEdgeTests: XCTestCase {
         return found
     }
 
-    /// Walks down×4 to the first poster row (same pre-Upcoming layout as
-    /// `InlineTrailerTileProbeTests`/`TrailerSoakTests`), which lands focus on the row's FIRST
-    /// (left-most) card — the one this bug's follow-up report is about — then polls up to 8s for
-    /// `debug_trailerTile` (dwell 1.0s + `InlineTrailerCardModel.morphAnimation`'s ~0.35s) and
-    /// returns its `x=` field.
-    private func pollFirstCardTileOriginX(_ app: XCUIApplication, tag: String) throws -> CGFloat {
-        press(.down, times: 4)
-        shot(app, "\(tag)_00_row_focused")
-
+    /// Polls up to 8 s for `debug_trailerTile` (the dwell + `InlineTrailerCardModel.morphAnimation`'s
+    /// ~0.35 s) and returns its `x=` field: the focused tile's leading edge in `.global` space.
+    private func pollTileOriginX(_ app: XCUIApplication, tag: String) throws -> CGFloat {
         let probeText = app.staticTexts["debug_trailerTile"]
         var label: String?
         for i in 0..<16 {
-            pause(0.5)
             if probeText.exists {
                 label = probeText.label
                 break
             }
+            pause(0.5)
             if i == 8 { shot(app, "\(tag)_01_mid_poll") }
         }
         shot(app, "\(tag)_02_after_poll")
@@ -224,16 +221,42 @@ final class RowLeadingEdgeTests: XCTestCase {
         try assertNoBleedPastLeadingEdge(noZoom: false, tag: "rowEdge_zoomOn")
     }
 
+    /// harness-w4 (2026-10-23): the measurement compares the column left of card #1 in two states of
+    /// the SAME focus, so the only thing that can change in it is the bleed.
+    ///
+    /// The column left of the first card is not row background: it is the Home hero's backdrop, and
+    /// the hero follows the focused title. The old leg compared card #1 expanded against card #2
+    /// focused (one Right), so the backdrop changed with the title and the leg read that change as
+    /// a bleed (first full run: 76/255 and 51/255, captures `rowEdge_noZoom_03/04`). Now:
+    ///  1. Down ×4 lands on card #1 (the row's first card) and the leg waits, with the Trailer Start
+    ///     Delay at 3 s, until the hero has followed it: two at-rest captures 0.6 s apart, both
+    ///     before `debug_trailerTile` exists (the tile has not expanded).
+    ///  2. The tile expands (`debug_trailerTile`, its `x=` is the tile's leading edge) and settles.
+    ///  3. The column is the 60 pt left of that edge, over the focused card's rows. The two at-rest
+    ///     captures must agree there (the backdrop has settled; otherwise the leg skips, it cannot
+    ///     judge), and the expanded capture is compared against the second one: same title focused,
+    ///     same backdrop, so any difference is something the expanded tile drew past the row's
+    ///     leading edge (its shadow, its corners, its picture).
+    /// The focus-only treatment (still mode's shadow, the system lift) is present in both states and
+    /// is not judged here; the tile's expansion is what BUG-92 reported.
     private func assertNoBleedPastLeadingEdge(noZoom: Bool, tag: String) throws {
         let app = launchToHome(extraArguments: launchArguments(noZoom: noZoom))
-        let originX = try pollFirstCardTileOriginX(app, tag: tag)
-        // `debug_trailerTile` exists as soon as `model.isExpanded` flips true (dwell fired), which
-        // is the START of `InlineTrailerCardModel.morphAnimation` (~0.35s), not its end — the
-        // tile's LEADING edge (`originX`, `.topLeading`-anchored) is invariant across that
-        // animation, but the bleed sources this test looks for (the tile's `.shadow`, its rounded
-        // corners) are still animating in at the moment the probe first appears. Settle past the
-        // morph before judging the steady state.
-        pause(0.5)
+        let probeText = app.staticTexts["debug_trailerTile"]
+        press(.down, times: 4)
+        shot(app, "\(tag)_00_row_focused")
+        let firstRest = XCUIScreen.main.screenshot().image
+        pause(0.6)
+        let secondRest = XCUIScreen.main.screenshot().image
+        let expandedBeforeRest = probeText.exists
+        shot(app, "\(tag)_00b_at_rest")
+        guard !expandedBeforeRest else {
+            throw XCTSkip("\(tag): the trailer tile had already expanded at the at-rest captures (Trailer Start Delay not honoured?) — no unexpanded reference")
+        }
+        let originX = try pollTileOriginX(app, tag: tag)
+        // Past the morph (~0.35 s) and the tile shadow's fade-in before judging the steady state.
+        pause(0.8)
+        let expanded = XCUIScreen.main.screenshot().image
+        shot(app, "\(tag)_03_expanded")
 
         guard let buttonFrame = focusedButtonFrame(app) else {
             throw XCTSkip("\(tag): no focused element reported (27.0 runtime never reports hasFocus reliably) — cannot bound the column vertically")
@@ -245,25 +268,20 @@ final class RowLeadingEdgeTests: XCTestCase {
         // used for anything.
         let columnWidth: CGFloat = 60
         let column = CGRect(x: originX - columnWidth, y: buttonFrame.minY, width: columnWidth, height: buttonFrame.height)
+        let windowSize = app.frame.size
 
-        let focusedShot = XCUIScreen.main.screenshot().image
-        shot(app, "\(tag)_03_focused")
-
-        // Defocus card #1 by moving RIGHT onto card #2 — same row, same vertical scroll position —
-        // rather than DOWN to a different row, which would risk the whole page re-scrolling
-        // vertically and invalidating the column's screen coordinates between the two shots. A
-        // short pause lets card #1's collapse animation (`InlineTrailerCardModel.morphAnimation`,
-        // ~0.35s) finish while staying well under card #2's own 1.0s dwell threshold, so nothing
-        // new expands (and no horizontal reach-scroll can fire) before the second screenshot.
-        remote.press(.right)
-        pause(0.6)
-        let unfocusedShot = XCUIScreen.main.screenshot().image
-        shot(app, "\(tag)_04_unfocused")
-
-        let delta = try maxChannelDelta(focusedShot, unfocusedShot, pointRect: column, windowSize: app.frame.size)
+        let backdropDrift = try maxChannelDelta(firstRest, secondRest, pointRect: column, windowSize: windowSize)
+        let delta = try maxChannelDelta(secondRest, expanded, pointRect: column, windowSize: windowSize)
+        let report = XCTAttachment(string: "\(tag): column \(column) tile x=\(originX) backdrop drift at rest=\(backdropDrift)/255 expanded vs rest=\(delta)/255 (tolerance \(Self.noiseTolerance))")
+        report.name = "\(tag)_04_column"
+        report.lifetime = .keepAlways
+        add(report)
+        guard backdropDrift <= Self.noiseTolerance else {
+            throw XCTSkip("\(tag): the column left of card #1 was still changing between the two at-rest captures (\(backdropDrift)/255): the hero backdrop had not settled, so a bleed cannot be told from it — rerun")
+        }
         XCTAssertLessThanOrEqual(
             delta, Self.noiseTolerance,
-            "\(tag): the 60pt column left of the first card's leading edge (x=\(originX)) differs by up to \(delta)/255 between focused and unfocused — BUG-92 bleed past the row's leading edge"
+            "\(tag): the 60pt column left of the first card's leading edge (x=\(originX)) differs by up to \(delta)/255 between card #1 at rest and its expanded tile (same title focused, same backdrop) — BUG-92 bleed past the row's leading edge"
         )
         XCTAssertTrue(app.state == .runningForeground, "\(tag): app must survive the leading-edge check")
     }
