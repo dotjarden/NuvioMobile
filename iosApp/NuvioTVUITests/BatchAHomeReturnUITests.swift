@@ -96,6 +96,77 @@ final class BatchAHomeReturnUITests: XCTestCase {
          "-inline_trailers_enabled", "NO", "-sidebar_style", "tabs"]
     }
 
+    // MARK: - Verified card Select (harness-w4, 2026-10-23)
+    //
+    // The legs push Detail with Select on whatever card their walk reached. On FA87 the first row is
+    // Continue Watching, whose cards RESUME the player on Select, so every such Select now reads,
+    // in the same instant, that a card-sized element holds focus and that the layout's own readout
+    // names a catalog card; otherwise it records a screenshot and aborts without pressing.
+
+    /// The frame of the deepest element reporting focus, from one snapshot.
+    private func focusedFrame(_ app: XCUIApplication) -> CGRect? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: CGRect?
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { found = node.frame }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    private func cardSizedFocus(_ app: XCUIApplication) -> Bool {
+        guard let frame = focusedFrame(app) else { return false }
+        return frame.width >= 100 && frame.height >= 100
+    }
+
+    /// A catalog row key: not Continue Watching or Upcoming (their cards play).
+    private static func isCatalogRow(_ rowKey: String?) -> Bool {
+        guard let rowKey, rowKey != "-", !rowKey.isEmpty else { return false }
+        return rowKey != "continue-watching" && rowKey != "upcoming"
+    }
+
+    /// The item half of `foc=<rowKey>/<itemId>`.
+    private static func item(ofFoc foc: String?) -> String? {
+        guard let foc, let slash = foc.firstIndex(of: "/") else { return nil }
+        return String(foc[foc.index(after: slash)...])
+    }
+
+    /// Stage: `debug_strip foc=` names a catalog row's card (not a folder tile) and a card holds focus.
+    private func stageCatalogCardFocused(_ app: XCUIApplication) -> Bool {
+        let foc = Self.token(label(app, "debug_strip"), "foc")
+        guard Self.isCatalogRow(Self.row(ofFoc: foc)), let item = Self.item(ofFoc: foc), !item.isEmpty,
+              !item.hasPrefix("nuvio-folder://") else { return false }
+        return cardSizedFocus(app)
+    }
+
+    /// Classic: `debug_homeReturn own=` (the row holding focus NOW) is a catalog row, `foc=` is a card
+    /// in that same row (not a folder tile), and a card holds focus.
+    private func classicCatalogCardFocused(_ app: XCUIApplication) -> Bool {
+        let line = label(app, "debug_homeReturn")
+        let own = Self.token(line, "own")
+        let foc = Self.token(line, "foc")
+        guard Self.isCatalogRow(own), Self.row(ofFoc: foc) == own, let item = Self.item(ofFoc: foc), !item.isEmpty,
+              !item.hasPrefix("nuvio-folder://") else { return false }
+        return cardSizedFocus(app)
+    }
+
+    private func selectVerifiedStageCard(_ app: XCUIApplication, what: String) throws {
+        guard stageCatalogCardFocused(app) else {
+            shot("unverified_\(what)")
+            throw HarnessAbort("\(what): focus is not on a catalog card (\(label(app, "debug_strip")), focused frame \(String(describing: focusedFrame(app)))) — not pressing Select")
+        }
+        remote.press(.select)
+    }
+
+    private func selectVerifiedClassicCard(_ app: XCUIApplication, what: String) throws {
+        guard classicCatalogCardFocused(app) else {
+            shot("unverified_\(what)")
+            throw HarnessAbort("\(what): focus is not on a catalog card (\(label(app, "debug_homeReturn")), focused frame \(String(describing: focusedFrame(app)))) — not pressing Select")
+        }
+        remote.press(.select)
+    }
+
     // MARK: - Stage
 
     /// Leg 1: Stage. Down to row 3, Right twice, Select (Detail), Menu: the strip is back on row 3 and
@@ -126,7 +197,7 @@ final class BatchAHomeReturnUITests: XCTestCase {
         let foc = Self.token(before, "foc")
         note("stage_before", before)
         XCTAssertNotNil(foc, "no foc= on debug_strip: \(before)")
-        remote.press(.select)
+        try selectVerifiedStageCard(app, what: "stage_leg_card")
         pause(5.0)
         shot("stage_detail")
         remote.press(.menu)
@@ -174,7 +245,10 @@ final class BatchAHomeReturnUITests: XCTestCase {
         let before = label(app, "debug_homeReturn")
         let foc = Self.token(before, "foc")
         note("classic_before", "\(before) rows=\(rows)")
-        remote.press(.select)
+        // harness-w4 (2026-10-23): Select only on a verified catalog card (first full run: this
+        // was a blind Select, and on FA87 a Classic walk can end on Continue Watching, which
+        // resumes the player).
+        try selectVerifiedClassicCard(app, what: "classic_leg_card")
         pause(5.0)
         shot("classic_detail")
         remote.press(.menu)
@@ -260,7 +334,7 @@ final class BatchAHomeReturnUITests: XCTestCase {
         let row = Self.token(before, "row")
         let foc = Self.token(before, "foc")
         note("steal_before", before)
-        remote.press(.select)
+        try selectVerifiedStageCard(app, what: "steal_leg_card")
         pause(5.0)
         remote.press(.menu)
         let lines = sampleLines(app, "debug_strip", seconds: 4.0)
@@ -287,7 +361,7 @@ final class BatchAHomeReturnUITests: XCTestCase {
         let app = launch(Self.arguments(layout: "stage"))
         let before = try walkStageStrip(app)
         guard let row = Self.token(before, "row").flatMap(Int.init) else { throw HarnessAbort("no row= on debug_strip: \(before)") }
-        remote.press(.select)
+        try selectVerifiedStageCard(app, what: "viewer_down_leg_card")
         pause(5.0)
         remote.press(.menu)
         // `debug_strip row=` keeps its last value under the push, so it cannot show the landing;
@@ -487,7 +561,7 @@ final class BatchAHomeReturnUITests: XCTestCase {
         guard owned.count >= 3, owned.first == "continue-watching", let origin = owned.last else {
             throw XCTSkip("the fixture did not give three rows under Continue Watching: \(owned)")
         }
-        remote.press(.select)
+        try selectVerifiedClassicCard(app, what: "batchC_catalog_card")
         guard poll(20, step: 0.5, { self.detailPageUp(app) }) else {
             throw HarnessAbort("Select on a catalog card did not open its Detail page")
         }

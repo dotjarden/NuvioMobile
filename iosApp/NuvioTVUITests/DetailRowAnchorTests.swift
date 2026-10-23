@@ -91,13 +91,14 @@ final class DetailRowAnchorTests: XCTestCase {
 
     func testDownWalkNeverLeavesAHeaderStraddlingTheTopEdge() throws {
         let app = launchToHome()
-        // test02's route to a real DetailView: a movies catalog row (portrait cards → NavigationLink).
-        press(.down, times: 4)
-        pause(0.5)
-        remote.press(.select)
-        pause(8)
+        // harness-w4 (2026-10-23): into Detail by the shared, focus-verified Search route
+        // (`DetailEntryRoute`: the Severance series, then Dune), never a blind Select. The old
+        // "Down ×4, Select" could land on FA87's Continue Watching row, whose cards resume the
+        // player; the route presses Select only on a result card that reads focused.
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
+        pause(2)
         guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
-            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — the down×4 walk did not land on a movies row on this fixture; nothing to measure")
+            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — nothing to measure")
         }
         // FEAT-32: the page used to auto-enter the full-screen trailer cover a few seconds in, and
         // this walk pressed Menu once "regardless" to back out of it. That Menu now POPS the page:
