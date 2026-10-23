@@ -2881,7 +2881,11 @@ final class NuvioTVUITests: XCTestCase {
     /// Down scroll, during it and 1 s after, and must be 0 each time. That leg runs even when the
     /// Cinematic leg has nothing to check on posters; the poster skip is thrown last.
     func test33SeasonPosterRow() throws {
-        let app = launchToHome(forceFreshLaunch: true)
+        // harness-w4 (2026-10-23): season posters are TMDB artwork, and TMDB is off on the fixture
+        // profile, so the poster half always skipped. `-debug.tmdbEnabledOverride YES` (the DEBUG
+        // seam, in memory only: `tmdb_enabled` and the sync payload are untouched) turns it on for
+        // this launch.
+        let app = launchToHome(extraArguments: ["-debug.tmdbEnabledOverride", "YES"], forceFreshLaunch: true)
         let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
         let anyChip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Season '"))
         // ui-legs (2026-10-22): the blind per-row "Left ×6, Select" hunt for a multi-season series
