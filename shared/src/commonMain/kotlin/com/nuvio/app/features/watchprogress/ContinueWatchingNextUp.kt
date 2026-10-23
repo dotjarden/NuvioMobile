@@ -3,7 +3,6 @@ package com.nuvio.app.features.watchprogress
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
-import com.nuvio.app.features.details.isReleasedBy
 import com.nuvio.app.features.details.seriesPrimaryAction
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
@@ -88,6 +87,35 @@ val ContinueWatchingUnairedNextUpPolicy: UnairedNextUpPolicy = UnairedNextUpPoli
 /** Pure (unit-tested): whether an Up Next episode gets a card under [policy]. */
 fun keepNextUpEpisode(isReleased: Boolean, policy: UnairedNextUpPolicy): Boolean =
     isReleased || policy == UnairedNextUpPolicy.LabelAirDate
+
+/**
+ * The air check's verdict: whether the episode gets a card, and when the verdict goes stale.
+ * [recheckAtEpochMs] is the release instant of an episode that has not aired; a cached result
+ * past it is resolved again (review round 2 P2-1).
+ */
+data class NextUpAirCheck(val keep: Boolean, val recheckAtEpochMs: Long?)
+
+/**
+ * Pure (unit-tested), review round 2 P2-1: the air check by release INSTANT, the same instant
+ * `isEpisodeReleaseAired` compares. The verdict for an unaired episode carries that instant, so
+ * the cache cannot hold "unaired" for the rest of the local day. Example: a weekly show out at
+ * 2026-10-24T01:00Z (21:00 EDT on the 23rd), checked at 20:00 local; or a date-only "released
+ * today" read as midnight before the local day has reached it.
+ *
+ * An unknown or unparseable date counts as aired, as `isReleasedBy` treats it. `available =
+ * false` is deliberately not read: mobile surfaces an aired episode whatever that flag says
+ * (`shouldSurfaceNextEpisode`), and `seriesPrimaryAction` has already applied it when choosing
+ * the episode.
+ */
+fun nextUpAirCheck(
+    released: String?,
+    nowEpochMs: Long,
+    policy: UnairedNextUpPolicy = ContinueWatchingUnairedNextUpPolicy,
+): NextUpAirCheck {
+    val releaseAt = parseReleaseDateToEpochMs(released) ?: return NextUpAirCheck(keep = true, recheckAtEpochMs = null)
+    if (releaseAt <= nowEpochMs) return NextUpAirCheck(keep = true, recheckAtEpochMs = null)
+    return NextUpAirCheck(keep = keepNextUpEpisode(isReleased = false, policy = policy), recheckAtEpochMs = releaseAt)
+}
 
 /**
  * Pure (unit-tested): the episode a `seriesPrimaryAction` result points at, as mobile's
@@ -366,12 +394,17 @@ object ContinueWatchingNextUp {
     private var dismissKeysByVideoId: Map<String, String> = emptyMap()
 
     /**
-     * Conclusive results of the last refresh by [nextUpResolveKey]; a null value is a settled "no
+     * Conclusive results of the last refresh by [nextUpResolveKey]; a null entry is a settled "no
      * next episode" (series finished, next one unaired). Only the current seeds' keys are kept, so
      * the map never outgrows [ContinueWatchingNextUpResolveLimit]. A failed fetch is not stored and
-     * is retried on the next refresh.
+     * is retried on the next refresh. A result with [CachedOutcome.recheckAtEpochMs] is used only
+     * until that instant (an unaired episode's release).
      */
-    private var resolvedByKey: Map<String, WatchProgressEntry?> = emptyMap()
+    private var resolvedByKey: Map<String, CachedOutcome> = emptyMap()
+
+    private class CachedOutcome(val entry: WatchProgressEntry?, val recheckAtEpochMs: Long?) {
+        fun isUsableAt(nowEpochMs: Long): Boolean = recheckAtEpochMs == null || nowEpochMs < recheckAtEpochMs
+    }
 
     /**
      * Review P2-4: episodes marked watched from a Continue Watching card while Trakt is the source.
@@ -552,9 +585,17 @@ object ContinueWatchingNextUp {
                     todayIsoDate = todayIsoDate,
                 )
                 async {
-                    if (known.containsKey(key)) {
+                    val cached = known[key]?.takeIf { it.isUsableAt(now) }
+                    if (cached != null) {
                         // Same seed episode, possibly re-finished: keep the card dated from it.
-                        SeedOutcome(seed, key, known[key]?.copy(lastUpdatedEpochMs = seed.markedAtEpochMs), conclusive = true, fetched = false)
+                        SeedOutcome(
+                            seed = seed,
+                            key = key,
+                            entry = cached.entry?.copy(lastUpdatedEpochMs = seed.markedAtEpochMs),
+                            conclusive = true,
+                            fetched = false,
+                            recheckAtEpochMs = cached.recheckAtEpochMs,
+                        )
                     } else {
                         semaphore.withPermit {
                             resolveSeed(
@@ -563,6 +604,7 @@ object ContinueWatchingNextUp {
                                 entries = entries,
                                 watchedItems = watchedItems,
                                 todayIsoDate = todayIsoDate,
+                                nowEpochMs = now,
                                 preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
                                 showUnairedNextUp = prefs.showUnairedNextUp,
                             )
@@ -574,7 +616,8 @@ object ContinueWatchingNextUp {
         val resolved = outcomes.mapNotNull { outcome -> outcome.entry?.let { entry -> entry to outcome.seed } }
         synchronized(lock) {
             if (generation != startGeneration) return emptyList()
-            resolvedByKey = outcomes.filter { it.conclusive }.associate { it.key to it.entry }
+            resolvedByKey = outcomes.filter { it.conclusive }
+                .associate { it.key to CachedOutcome(it.entry, it.recheckAtEpochMs) }
             dismissKeysByVideoId = resolved.associate { (entry, seed) ->
                 entry.videoId to nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber)
             }
@@ -673,6 +716,8 @@ object ContinueWatchingNextUp {
         /** False for a failed fetch: not cached, retried on the next refresh. */
         val conclusive: Boolean,
         val fetched: Boolean,
+        /** See [NextUpAirCheck.recheckAtEpochMs]. */
+        val recheckAtEpochMs: Long? = null,
     )
 
     private suspend fun resolveSeed(
@@ -681,6 +726,7 @@ object ContinueWatchingNextUp {
         entries: List<WatchProgressEntry>,
         watchedItems: List<WatchedItem>,
         todayIsoDate: String,
+        nowEpochMs: Long,
         preferFurthestEpisode: Boolean,
         showUnairedNextUp: Boolean,
     ): SeedOutcome {
@@ -714,10 +760,11 @@ object ContinueWatchingNextUp {
             // matching video at all is no card either, as on mobile.
             val video = nextUpVideoFor(meta.videos, seed.contentId, season, episode, action.videoId)
                 ?: return settled(null)
-            if (!keepNextUpEpisode(video.isReleasedBy(todayIsoDate), ContinueWatchingUnairedNextUpPolicy)) {
-                return settled(null)
+            val airCheck = nextUpAirCheck(video.released, nowEpochMs)
+            if (!airCheck.keep) {
+                return SeedOutcome(seed, key, null, conclusive = true, fetched = true, recheckAtEpochMs = airCheck.recheckAtEpochMs)
             }
-            settled(
+            SeedOutcome(seed, key, conclusive = true, fetched = true, recheckAtEpochMs = airCheck.recheckAtEpochMs, entry =
                 WatchProgressEntry(
                     contentType = seed.contentType,
                     parentMetaId = seed.contentId,

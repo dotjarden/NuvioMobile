@@ -391,4 +391,40 @@ class ContinueWatchingNextUpTest {
         assertEquals(oneCall, staged)
         assertTrue(staged.isEmpty())
     }
+
+    @Test
+    fun airCheckUsesTheReleaseInstantAndRechecksAtIt() {
+        // A weekly show out at 01:00Z on the 24th, which is the evening of the 23rd in New York:
+        // before it, no card and a recheck at the instant; after it, a card.
+        val releaseAt = parseReleaseDateToEpochMs("2026-10-24T01:00:00.000Z")!!
+        assertEquals(
+            NextUpAirCheck(keep = false, recheckAtEpochMs = releaseAt),
+            nextUpAirCheck("2026-10-24T01:00:00.000Z", nowEpochMs = releaseAt - 3_600_000L),
+        )
+        assertEquals(
+            NextUpAirCheck(keep = true, recheckAtEpochMs = null),
+            nextUpAirCheck("2026-10-24T01:00:00.000Z", nowEpochMs = releaseAt + 1_000L),
+        )
+    }
+
+    @Test
+    fun airCheckOnADateOnlyReleaseRechecksAtTheParsedInstantNotTheNextDay() {
+        // Whatever zone the test runs in, the verdict flips at the instant the shared parser gives
+        // the date, not at the next local midnight.
+        val releaseAt = parseReleaseDateToEpochMs("2026-10-24")!!
+        assertEquals(releaseAt, nextUpAirCheck("2026-10-24", nowEpochMs = releaseAt - 1).recheckAtEpochMs)
+        assertFalse(nextUpAirCheck("2026-10-24", nowEpochMs = releaseAt - 1).keep)
+        assertTrue(nextUpAirCheck("2026-10-24", nowEpochMs = releaseAt).keep)
+    }
+
+    @Test
+    fun airCheckTreatsAnUnknownDateAsAiredAndKeepsUnderLabelPolicy() {
+        assertEquals(NextUpAirCheck(true, null), nextUpAirCheck(null, nowEpochMs = t0))
+        assertEquals(NextUpAirCheck(true, null), nextUpAirCheck("soon", nowEpochMs = t0))
+        val releaseAt = parseReleaseDateToEpochMs("2099-01-01T00:00:00.000Z")!!
+        assertEquals(
+            NextUpAirCheck(keep = true, recheckAtEpochMs = releaseAt),
+            nextUpAirCheck("2099-01-01T00:00:00.000Z", nowEpochMs = t0, policy = UnairedNextUpPolicy.LabelAirDate),
+        )
+    }
 }
