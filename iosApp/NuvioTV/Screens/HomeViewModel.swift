@@ -278,6 +278,10 @@ final class HomeViewModel: ObservableObject {
     private var inProgressContinueWatching: [WatchProgressEntry] = []
     private var nextUpEntries: [WatchProgressEntry] = []
     private var nextUpTask: Task<Void, Never>?
+    /// Review P3-1: false until this pipeline's first Up Next refresh has started. That first one
+    /// skips the debounce, so a caught-up profile's row (and the hero-off / Stage panels reading
+    /// `continueWatching.first`) is not built twice, 1.5 s apart, on every Home start.
+    private var nextUpStartedThisPipeline = false
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
     private var lastTraktContinueWatchingDaysCap: Int32?
@@ -483,6 +487,7 @@ final class HomeViewModel: ObservableObject {
         nextUpEntries = []
         nextUpTask?.cancel()
         nextUpTask = nil
+        nextUpStartedThisPipeline = false
         continueWatchingPosterPattern = ""
         // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
         ArtworkStore.clearFailedURLs()
@@ -1052,9 +1057,17 @@ final class HomeViewModel: ObservableObject {
     private func scheduleNextUpRefresh() {
         nextUpTask?.cancel()
         let gen = pipelineGeneration
+        let debounce = nextUpStartedThisPipeline
         nextUpTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if debounce {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            } else {
+                // The watchers' attach-time replays all land in the same main-actor turn; one
+                // yield lets them cancel each other so only the last one runs.
+                await Task.yield()
+            }
             guard !Task.isCancelled else { return }
+            self?.nextUpStartedThisPipeline = true
             do {
                 let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
                     limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
@@ -1131,6 +1144,7 @@ final class HomeViewModel: ObservableObject {
         watchedWatcher = nil
         cwPreferencesWatcher = nil
         nextUpTask = nil
+        nextUpStartedThisPipeline = false
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
