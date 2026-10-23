@@ -185,6 +185,57 @@ final class NavigationRailUITests: XCTestCase {
         return frames.min { $0.minX < $1.minX }
     }
 
+    // MARK: - Verified card Select (harness-w4)
+
+    /// `debug_strip foc=<rowKey>/<itemId>` (Stage Home's strip readout, always mounted in DEBUG):
+    /// the row and the card the strip last recorded focus on, "-" before any.
+    private func stripFocus(_ app: XCUIApplication) -> String {
+        Self.token(label(app, "debug_strip"), "foc") ?? "-"
+    }
+
+    /// Whether `foc` names a card that opens DETAIL on Select: a catalog row's poster. Continue
+    /// Watching resumes playback, Upcoming can too, and a folder tile opens a folder page.
+    private static func isCatalogCard(_ foc: String) -> Bool {
+        guard foc != "-", let slash = foc.firstIndex(of: "/") else { return false }
+        let row = String(foc[..<slash])
+        let item = String(foc[foc.index(after: slash)...])
+        return !row.isEmpty && row != "continue-watching" && row != "upcoming"
+            && !item.isEmpty && item != "-" && !item.hasPrefix("nuvio-folder://")
+    }
+
+    /// The focused element is a strip card (a card-sized element below the stage block, not a rail
+    /// item) and the strip's readout names a catalog card.
+    private func catalogCardFocused(_ app: XCUIApplication) -> Bool {
+        guard railFocused(app) < 0, let item = focused(app), !item.identifier.hasPrefix("rail_item_"),
+              item.frame.width >= 100, item.frame.height >= 100 else { return false }
+        return Self.isCatalogCard(stripFocus(app))
+    }
+
+    /// Steps Down (never Select) from wherever the launch left focus until a catalog card holds it,
+    /// reading the strip after every press. Throws when none does within four rows.
+    private func focusCatalogCardOnStrip(_ app: XCUIApplication) throws {
+        for _ in 0..<4 {
+            if catalogCardFocused(app) { return }
+            remote.press(.down)
+            _ = poll(2.5, step: 0.25) { catalogCardFocused(app) }
+        }
+        guard catalogCardFocused(app) else {
+            shot("unverified_catalog_card")
+            throw HarnessAbort("no catalog card took focus within four Downs — focused: \(focused(app).map { "\($0.label)@\($0.frame)" } ?? "<none>") | \(label(app, "debug_strip"))")
+        }
+    }
+
+    /// Select, only while `catalogCardFocused` reads true in this same instant; otherwise a
+    /// screenshot and a thrown abort, nothing pressed.
+    private func selectVerifiedCatalogCard(_ app: XCUIApplication, what: String) throws {
+        guard catalogCardFocused(app) else {
+            shot("unverified_\(what)")
+            throw HarnessAbort("\(what): focus is not on a catalog card (focused: \(focused(app).map { "\($0.label)@\($0.frame)" } ?? "<none>"), \(label(app, "debug_strip"))) — not pressing Select")
+        }
+        note(what, "Select on \(stripFocus(app)) ('\(focused(app)?.label ?? "")')")
+        remote.press(.select)
+    }
+
     // MARK: - Rail driving
 
     /// Presses Left until the rail opens, recording the focused label before every press; `origin`
@@ -684,12 +735,17 @@ final class NavigationRailUITests: XCTestCase {
         let app = launch(Self.railArguments() + ["-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES",
                                                  "-detail_layout", "cinematic"])
         try requireRail(app)
-        remote.press(.select)
+        // harness-w4 (2026-10-23): the Select goes only to a verified CATALOG poster. The launch
+        // lands on row 0's first card, which on FA87 is Continue Watching ("Smoke Test"): the old
+        // blind Select there resumed the player instead of opening Detail (first full run).
+        try focusCatalogCardOnStrip(app)
+        let target = stripFocus(app)
+        try selectVerifiedCatalogCard(app, what: "rail10_catalog_card")
         let actionLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
         guard poll(20, step: 0.5, {
             app.descendants(matching: .any)["detail_hero"].exists || actionLabels.contains(where: { app.buttons[$0].exists })
         }) else {
-            XCTFail("Select on row 0's first card did not open a Detail page")
+            XCTFail("Select on the catalog card \(target) did not open a Detail page")
             return
         }
         pause(3.0)

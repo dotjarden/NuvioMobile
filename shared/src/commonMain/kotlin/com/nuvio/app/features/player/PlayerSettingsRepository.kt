@@ -168,6 +168,9 @@ object PlayerSettingsRepository {
     private var iosSaturation = 0
     private var iosGamma = 0
 
+    // DEBUG harness seam (harness-w4, 2026-10-23). See [setDebugStreamAutoPlayModeOverride].
+    private var debugStreamAutoPlayModeOverrideValue: StreamAutoPlayMode? = null
+
     fun ensureLoaded() {
         if (hasLoaded) return
         loadFromDisk()
@@ -308,8 +311,10 @@ object PlayerSettingsRepository {
         decoderPriority = PlayerSettingsStorage.loadDecoderPriority() ?: 1
         mapDV7ToHevc = PlayerSettingsStorage.loadMapDV7ToHevc() ?: false
         tunnelingEnabled = PlayerSettingsStorage.loadTunnelingEnabled() ?: false
-        streamAutoPlayMode = PlayerSettingsStorage.loadStreamAutoPlayMode()
-            ?.let { runCatching { StreamAutoPlayMode.valueOf(it) }.getOrNull() }
+        // harness-w4: the DEBUG override (in memory only) is consulted before the persisted value.
+        streamAutoPlayMode = debugStreamAutoPlayModeOverrideValue
+            ?: PlayerSettingsStorage.loadStreamAutoPlayMode()
+                ?.let { runCatching { StreamAutoPlayMode.valueOf(it) }.getOrNull() }
             ?: StreamAutoPlayMode.MANUAL
         streamAutoPlaySource = PlayerSettingsStorage.loadStreamAutoPlaySource()
             ?.let { runCatching { StreamAutoPlaySource.valueOf(it) }.getOrNull() }
@@ -609,6 +614,28 @@ object PlayerSettingsRepository {
         publish()
         PlayerSettingsStorage.saveTunnelingEnabled(enabled)
     }
+
+    /**
+     * DEBUG harness seam (harness-w4, 2026-10-23), the twin of
+     * [com.nuvio.app.features.tmdb.TmdbSettingsRepository.setDebugEnabledOverride]: when [modeName]
+     * names a [StreamAutoPlayMode] it stands in for the persisted `stream_auto_play_mode` in the
+     * [PlayerSettingsUiState] this repository publishes, for this process only (it survives profile
+     * switches, which reload from storage). It is never written to [PlayerSettingsStorage], and the
+     * profile-settings sync export ([PlayerSettingsStorage.exportToSyncPayload]) reads storage, so
+     * the account's payload keeps the persisted value. The name is decoded exactly as storage's
+     * value is; null, or a name that is not a mode, clears it. Only the tvOS app's DEBUG build calls
+     * this (`StreamAutoPlayModeDebugOverride`, `-debug.streamAutoPlayModeOverride <MODE>`); Release
+     * never does.
+     */
+    fun setDebugStreamAutoPlayModeOverride(modeName: String?) {
+        val value = modeName?.let { runCatching { StreamAutoPlayMode.valueOf(it) }.getOrNull() }
+        if (debugStreamAutoPlayModeOverrideValue == value) return
+        debugStreamAutoPlayModeOverrideValue = value
+        if (hasLoaded) loadFromDisk()
+    }
+
+    /** The active DEBUG override of `stream_auto_play_mode`, or null (see [setDebugStreamAutoPlayModeOverride]). */
+    fun currentDebugStreamAutoPlayModeOverride(): StreamAutoPlayMode? = debugStreamAutoPlayModeOverrideValue
 
     fun setStreamAutoPlayMode(mode: StreamAutoPlayMode) {
         ensureLoaded()

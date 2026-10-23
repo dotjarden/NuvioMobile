@@ -75,6 +75,11 @@ struct NuvioTVApp: App {
         // ui-legs (2026-10-22): `-debug.tmdbEnabledOverride YES|NO` (DEBUG only) sets TMDB
         // enrichment for this launch, in memory, never written or synced. Before any repository load.
         TmdbDebugOverride.apply()
+        // harness-w4 (2026-10-23): the same seam for two more synced keys the UI legs need, DEBUG
+        // only, in memory, never written or synced: `-debug.streamAutoPlayModeOverride <MODE>`
+        // (stream_auto_play_mode) and `-debug.amoledEnabledOverride YES|NO` (amoled_enabled).
+        StreamAutoPlayModeDebugOverride.apply()
+        AmoledDebugOverride.apply()
 
         // Native (AVPlayer) engine is ON by default since beta.13 (info-panel work; see
         // docs/tvos-native-player-info-panel-plan.md). Registered — not written — so a user's explicit

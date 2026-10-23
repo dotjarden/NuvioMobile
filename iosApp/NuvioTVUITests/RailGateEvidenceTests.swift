@@ -42,6 +42,44 @@ final class RailGateEvidenceTests: XCTestCase {
         return probe.exists ? probe.label : "rail_state <absent>"
     }
 
+    private func label(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        return element.exists ? element.label : ""
+    }
+
+    private static func token(_ line: String, _ key: String) -> String? {
+        for part in line.split(separator: " ") {
+            let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2, pair[0] == Substring(key) else { continue }
+            return String(pair[1])
+        }
+        return nil
+    }
+
+    /// harness-w4: Classic Home's focus is on a catalog row's card, read in one instant:
+    /// `debug_homeReturn own=` (the row holding focus now) is not Continue Watching / Upcoming,
+    /// `foc=` names a card in that row that is not a folder tile, and a card-sized element holds focus.
+    private func classicCatalogCardFocused(_ app: XCUIApplication) -> Bool {
+        let line = label(app, "debug_homeReturn")
+        guard let own = Self.token(line, "own"), own != "-", own != "continue-watching", own != "upcoming",
+              let foc = Self.token(line, "foc"), foc.hasPrefix(own + "/"),
+              !foc.dropFirst(own.count + 1).isEmpty, !foc.dropFirst(own.count + 1).hasPrefix("nuvio-folder://") else {
+            return false
+        }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        return focused.exists && focused.frame.width >= 100 && focused.frame.height >= 100
+    }
+
+    /// Steps Down (never Select) until `classicCatalogCardFocused`, reading after every press.
+    private func focusClassicCatalogCard(_ app: XCUIApplication) -> Bool {
+        for _ in 0..<4 {
+            if classicCatalogCardFocused(app) { return true }
+            remote.press(.down)
+            pause(1.8)
+        }
+        return classicCatalogCardFocused(app)
+    }
+
     @discardableResult
     private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
@@ -186,11 +224,21 @@ final class RailGateEvidenceTests: XCTestCase {
         remote.press(.down)
         pause(2)
         record(classic, "classic-home")
-        remote.press(.select)                   // a Detail pushed from a Classic row
-        pause(5)
-        record(classic, "detail")
-        remote.press(.menu)
-        pause(2.5)
+        // harness-w4 (2026-10-23): a Detail pushed from a Classic row, but only from a verified
+        // CATALOG card. On FA87 two Downs can end on Continue Watching, whose cards resume the
+        // player on Select (the first full run's blind Select here). Down (never Select) until
+        // `debug_homeReturn` reads a catalog row and a card holds focus; no Detail step otherwise.
+        if focusClassicCatalogCard(classic) {
+            log.append("detail-select: \(label(classic, "debug_homeReturn"))")
+            remote.press(.select)
+            pause(5)
+            record(classic, "detail")
+            remote.press(.menu)
+            pause(2.5)
+        } else {
+            log.append("detail: SKIPPED — no catalog card verified (\(label(classic, "debug_homeReturn")), focus=\(focusedLabel(classic)))")
+            shot("inset-detail-skipped")
+        }
         // Up to the top of Home so Menu opens the rail rather than paging back.
         press(.up, 3)
         pause(2)

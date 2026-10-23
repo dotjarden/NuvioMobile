@@ -246,6 +246,54 @@ final class StageStripUITests: XCTestCase {
         return !band.contains { $0.minX < item.frame.minX - 20 }
     }
 
+    // MARK: - Verified poster hold (harness-w4)
+
+    /// `debug_strip foc=<rowKey>/<itemId>`: the row and card the strip last recorded focus on.
+    private func stripFocus(_ app: XCUIApplication) -> String {
+        Self.token(strip(app), "foc") ?? "-"
+    }
+
+    /// Whether `foc` names a catalog row's poster (not Continue Watching or Upcoming, whose cards
+    /// play, and not a folder tile).
+    private static func isCatalogCard(_ foc: String) -> Bool {
+        guard foc != "-", let slash = foc.firstIndex(of: "/") else { return false }
+        let row = String(foc[..<slash])
+        let item = String(foc[foc.index(after: slash)...])
+        return !row.isEmpty && row != "continue-watching" && row != "upcoming"
+            && !item.isEmpty && item != "-" && !item.hasPrefix("nuvio-folder://")
+    }
+
+    /// A strip card holds focus and the strip's readout names a catalog poster.
+    private func catalogPosterFocused(_ app: XCUIApplication, _ geo: Geometry) -> Bool {
+        guard stripHasFocus(app, geo), let item = focused(app), item.frame.width >= 100, item.frame.height >= 100 else {
+            return false
+        }
+        return Self.isCatalogCard(stripFocus(app))
+    }
+
+    /// Steps Down (never Select) until a catalog poster holds focus, reading after every press.
+    private func focusCatalogPoster(_ app: XCUIApplication, _ geo: Geometry) throws {
+        for _ in 0..<4 {
+            if catalogPosterFocused(app, geo) { return }
+            remote.press(.down)
+            _ = poll(2.5, step: 0.25) { catalogPosterFocused(app, geo) }
+        }
+        guard catalogPosterFocused(app, geo) else {
+            shot("unverified_catalog_poster")
+            throw HarnessAbort("no catalog poster took focus within four Downs — focused: \(focused(app).map { "\($0.label)@\($0.frame)" } ?? "<none>") | \(strip(app))")
+        }
+    }
+
+    /// A 2 s Select hold, only while `catalogPosterFocused` reads true in this same instant.
+    private func holdVerifiedCatalogPoster(_ app: XCUIApplication, _ geo: Geometry, what: String) throws {
+        guard catalogPosterFocused(app, geo) else {
+            shot("unverified_\(what)")
+            throw HarnessAbort("\(what): focus is not on a catalog poster (\(strip(app))) — not holding Select")
+        }
+        note(what, "hold on \(stripFocus(app)) ('\(focused(app)?.label ?? "")')")
+        remote.press(.select, forDuration: 2.0)
+    }
+
     // MARK: - Rail (testS08)
 
     private func railState(_ app: XCUIApplication) -> String { label(app, "rail_state") }
@@ -830,13 +878,17 @@ final class StageStripUITests: XCTestCase {
         }
         var opened = false
         for attempt in 0..<3 where !opened {
-            remote.press(.select, forDuration: 2.0)
+            // harness-w4 (2026-10-23): hold only on a verified CATALOG poster. The fixture's first
+            // row is Continue Watching, and a hold there that falls through to a plain press
+            // resumes the player; Down (never Select) moves past it first, read after each press.
+            try focusCatalogPoster(app, geo)
+            try holdVerifiedCatalogPoster(app, geo, what: "S11_hold_\(attempt)")
             pause(1.5)
             shot("S11_hold_\(attempt)")
             opened = menuRow("Mark as ").waitForExistence(timeout: 3)
             if !opened, menuRow("Play Manually").exists {
-                // The fixture's first row can be Continue Watching (an earlier mpv smoke run leaves
-                // one): that hold menu has no "Mark as …". Close it and try the next row's poster.
+                // A Continue Watching hold menu (no "Mark as …"): the guard above should make this
+                // unreachable; close it and step to the next row's poster.
                 remote.press(.menu)
                 pause(1.2)
                 remote.press(.down)

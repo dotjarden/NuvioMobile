@@ -13,13 +13,26 @@ import UIKit
 class NativePlayerParityUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
+    // MARK: Environment
+
+    /// harness-w4 (2026-10-23): a `TEST_RUNNER_*` variable this leg needs, or an `XCTSkip` when it is
+    /// absent or empty. `XCTUnwrap` FAILED the legs on a runner that never set it (first full run,
+    /// 2026-10-22: testNativeChaptersTab and testNativeLateSubtitleLazyPick read their URL before
+    /// the `PLAYER_NATIVE_PROBE` gate): an unset rig is an environment choice, not a regression.
+    func requiredEnv(_ key: String) throws -> String {
+        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else {
+            throw XCTSkip("\(key) not set (pass it as TEST_RUNNER_\(key))")
+        }
+        return value
+    }
+
     // MARK: Native harness
 
     /// Launches the smoke rig on the native engine and waits until playback has started.
     func launchNative(url fixture: String? = nil, extra: [String] = []) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
-        let url = try fixture ?? XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let url = try fixture ?? requiredEnv("PLAYER_SMOKE_URL")
         let app = XCUIApplication()
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES",
                                 "-debug.mpvSmokeEngine", "native", "-debug.mpvSmokeStartOver", "YES"] + extra
@@ -108,7 +121,7 @@ class NativePlayerParityUITests: XCTestCase {
     func testMpvPlaybackTabUnchanged() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_BAR_PROBE"] == "1", "PLAYER_BAR_PROBE not set")
-        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
         let app = XCUIApplication()
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "NO",
                                 "-player.bufferMB", "8", "-debug.mpvSmokeStartOver", "YES"]
@@ -273,8 +286,8 @@ class NativePlayerParityUITests: XCTestCase {
     /// A6-native: the remux's chapters fill the panel's Chapters tab, and picking row 3 (Act Two,
     /// 240 s in the fixture) lands there.
     func testNativeChaptersTab() throws {
-        let url = try XCTUnwrap(ProcessInfo.processInfo.environment["PLAYER_SMOKE_CHAPTERS_URL"],
-                                "PLAYER_SMOKE_CHAPTERS_URL not set")
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let url = try requiredEnv("PLAYER_SMOKE_CHAPTERS_URL")
         let app = try launchNative(url: url)
         XCTAssertTrue(waitNative(app, timeout: 10) { $0["chapters"] == "5" }, "chapters: \(nativeProbeText(app))")
         remote.press(.down)
@@ -295,7 +308,8 @@ class NativePlayerParityUITests: XCTestCase {
     /// row before the pick; picking it rebuilds the item once at the same position and shows it.
     func testNativeLateSubtitleLazyPick() throws {
         let env = ProcessInfo.processInfo.environment
-        let smoke = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
+        let smoke = try requiredEnv("PLAYER_SMOKE_URL")
         let base = smoke.components(separatedBy: "/").dropLast().joined(separator: "/")
         let app = try launchNative(extra: ["-debug.nativeLateSubtitleURL", base + "/test.srt",
                                            "-debug.nativeLateSubtitleDelaySec", "6",
@@ -383,7 +397,7 @@ class NativePlayerParityUITests: XCTestCase {
         if let ts = env["PLAYER_SMOKE_TS_URL"] {
             url = ts
         } else {
-            let mkv = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+            let mkv = try requiredEnv("PLAYER_SMOKE_URL")
             url = mkv.replacingOccurrences(of: ".mkv", with: ".ts")
         }
         try XCTSkipUnless(Self.fixtureAnswers(url), "\(url) is missing; make it with: \(Self.mpvFixtureRecipe)")
@@ -410,7 +424,7 @@ class NativePlayerParityUITests: XCTestCase {
     func testNativeLoadingOverlay() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
-        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
         let app = XCUIApplication()
         app.launchArguments += ["-debug.mpvSmokeURL", url, "-player.nativeDolbyVision", "YES",
                                 "-debug.mpvSmokeEngine", "native", "-debug.mpvSmokeStartOver", "YES"]
@@ -482,7 +496,7 @@ class NativePlayerParityUITests: XCTestCase {
     func testLoadingOverlayOff() throws {
         let env = ProcessInfo.processInfo.environment
         try XCTSkipUnless(env["PLAYER_NATIVE_PROBE"] == "1", "PLAYER_NATIVE_PROBE not set")
-        let url = try XCTUnwrap(env["PLAYER_SMOKE_URL"], "PLAYER_SMOKE_URL not set")
+        let url = try requiredEnv("PLAYER_SMOKE_URL")
 
         final class Found { var before: Bool? }
         let found = Found()

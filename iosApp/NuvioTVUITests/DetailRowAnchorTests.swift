@@ -91,13 +91,14 @@ final class DetailRowAnchorTests: XCTestCase {
 
     func testDownWalkNeverLeavesAHeaderStraddlingTheTopEdge() throws {
         let app = launchToHome()
-        // test02's route to a real DetailView: a movies catalog row (portrait cards → NavigationLink).
-        press(.down, times: 4)
-        pause(0.5)
-        remote.press(.select)
-        pause(8)
+        // harness-w4 (2026-10-23): into Detail by the shared, focus-verified Search route
+        // (`DetailEntryRoute`: the Severance series, then Dune), never a blind Select. The old
+        // "Down ×4, Select" could land on FA87's Continue Watching row, whose cards resume the
+        // player; the route presses Select only on a result card that reads focused.
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
+        pause(2)
         guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
-            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — the down×4 walk did not land on a movies row on this fixture; nothing to measure")
+            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — nothing to measure")
         }
         // FEAT-32: the page used to auto-enter the full-screen trailer cover a few seconds in, and
         // this walk pressed Menu once "regardless" to back out of it. That Menu now POPS the page:
@@ -234,8 +235,15 @@ final class DetailRowAnchorTests: XCTestCase {
                 // sample's offset + visible height reaches the content height), a row near the bottom
                 // (About is the short last row in Cinematic) physically cannot be raised to the 108 pt
                 // rest — it rests LOWER (positive residual). Only that case is exempt below.
+                // harness-w4 (2026-10-23): the page's last reachable offset is `content − vis − inset`
+                // (`geo=… inset=`), not `content − vis`. Measured on FA87's Severance page (the leg's
+                // first run in weeks, via DetailEntryRoute): `content=2627 vis=863 inset=157`, and the
+                // About row (Down 4–6) rested at `off=1607` = 2627 − 863 − 157 while asking for more;
+                // Up 1 to Trailers & Extras then re-issued y=1873 and stayed at 1607 (residual 109),
+                // which the old `off + vis ≥ content − 4` test did not recognise as the clamp.
+                let inset = probeNumber(probeLabel, key: "inset=") ?? 0
                 if let vis = probeNumber(probeLabel, key: "vis="), let content = probeNumber(probeLabel, key: "content="),
-                   off + vis >= content - 4, residual > 0 {
+                   off + vis + inset >= content - 4, residual > 0 {
                     upClampedSteps.insert(step)
                 }
                 if let moves = probeNumber(probeLabel, key: "moves=") {
