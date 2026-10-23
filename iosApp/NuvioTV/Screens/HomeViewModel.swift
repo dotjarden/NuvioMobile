@@ -277,9 +277,11 @@ final class HomeViewModel: ObservableObject {
     /// `continueWatching` by `publishContinueWatching()`.
     private var inProgressContinueWatching: [WatchProgressEntry] = []
     private var nextUpEntries: [WatchProgressEntry] = []
-    private var nextUpTask: Task<Void, Never>?
-    /// Review P3-1: the pipeline's first Up Next refresh skips the debounce (`NextUpRefreshPacing`).
-    private var nextUpPacing = NextUpRefreshPacing()
+    /// Review P3-1: the pipeline's first Up Next refresh skips the debounce, later ones wait it
+    /// (`NextUpRefreshScheduler`, unit-tested in `NextUpRefreshPacingTests`).
+    private lazy var nextUpScheduler = NextUpRefreshScheduler { [weak self] in
+        await self?.runNextUpRefresh()
+    }
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
     private var lastTraktContinueWatchingDaysCap: Int32?
@@ -483,9 +485,7 @@ final class HomeViewModel: ObservableObject {
         continueWatching = []
         inProgressContinueWatching = []
         nextUpEntries = []
-        nextUpTask?.cancel()
-        nextUpTask = nil
-        nextUpPacing.reset()
+        nextUpScheduler.reset()
         continueWatchingPosterPattern = ""
         // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
         ArtworkStore.clearFailedURLs()
@@ -1053,37 +1053,24 @@ final class HomeViewModel: ObservableObject {
     /// series, four at a time. Cancelling this task drops a late result; it does not stop the
     /// Kotlin call, which finishes and leaves its results cached for the next run.
     private func scheduleNextUpRefresh() {
-        nextUpTask?.cancel()
+        nextUpScheduler.schedule()
+    }
+
+    /// One Up Next refresh (run by `nextUpScheduler`). A result that lands after a pipeline
+    /// teardown is dropped by the generation check.
+    private func runNextUpRefresh() async {
         let gen = pipelineGeneration
-        let delay = nextUpPacing.delayNanoseconds()
-        nextUpTask = Task { @MainActor [weak self] in
-            if let delay {
-                try? await Task.sleep(nanoseconds: delay)
-            } else {
-                // The watchers' attach-time replays are queued FIFO on Dispatchers.Main (the main
-                // queue), ahead of this task's first run, which is enqueued behind them. Each one
-                // that lands cancels the task before it, so after one yield only the last runs.
-                // The fast path rests on that ordering, not on the replays sharing one turn.
-                await Task.yield()
+        do {
+            let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
+                limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
+            )
+            guard !Task.isCancelled, pipelineGeneration == gen else { return }
+            if entries != nextUpEntries {
+                nextUpEntries = entries
+                publishContinueWatching()
             }
-            guard !Task.isCancelled else { return }
-            // Scoped, so the model is not held strongly across the resolve below.
-            do {
-                guard let model = self, model.pipelineGeneration == gen else { return }
-                model.nextUpPacing.markStarted()
-            }
-            do {
-                let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
-                    limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
-                )
-                guard let self, !Task.isCancelled, self.pipelineGeneration == gen else { return }
-                if entries != self.nextUpEntries {
-                    self.nextUpEntries = entries
-                    self.publishContinueWatching()
-                }
-            } catch {
-                NSLog("[UpNext] resolution failed: %@", String(describing: error))
-            }
+        } catch {
+            NSLog("[UpNext] resolution failed: %@", String(describing: error))
         }
     }
 
@@ -1132,7 +1119,7 @@ final class HomeViewModel: ObservableObject {
         traktSettingsWatcher?.cancel()
         watchedWatcher?.cancel()
         cwPreferencesWatcher?.cancel()
-        nextUpTask?.cancel()
+        nextUpScheduler.reset()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
         addonWatcher = nil
@@ -1147,8 +1134,6 @@ final class HomeViewModel: ObservableObject {
         traktSettingsWatcher = nil
         watchedWatcher = nil
         cwPreferencesWatcher = nil
-        nextUpTask = nil
-        nextUpPacing.reset()
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
@@ -1648,6 +1633,57 @@ nonisolated enum HomeCatalogSeedSettle {
     static func settles(hasCatalogRow: Bool, addonsSettled: Bool, addonCatalogCount: Int,
                         loadFinishedEmpty: Bool = false) -> Bool {
         hasCatalogRow || (addonsSettled && addonCatalogCount == 0) || loadFinishedEmpty
+    }
+}
+
+/// FEAT-85 review P3-1 / pass 3 P3-3: the Up Next refresh scheduling, out of `HomeViewModel` so
+/// the ordering rule is unit-tested. Every `schedule()` cancels the pending refresh and queues a
+/// new one; the wait comes from `NextUpRefreshPacing`.
+///
+/// The fast path: the Home watchers' attach-time replays are queued FIFO on Dispatchers.Main (the
+/// main queue). The first `schedule()` enqueues its task's first run behind the replays already
+/// queued, and each replay that lands calls `schedule()` again, cancelling the task before it, so
+/// after one yield only the last one runs. It rests on that ordering, not on the replays sharing
+/// one main-actor turn. A refresh that got past its wait turns the debounce on.
+///
+/// Cancelling never stops a `run` that has started (a Kotlin call is not cancellable from here);
+/// `run` drops its own late result.
+@MainActor
+final class NextUpRefreshScheduler {
+    private var pacing = NextUpRefreshPacing()
+    private var task: Task<Void, Never>?
+    private let debounceNanoseconds: UInt64
+    private let run: @MainActor () async -> Void
+
+    /// `debounceNanoseconds` is injectable for tests only.
+    init(debounceNanoseconds: UInt64 = NextUpRefreshPacing.debounceNanoseconds,
+         run: @escaping @MainActor () async -> Void) {
+        self.debounceNanoseconds = debounceNanoseconds
+        self.run = run
+    }
+
+    func schedule() {
+        task?.cancel()
+        let isFirst = pacing.delayNanoseconds() == nil
+        let debounce = debounceNanoseconds
+        let run = self.run
+        task = Task { @MainActor [weak self] in
+            if isFirst {
+                await Task.yield()
+            } else {
+                try? await Task.sleep(nanoseconds: debounce)
+            }
+            guard !Task.isCancelled, let scheduler = self else { return }
+            scheduler.pacing.markStarted()
+            await run()
+        }
+    }
+
+    /// Pipeline teardown or a hard stop: drop the pending refresh; the next pipeline starts fast.
+    func reset() {
+        task?.cancel()
+        task = nil
+        pacing.reset()
     }
 }
 
