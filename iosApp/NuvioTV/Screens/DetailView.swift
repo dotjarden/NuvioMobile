@@ -58,8 +58,8 @@ private final class ScrollDimModel: ObservableObject {
     /// `DetailCompactLogo`). Bool, so it publishes only on the crossing.
     @Published var heroGone: Bool = false
     /// D-3: a row's heading or chips sit inside the compact logo's band, so the logo steps aside
-    /// (`DetailCompactLogoBand`). Published only on the crossing, from the same observer as
-    /// `heroGone`; false while the hero is still on screen.
+    /// (`DetailCompactLogoBand`). Decided at rest (review P2-1: `DetailView.settleCompactLogoBand`
+    /// on the `isScrolling` false edge), held mid-glide; false while the hero is still on screen.
     @Published var logoBandBlocked: Bool = false
 
     /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
@@ -218,8 +218,7 @@ private struct DetailCompactLogo: View {
 
     /// D-3: also steps aside while a row's heading or chips cross its band (`model.logoBandBlocked`).
     private var visible: Bool {
-        DetailCompactLogoBand.shows(inRows: inRows,
-                                    gate: .init(heroGone: model.heroGone, bandBlocked: model.logoBandBlocked))
+        DetailCompactLogoBand.shows(inRows: inRows, heroGone: model.heroGone, bandBlocked: model.logoBandBlocked)
     }
 
     var body: some View {
@@ -290,8 +289,8 @@ private struct ScrollDimOverlay: View {
     #if DEBUG
     /// D-3: the compact logo's visibility, the same rule `DetailCompactLogo` renders.
     private var compactLogoShown: Bool {
-        DetailCompactLogoBand.shows(inRows: compactLogoInRows,
-                                    gate: .init(heroGone: model.heroGone, bandBlocked: model.logoBandBlocked))
+        DetailCompactLogoBand.shows(inRows: compactLogoInRows, heroGone: model.heroGone,
+                                    bandBlocked: model.logoBandBlocked)
     }
     #endif
 }
@@ -706,15 +705,25 @@ struct DetailView: View {
     /// compact logo's visibility (the D-3 probe reads it too).
     private var compactLogoInRows: Bool { focusedRow != nil && bridgePhase == .idle }
 
-    /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, captured by the hero-exit
-    /// observer. Both maps change on layout only, so this is rebuilt only when the body is anyway.
+    /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, read at rest
+    /// (`settleCompactLogoBand`). Both maps change on layout only.
     /// Cinematic only (Classic has no compact logo). A row hidden after it was measured keeps a stale
     /// entry, the `detailRowOffsets` caveat above; sections only toggle in Settings, a fresh page.
     private var compactLogoBandRows: [DetailCompactLogoBand.Row] {
         guard detailLayout == .cinematic else { return [] }
+        // Sorted so the `.onChange` below compares like with like (dictionary order can shift).
         return detailRowOffsets.compactMap { id, top in
             detailRowHeights[id].map { DetailCompactLogoBand.Row(top: top, height: $0) }
-        }
+        }.sorted { $0.top < $1.top }
+    }
+
+    /// D-3 (review P2-1): decides the compact logo's band from the rows and the resting content
+    /// offset (`lastContentOffset`, the plain per-frame field). Called on the scroll latch's false
+    /// edge, on a layout change while still, and on a still hero edge — never per frame.
+    private func settleCompactLogoBand() {
+        let blocked = DetailCompactLogoBand.bandAtRest(heroGone: dimModel.heroGone, rows: compactLogoBandRows,
+                                                       contentOffset: dimModel.lastContentOffset)
+        if dimModel.logoBandBlocked != blocked { dimModel.logoBandBlocked = blocked }
     }
 
     var body: some View {
@@ -965,22 +974,27 @@ struct DetailView: View {
             // FEAT-60: the compact logo waits for the whole hero, action row included, to leave.
             // The first Down only reveals the next row (BUG-99), which leaves the dimmed action row
             // at the top, so the dim ceiling alone was too early (device pass 2026-10-18).
-            // D-3: the same observer decides whether a row's heading or chips sit in the logo's band
-            // (`DetailCompactLogoBand`), from the rows' layout-only frames — no second observer, no
-            // per-row preference traffic; `action:` fires only when either half flips.
-            .onScrollGeometryChange(for: DetailCompactLogoBand.Gate.self, of: { [isCinematic = detailLayout == .cinematic,
-                                                                                 heroHeight = cinematicHeroHeight,
-                                                                                 bandRows = compactLogoBandRows] geo in
-                guard isCinematic, heroHeight > 0 else { return DetailCompactLogoBand.Gate() }
-                let heroGone = DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
-                                                          contentInsetTop: geo.contentInsets.top)
+            // D-3 (review P2-1): `heroGone` stays live here; the band itself is decided at rest
+            // (`settleCompactLogoBand`), so this observer only hands the hero edge over.
+            .onScrollGeometryChange(for: Bool.self, of: { [isCinematic = detailLayout == .cinematic,
+                                                           heroHeight = cinematicHeroHeight] geo in
+                guard isCinematic, heroHeight > 0 else { return false }
+                return DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
+                                                  contentInsetTop: geo.contentInsets.top)
                     >= heroHeight + geo.contentInsets.top + DetailCompactLogo.heroClearance
-                return DetailCompactLogoBand.gate(heroGone: heroGone, rows: bandRows,
-                                                  contentOffset: geo.contentOffset.y)
-            }, action: { _, gate in
-                if dimModel.heroGone != gate.heroGone { dimModel.heroGone = gate.heroGone }
-                if dimModel.logoBandBlocked != gate.bandBlocked { dimModel.logoBandBlocked = gate.bandBlocked }
+            }, action: { _, gone in
+                dimModel.heroGone = gone
+                if let band = DetailCompactLogoBand.bandOnHeroEdge(heroGone: gone, scrolling: dimModel.isScrolling) {
+                    if dimModel.logoBandBlocked != band { dimModel.logoBandBlocked = band }
+                } else {
+                    settleCompactLogoBand()
+                }
             })
+            // D-3: a row's layout moved while the page is still (late rows, cast photos): re-decide.
+            // Mid-glide the rest edge below decides instead.
+            .onChange(of: compactLogoBandRows) { _, _ in
+                if !dimModel.isScrolling { settleCompactLogoBand() }
+            }
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
@@ -1089,6 +1103,8 @@ struct DetailView: View {
             .onReceive(dimModel.$isScrolling.removeDuplicates()) { scrolling in
                 if pageScrolling != scrolling { pageScrolling = scrolling }
                 updateTrailerMount()
+                // D-3 (review P2-1): the scroll has come to rest, so the band is decided now.
+                if !scrolling { settleCompactLogoBand() }
             }
             .onReceive(dimModel.$value) { newValue in
                 // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as

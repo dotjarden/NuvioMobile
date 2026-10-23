@@ -12,9 +12,12 @@ import CoreGraphics
 /// `DetailTopScrim` and reads as scrolled away; a heading or a chip line does not.
 ///
 /// The rows' content-space tops and heights come from `DetailRowAnchored` (layout-only changes,
-/// the BUG-41 rule) and the content offset from the page's existing `onScrollGeometryChange`, so
-/// the per-frame cost is this loop over at most nine rows inside a closure that already runs.
-/// Pure so `DetailCompactLogoBandTests` can drive it without a scroll view.
+/// the BUG-41 rule). Review P2-1: the band is decided at REST, never per frame — a row resting at
+/// the band's bottom moves into it the moment a glide starts and out again a few hundred points
+/// later, so a live test blinked the logo on every press. `DetailView` evaluates `bandAtRest` on
+/// the scroll latch's false edge (`ScrollDimModel.isScrolling`, ~150 ms after the last frame) and
+/// on a layout change while still, with the plain `lastContentOffset` field; mid-glide the value
+/// holds. Pure so `DetailCompactLogoBandTests` can drive it without a scroll view.
 /// `nonisolated` (the `DetailScrim` pattern): read from the scroll-geometry closure and the tests.
 nonisolated enum DetailCompactLogoBand {
     /// The logo's top padding from the scroll view's top edge (`DetailCompactLogo`).
@@ -41,13 +44,6 @@ nonisolated enum DetailCompactLogoBand {
         let height: CGFloat
     }
 
-    /// What the page's hero-exit observer publishes: `heroGone` is FEAT-60's existing gate
-    /// (`DetailCompactLogo.heroClearance`, unchanged); `bandBlocked` is the D-3 gate.
-    nonisolated struct Gate: Equatable, Sendable {
-        var heroGone = false
-        var bandBlocked = false
-    }
-
     /// True while any row's lead — `[top, top + min(height, leadDepth)]` on screen — overlaps the
     /// band. A row's screen top is `top − contentOffset` (`DetailRowAnchor.scrollTarget`'s doc).
     /// Edges touching the band do not count, and a top within `restTolerance` of the band's bottom
@@ -63,15 +59,23 @@ nonisolated enum DetailCompactLogoBand {
         }
     }
 
-    /// The observer's whole decision: the band only matters once the hero has gone (the logo is
-    /// hidden before that anyway), so it is not computed — and cannot flip — inside the hero.
-    static func gate(heroGone: Bool, rows: [Row], contentOffset: CGFloat) -> Gate {
-        Gate(heroGone: heroGone,
-             bandBlocked: heroGone && blocked(rows: rows, contentOffset: contentOffset))
+    /// The decision at rest: the band only matters once the hero has gone (FEAT-60's
+    /// `heroClearance` gate, unchanged; the logo is hidden before that anyway).
+    static func bandAtRest(heroGone: Bool, rows: [Row], contentOffset: CGFloat) -> Bool {
+        heroGone && blocked(rows: rows, contentOffset: contentOffset)
+    }
+
+    /// What `logoBandBlocked` becomes when `heroGone` flips (it stays live, so the logo still hides
+    /// the instant the hero returns). Back in the hero: false. Past it mid-glide: hold the band
+    /// blocked so the logo waits for the rest's decision instead of fading in under a moving row.
+    /// `nil`: the page is still (a layout change moved the clearance) — decide from `bandAtRest` now.
+    static func bandOnHeroEdge(heroGone: Bool, scrolling: Bool) -> Bool? {
+        guard heroGone else { return false }
+        return scrolling ? true : nil
     }
 
     /// The logo shows only in the rows, past the hero, with the band clear.
-    static func shows(inRows: Bool, gate: Gate) -> Bool {
-        inRows && gate.heroGone && !gate.bandBlocked
+    static func shows(inRows: Bool, heroGone: Bool, bandBlocked: Bool) -> Bool {
+        inRows && heroGone && !bandBlocked
     }
 }

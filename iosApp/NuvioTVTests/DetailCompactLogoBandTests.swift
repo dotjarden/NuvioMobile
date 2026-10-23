@@ -95,18 +95,37 @@ final class DetailCompactLogoBandTests: XCTestCase {
     }
 
     /// The band is only evaluated once the hero has gone (`heroClearance` keeps its meaning).
-    func testGateIgnoresTheBandInsideTheHero() {
+    func testBandAtRestIgnoresTheBandInsideTheHero() {
         let rows = [Row(top: 1000, height: parentalHeight)]
-        let inHero = Band.gate(heroGone: false, rows: rows, contentOffset: 1000 - 60)
-        XCTAssertEqual(inHero, .init(heroGone: false, bandBlocked: false))
-        let past = Band.gate(heroGone: true, rows: rows, contentOffset: 1000 - 60)
-        XCTAssertEqual(past, .init(heroGone: true, bandBlocked: true))
+        XCTAssertFalse(Band.bandAtRest(heroGone: false, rows: rows, contentOffset: 1000 - 60))
+        XCTAssertTrue(Band.bandAtRest(heroGone: true, rows: rows, contentOffset: 1000 - 60))
+    }
+
+    /// Review P2-1: a hero edge mid-glide holds the logo until the rest decides; back in the hero
+    /// clears; a still edge defers to `bandAtRest` (nil).
+    func testHeroEdgeHoldsUntilRest() {
+        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: true, scrolling: true), true)
+        XCTAssertNil(Band.bandOnHeroEdge(heroGone: true, scrolling: false))
+        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: false, scrolling: true), false)
+        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: false, scrolling: false), false)
+    }
+
+    /// Review P2-1: the press that starts a glide from an anchored rest. The focused row rests at
+    /// 108 (clear); a few points into the glide its heading is in the band, so a per-frame rule
+    /// flipped here — `bandAtRest` is only asked at the two rests, which are both clear.
+    func testAGlideBetweenTwoClearRestsNeverAsksMidway() {
+        let a = Row(top: 1000, height: castHeight)
+        let b = Row(top: 1000 + castHeight + 36, height: castHeight)
+        let restA = a.top - 108, restB = b.top - 108
+        XCTAssertFalse(Band.bandAtRest(heroGone: true, rows: [a, b], contentOffset: restA))
+        XCTAssertTrue(Band.blocked(rows: [a, b], contentOffset: restA + 40), "mid-glide geometry is blocked")
+        XCTAssertFalse(Band.bandAtRest(heroGone: true, rows: [a, b], contentOffset: restB))
     }
 
     func testShowsTruthTable() {
-        XCTAssertTrue(Band.shows(inRows: true, gate: .init(heroGone: true, bandBlocked: false)))
-        XCTAssertFalse(Band.shows(inRows: true, gate: .init(heroGone: true, bandBlocked: true)))
-        XCTAssertFalse(Band.shows(inRows: true, gate: .init(heroGone: false, bandBlocked: false)))
-        XCTAssertFalse(Band.shows(inRows: false, gate: .init(heroGone: true, bandBlocked: false)))
+        XCTAssertTrue(Band.shows(inRows: true, heroGone: true, bandBlocked: false))
+        XCTAssertFalse(Band.shows(inRows: true, heroGone: true, bandBlocked: true))
+        XCTAssertFalse(Band.shows(inRows: true, heroGone: false, bandBlocked: false))
+        XCTAssertFalse(Band.shows(inRows: false, heroGone: true, bandBlocked: false))
     }
 }
