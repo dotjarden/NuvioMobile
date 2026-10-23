@@ -124,6 +124,7 @@ object TraktAuthRepository : TrackingAuthProvider {
      */
     override fun removeStoredProfile(profileId: Int) {
         TraktAuthStorage.savePayload(profileId, "")
+        TraktPendingScrobbleStopStorage.clear(profileId)
     }
 
     fun snapshot(profileId: Int = ProfileRepository.activeProfileId): TraktAuthUiState {
@@ -543,6 +544,8 @@ object TraktAuthRepository : TrackingAuthProvider {
         }
 
         TraktCredentialSync.deleteRemote(profileId)
+        // BUG-220: a stop queued for this account must never replay into the next one connected.
+        TraktPendingScrobbleStopStorage.clear(profileId)
         authState = TraktAuthState()
         persist(profileId)
         publish(

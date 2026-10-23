@@ -57,6 +57,7 @@ import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.upcoming.UpcomingEpisodesRepository
 import com.nuvio.app.features.watched.WatchedRepository
@@ -417,6 +418,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("watched") { WatchedRepository.onProfileChanged(profileIndex) }
         step("traktSettings") { TraktSettingsRepository.onProfileChanged() }
         step("traktAuth") { TraktAuthRepository.onProfileChanged(profileIndex) }
+        // BUG-220: replay the incoming profile's pending Trakt scrobble stops (needs traktAuth
+        // loaded first) and arm the watcher that replays again when Trakt auth turns on later.
+        step("traktPendingScrobbleStops") { TraktScrobbleRepository.onProfileChanged(profileIndex) }
         // MDBList account: stop the outgoing profile's device-flow poll and load the incoming
         // profile's Keychain tokens. Idempotent with the registry fan-out LibraryRepository runs.
         step("mdbListAccount") { MdbListTracker.onProfileChanged() }
