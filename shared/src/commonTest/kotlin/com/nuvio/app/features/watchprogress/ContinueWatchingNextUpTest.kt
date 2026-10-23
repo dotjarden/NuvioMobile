@@ -427,4 +427,20 @@ class ContinueWatchingNextUpTest {
             nextUpAirCheck("2099-01-01T00:00:00.000Z", nowEpochMs = t0, policy = UnairedNextUpPolicy.LabelAirDate),
         )
     }
+
+    @Test
+    fun anUnmarkDropsTheMatchingMarkSeeds() {
+        val marks = listOf(
+            RecentNextUpMark(1, watched("tt1", 1, 4, t0)),
+            RecentNextUpMark(1, watched("tt1", 1, 5, t0)),
+            RecentNextUpMark(1, watched("tt2", 1, 1, t0)),
+        )
+        assertEquals(
+            listOf("tt1:5", "tt2:1"),
+            withoutUnmarkedNextUpMarks(marks, listOf(watched("tt1", 1, 4, t0))).map { "${it.item.id}:${it.item.episode}" },
+        )
+        // A whole-show unmark (no season/episode) drops every mark for that show.
+        val wholeShow = WatchedItem(id = "tt1", type = "series", name = "tt1", markedAtEpochMs = 0L)
+        assertEquals(listOf("tt2"), withoutUnmarkedNextUpMarks(marks, listOf(wholeShow)).map { it.item.id })
+    }
 }

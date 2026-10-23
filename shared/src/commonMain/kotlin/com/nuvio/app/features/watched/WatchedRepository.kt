@@ -14,6 +14,7 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.watchprogress.ContinueWatchingNextUp
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watching.sync.SupabaseWatchedSyncAdapter
 import com.nuvio.app.features.watching.sync.WatchedDeltaEvent
@@ -854,6 +855,8 @@ object WatchedRepository {
     fun unmarkWatched(items: Collection<WatchedItem>) {
         ensureLoaded()
         if (items.isEmpty()) return
+        // FEAT-85 (review round 2 P3-2): drop Up Next's temporary Trakt mark seeds for these too.
+        ContinueWatchingNextUp.onUnmarkedWatched(items)
         val source = activeSource
         val (removedItems, removedExtraKeys) = itemsStore.update { nuvioItems, providerItems, dirtyNuvioKeys, dirtyProviderKeys ->
             val targetItems = source.providerId

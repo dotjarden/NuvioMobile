@@ -368,6 +368,22 @@ fun activeRecentNextUpMarks(
 data class RecentNextUpMark(val profileId: Int, val item: WatchedItem)
 
 /**
+ * Pure (unit-tested), review round 2 P3-2: [marks] without the ones an unmark covers. An item with
+ * a season and episode unmarks that episode; one without (a whole show or a movie) unmarks every
+ * mark for its id.
+ */
+fun withoutUnmarkedNextUpMarks(
+    marks: List<RecentNextUpMark>,
+    unmarked: Collection<WatchedItem>,
+): List<RecentNextUpMark> = marks.filterNot { mark ->
+    unmarked.any { item ->
+        item.id == mark.item.id &&
+            (item.season == null || item.episode == null ||
+                (item.season == mark.item.season && item.episode == mark.item.episode))
+    }
+}
+
+/**
  * The inputs a seed's resolution depends on besides the episode metadata. Two refreshes with the
  * same key give the same next episode, so the result is reused instead of refetched; the date is
  * in it so an episode that airs overnight is picked up the next day. The profile is in it so a
@@ -531,6 +547,17 @@ object ContinueWatchingNextUp {
             ) {
                 WatchProgressRepository.refreshEpisodeProgress(entry.parentMetaId, forceRefresh = true)
             }
+        }
+    }
+
+    /**
+     * `WatchedRepository.unmarkWatched` (review round 2 P3-2): an episode unmarked within the mark
+     * window must stop seeding Up Next straight away, not 30 minutes later.
+     */
+    fun onUnmarkedWatched(items: Collection<WatchedItem>) {
+        if (items.isEmpty()) return
+        synchronized(lock) {
+            recentTraktMarks = withoutUnmarkedNextUpMarks(recentTraktMarks, items)
         }
     }
 
