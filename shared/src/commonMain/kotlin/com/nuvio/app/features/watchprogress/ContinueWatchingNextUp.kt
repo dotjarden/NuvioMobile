@@ -2,6 +2,8 @@ package com.nuvio.app.features.watchprogress
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.details.MetaVideo
+import com.nuvio.app.features.details.isReleasedBy
 import com.nuvio.app.features.details.seriesPrimaryAction
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
@@ -52,6 +54,50 @@ const val ContinueWatchingNextUpResolveLimit = 20
 
 /** Parallel metadata fetches per refresh; mobile's `NEXT_UP_RESOLUTION_CONCURRENCY`. */
 internal const val ContinueWatchingNextUpFetchConcurrency = 4
+
+/**
+ * What tvOS Home does with an Up Next episode that has not aired yet (FEAT-85 review P2-2).
+ *
+ * - [Drop] (current): no card. The synced "Show unaired next up" preference defaults on, and with
+ *   it a caught-up show got a card whose stream picker is empty, for an episode the Upcoming row
+ *   already lists with its air date.
+ * - [LabelAirDate] (not built yet): keep the card, badge it "Airs <date>" and open Detail on press.
+ *   Flipping [ContinueWatchingUnairedNextUpPolicy] keeps the card; the badge and the press route
+ *   are Swift work in `ContinueWatchingRow` / `HomeRowActions` that has to land with the flip.
+ */
+enum class UnairedNextUpPolicy { Drop, LabelAirDate }
+
+/** The one switch for the rule above. */
+val ContinueWatchingUnairedNextUpPolicy: UnairedNextUpPolicy = UnairedNextUpPolicy.Drop
+
+/** Pure (unit-tested): whether an Up Next episode gets a card under [policy]. */
+fun keepNextUpEpisode(isReleased: Boolean, policy: UnairedNextUpPolicy): Boolean =
+    isReleased || policy == UnairedNextUpPolicy.LabelAirDate
+
+/**
+ * Pure (unit-tested): the episode a `seriesPrimaryAction` result points at, as mobile's
+ * `videoForSeriesAction` finds it: by season and episode first, then by playback id.
+ */
+fun nextUpVideoFor(
+    videos: List<MetaVideo>,
+    contentId: String,
+    seasonNumber: Int?,
+    episodeNumber: Int?,
+    videoId: String,
+): MetaVideo? {
+    if (seasonNumber != null && episodeNumber != null) {
+        videos.firstOrNull { video -> video.season == seasonNumber && video.episode == episodeNumber }
+            ?.let { return it }
+    }
+    return videos.firstOrNull { video ->
+        video.id == videoId || buildPlaybackVideoId(
+            parentMetaId = contentId,
+            seasonNumber = video.season,
+            episodeNumber = video.episode,
+            fallbackVideoId = video.id,
+        ) == videoId
+    }
+}
 
 data class ContinueWatchingNextUpSeed(
     val contentType: String,
@@ -394,6 +440,13 @@ object ContinueWatchingNextUp {
             val episode = action.episodeNumber ?: return settled(null)
             // The seed episode itself is never "next".
             if (season == seed.seasonNumber && episode == seed.episodeNumber) return settled(null)
+            // P2-2: an episode that has not aired gets no card (see [UnairedNextUpPolicy]). No
+            // matching video at all is no card either, as on mobile.
+            val video = nextUpVideoFor(meta.videos, seed.contentId, season, episode, action.videoId)
+                ?: return settled(null)
+            if (!keepNextUpEpisode(video.isReleasedBy(todayIsoDate), ContinueWatchingUnairedNextUpPolicy)) {
+                return settled(null)
+            }
             settled(
                 WatchProgressEntry(
                     contentType = seed.contentType,

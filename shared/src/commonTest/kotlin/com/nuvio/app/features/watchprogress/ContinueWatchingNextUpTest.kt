@@ -1,10 +1,12 @@
 package com.nuvio.app.features.watchprogress
 
+import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.watched.WatchedItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -260,5 +262,26 @@ class ContinueWatchingNextUpTest {
         variants.forEach { assertNotEquals(base, it) }
         // Re-finishing the same episode later re-dates the card but does not refetch it.
         assertEquals(base, nextUpResolveKey(seed.copy(markedAtEpochMs = t0 + 1), 1, "NUVIO_SYNC", true, true, "2026-10-23"))
+    }
+
+    @Test
+    fun unairedEpisodesAreDroppedUnderTheCurrentPolicy() {
+        assertEquals(UnairedNextUpPolicy.Drop, ContinueWatchingUnairedNextUpPolicy)
+        assertTrue(keepNextUpEpisode(isReleased = true, policy = UnairedNextUpPolicy.Drop))
+        assertFalse(keepNextUpEpisode(isReleased = false, policy = UnairedNextUpPolicy.Drop))
+        // The flip Christian may choose later keeps the card (to be labelled "Airs <date>").
+        assertTrue(keepNextUpEpisode(isReleased = false, policy = UnairedNextUpPolicy.LabelAirDate))
+    }
+
+    @Test
+    fun nextUpVideoMatchesBySeasonEpisodeThenPlaybackId() {
+        val videos = listOf(
+            MetaVideo(id = "tt1:1:4", title = "Four", released = "2026-01-01", season = 1, episode = 4),
+            MetaVideo(id = "addon-ep-5", title = "Five", released = "2099-01-01", season = 1, episode = 5),
+        )
+        assertEquals("Four", nextUpVideoFor(videos, "tt1", 1, 4, "ignored")?.title)
+        assertEquals("Five", nextUpVideoFor(videos, "tt1", null, null, "addon-ep-5")?.title)
+        assertEquals("Four", nextUpVideoFor(videos, "tt1", null, null, "tt1:1:4")?.title)
+        assertNull(nextUpVideoFor(videos, "tt1", 2, 1, "tt1:2:1"))
     }
 }
