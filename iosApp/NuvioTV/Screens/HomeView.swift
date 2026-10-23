@@ -5776,7 +5776,12 @@ struct ContinueWatchingRow: View {
     /// the Upcoming row so the two shelves read as one system.
     private func episodeCode(_ entry: WatchProgressEntry) -> String? {
         guard let season = entry.seasonNumber?.intValue, let episode = entry.episodeNumber?.intValue else { return nil }
-        return String(format: "S%02dE%02d", season, episode)
+        let code = String(format: "S%02dE%02d", season, episode)
+        // Up Next card (the episode after the last one finished): say so, since it has no progress bar.
+        if entry.source == ContinueWatchingNextUpKt.WatchProgressSourceNextUp {
+            return String(localized: "Up Next \u{00B7} \(code)")
+        }
+        return code
     }
 
     private func isEpisode(_ entry: WatchProgressEntry) -> Bool {

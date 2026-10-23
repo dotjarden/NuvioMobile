@@ -1933,6 +1933,15 @@ object WatchProgressRepository {
         nowEpochMs: Long,
     ): Long? = activeProgressProvider()?.continueWatchingCutoffEpochMs(daysCap, nowEpochMs)
 
+    /** Fork (tvOS Up Next, [ContinueWatchingNextUp]): every projected entry of the active source. */
+    fun nextUpSourceEntries(): List<WatchProgressEntry> {
+        ensureLoaded()
+        return currentEntries()
+    }
+
+    /** Fork (tvOS Up Next): mobile leaves watched history out of next-up seeds under Trakt. */
+    fun isTraktProgressActive(): Boolean = activeSource == WatchProgressSource.TRAKT
+
     fun shouldUseAsNextUpSeed(entry: WatchProgressEntry, nowEpochMs: Long): Boolean =
         activeProgressProvider()?.shouldUseAsNextUpSeed(entry, nowEpochMs)
             ?: entry.shouldUseAsCompletedSeedForContinueWatching()

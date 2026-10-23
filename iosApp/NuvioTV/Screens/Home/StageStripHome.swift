@@ -294,7 +294,8 @@ struct StageStripHome: View {
         ContinueWatchingRow(
             entries: model.continueWatching,
             onSelect: { actions.resume(ResumeTarget(entry: $0)) },
-            onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
+            // Up Next cards are dismissed, progress cards cleared (`ContinueWatchingNextUp`).
+            onRemove: { ContinueWatchingNextUp.shared.removeFromContinueWatching(entry: $0) },
             onGoToDetails: { actions.push(TitleRoute(preview: HomeRowPreviews.entry($0))) },
             onPlayManually: { actions.resume(ResumeTarget(entry: $0, forceManual: true)) },
             onStartOver: { actions.resume(ResumeTarget(entry: $0, startFromBeginning: true)) },

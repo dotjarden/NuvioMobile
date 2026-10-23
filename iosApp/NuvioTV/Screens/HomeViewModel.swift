@@ -269,6 +269,15 @@ final class HomeViewModel: ObservableObject {
     private var posterPatternWatcher: FlowWatcher?
     private var posterScreensWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
+    /// Up Next: finished episodes and next-up dismissals change which next episodes belong in the
+    /// row without touching an in-progress entry.
+    private var watchedWatcher: FlowWatcher?
+    private var cwPreferencesWatcher: FlowWatcher?
+    /// Up Next: the provider-aware in-progress row and the resolved next-up entries, merged into
+    /// `continueWatching` by `publishContinueWatching()`.
+    private var inProgressContinueWatching: [WatchProgressEntry] = []
+    private var nextUpEntries: [WatchProgressEntry] = []
+    private var nextUpTask: Task<Void, Never>?
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
     private var lastTraktContinueWatchingDaysCap: Int32?
@@ -470,6 +479,10 @@ final class HomeViewModel: ObservableObject {
         sections = []
         rows = []
         continueWatching = []
+        inProgressContinueWatching = []
+        nextUpEntries = []
+        nextUpTask?.cancel()
+        nextUpTask = nil
         continueWatchingPosterPattern = ""
         // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
         ArtworkStore.clearFailedURLs()
@@ -857,6 +870,17 @@ final class HomeViewModel: ObservableObject {
             self.refreshContinueWatching()
         }
 
+        // Up Next: an episode marked watched (history) or a next-up dismissed / a next-up
+        // preference changed (profile-synced, so also from the phone) re-resolves the next-up cards.
+        watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.scheduleNextUpRefresh()
+        }
+        cwPreferencesWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.scheduleNextUpRefresh()
+        }
+
         // BUG-86 hero-off rows (beta.18): applied BEFORE `AddonRepository.initialize()`, not
         // alongside the burst sim below, because initialize()'s first add-on emission can drive
         // `onAddonsChanged` → `HomeRepository.refresh` synchronously, and refresh is what arms the
@@ -994,11 +1018,46 @@ final class HomeViewModel: ObservableObject {
         // Kotlin data classes bridge `equals` as `isEqual`, so `!=` is a structural compare. The
         // progress flow emits on every playback save while Home sits under the player; an
         // unchanged row must not republish.
-        let next = WatchProgressRepository.shared.continueWatchingRow(
+        inProgressContinueWatching = WatchProgressRepository.shared.continueWatchingRow(
             limit: ContinueWatchingRowKt.ContinueWatchingRowScanLimit
+        )
+        publishContinueWatching()
+        scheduleNextUpRefresh()
+    }
+
+    /// In-progress entries plus a next-up entry for each series whose last episode is finished
+    /// (shared `mergeContinueWatchingWithNextUp`: a series with an in-progress card keeps that card).
+    private func publishContinueWatching() {
+        let next = ContinueWatchingNextUpKt.mergeContinueWatchingWithNextUp(
+            inProgress: inProgressContinueWatching,
+            nextUp: nextUpEntries
         )
         if next != continueWatching { continueWatching = next }
         refreshShuffleParentIds()
+    }
+
+    /// Up Next: resolves the next episode per finished series off the main path. Debounced, because
+    /// progress emits on every playback save while Home sits under the player; each run fetches
+    /// metadata (cached after the first) for at most `ContinueWatchingNextUpResolveLimit` series.
+    private func scheduleNextUpRefresh() {
+        nextUpTask?.cancel()
+        let gen = pipelineGeneration
+        nextUpTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
+                    limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
+                )
+                guard let self, !Task.isCancelled, self.pipelineGeneration == gen else { return }
+                if entries != self.nextUpEntries {
+                    self.nextUpEntries = entries
+                    self.publishContinueWatching()
+                }
+            } catch {
+                print("[Home] Up Next resolution failed: \(error)")
+            }
+        }
     }
 
     /// Assigned only on change so an unrelated emission does not re-render (and disturb focus in)
@@ -1044,6 +1103,9 @@ final class HomeViewModel: ObservableObject {
         posterPatternWatcher?.cancel()
         posterScreensWatcher?.cancel()
         traktSettingsWatcher?.cancel()
+        watchedWatcher?.cancel()
+        cwPreferencesWatcher?.cancel()
+        nextUpTask?.cancel()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
         addonWatcher = nil
@@ -1056,6 +1118,9 @@ final class HomeViewModel: ObservableObject {
         posterPatternWatcher = nil
         posterScreensWatcher = nil
         traktSettingsWatcher = nil
+        watchedWatcher = nil
+        cwPreferencesWatcher = nil
+        nextUpTask = nil
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
