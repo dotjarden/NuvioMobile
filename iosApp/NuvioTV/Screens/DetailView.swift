@@ -232,7 +232,10 @@ private struct DetailCompactLogo: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: visible)
             .allowsHitTesting(false)
             .accessibilityHidden(!visible)
-            .accessibilityIdentifier("detail_compact_logo")
+            // D-3 (review P3-1): the page's own `.accessibilityHidden(bridgePhase != .idle)` (false
+            // while idle) wins over the `true` above, so the hidden logo stayed in the AX tree and a
+            // leg could not read its visibility. The identifier is carried only while it shows.
+            .accessibilityIdentifier(visible ? "detail_compact_logo" : "")
             .padding(.top, DetailCompactLogoBand.topPadding)
             .ignoresSafeArea(edges: .top)
     }
