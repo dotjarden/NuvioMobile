@@ -284,4 +284,50 @@ class ContinueWatchingNextUpTest {
         assertEquals("Four", nextUpVideoFor(videos, "tt1", null, null, "tt1:1:4")?.title)
         assertNull(nextUpVideoFor(videos, "tt1", 2, 1, "tt1:2:1"))
     }
+
+    @Test
+    fun removingAnInProgressCardNamesTheUpNextItWouldUncover() {
+        // E3 finished, E4 half watched after it: Remove on E4 must dismiss the E3 seed (Up Next E4).
+        val entries = listOf(
+            progress("tt1", 1, 3, t0, completed = true),
+            progress("tt1", 1, 4, t0 + 1_000, completed = false),
+            progress("other", 1, 9, t0 + 2_000, completed = true),
+        )
+        val seed = nextUpSeedAfterRemoval(
+            progressEntries = entries,
+            watchedItems = emptyList(),
+            contentId = "tt1",
+            removedVideoId = "tt1:1:4",
+            isProgressSeed = { it.shouldUseAsCompletedSeedForContinueWatching() },
+            preferFurthestEpisode = true,
+        )
+        assertEquals(ContinueWatchingNextUpSeed("series", "tt1", 1, 3, t0), seed)
+    }
+
+    @Test
+    fun removingWithNothingFinishedDismissesNothing() {
+        val seed = nextUpSeedAfterRemoval(
+            progressEntries = listOf(progress("tt1", 1, 1, t0, completed = false)),
+            watchedItems = emptyList(),
+            contentId = "tt1",
+            removedVideoId = "tt1:1:1",
+            isProgressSeed = { it.shouldUseAsCompletedSeedForContinueWatching() },
+            preferFurthestEpisode = true,
+        )
+        assertNull(seed)
+    }
+
+    @Test
+    fun removingUsesWatchedHistoryToo() {
+        val seed = nextUpSeedAfterRemoval(
+            progressEntries = listOf(progress("tt1", 1, 4, t0 + 1_000, completed = false)),
+            watchedItems = listOf(watched("tt1", 1, 3, t0), watched("tt9", 2, 2, t0)),
+            contentId = "tt1",
+            removedVideoId = "tt1:1:4",
+            isProgressSeed = { it.shouldUseAsCompletedSeedForContinueWatching() },
+            preferFurthestEpisode = true,
+        )
+        assertEquals(3, seed?.episodeNumber)
+        assertEquals("tt1", seed?.contentId)
+    }
 }

@@ -39,8 +39,9 @@ final class HomeRowActions {
     var collectionRowAppeared: (NuvioCollection) -> Void = { _ in }
 
 
-    /// Continue Watching › Remove. An Up Next card is dismissed (synced with the phone);
-    /// a progress card clears its progress.
+    /// Continue Watching › Remove. An Up Next card is dismissed (synced with the phone); a
+    /// progress card clears its progress and dismisses the Up Next its removal would uncover, so
+    /// the series leaves the row (`ContinueWatchingNextUp.removeFromContinueWatching`).
     func removeProgress(_ entry: WatchProgressEntry) {
         ContinueWatchingNextUp.shared.removeFromContinueWatching(entry: entry)
     }

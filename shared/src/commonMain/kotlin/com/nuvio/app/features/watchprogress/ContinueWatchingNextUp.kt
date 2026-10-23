@@ -210,6 +210,33 @@ fun withoutDismissedNextUp(
 }
 
 /**
+ * Pure (unit-tested), FEAT-85 review P2-1: the Up Next a series would show once its in-progress
+ * card [removedVideoId] is removed, i.e. the seed to dismiss so Remove takes the whole series out
+ * of the row (the in-progress card was what suppressed that seed). Recency window, hidden shows
+ * and existing dismissals are left out on purpose: dismissing a seed that would not show anyway
+ * is harmless.
+ */
+fun nextUpSeedAfterRemoval(
+    progressEntries: List<WatchProgressEntry>,
+    watchedItems: List<WatchedItem>,
+    contentId: String,
+    removedVideoId: String,
+    isProgressSeed: (WatchProgressEntry) -> Boolean,
+    preferFurthestEpisode: Boolean,
+): ContinueWatchingNextUpSeed? = buildContinueWatchingNextUpSeeds(
+    progressEntries = progressEntries.filter { entry ->
+        entry.parentMetaId == contentId && entry.videoId != removedVideoId
+    },
+    watchedItems = watchedItems.filter { item -> item.id == contentId },
+    isProgressSeed = isProgressSeed,
+    isDroppedShow = { false },
+    recencyCutoffEpochMs = null,
+    preferFurthestEpisode = preferFurthestEpisode,
+    dismissedNextUpKeys = emptySet(),
+    limit = 1,
+).firstOrNull()
+
+/**
  * The inputs a seed's resolution depends on besides the episode metadata. Two refreshes with the
  * same key give the same next episode, so the result is reused instead of refetched; the date is
  * in it so an episode that airs overnight is picked up the next day. The profile is in it so a
@@ -269,30 +296,53 @@ object ContinueWatchingNextUp {
      */
     @Throws(Throwable::class)
     suspend fun resolveEntries(limit: Int): List<WatchProgressEntry> {
-        WatchProgressRepository.ensureLoaded()
-        WatchedRepository.ensureLoaded()
-        ContinueWatchingPreferencesRepository.ensureLoaded()
-        TraktSettingsRepository.ensureLoaded()
+        ensureInputsLoaded()
         return withContext(Dispatchers.Default) { resolveMutex.withLock { resolve(limit) } }
+    }
+
+    /** One read of everything seed selection depends on (StateFlow values: safe off main). */
+    private class SeedInputs(
+        val profileId: Int,
+        val source: WatchProgressSource,
+        val prefs: ContinueWatchingPreferencesUiState,
+        val now: Long,
+        val entries: List<WatchProgressEntry>,
+        val watchedItems: List<WatchedItem>,
+    ) {
+        fun isProgressSeed(entry: WatchProgressEntry): Boolean =
+            WatchProgressRepository.shouldUseAsNextUpSeed(entry, now)
+    }
+
+    private fun seedInputs(): SeedInputs {
+        val source = WatchProgressRepository.activeSourceState.value
+        return SeedInputs(
+            profileId = ProfileRepository.activeProfileId,
+            source = source,
+            prefs = ContinueWatchingPreferencesRepository.uiState.value,
+            now = WatchProgressClock.nowEpochMs(),
+            // The published projection (the same list mobile's Home reads), not a private snapshot.
+            entries = WatchProgressRepository.uiState.value.entries,
+            watchedItems = if (source == WatchProgressSource.TRAKT) {
+                emptyList()
+            } else {
+                WatchedRepository.uiState.value.items
+            },
+        )
     }
 
     private suspend fun resolve(limit: Int): List<WatchProgressEntry> {
         val startGeneration = synchronized(lock) { generation }
-        val profileId = ProfileRepository.activeProfileId
-        val prefs = ContinueWatchingPreferencesRepository.uiState.value
-        val now = WatchProgressClock.nowEpochMs()
-        val source = WatchProgressRepository.activeSourceState.value
-        // The published projection (the same list mobile's Home reads), not a private snapshot.
-        val entries = WatchProgressRepository.uiState.value.entries
-        val watchedItems = if (source == WatchProgressSource.TRAKT) {
-            emptyList()
-        } else {
-            WatchedRepository.uiState.value.items
-        }
+        val inputs = seedInputs()
+        val profileId = inputs.profileId
+        val prefs = inputs.prefs
+        val now = inputs.now
+        val source = inputs.source
+        val entries = inputs.entries
+        val watchedItems = inputs.watchedItems
         val seeds = buildContinueWatchingNextUpSeeds(
             progressEntries = entries,
             watchedItems = watchedItems,
-            isProgressSeed = { entry -> WatchProgressRepository.shouldUseAsNextUpSeed(entry, now) },
+            isProgressSeed = inputs::isProgressSeed,
             isDroppedShow = { contentId -> WatchProgressRepository.isDroppedShow(contentId) },
             recencyCutoffEpochMs = WatchProgressRepository.activeProviderContinueWatchingCutoffEpochMs(
                 daysCap = TraktSettingsRepository.uiState.value.continueWatchingDaysCap,
@@ -366,17 +416,49 @@ object ContinueWatchingNextUp {
         )
 
     /**
-     * Continue Watching › Remove for any card: a next-up card is dismissed (profile-synced; the
+     * Continue Watching › Remove for any card. A next-up card is dismissed (profile-synced; the
      * series comes back once a later episode is finished, because playing any of its episodes
-     * clears its keys in `WatchProgressRepository.upsert`); a real progress card clears its progress.
+     * clears its keys in `WatchProgressRepository.upsert`). A progress card clears its progress
+     * and, for a series, also dismisses the Up Next its removal would uncover (review P2-1: E3
+     * finished, E4 half watched, Remove E4 used to bring "Up Next · S01E04" back 1.5 s later).
+     *
+     * The phone's Remove calls `removeProgress(contentId)`, which drops every progress row of the
+     * series; its watched history survives, so by its code the phone can still build the same Up
+     * Next from history. This keeps tvOS's episode-level clear and adds the synced dismissal, so
+     * the series leaves the row here AND the phone hides that Up Next too.
      */
     fun removeFromContinueWatching(entry: WatchProgressEntry) {
         if (entry.isContinueWatchingNextUp) {
             val key = synchronized(lock) { dismissKeysByVideoId[entry.videoId] } ?: return
             ContinueWatchingPreferencesRepository.addDismissedNextUpKey(key)
-        } else {
-            WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
+            return
         }
+        if (entry.parentMetaType.isSeriesTypeForContinueWatching()) {
+            ensureInputsLoaded()
+            val inputs = seedInputs()
+            nextUpSeedAfterRemoval(
+                progressEntries = inputs.entries,
+                watchedItems = inputs.watchedItems,
+                contentId = entry.parentMetaId,
+                removedVideoId = entry.videoId,
+                isProgressSeed = inputs::isProgressSeed,
+                preferFurthestEpisode = inputs.prefs.upNextFromFurthestEpisode,
+            )?.let { seed ->
+                // Before the clear: the clear publishes, and the refresh it schedules must already
+                // see the dismissal.
+                ContinueWatchingPreferencesRepository.addDismissedNextUpKey(
+                    nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber),
+                )
+            }
+        }
+        WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
+    }
+
+    private fun ensureInputsLoaded() {
+        WatchProgressRepository.ensureLoaded()
+        WatchedRepository.ensureLoaded()
+        ContinueWatchingPreferencesRepository.ensureLoaded()
+        TraktSettingsRepository.ensureLoaded()
     }
 
     /**
