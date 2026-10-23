@@ -235,8 +235,15 @@ final class DetailRowAnchorTests: XCTestCase {
                 // sample's offset + visible height reaches the content height), a row near the bottom
                 // (About is the short last row in Cinematic) physically cannot be raised to the 108 pt
                 // rest — it rests LOWER (positive residual). Only that case is exempt below.
+                // harness-w4 (2026-10-23): the page's last reachable offset is `content − vis − inset`
+                // (`geo=… inset=`), not `content − vis`. Measured on FA87's Severance page (the leg's
+                // first run in weeks, via DetailEntryRoute): `content=2627 vis=863 inset=157`, and the
+                // About row (Down 4–6) rested at `off=1607` = 2627 − 863 − 157 while asking for more;
+                // Up 1 to Trailers & Extras then re-issued y=1873 and stayed at 1607 (residual 109),
+                // which the old `off + vis ≥ content − 4` test did not recognise as the clamp.
+                let inset = probeNumber(probeLabel, key: "inset=") ?? 0
                 if let vis = probeNumber(probeLabel, key: "vis="), let content = probeNumber(probeLabel, key: "content="),
-                   off + vis >= content - 4, residual > 0 {
+                   off + vis + inset >= content - 4, residual > 0 {
                     upClampedSteps.insert(step)
                 }
                 if let moves = probeNumber(probeLabel, key: "moves=") {
