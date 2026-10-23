@@ -66,12 +66,24 @@ nonisolated enum DetailCompactLogoBand {
     }
 
     /// What `logoBandBlocked` becomes when `heroGone` flips (it stays live, so the logo still hides
-    /// the instant the hero returns). Back in the hero: false. Past it mid-glide: hold the band
-    /// blocked so the logo waits for the rest's decision instead of fading in under a moving row.
-    /// `nil`: the page is still (a layout change moved the clearance) — decide from `bandAtRest` now.
-    static func bandOnHeroEdge(heroGone: Bool, scrolling: Bool) -> Bool? {
-        guard heroGone else { return false }
-        return scrolling ? true : nil
+    /// the instant the hero returns). Back in the hero: false. Past it: held blocked, never decided
+    /// on the edge itself (review P3-b: the edge's action can run a frame before the offset and the
+    /// scroll latch catch up) — the latch's false edge or a layout change decides it at rest.
+    static func bandOnHeroEdge(heroGone: Bool) -> Bool {
+        heroGone
+    }
+
+    /// The scroll latch's false edge decides the band unless a Down focus change's settle task is
+    /// still unresolved (review P3-a: it may yet anchor the row to 108, and decides itself).
+    static func settlesOnRest(scrolling: Bool, downSettlePending: Bool) -> Bool {
+        !scrolling && !downSettlePending
+    }
+
+    /// A row-layout change decides the band only on a still page with focus in the rows (review
+    /// P3-c: a push or cover takes focus off the page and drops the row heights, which would read
+    /// clear) and no Down settle pending (P3-a).
+    static func settlesOnLayout(scrolling: Bool, focusInRows: Bool, downSettlePending: Bool) -> Bool {
+        !scrolling && focusInRows && !downSettlePending
     }
 
     /// The logo shows only in the rows, past the hero, with the band clear.

@@ -107,6 +107,12 @@ private final class ScrollDimModel: ObservableObject {
     /// timer in `DetailView.armHeroReturn`. Plain fields, written on the per-frame path.
     var awaitingHeroReturn = false
     var awaitingHeroReturnStartOffset: CGFloat = 0
+    /// D-3 (review P3-a): set while a Down focus change's settle task is unresolved (the engine's
+    /// reveal can rest >150 ms before the 0.35 s straddle check, and a down-straddle anchor may
+    /// still glide the row to 108). The scroll latch's false edge does not decide the compact
+    /// logo's band while it is set; the task's `.free` branch (or the anchor glide's own rest)
+    /// does. A token, so a cancelled task never clears a newer one's mark. Plain field.
+    var downSettlePending: UUID?
     /// BUG-96 oracle: timestamped content-offset samples for the current focus visit, capped at
     /// ~600 and reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the
     /// `moves=` count appended to `geometrySample`. Timestamped (not just the raw offset) because
@@ -992,16 +998,21 @@ struct DetailView: View {
                     >= heroHeight + geo.contentInsets.top + DetailCompactLogo.heroClearance
             }, action: { _, gone in
                 dimModel.heroGone = gone
-                if let band = DetailCompactLogoBand.bandOnHeroEdge(heroGone: gone, scrolling: dimModel.isScrolling) {
-                    if dimModel.logoBandBlocked != band { dimModel.logoBandBlocked = band }
-                } else {
-                    settleCompactLogoBand()
-                }
+                // Review P3-b: never decided here — `isScrolling`/`lastContentOffset` can be a frame
+                // stale when this runs first (instant jumps: Reduce Motion, pop restore). Past the
+                // hero the band holds blocked; the latch edge or a layout change decides it.
+                let band = DetailCompactLogoBand.bandOnHeroEdge(heroGone: gone)
+                if dimModel.logoBandBlocked != band { dimModel.logoBandBlocked = band }
             })
             // D-3: a row's layout moved while the page is still (late rows, cast photos): re-decide.
-            // Mid-glide the rest edge below decides instead.
+            // Mid-glide the rest edge below decides instead. Review P3-c: not while focus is off the
+            // page (a push or cover drops the row heights, which would read clear) or while a Down
+            // settle is pending (P3-a).
             .onChange(of: compactLogoBandRows) { _, _ in
-                if !dimModel.isScrolling { settleCompactLogoBand() }
+                if DetailCompactLogoBand.settlesOnLayout(scrolling: dimModel.isScrolling, focusInRows: focusedRow != nil,
+                                                         downSettlePending: dimModel.downSettlePending != nil) {
+                    settleCompactLogoBand()
+                }
             }
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
@@ -1111,8 +1122,12 @@ struct DetailView: View {
             .onReceive(dimModel.$isScrolling.removeDuplicates()) { scrolling in
                 if pageScrolling != scrolling { pageScrolling = scrolling }
                 updateTrailerMount()
-                // D-3 (review P2-1): the scroll has come to rest, so the band is decided now.
-                if !scrolling { settleCompactLogoBand() }
+                // D-3 (review P2-1): the scroll has come to rest, so the band is decided now —
+                // unless a Down settle may still move the page (review P3-a), which decides itself.
+                if DetailCompactLogoBand.settlesOnRest(scrolling: scrolling,
+                                                       downSettlePending: dimModel.downSettlePending != nil) {
+                    settleCompactLogoBand()
+                }
             }
             .onReceive(dimModel.$value) { newValue in
                 // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as
@@ -2418,6 +2433,8 @@ struct DetailView: View {
         // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
         if row != nil, !userInteracted { userInteracted = true }
         dimModel.motionSamples.removeAll(keepingCapacity: true)
+        // D-3 (review P3-a): a pending Down settle belongs to the focus visit that armed it.
+        dimModel.downSettlePending = nil
         // FEAT-35: a pending hero return belongs to the focus visit that armed it.
         dimModel.awaitingHeroReturn = false
         // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
@@ -2481,10 +2498,19 @@ struct DetailView: View {
             // straddle-checks the result and anchors only if the header needs rescuing.
             dimModel.awaitingRevealRow = nil
             dimModel.awaitingRevealNote = nil
+            let settleToken = UUID()
+            dimModel.downSettlePending = settleToken
             detailAnchorTask = Task { @MainActor in
+                // D-3 (review P3-a): however this task ends, it releases only its own mark.
+                defer { if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil } }
                 try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
                 guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
-                      let rowTop = detailRowOffsets[row] else { return }
+                      let rowTop = detailRowOffsets[row] else {
+                    // D-3 (review P3-a): not superseded (no newer focus change cancelled it) and the
+                    // page is still, so the latch edge this mark held back is decided here instead.
+                    if !Task.isCancelled, bridgePhase == .idle, !dimModel.isScrolling { settleCompactLogoBand() }
+                    return
+                }
                 // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
                 // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
                 // i.e. `contentOffset == rowTop − rest` at rest, which is also the
@@ -2492,10 +2518,16 @@ struct DetailView: View {
                 // it the check would overshoot by the inset (157 pt on the fixture) and a
                 // header sitting under the scrim would read as free.
                 let screenTop = rowTop - dimModel.lastContentOffset
-                switch DetailRowAnchor.decision(direction: .down, screenTop: screenTop) {
+                // D-3 (review P3-a): resolved — release the mark before deciding so the anchor
+                // glide's own latch edge (below) is free to settle the compact logo's band.
+                if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil }
+                let decision = DetailRowAnchor.decision(direction: .down, screenTop: screenTop)
+                switch decision {
                 case .anchor:
                     _ = anchorPass(row, note: "down-straddle")
                 case .free:
+                    // The engine's reveal is this visit's rest: the band is decided here.
+                    settleCompactLogoBand()
                     // A free row is not this pass's rest — a later layout change under it
                     // must not pull it up to the anchor either. `lastAnchored` is already
                     // nil (cleared at the top of this handler and never set by this branch,
@@ -2513,6 +2545,9 @@ struct DetailView: View {
                 // step regardless of direction.
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+                // D-3 (review P3-a): an anchor that did not move the page (already at its rest)
+                // has no latch edge to settle on; a moving one settles there (idempotent).
+                if !Task.isCancelled, decision == .anchor, !dimModel.isScrolling { settleCompactLogoBand() }
             }
         }
     }

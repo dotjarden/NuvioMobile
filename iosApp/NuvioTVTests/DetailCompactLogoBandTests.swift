@@ -101,13 +101,11 @@ final class DetailCompactLogoBandTests: XCTestCase {
         XCTAssertTrue(Band.bandAtRest(heroGone: true, rows: rows, contentOffset: 1000 - 60))
     }
 
-    /// Review P2-1: a hero edge mid-glide holds the logo until the rest decides; back in the hero
-    /// clears; a still edge defers to `bandAtRest` (nil).
+    /// Review P2-1 / P3-b: a hero edge past the clearance holds the logo until a rest decides (even
+    /// on a still page, whose offset may be a frame stale); back in the hero clears.
     func testHeroEdgeHoldsUntilRest() {
-        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: true, scrolling: true), true)
-        XCTAssertNil(Band.bandOnHeroEdge(heroGone: true, scrolling: false))
-        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: false, scrolling: true), false)
-        XCTAssertEqual(Band.bandOnHeroEdge(heroGone: false, scrolling: false), false)
+        XCTAssertTrue(Band.bandOnHeroEdge(heroGone: true))
+        XCTAssertFalse(Band.bandOnHeroEdge(heroGone: false))
     }
 
     /// Review P2-1: the press that starts a glide from an anchored rest. The focused row rests at
@@ -120,6 +118,21 @@ final class DetailCompactLogoBandTests: XCTestCase {
         XCTAssertFalse(Band.bandAtRest(heroGone: true, rows: [a, b], contentOffset: restA))
         XCTAssertTrue(Band.blocked(rows: [a, b], contentOffset: restA + 40), "mid-glide geometry is blocked")
         XCTAssertFalse(Band.bandAtRest(heroGone: true, rows: [a, b], contentOffset: restB))
+    }
+
+    /// Review P3-a: the latch's false edge waits for an unresolved Down settle.
+    func testRestEdgeWaitsForAPendingDownSettle() {
+        XCTAssertTrue(Band.settlesOnRest(scrolling: false, downSettlePending: false))
+        XCTAssertFalse(Band.settlesOnRest(scrolling: false, downSettlePending: true))
+        XCTAssertFalse(Band.settlesOnRest(scrolling: true, downSettlePending: false))
+    }
+
+    /// Review P3-c: a layout change while focus is off the page (push, cover) never decides.
+    func testLayoutChangeNeedsFocusInRowsAndNoPendingSettle() {
+        XCTAssertTrue(Band.settlesOnLayout(scrolling: false, focusInRows: true, downSettlePending: false))
+        XCTAssertFalse(Band.settlesOnLayout(scrolling: false, focusInRows: false, downSettlePending: false))
+        XCTAssertFalse(Band.settlesOnLayout(scrolling: false, focusInRows: true, downSettlePending: true))
+        XCTAssertFalse(Band.settlesOnLayout(scrolling: true, focusInRows: true, downSettlePending: false))
     }
 
     func testShowsTruthTable() {
