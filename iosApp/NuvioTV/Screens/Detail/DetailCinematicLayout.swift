@@ -86,6 +86,13 @@ nonisolated enum DetailRatings {
         }
     }
 
+    /// D-5 (design review 2026-10-22): Classic's Details block prints the ratings on one line with
+    /// the same brand labels and order as the Cinematic strip ("IMDb 8.1  ·  Rotten Tomatoes 91%"),
+    /// not the add-on's raw keys ("imdb 8.1   tomatoes 91"). Pure, read by `DetailView.infoRows`.
+    static func detailsLine(_ ratings: [DetailRatingEntry]) -> String {
+        ratings.map { "\($0.label) \($0.value)" }.joined(separator: "  \u{00B7}  ")
+    }
+
     /// Brand names stay as they are in every language; "Audience" is the one plain word.
     static func label(for source: String) -> String {
         switch source.lowercased() {

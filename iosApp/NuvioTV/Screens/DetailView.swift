@@ -2836,6 +2836,9 @@ struct DetailView: View {
                             .font(Theme.Font.detail)
                             .foregroundStyle(Theme.Palette.textPrimary)
                             .frame(maxWidth: 900, alignment: .leading)
+                            // D-5: a long value (the Ratings line) wraps instead of truncating
+                            // ("… letterboxd 2.2 au…" in the design review's Classic shot).
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -2859,9 +2862,10 @@ struct DetailView: View {
         // `DetailStatusText` so they translate; an unknown value shows as the add-on gave it.
         let status: String? = meta.status;      add(String(localized: "Status"), DetailStatusText.localized(status) ?? "")
         let awards: String? = meta.awards;      add(String(localized: "Awards"), awards ?? "")
-        let ratings = meta.externalRatings
+        // D-5 (design review 2026-10-22): Cinematic's labels and order, joined so the line wraps.
+        let ratings = DetailRatings.ordered(meta.externalRatings.map { DetailRatingInput($0) })
         if !ratings.isEmpty {
-            add(String(localized: "Ratings"), ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
+            add(String(localized: "Ratings"), DetailRatings.detailsLine(ratings))
         }
         return rows
     }
@@ -2887,11 +2891,6 @@ struct DetailView: View {
             showRatings: sectionRatings,
             isSeries: isSeries
         )
-    }
-
-    private func formatRating(_ v: Double) -> String {
-        let r = (v * 10).rounded() / 10
-        return r == r.rounded() ? String(Int(r)) : String(r)
     }
 
     // MARK: - Collection row ("Part of the X Collection")
