@@ -153,9 +153,10 @@ class NextUpEngineTest {
 
         assertTrue(inFlight.await().isEmpty())
         assertTrue(engine.dismissKeysSnapshot().isEmpty())
-        // Nothing was cached for the old profile: the next refresh fetches again.
+        // Nothing was cached: the next refresh, for the SAME profile (a different one could never
+        // hit the old key anyway), fetches again.
         fakes.gate = null
-        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(entries, profileId = 2) }, 20).map { it.videoId })
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(entries, profileId = 1) }, 20).map { it.videoId })
         assertEquals(2, fakes.fetches)
     }
 
