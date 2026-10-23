@@ -171,6 +171,11 @@ struct SettingsRootView: View {
             }
         }
         .defaultFocus($focusedCategory, focusTarget)
+        // BUG-215 (GitHub #10, reopened 2026-10-23 with a screenshot): in the Default style the
+        // focused row's lifted platter grew past the List's leading edge and the List clipped it to
+        // a hard vertical cut (simulator shot `ced48ec6`). The lift may draw into the HStack's
+        // `Spacing.xl` gap instead; nothing else sits there.
+        .scrollClipDisabled()
         .environment(\.settingsUsesNativeList, true)
         .accessibilityIdentifier("settings_root_list")
     }
