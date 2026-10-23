@@ -3154,45 +3154,55 @@ final class NuvioTVUITests: XCTestCase {
     /// launch, beta.12 lesson) — into the reporter's configuration (u/mrStevenx3, `p2qudtq`
     /// t73.5: Accent Focus Ring ON, No Zoom on Focus ON), turns Card Depth on with the Bold edge,
     /// and captures Home rows at Edge Coverage = Top ("En haut" — the reporter's "upwards") and
-    /// again at Full. Restores: depth section reset, both toggles back OFF (state-aware, so a
-    /// re-run after a failure cannot invert leftover state). Human/agent compares 27b vs 27d
-    /// against the mobile app's Top rendering (a full-perimeter outline whose alpha ramps
-    /// top→bottom, `composeApp/.../CardDepthEffect.kt`).
+    /// again at Full. Human/agent compares 27b vs 27d against the mobile app's Top rendering (a
+    /// full-perimeter outline whose alpha ramps top→bottom, `composeApp/.../CardDepthEffect.kt`).
+    ///
+    /// harness-w4 (2026-10-23): C3a turned the Edge / Sheen / Edge Coverage chip rows into
+    /// `SettingsPickerRow` menus ("Edge › Subtle", "Sheen › Soft", "Edge Coverage › Top"), so the
+    /// leg drives the pickers now: focus is moved onto the row by frame and read EXACTLY (the
+    /// focused node's label is the row's title or "title, value", or an unlabelled node on the
+    /// row's line while the explainer names it; "Edge" must never match "Edge Coverage"), the
+    /// menu opens only on that read, and the option is selected only once it reads focused
+    /// (`chooseMenuOption`). The rows' values are read before anything is picked; the `defer` puts
+    /// the pickers back to them and then runs test30's baseline (Card Depth OFF, both focus
+    /// toggles OFF, Ocean), whether the leg passed, failed or skipped.
     func test27CardDepthCoverageAB() throws {
         let app = launchToHome(forceFreshLaunch: true)
         func openAppearance() {
             XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
-        // Chip rows keep the column you arrive in — walk to the row, then Left/Right by chip
-        // (chips DO report focus).
-        func selectChip(_ name: String, rowPrefix: String, sidebarX: CGFloat) throws {
-            try walkToRowByTreeIndex(app, targetLabelPrefix: rowPrefix, sidebarMaxX: sidebarX, category: "Appearance")
-            let chip = app.buttons[name]
-            // Chips report focus: prove the walk landed on the row before sliding along it.
-            let rowChips = ["Subtle", "Balanced", "Bold", "Off", "Soft", "Bright", "Top", "Half", "Full"]
-            guard rowChips.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) else {
-                XCTFail("walk to chip row '\(rowPrefix)' did not land on a chip row"); return
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
+        var originals: [(row: String, value: String, options: [String])] = []
+        defer {
+            restoreCardDepthPickers(app, originals)
+            do {
+                try restoreAppearanceBaseline(app)
+            } catch {
+                XCTFail("test27 restore: the appearance baseline could not be restored — \(error)")
             }
-            // Right FIRST: Left from the leftmost chip leaves the row for the sidebar (pane
-            // switch), while Right past the last chip is a no-op.
-            if !moveFocus(.right, until: chip, max: 4) { _ = moveFocus(.left, until: chip, max: 4) }
-            guard chip.exists && chip.hasFocus else { XCTFail("chip \(name) never focused"); return }
-            remote.press(.select)
-            pause(0.8)
+            shot(app, "27e_restored")
         }
 
         try restoreAppearanceBaseline(app) // Ocean, portrait rows, everything OFF — a known start
         openAppearance()
-        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         shot(app, "27a_ring_and_nozoom_on")
         try ensureToggleRow(app, labelPrefix: "Card Depth", on: true, sidebarMaxX: sidebarX, category: "Appearance")
-        XCTAssertTrue(app.buttons["Top"].waitForExistence(timeout: 2), "Edge Coverage chips never appeared — Card Depth not on")
-        // The chip rows are labelled by their first chip in the AX tree — anchor on "Subtle"
-        // (edge row) and "Top" (coverage row).
-        try selectChip("Bold", rowPrefix: "Subtle", sidebarX: sidebarX)
-        try selectChip("Top", rowPrefix: "Top", sidebarX: sidebarX)
+        guard pollUntil(3, { self.settingsRowSnapshot(app, exactTitle: "Edge Coverage").row != nil }) else {
+            XCTFail("the Card Depth picker rows (Edge, Sheen, Edge Coverage) never appeared — Card Depth not on")
+            return
+        }
+        guard let edgeBefore = cardDepthRowValue(app, "Edge", options: Self.cardDepthEdgeOptions),
+              let coverageBefore = cardDepthRowValue(app, "Edge Coverage", options: Self.cardDepthCoverageOptions) else {
+            throw XCTSkip("the Card Depth picker values are unreadable (Edge=\(cardDepthRowValue(app, "Edge", options: Self.cardDepthEdgeOptions) ?? "?"), Edge Coverage=\(cardDepthRowValue(app, "Edge Coverage", options: Self.cardDepthCoverageOptions) ?? "?")) — nothing was picked")
+        }
+        originals = [("Edge", edgeBefore, Self.cardDepthEdgeOptions),
+                     ("Edge Coverage", coverageBefore, Self.cardDepthCoverageOptions)]
+        add(XCTAttachment(string: "Card Depth pickers before the leg: Edge=\(edgeBefore) Edge Coverage=\(coverageBefore)"))
+
+        try pickCardDepth(app, row: "Edge", option: "Bold", options: Self.cardDepthEdgeOptions)
+        try pickCardDepth(app, row: "Edge Coverage", option: "Top", options: Self.cardDepthCoverageOptions)
         shot(app, "27a2_depth_bold_top_selected")
 
         openTab(app, named: "Home")
@@ -3204,18 +3214,143 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "27b2_home_rows_depth_TOP_second_card")
 
         openAppearance()
-        try selectChip("Full", rowPrefix: "Top", sidebarX: sidebarX)
+        // Back down to the section by the toggle row (the tree-index walk handles the pane's lazy
+        // rows), then onto the picker by frame.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Card Depth", sidebarMaxX: sidebarX, category: "Appearance")
+        try pickCardDepth(app, row: "Edge Coverage", option: "Full", options: Self.cardDepthCoverageOptions)
         shot(app, "27c_depth_full_selected")
         openTab(app, named: "Home")
         press(.down, times: 3, gap: 1.0)
         pause(3)
         shot(app, "27d_home_rows_depth_FULL")
-
-        // Restore everything (depth OFF, both focus toggles OFF, theme) through the shared
-        // state-aware baseline — the same routine test30 runs standalone.
-        try restoreAppearanceBaseline(app)
-        shot(app, "27e_restored")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - Card Depth picker rows (harness-w4, test27)
+
+    /// The options of the Card Depth section's picker rows (`CardDepthControls`, English fixture).
+    private static let cardDepthEdgeOptions = ["Off", "Subtle", "Balanced", "Bold"]
+    private static let cardDepthCoverageOptions = ["Top", "Half", "Full"]
+
+    /// A row label that names EXACTLY `title`: the title itself, or a Cell's composed "title, …".
+    private func labelNamesRow(_ label: String, _ title: String) -> Bool {
+        label == title || label.hasPrefix(title + ",")
+    }
+
+    /// One snapshot: the deepest focused node, the frame of the Settings row titled exactly `title`
+    /// (its Cell, Button or Other; else its title text), and the explainer's title (which names the
+    /// focused row).
+    private func settingsRowSnapshot(_ app: XCUIApplication, exactTitle title: String)
+        -> (focused: XCUIElementSnapshot?, row: CGRect?, explainer: String) {
+        guard let root = try? app.snapshot() else { return (nil, nil, "") }
+        var focused: XCUIElementSnapshot?
+        var rowFrame: CGRect?
+        var textFrame: CGRect?
+        var explainer = ""
+        let rowTypes: [XCUIElement.ElementType] = [.cell, .button, .other]
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused = node }
+            if node.identifier == "settings_explainer_title" {
+                explainer = node.label
+            } else if node.frame.height > 0, labelNamesRow(node.label, title) {
+                if rowFrame == nil, rowTypes.contains(node.elementType) { rowFrame = node.frame }
+                if textFrame == nil, node.elementType == .staticText { textFrame = node.frame }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return (focused, rowFrame ?? textFrame, explainer)
+    }
+
+    /// Whether the Settings row titled exactly `title` holds focus: the deepest focused node names
+    /// it, or it is an unlabelled node on the row's line (±14 pt; a picker row's focus can sit on a
+    /// Cell with no label) while the explainer names no OTHER row.
+    private func cardDepthRowHasFocus(_ app: XCUIApplication, _ title: String) -> Bool {
+        let read = settingsRowSnapshot(app, exactTitle: title)
+        guard let focused = read.focused else { return false }
+        if labelNamesRow(focused.label, title) { return true }
+        if !focused.label.isEmpty { return false }
+        if !read.explainer.isEmpty, read.explainer != title { return false }
+        guard let row = read.row else { return false }
+        return abs(focused.frame.midY - row.midY) < 14
+    }
+
+    /// Moves focus onto the row titled `title`, one Up/Down at a time toward its frame, reading after
+    /// every press. Never Select.
+    private func focusSettingsRowExact(_ app: XCUIApplication, _ title: String, max: Int = 8) -> Bool {
+        for _ in 0..<max {
+            if cardDepthRowHasFocus(app, title) { return true }
+            let read = settingsRowSnapshot(app, exactTitle: title)
+            if let focused = read.focused, let row = read.row {
+                remote.press(focused.frame.midY > row.midY ? .up : .down)
+            } else {
+                remote.press(.down) // the row is below the List's materialised part
+            }
+            pause(0.7)
+        }
+        return cardDepthRowHasFocus(app, title)
+    }
+
+    /// The value the picker row titled `title` shows, from one snapshot: the row element's `.value`,
+    /// its composed "title, value" label, or an option text on the row's line, right of its start.
+    private func cardDepthRowValue(_ app: XCUIApplication, _ title: String, options: [String]) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var rowNodes: [XCUIElementSnapshot] = []
+        var optionTexts: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier != "settings_explainer_title", node.frame.height > 0 {
+                if labelNamesRow(node.label, title) {
+                    rowNodes.append(node)
+                } else if node.elementType == .staticText, options.contains(node.label) {
+                    optionTexts.append(node)
+                }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        for node in rowNodes {
+            if let value = node.value as? String, options.contains(value) { return value }
+            if let option = options.first(where: { node.label.hasSuffix(", \($0)") || node.label.contains(", \($0),") }) {
+                return option
+            }
+        }
+        guard let anchor = rowNodes.first?.frame else { return nil }
+        return optionTexts.first { abs($0.frame.midY - anchor.midY) < 14 && $0.frame.minX > anchor.minX }?.label
+    }
+
+    /// Picks `option` on the Card Depth picker row `title`: focus onto the row (read exactly), the
+    /// menu opened only on that read, the option selected only once it reads focused. Asserts the
+    /// row then shows `option`.
+    private func pickCardDepth(_ app: XCUIApplication, row title: String, option: String, options: [String]) throws {
+        guard focusSettingsRowExact(app, title) else {
+            shot(app, "unverified_card_depth_\(title)")
+            throw UnverifiedFocus(description: "focus never settled on the Card Depth '\(title)' row (focused: \(focusedLabelList(app))) — not opening its menu")
+        }
+        try chooseMenuOption(app, option, what: "Card Depth \(title)", onRow: title,
+                             rowFocused: { self.cardDepthRowHasFocus(app, title) })
+        let shows = pollUntil(3) { self.cardDepthRowValue(app, title, options: options) == option }
+        XCTAssertTrue(shows, "Card Depth '\(title)' must read '\(option)' after the pick (reads \(cardDepthRowValue(app, title, options: options) ?? "unreadable"))")
+    }
+
+    /// test27's `defer`: puts each picker the leg changed back to the value it read before (Card
+    /// Depth must be on for the pickers to exist; the baseline that follows turns it off).
+    private func restoreCardDepthPickers(_ app: XCUIApplication, _ originals: [(row: String, value: String, options: [String])]) {
+        guard !originals.isEmpty else { return }
+        guard openSettingsCategory(app, named: "Appearance") else {
+            XCTFail("test27 restore: Settings › Appearance did not open; Card Depth pickers left as the leg set them (wanted \(originals.map { "\($0.row)=\($0.value)" }))")
+            return
+        }
+        do {
+            try ensureToggleRow(app, labelPrefix: "Card Depth", on: true, sidebarMaxX: 0, category: "Appearance")
+            for original in originals where cardDepthRowValue(app, original.row, options: original.options) != original.value {
+                try pickCardDepth(app, row: original.row, option: original.value, options: original.options)
+            }
+            add(XCTAttachment(string: "Card Depth pickers restored: " + originals.map {
+                "\($0.row)=\(cardDepthRowValue(app, $0.row, options: $0.options) ?? "?") (wanted \($0.value))"
+            }.joined(separator: ", ")))
+        } catch {
+            XCTFail("test27 restore: the Card Depth pickers could not be put back to \(originals.map { "\($0.row)=\($0.value)" }) — \(error)")
+        }
     }
 
     /// Moves focus to the pane row whose label starts with `targetLabelPrefix` — a row that does
@@ -10137,11 +10272,14 @@ extension NuvioTVUITests {
     /// inline or behind a nested `submenu` row). Throws `XCTSkip` when the runtime never publishes
     /// the option as a focusable button — a known soft spot (PinnedRowSettleRegimeTests' Poster
     /// Size leg) — after closing the menu with Menu, so nothing was changed.
+    /// `rowFocused` (harness-w4) replaces the default row read for a caller whose row title is the
+    /// prefix of another row's ("Edge" / "Edge Coverage"), where a prefix match cannot tell them apart.
     private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String,
-                                  onRow rowTitle: String) throws {
+                                  onRow rowTitle: String, rowFocused: (() -> Bool)? = nil) throws {
         // ui-legs: the menu opens only from the row it belongs to, read focused here (its Cell's
         // composed label, or the explainer, which names the focused row).
         try pressVerified(app, "menu_row_\(rowTitle)", when: {
+            if let rowFocused { return rowFocused() }
             let explainer = app.staticTexts["settings_explainer_title"]
             return focusedNodes(app).contains { $0.label.hasPrefix(rowTitle) }
                 || (explainer.exists && explainer.label == rowTitle)
