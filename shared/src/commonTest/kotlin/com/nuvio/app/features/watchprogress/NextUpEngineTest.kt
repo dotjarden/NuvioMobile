@@ -76,11 +76,12 @@ class NextUpEngineTest {
         history: List<WatchedItem> = emptyList(),
         dismissed: Set<String> = emptySet(),
         profileId: Int = 1,
+        showUnaired: Boolean = true,
     ) = NextUpInputs(
         profileId = profileId,
         source = source,
         preferFurthestEpisode = true,
-        showUnairedNextUp = true,
+        showUnairedNextUp = showUnaired,
         dismissedNextUpKeys = dismissed,
         nowEpochMs = now,
         todayIsoDate = "2026-10-23",
@@ -261,5 +262,32 @@ class NextUpEngineTest {
 
         engine.onUnmarkedWatched(listOf(WatchedItem(id = "tt1", type = "series", name = "tt1", season = 1, episode = 4, markedAtEpochMs = 0L)))
         assertEquals(listOf("tt1:1:4"), engine.resolve(trakt(t0 + 4_000L), 20).map { it.videoId })
+    }
+
+    @Test
+    fun withUnairedNextUpOffTheNoCardIsRecheckedAtTheNextRelease() = runTest {
+        // "Show unaired next up" OFF: seriesPrimaryAction itself returns nothing for E4, so the air
+        // check never runs. The "no card" must still be reused only until E4's release instant.
+        // (seriesPrimaryAction reads the real clock, hence a far-future date: this checks the
+        // recheck, not the card that follows it.)
+        val releaseAt = parseReleaseDateToEpochMs("2099-06-01T01:00:00.000Z")!!
+        val fakes = Fakes().apply { metaById["tt1"] = series("tt1", aired, aired, aired, "2099-06-01T01:00:00.000Z") }
+        val engine = engine(fakes, this)
+        val entries = listOf(progress("tt1", 3, t0, completed = true))
+        val off = { now: Long -> inputs(entries, now = now, showUnaired = false) }
+
+        assertTrue(engine.resolve(off(t0), 20).isEmpty())
+        assertTrue(engine.resolve(off(t0 + 60_000L), 20).isEmpty())
+        assertEquals(1, fakes.fetches, "the no-card verdict is reused before the release")
+        engine.resolve(off(releaseAt + 1_000L), 20)
+        assertEquals(2, fakes.fetches, "and resolved again once the release instant has passed")
+    }
+
+    @Test
+    fun withUnairedNextUpOffAnAiredNextEpisodeStillGetsItsCard() = runTest {
+        val fakes = Fakes().apply { metaById["tt1"] = series("tt1", aired, aired, aired, aired) }
+        val engine = engine(fakes, this)
+        val entries = listOf(progress("tt1", 3, t0, completed = true))
+        assertEquals(listOf("tt1:1:4"), engine.resolve(inputs(entries, showUnaired = false), 20).map { it.videoId })
     }
 }

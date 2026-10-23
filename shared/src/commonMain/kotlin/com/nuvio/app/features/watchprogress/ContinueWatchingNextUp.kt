@@ -124,6 +124,29 @@ fun nextUpAirCheck(
 }
 
 /**
+ * Pure (unit-tested), review pass 3 P2-1: the earliest release still ahead among the main-season
+ * episodes after the seed. With "Show unaired next up" OFF, `seriesPrimaryAction` returns no
+ * action at all for a caught-up show whose next episode has not aired, so [nextUpAirCheck] is
+ * never reached; this instant is the recheck for that "no card" instead, so it is not cached
+ * until local midnight. Null when nothing later has a future date (the show is finished or
+ * undated), which is a settled "no card" for the day.
+ */
+fun nextFutureReleaseAfterSeed(
+    videos: List<MetaVideo>,
+    seedSeasonNumber: Int,
+    seedEpisodeNumber: Int,
+    nowEpochMs: Long,
+): Long? = videos
+    .filter { video ->
+        val season = video.season ?: return@filter false
+        val episode = video.episode ?: return@filter false
+        season > 0 && (season > seedSeasonNumber || (season == seedSeasonNumber && episode > seedEpisodeNumber))
+    }
+    .mapNotNull { video -> parseReleaseDateToEpochMs(video.released) }
+    .filter { releaseAt -> releaseAt > nowEpochMs }
+    .minOrNull()
+
+/**
  * Pure (unit-tested): the episode a `seriesPrimaryAction` result points at, as mobile's
  * `videoForSeriesAction` finds it: by season and episode first, then by playback id.
  */
@@ -752,7 +775,16 @@ internal class NextUpEngine(
                 preferFurthestEpisode = inputs.preferFurthestEpisode,
                 showUnairedNextUp = inputs.showUnairedNextUp,
                 allowRewatch = false,
-            ) ?: return settled(null)
+            ) ?: return settled(
+                entry = null,
+                // Pass 3 P2-1: "Show unaired next up" off and the next episode not out yet.
+                recheckAtEpochMs = nextFutureReleaseAfterSeed(
+                    videos = meta.videos,
+                    seedSeasonNumber = seed.seasonNumber,
+                    seedEpisodeNumber = seed.episodeNumber,
+                    nowEpochMs = inputs.nowEpochMs,
+                ),
+            )
             // A resume action means an episode is already in progress: its own card covers it.
             if (action.resumePositionMs != null) return settled(null)
             val season = action.seasonNumber ?: return settled(null)

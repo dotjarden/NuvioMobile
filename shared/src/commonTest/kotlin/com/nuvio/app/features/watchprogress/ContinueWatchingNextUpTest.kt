@@ -443,4 +443,21 @@ class ContinueWatchingNextUpTest {
         val wholeShow = WatchedItem(id = "tt1", type = "series", name = "tt1", markedAtEpochMs = 0L)
         assertEquals(listOf("tt2"), withoutUnmarkedNextUpMarks(marks, listOf(wholeShow)).map { it.item.id })
     }
+
+    @Test
+    fun nextFutureReleaseAfterSeedLooksOnlyAheadOfTheSeedAndInTheFuture() {
+        val past = "2020-01-01T00:00:00.000Z"
+        val soon = "2099-01-01T00:00:00.000Z"
+        val later = "2099-02-01T00:00:00.000Z"
+        val videos = listOf(
+            MetaVideo(id = "s1e2", title = "", released = later, season = 1, episode = 2), // before the seed
+            MetaVideo(id = "s1e4", title = "", released = past, season = 1, episode = 4),
+            MetaVideo(id = "s1e5", title = "", released = later, season = 1, episode = 5),
+            MetaVideo(id = "s2e1", title = "", released = soon, season = 2, episode = 1),
+            MetaVideo(id = "sp", title = "", released = "2098-01-01T00:00:00.000Z", season = 0, episode = 1), // special
+            MetaVideo(id = "undated", title = "", released = null, season = 1, episode = 6),
+        )
+        assertEquals(parseReleaseDateToEpochMs(soon), nextFutureReleaseAfterSeed(videos, 1, 3, t0))
+        assertNull(nextFutureReleaseAfterSeed(videos.take(2), 1, 3, t0))
+    }
 }
