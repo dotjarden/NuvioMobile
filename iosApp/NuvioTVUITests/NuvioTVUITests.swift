@@ -10163,6 +10163,10 @@ extension NuvioTVUITests {
                          "-home_upcoming_row_enabled", "NO",
                          "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES"]
         if shadowGridChoice { arguments += ["-folder_layout_grid", ""] }
+        // BUG-221 guard (2026-10-23): the folder legs run with Card Depth ON (master + every
+        // surface, DEBUG launch override, never written or synced). The W3-13 raster-cache overlay
+        // crashed these legs 8 / 8 when an earlier leg had left the synced setting on.
+        arguments += ["-debug.cardDepthOn", "YES"]
         return launchToHomeWithSeededCollections(Self.folderRowsSeedJson, extraArguments: arguments + extraArguments,
                                                  homeLayout: "stage")
     }
