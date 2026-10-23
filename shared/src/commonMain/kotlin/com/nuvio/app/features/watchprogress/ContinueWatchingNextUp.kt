@@ -3,6 +3,7 @@ package com.nuvio.app.features.watchprogress
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.seriesPrimaryAction
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedItem
@@ -165,10 +166,12 @@ fun withoutDismissedNextUp(
 /**
  * The inputs a seed's resolution depends on besides the episode metadata. Two refreshes with the
  * same key give the same next episode, so the result is reused instead of refetched; the date is
- * in it so an episode that airs overnight is picked up the next day.
+ * in it so an episode that airs overnight is picked up the next day. The profile is in it so a
+ * result can never cross a profile switch, even one that lands between two refreshes.
  */
 internal fun nextUpResolveKey(
     seed: ContinueWatchingNextUpSeed,
+    profileId: Int,
     source: String,
     preferFurthestEpisode: Boolean,
     showUnairedNextUp: Boolean,
@@ -182,7 +185,7 @@ internal fun nextUpResolveKey(
     if (preferFurthestEpisode) "furthest" else "latest",
     if (showUnairedNextUp) "unaired" else "aired",
     todayIsoDate,
-).joinToString("|")
+).joinToString("|", prefix = "p$profileId|")
 
 object ContinueWatchingNextUp {
     private val log = Logger.withTag("CWNextUp")
@@ -229,6 +232,7 @@ object ContinueWatchingNextUp {
 
     private suspend fun resolve(limit: Int): List<WatchProgressEntry> {
         val startGeneration = synchronized(lock) { generation }
+        val profileId = ProfileRepository.activeProfileId
         val prefs = ContinueWatchingPreferencesRepository.uiState.value
         val now = WatchProgressClock.nowEpochMs()
         val source = WatchProgressRepository.activeSourceState.value
@@ -259,6 +263,7 @@ object ContinueWatchingNextUp {
             seeds.map { seed ->
                 val key = nextUpResolveKey(
                     seed = seed,
+                    profileId = profileId,
                     source = source.name,
                     preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
                     showUnairedNextUp = prefs.showUnairedNextUp,
@@ -327,6 +332,13 @@ object ContinueWatchingNextUp {
             WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
         }
     }
+
+    /**
+     * Profile switch (`TvOsProviderInstaller`'s profile fan-out, next to the Upcoming row's step):
+     * the same reset as the account wipe. The generation bump means a refresh still running for
+     * the outgoing profile cannot write its results or dismiss keys back afterwards.
+     */
+    fun onProfileChanged() = clearLocalState()
 
     /** Account wipe (`TvOsAccountDataCleaner`): the cached results name the outgoing account's shows. */
     fun clearLocalState() {

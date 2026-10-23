@@ -247,17 +247,18 @@ class ContinueWatchingNextUpTest {
     @Test
     fun resolveKeyChangesWithEveryInputThatChangesTheAnswer() {
         val seed = ContinueWatchingNextUpSeed("series", "tt1", 1, 3, t0)
-        val base = nextUpResolveKey(seed, "NUVIO_SYNC", preferFurthestEpisode = true, showUnairedNextUp = true, todayIsoDate = "2026-10-23")
+        val base = nextUpResolveKey(seed, 1, "NUVIO_SYNC", preferFurthestEpisode = true, showUnairedNextUp = true, todayIsoDate = "2026-10-23")
         val variants = listOf(
-            nextUpResolveKey(seed.copy(episodeNumber = 4), "NUVIO_SYNC", true, true, "2026-10-23"),
-            nextUpResolveKey(seed.copy(contentId = "tt2"), "NUVIO_SYNC", true, true, "2026-10-23"),
-            nextUpResolveKey(seed, "TRAKT", true, true, "2026-10-23"),
-            nextUpResolveKey(seed, "NUVIO_SYNC", false, true, "2026-10-23"),
-            nextUpResolveKey(seed, "NUVIO_SYNC", true, false, "2026-10-23"),
-            nextUpResolveKey(seed, "NUVIO_SYNC", true, true, "2026-10-24"),
+            nextUpResolveKey(seed.copy(episodeNumber = 4), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed.copy(contentId = "tt2"), 1, "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed, 1, "TRAKT", true, true, "2026-10-23"),
+            nextUpResolveKey(seed, 1, "NUVIO_SYNC", false, true, "2026-10-23"),
+            nextUpResolveKey(seed, 1, "NUVIO_SYNC", true, false, "2026-10-23"),
+            nextUpResolveKey(seed, 1, "NUVIO_SYNC", true, true, "2026-10-24"),
+            nextUpResolveKey(seed, 2, "NUVIO_SYNC", true, true, "2026-10-23"),
         )
         variants.forEach { assertNotEquals(base, it) }
         // Re-finishing the same episode later re-dates the card but does not refetch it.
-        assertEquals(base, nextUpResolveKey(seed.copy(markedAtEpochMs = t0 + 1), "NUVIO_SYNC", true, true, "2026-10-23"))
+        assertEquals(base, nextUpResolveKey(seed.copy(markedAtEpochMs = t0 + 1), 1, "NUVIO_SYNC", true, true, "2026-10-23"))
     }
 }

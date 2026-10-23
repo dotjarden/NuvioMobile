@@ -446,6 +446,8 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
         step("episodeReleaseAlerts") { EpisodeReleaseNotificationsRepository.onProfileChanged() }
         step("upcomingEpisodes") { UpcomingEpisodesRepository.onProfileChanged() }
+        // FEAT-85 Up Next: drop the outgoing profile's resolved cards and dismiss-key map.
+        step("continueWatchingNextUp") { ContinueWatchingNextUp.onProfileChanged() }
         step("tmdbSettings") { TmdbSettingsRepository.onProfileChanged() }
         step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
         step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
