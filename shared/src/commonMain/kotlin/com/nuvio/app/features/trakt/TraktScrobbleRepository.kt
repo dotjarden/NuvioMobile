@@ -16,19 +16,10 @@ import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.launch
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import kotlin.math.abs
+import com.nuvio.app.features.profiles.MAX_PROFILES
+import kotlin.time.Instant
 import kotlin.random.Random
-
-private const val BASE_URL = "https://api.trakt.tv"
 
 sealed interface TraktScrobbleItem {
     val itemKey: String
@@ -88,42 +79,58 @@ object TraktScrobbleRepository : TrackingScrobbler {
     override val seekScrobblePolicy: TrackingSeekScrobblePolicy =
         TrackingSeekScrobblePolicy.STOP_AND_RESTART
 
-    private data class ScrobbleStamp(
-        val profileId: Int,
-        val action: String,
-        val itemKey: String,
-        val progress: Float,
-        val timestampMs: Long,
-    )
-
     private val log = Logger.withTag("TraktScrobble")
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = false
-        explicitNulls = false
-    }
 
-    private var lastScrobbleStamp: ScrobbleStamp? = null
-
-    private val replayScope = CoroutineScope(
+    private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TraktScrobbleRepository"),
     )
-    private var authWatcher: Job? = null
 
-    private val pendingStops = TraktScrobbleStopOutbox(
+    /** The request path, write-ahead queue and replay (BUG-220), wired to the real singletons. */
+    private val engine = TraktScrobbleEngine(
+        activeProfileId = { ActiveProfileProvider.activeProfileId },
+        authorizedHeaders = { TraktAuthRepository.authorizedHeaders() },
+        isAuthenticated = { TraktAuthRepository.isAuthenticated.value },
+        authenticatedChanges = { TraktAuthRepository.isAuthenticated },
+        accountSlug = { TraktAuthRepository.currentUserSlug() },
+        http = { method, url, body, headers ->
+            runCatching { httpRequestRaw(method = method, url = url, headers = headers, body = body) }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    log.w(error) { "Trakt $method ${url.substringBefore('?')} transport failure" }
+                }
+                .getOrNull()
+                ?.let { response ->
+                    TraktHttpReply(
+                        status = response.status,
+                        statusText = response.statusText,
+                        body = response.body,
+                        url = response.url,
+                        headers = response.headers,
+                    )
+                }
+        },
+        refreshProgress = {
+            runCatching { TraktProgressRepository.invalidateAndRefresh() }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    log.w { "Failed to refresh Trakt progress after stop: ${error.message}" }
+                }
+        },
         queue = TraktPendingScrobbleStopQueue(
             load = TraktPendingScrobbleStopStorage::load,
             save = TraktPendingScrobbleStopStorage::save,
             clear = TraktPendingScrobbleStopStorage::clear,
             now = TraktPlatformClock::nowEpochMs,
         ),
-        activeProfileId = { ActiveProfileProvider.activeProfileId },
-        isConnected = { profileId ->
-            ActiveProfileProvider.activeProfileId == profileId && TraktAuthRepository.isAuthenticated.value
-        },
         now = TraktPlatformClock::nowEpochMs,
         newId = { "${TraktPlatformClock.nowEpochMs()}-${Random.nextInt(0, Int.MAX_VALUE)}" },
-        log = ::trace,
+        scope = scope,
+        appVersion = AppVersionConfig.VERSION_NAME,
+        parseIsoMs = TraktPlatformClock::parseIsoDateTimeToEpochMs,
+        formatIsoMs = { ms -> Instant.fromEpochMilliseconds(ms).toString() },
+        trace = ::trace,
+        debug = { message -> log.d { message() } },
+        warn = { message -> log.w { message } },
     )
 
     /**
@@ -135,11 +142,6 @@ object TraktScrobbleRepository : TrackingScrobbler {
         log.i { message }
         println("[TraktScrobble] $message")
     }
-    private val minSendIntervalMs = 8_000L
-    private val progressWindow = 1.5f
-    private val maxStopRetries = 2
-    private val retryDelayMs = 1_500L
-    private val serverOverloadedRetryDelayMs = 5_000L
 
     init {
         TrackingProviderRegistry.registerScrobbler(this)
@@ -272,309 +274,31 @@ object TraktScrobbleRepository : TrackingScrobbler {
         action: String,
         item: TraktScrobbleItem,
         progressPercent: Float,
-    ) {
-        val clampedProgress = progressPercent.coerceIn(0f, 100f)
-        when (action) {
-            // BUG-220: persisted before it is sent, replayed later if it does not land.
-            "stop" -> pendingStops.sendStop(profileId, item, clampedProgress) { stopItem, progress ->
-                deliver(profileId, action, stopItem, progress, replay = false)
-            }
-            "start" -> {
-                pendingStops.onSessionStarted(profileId, item.itemKey)
-                deliver(profileId, action, item, clampedProgress, replay = false)
-            }
-            else -> deliver(profileId, action, item, clampedProgress, replay = false)
-        }
-    }
-
-    /**
-     * One request. A live stop retries transport failures and 5xx in place (as before); a replay
-     * sends once and leaves the retry to the next drain. A live stop refreshes Trakt progress on
-     * success; a drain refreshes once at its end.
-     */
-    private suspend fun deliver(
-        profileId: Int,
-        action: String,
-        item: TraktScrobbleItem,
-        clampedProgress: Float,
-        replay: Boolean,
-    ): TraktScrobbleDelivery {
-        if (ActiveProfileProvider.activeProfileId != profileId) return TraktScrobbleDelivery.NOT_READY
-        val headers = TraktAuthRepository.authorizedHeaders() ?: return TraktScrobbleDelivery.NOT_READY
-        if (ActiveProfileProvider.activeProfileId != profileId) return TraktScrobbleDelivery.NOT_READY
-        if (!replay && shouldSkip(profileId, action, item.itemKey, clampedProgress)) {
-            return TraktScrobbleDelivery.SKIPPED
-        }
-
-        val url = "$BASE_URL/scrobble/$action"
-        val requestBody = json.encodeToString(buildRequestBody(item, clampedProgress))
-        val requestHeaders = mapOf(
-            "Accept" to "application/json",
-            "Content-Type" to "application/json",
-        ) + headers
-
-        log.d {
-            buildString {
-                append("Trakt scrobble ")
-                append(action)
-                if (replay) append(" (replay)")
-                append(" request")
-                append('\n')
-                append("url=")
-                append(url)
-                append('\n')
-                append("headers=")
-                append(requestHeaders.redactedForLogs().formatForLog())
-                append('\n')
-                append("body=")
-                append(requestBody.ifBlank { "<empty>" })
-            }
-        }
-
-        val attempts = if (action == "stop" && !replay) maxStopRetries + 1 else 1
-        var wasSent = false
-        for (attempt in 1..attempts) {
-            val response = runCatching {
-                httpRequestRaw(
-                    method = "POST",
-                    url = url,
-                    body = requestBody,
-                    headers = requestHeaders,
-                )
-            }.onFailure { error ->
-                if (error is CancellationException) throw error
-                log.w(error) {
-                    "Trakt scrobble $action transport failure on attempt $attempt/$attempts"
-                }
-            }.getOrNull()
-
-            if (response == null) {
-                if (attempt < attempts) {
-                    delay(retryDelayMs * attempt)
-                    continue
-                }
-                return TraktScrobbleDelivery.OFFLINE
-            }
-
-            log.d {
-                buildString {
-                    append("Trakt scrobble ")
-                    append(action)
-                    append(" response")
-                    append('\n')
-                    append("status=")
-                    append(response.status)
-                    append(' ')
-                    append(response.statusText.ifBlank { "<no-status-text>" })
-                    append('\n')
-                    append("url=")
-                    append(response.url)
-                    append('\n')
-                    append("headers=")
-                    append(response.headers.formatForLog())
-                    append('\n')
-                    append("body=")
-                    append(response.body.ifBlank { "<empty>" })
-                }
-            }
-
-            if (response.status in 200..299 || response.status == 409) {
-                if (action == "stop") trace("Trakt scrobble stop status=${response.status}${if (replay) " (replay)" else ""}")
-                wasSent = true
-                break
-            }
-
-            if (response.status in 500..599 && attempt < attempts) {
-                val delayMs = if (response.status in 502..504) serverOverloadedRetryDelayMs else retryDelayMs * attempt
-                delay(delayMs)
-                continue
-            }
-
-            val failure = "Failed Trakt scrobble $action: HTTP ${response.status} ${response.statusText.ifBlank { "<no-status-text>" }}"
-            if (action == "stop") trace(failure) else log.w { failure }
-            return classifyTraktScrobbleFailure(response.status)
-        }
-
-        if (!wasSent) return TraktScrobbleDelivery.OFFLINE
-
-        lastScrobbleStamp = ScrobbleStamp(
-            profileId = profileId,
-            action = action,
-            itemKey = item.itemKey,
-            progress = clampedProgress,
-            timestampMs = TraktPlatformClock.nowEpochMs(),
-        )
-
-        if (action == "stop" && !replay) refreshProgressAfterStop()
-        return TraktScrobbleDelivery.SENT
-    }
-
-    private suspend fun refreshProgressAfterStop() {
-        runCatching { TraktProgressRepository.invalidateAndRefresh() }
-            .onFailure { error ->
-                if (error is CancellationException) throw error
-                log.w { "Failed to refresh Trakt progress after stop: ${error.message}" }
-            }
-    }
+    ) = engine.send(profileId, action, item, progressPercent)
 
     // ── BUG-220 pending-stop replay ─────────────────────────────────────────────────────────
 
     /**
      * Profile-selection hook (tvOS fan-out after `traktAuth`, composeApp's adapter): every launch
-     * enters through it, so this is the launch drain. Also arms the auth watcher once, which
-     * drains again whenever Trakt auth turns on later (device-flow connect, credential sync pull).
+     * enters through it, so this is the launch drain. The first call arms the auth watcher, which
+     * drains again whenever Trakt auth turns on (device-flow connect, credential sync pull).
      */
-    fun onProfileChanged(profileId: Int) {
-        pendingStops.onProfileChanged()
-        armAuthWatcher()
-        requestPendingStopReplay(profileId)
-    }
+    fun onProfileChanged(profileId: Int) = engine.onProfileChanged(profileId)
 
-    /** Drops [profileId]'s pending stops (Trakt disconnect, profile removal): never replay into another account. */
-    fun clearPendingStops(profileId: Int) {
-        TraktPendingScrobbleStopStorage.clear(profileId)
-    }
+    fun requestPendingStopReplay(profileId: Int = ActiveProfileProvider.activeProfileId) =
+        engine.requestReplay(profileId)
 
-    fun requestPendingStopReplay(profileId: Int = ActiveProfileProvider.activeProfileId) {
-        replayScope.launch { replayPendingStops(profileId) }
-    }
+    suspend fun replayPendingStops(profileId: Int = ActiveProfileProvider.activeProfileId): TraktPendingStopDrainResult =
+        engine.replay(profileId)
 
-    suspend fun replayPendingStops(profileId: Int = ActiveProfileProvider.activeProfileId): TraktPendingStopDrainResult {
-        val result = pendingStops.drain(profileId) { item, progress ->
-            deliver(profileId, "stop", item, progress, replay = true)
-        }
-        if (result.sent > 0 || result.dropped > 0 || result.kept > 0) {
-            trace("Trakt pending stop replay done profile=$profileId sent=${result.sent} kept=${result.kept} dropped=${result.dropped}")
-        }
-        if (result.sent > 0) refreshProgressAfterStop()
-        return result
-    }
+    /** Trakt disconnect: never replay this profile's stops into the next account connected. */
+    suspend fun clearPendingStops(profileId: Int) = engine.clearPendingStops(profileId)
 
-    private fun armAuthWatcher() {
-        if (authWatcher != null) return
-        // drop(1): the current value is covered by the explicit request in onProfileChanged.
-        authWatcher = replayScope.launch {
-            TraktAuthRepository.isAuthenticated.drop(1).collect { authenticated ->
-                if (authenticated) replayPendingStops(ActiveProfileProvider.activeProfileId)
-            }
-        }
-    }
+    /** Profile removal (non-suspending caller). */
+    fun clearPendingStopsAsync(profileId: Int) = engine.clearPendingStopsAsync(profileId)
 
-    private fun buildRequestBody(
-        item: TraktScrobbleItem,
-        clampedProgress: Float,
-    ): TraktScrobbleRequest {
-        return when (item) {
-            is TraktScrobbleItem.Movie -> TraktScrobbleRequest(
-                movie = TraktMovieBody(
-                    title = item.title,
-                    year = item.year,
-                    ids = item.ids.toRequestBodyOrNull(),
-                ),
-                progress = clampedProgress,
-                appVersion = AppVersionConfig.VERSION_NAME,
-            )
-
-            is TraktScrobbleItem.Episode -> TraktScrobbleRequest(
-                show = TraktShowBody(
-                    title = item.showTitle,
-                    year = item.showYear,
-                    ids = item.showIds.toRequestBodyOrNull(),
-                ),
-                episode = TraktEpisodeBody(
-                    title = item.episodeTitle,
-                    season = item.season,
-                    number = item.number,
-                ),
-                progress = clampedProgress,
-                appVersion = AppVersionConfig.VERSION_NAME,
-            )
-        }
-    }
-
-    private fun shouldSkip(profileId: Int, action: String, itemKey: String, progress: Float): Boolean {
-        val last = lastScrobbleStamp ?: return false
-        val now = TraktPlatformClock.nowEpochMs()
-        val isSameWindow = now - last.timestampMs < minSendIntervalMs
-        val isSameProfile = last.profileId == profileId
-        val isSameAction = last.action == action
-        val isSameItem = last.itemKey == itemKey
-        val isNearProgress = abs(last.progress - progress) <= progressWindow
-        if (action == "stop" && last.action == "start" && isSameItem && isSameProfile) {
-            return false
-        }
-        return isSameWindow && isSameProfile && isSameAction && isSameItem && isNearProgress
-    }
-
-    private fun Map<String, String>.redactedForLogs(): Map<String, String> =
-        entries.associate { (key, value) ->
-            key to when {
-                key.equals("authorization", ignoreCase = true) -> redactBearerValue(value)
-                key.equals("trakt-api-key", ignoreCase = true) -> "<redacted>"
-                else -> value
-            }
-        }
-
-    private fun Map<String, String>.formatForLog(): String =
-        entries
-            .sortedBy { it.key.lowercase() }
-            .joinToString(prefix = "{", postfix = "}") { (key, value) -> "$key=$value" }
-
-    private fun redactBearerValue(value: String): String {
-        val tokenPrefix = "Bearer "
-        if (!value.startsWith(tokenPrefix, ignoreCase = true)) return "<redacted>"
-        val token = value.removePrefix(tokenPrefix).trim()
-        if (token.isBlank()) return "Bearer <redacted>"
-        val prefix = token.take(6)
-        val suffix = token.takeLast(4)
-        return "Bearer ${prefix}...${suffix}"
-    }
-
-    private fun TraktExternalIds.toRequestBodyOrNull(): TraktIdsBody? {
-        if (trakt == null && imdb.isNullOrBlank() && tmdb == null) return null
-        return TraktIdsBody(
-            trakt = trakt,
-            imdb = imdb,
-            tmdb = tmdb,
-        )
-    }
+    /** Sign-out: every profile slot's queue (the keys themselves are erased via AccountDataStores). */
+    fun clearLocalState() = engine.onAccountDataWiped(1..MAX_PROFILES)
 }
 
 private fun Long.toTraktIntOrNull(): Int? = takeIf { value -> value in 1L..Int.MAX_VALUE.toLong() }?.toInt()
-
-@Serializable
-private data class TraktScrobbleRequest(
-    @SerialName("movie") val movie: TraktMovieBody? = null,
-    @SerialName("show") val show: TraktShowBody? = null,
-    @SerialName("episode") val episode: TraktEpisodeBody? = null,
-    @SerialName("progress") val progress: Float,
-    @SerialName("app_version") val appVersion: String? = null,
-)
-
-@Serializable
-private data class TraktMovieBody(
-    @SerialName("title") val title: String? = null,
-    @SerialName("year") val year: Int? = null,
-    @SerialName("ids") val ids: TraktIdsBody? = null,
-)
-
-@Serializable
-private data class TraktShowBody(
-    @SerialName("title") val title: String? = null,
-    @SerialName("year") val year: Int? = null,
-    @SerialName("ids") val ids: TraktIdsBody? = null,
-)
-
-@Serializable
-private data class TraktEpisodeBody(
-    @SerialName("title") val title: String? = null,
-    @SerialName("season") val season: Int? = null,
-    @SerialName("number") val number: Int? = null,
-)
-
-@Serializable
-private data class TraktIdsBody(
-    @SerialName("trakt") val trakt: Int? = null,
-    @SerialName("imdb") val imdb: String? = null,
-    @SerialName("tmdb") val tmdb: Int? = null,
-)

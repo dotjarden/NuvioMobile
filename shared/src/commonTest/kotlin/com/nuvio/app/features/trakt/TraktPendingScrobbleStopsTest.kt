@@ -13,17 +13,41 @@ import kotlin.test.assertTrue
 /** BUG-220: the write-ahead Trakt `/scrobble/stop` queue and its replay. */
 class TraktPendingScrobbleStopsTest {
 
+    private class FakeRemote(
+        var slug: String? = null,
+        var playback: List<TraktRemoteProgress>? = emptyList(),
+        var plays: List<TraktRemoteProgress>? = emptyList(),
+    ) : TraktReplayRemote {
+        var playbackCalls = 0
+        val playsCalls = mutableListOf<Pair<String, Long>>()
+
+        override fun accountSlug(): String? = slug
+
+        override suspend fun playback(): List<TraktRemoteProgress>? {
+            playbackCalls += 1
+            return playback
+        }
+
+        override suspend fun playsSince(kind: String, sinceMs: Long): List<TraktRemoteProgress>? {
+            playsCalls += kind to sinceMs
+            return plays?.filter { it.kind == kind && it.atMs >= sinceMs }
+        }
+    }
+
     private class Harness(
         var nowMs: Long = 1_000_000_000L,
         var activeProfile: Int = 1,
         var connected: Boolean = true,
+        var slug: String? = null,
         val storage: MutableMap<Int, String> = mutableMapOf(),
     ) {
         private var nextId = 0
         val logs = mutableListOf<String>()
+        var onLoad: (() -> Unit)? = null
+        val remote = FakeRemote()
 
         val queue = TraktPendingScrobbleStopQueue(
-            load = { storage[it] },
+            load = { profileId -> storage[profileId].also { onLoad?.invoke() } },
             save = { profileId, payload -> storage[profileId] = payload },
             clear = { storage.remove(it) },
             now = { nowMs },
@@ -34,6 +58,7 @@ class TraktPendingScrobbleStopsTest {
             queue = queue,
             activeProfileId = { activeProfile },
             isConnected = { connected },
+            accountSlug = { slug },
             now = { nowMs },
             newId = { "id-${nextId++}" },
             log = { logs += it },
@@ -41,6 +66,12 @@ class TraktPendingScrobbleStopsTest {
 
         suspend fun pending(profileId: Int = 1) = queue.pending(profileId)
     }
+
+    private suspend fun Harness.drain(
+        outbox: TraktScrobbleStopOutbox,
+        profileId: Int = 1,
+        deliver: suspend (TraktScrobbleItem, Float) -> TraktScrobbleDelivery,
+    ) = outbox.drain(profileId, remote, deliver)
 
     private fun movie(imdb: String = "tt0111161") =
         TraktScrobbleItem.Movie(title = "Film", year = 1994, ids = TraktExternalIds(imdb = imdb))
@@ -144,12 +175,12 @@ class TraktPendingScrobbleStopsTest {
 
         // Run 2: a fresh outbox over the same storage drains at profile selection.
         val replayed = mutableListOf<Pair<TraktScrobbleItem, Float>>()
-        val result = h.outbox().drain(1) { item, progress ->
+        val result = h.drain(h.outbox(), 1) { item, progress ->
             replayed += item to progress
             TraktScrobbleDelivery.SENT
         }
         assertEquals(listOf<Pair<TraktScrobbleItem, Float>>(episode() to 2.4f), replayed)
-        assertEquals(TraktPendingStopDrainResult(sent = 1, kept = 0, dropped = 0), result)
+        assertEquals(TraktPendingStopDrainResult(sent = 1, kept = 0, dropped = 0, superseded = 0), result)
         assertTrue(h.pending().isEmpty())
     }
 
@@ -160,7 +191,7 @@ class TraktPendingScrobbleStopsTest {
         h.nowMs += 1
         h.outbox().sendStop(1, movie("tt2"), 20f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
         var calls = 0
-        val result = h.outbox().drain(1) { _, _ -> calls++; TraktScrobbleDelivery.OFFLINE }
+        val result = h.drain(h.outbox(), 1) { _, _ -> calls++; TraktScrobbleDelivery.OFFLINE }
         assertEquals(1, calls, "offline: no point sending the rest")
         assertEquals(2, result.kept)
         assertTrue(h.pending().all { it.attempts == 0 })
@@ -172,10 +203,10 @@ class TraktPendingScrobbleStopsTest {
         val outbox = h.outbox()
         outbox.sendStop(1, movie(), 40f) { _, _ -> TraktScrobbleDelivery.RETRYABLE } // attempt 1
         repeat(outbox.maxReplayAttempts - 2) {
-            outbox.drain(1) { _, _ -> TraktScrobbleDelivery.RETRYABLE }
+            h.drain(outbox, 1) { _, _ -> TraktScrobbleDelivery.RETRYABLE }
         }
         assertEquals(outbox.maxReplayAttempts - 1, h.pending().single().attempts)
-        val last = outbox.drain(1) { _, _ -> TraktScrobbleDelivery.RETRYABLE }
+        val last = h.drain(outbox, 1) { _, _ -> TraktScrobbleDelivery.RETRYABLE }
         assertEquals(1, last.dropped)
         assertTrue(h.pending().isEmpty())
     }
@@ -187,7 +218,7 @@ class TraktPendingScrobbleStopsTest {
         val outbox = h.outbox()
         outbox.onSessionStarted(1, movie().itemKey)
         var calls = 0
-        outbox.drain(1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        h.drain(outbox, 1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
         assertEquals(0, calls, "a replay must not end the session that is playing")
         assertEquals(1, h.pending().size)
     }
@@ -210,7 +241,7 @@ class TraktPendingScrobbleStopsTest {
         h.outbox().sendStop(1, movie("tt2"), 20f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
         val outbox = h.outbox()
         val sent = mutableListOf<String>()
-        outbox.drain(1) { item, _ ->
+        h.drain(outbox, 1) { item, _ ->
             sent += item.itemKey
             // While the first replay is in flight, a live stop for tt2 supersedes its old entry.
             if (item.itemKey == movie("tt1").itemKey) {
@@ -249,12 +280,12 @@ class TraktPendingScrobbleStopsTest {
     }
 
     @Test
-    fun entriesOlderThanSevenDaysAreNeverReplayed() = runTest {
+    fun pausedEntriesOlderThan48HoursAreNeverReplayed() = runTest {
         val h = Harness()
         h.outbox().sendStop(1, movie(), 40f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
-        h.nowMs += h.queue.maxAgeMs + 1
+        h.nowMs += h.queue.maxPausedAgeMs + 1
         var calls = 0
-        h.outbox().drain(1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        h.drain(h.outbox(), 1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
         assertEquals(0, calls)
         assertNull(h.storage[1], "the expired entry is pruned from storage")
     }
@@ -285,8 +316,8 @@ class TraktPendingScrobbleStopsTest {
         h.outbox().sendStop(1, movie(), 10f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
         h.activeProfile = 2
         var calls = 0
-        h.outbox().drain(1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
-        h.outbox().drain(2) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        h.drain(h.outbox(), 1) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        h.drain(h.outbox(), 2) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
         assertEquals(0, calls)
         assertEquals(1, h.pending(1).size)
     }
@@ -298,7 +329,7 @@ class TraktPendingScrobbleStopsTest {
         h.nowMs += 1
         h.outbox().sendStop(1, movie("tt2"), 20f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
         var calls = 0
-        h.outbox().drain(1) { _, _ ->
+        h.drain(h.outbox(), 1) { _, _ ->
             calls++
             h.activeProfile = 2
             TraktScrobbleDelivery.SENT
@@ -322,7 +353,7 @@ class TraktPendingScrobbleStopsTest {
     fun wipedStorageIsNotWrittenBackByAnInFlightDrain() = runTest {
         val h = Harness()
         h.outbox().sendStop(1, movie(), 10f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
-        h.outbox().drain(1) { _, _ ->
+        h.drain(h.outbox(), 1) { _, _ ->
             h.storage.clear() // the sign-out wipe lands while the replay is in flight
             TraktScrobbleDelivery.RETRYABLE
         }
@@ -352,5 +383,237 @@ class TraktPendingScrobbleStopsTest {
         assertEquals(movie(), TraktPendingScrobbleItem.from(movie()).toScrobbleItem())
         assertEquals(episode(3, 4), TraktPendingScrobbleItem.from(episode(3, 4)).toScrobbleItem())
         assertNull(TraktPendingScrobbleItem(kind = "movie").toScrobbleItem(), "no ids, never replayed")
+    }
+
+    // ── Review round 1 (P2-1, P2-2, P3-3..P3-6) ───────────────────────────────────────────
+
+    private fun moviePlay(imdb: String, atMs: Long) =
+        TraktRemoteProgress(kind = "movie", ids = TraktExternalIds(imdb = imdb, tmdb = 999), atMs = atMs)
+
+    private fun episodePlay(season: Int, number: Int, atMs: Long) = TraktRemoteProgress(
+        kind = "episode",
+        ids = TraktExternalIds(tmdb = 1396),
+        season = season,
+        number = number,
+        atMs = atMs,
+    )
+
+    private suspend fun Harness.queueOffline(item: TraktScrobbleItem, progress: Float, outbox: TraktScrobbleStopOutbox = outbox()) {
+        outbox.sendStop(1, item, progress) { _, _ -> TraktScrobbleDelivery.OFFLINE }
+    }
+
+    @Test
+    fun watchedReplayIsSkippedWhenTraktAlreadyHasAPlaySinceItWasQueued() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 92f)
+        val queuedAt = h.nowMs
+        h.nowMs += 60 * 60 * 1000
+        h.remote.plays = listOf(moviePlay("tt0111161", atMs = queuedAt + 2_000)) // the lost live stop landed
+        var calls = 0
+        val result = h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls, "a second play must never be added")
+        assertEquals(1, result.superseded)
+        assertTrue(h.pending().isEmpty())
+        assertEquals("movie", h.remote.playsCalls.single().first)
+        assertEquals(0, h.remote.playbackCalls, "a watched entry only needs the history")
+    }
+
+    @Test
+    fun watchedReplayGoesAheadWhenTheOnlyPlayIsOlder() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 92f)
+        h.remote.plays = listOf(moviePlay("tt0111161", atMs = h.nowMs - 3L * 24 * 60 * 60 * 1000))
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun watchedEntriesExpireAfter24HoursPausedAfter48() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 85f)
+        h.queueOffline(movie("tt2"), 40f)
+        h.nowMs += 24L * 60 * 60 * 1000 + 1
+        assertEquals(listOf(movie("tt2").itemKey), h.pending().map { it.itemKey })
+        h.nowMs += 24L * 60 * 60 * 1000
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun pausedReplayIsSkippedWhenTraktHoldsNewerProgress() = runTest {
+        val h = Harness()
+        h.queueOffline(episode(1, 2), 30f)
+        h.remote.playback = listOf(episodePlay(1, 2, atMs = h.nowMs + 3_600_000)) // another device, later
+        var calls = 0
+        val result = h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertEquals(1, result.superseded)
+    }
+
+    @Test
+    fun pausedReplayOverwritesOnlyOlderTraktProgress() = runTest {
+        val h = Harness()
+        h.queueOffline(episode(1, 2), 30f)
+        h.remote.playback = listOf(
+            episodePlay(1, 2, atMs = h.nowMs - 5L * 60 * 60 * 1000),
+            episodePlay(1, 3, atMs = h.nowMs + 3_600_000), // a different episode does not count
+        )
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun pausedReplayIsSkippedWhenTheItemWasFinishedElsewhereSince() = runTest {
+        val h = Harness()
+        h.queueOffline(episode(1, 2), 30f)
+        h.remote.playback = emptyList()
+        h.remote.plays = listOf(episodePlay(1, 2, atMs = h.nowMs + 600_000))
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun pausedReplayGoesAheadWhenTraktHasNothing() = runTest {
+        val h = Harness()
+        h.queueOffline(episode(1, 2), 30f)
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(1, calls)
+        assertEquals("episode", h.remote.playsCalls.single().first)
+    }
+
+    @Test
+    fun anUnreadableTraktStateKeepsEverything() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.remote.playback = null
+        var calls = 0
+        val result = h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertEquals(1, result.kept)
+        assertEquals(0, h.pending().single().attempts)
+    }
+
+    @Test
+    fun traktStateIsReadOncePerDrain() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.nowMs += 1
+        h.queueOffline(movie("tt2"), 30f)
+        h.drain(h.outbox()) { _, _ -> TraktScrobbleDelivery.SENT }
+        assertEquals(1, h.remote.playbackCalls)
+        assertEquals(1, h.remote.playsCalls.size)
+        assertEquals(h.pending().size, 0)
+    }
+
+    @Test
+    fun aStopQueuedForAnotherTraktAccountIsDropped() = runTest {
+        val h = Harness(slug = "alice")
+        h.queueOffline(movie(), 30f)
+        assertEquals("alice", h.pending().single().accountSlug)
+        h.remote.slug = "bob"
+        var calls = 0
+        val result = h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls)
+        assertEquals(1, result.dropped)
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun theSameAccountReplaysAndAnUnknownAccountWaits() = runTest {
+        val h = Harness(slug = "alice")
+        h.queueOffline(movie(), 30f)
+        h.remote.slug = null
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(0, calls, "user settings not fetched yet: wait")
+        assertEquals(1, h.pending().size)
+        h.remote.slug = "Alice"
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun aDrainDuringALiveSendLeavesTheInFlightEntryAlone() = runTest {
+        val h = Harness()
+        val outbox = h.outbox()
+        var replayed = 0
+        outbox.sendStop(1, movie(), 40f) { _, _ ->
+            // The live send is mid-retry when a drain runs (auth flip, profile re-selection).
+            h.drain(outbox) { _, _ -> replayed++; TraktScrobbleDelivery.SENT }
+            TraktScrobbleDelivery.SENT
+        }
+        assertEquals(0, replayed, "the same stop must not be sent twice")
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aRetryableFailureDoesNotBlockTheNextEntry() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.nowMs += 1
+        h.queueOffline(movie("tt2"), 30f)
+        val sent = mutableListOf<String>()
+        val result = h.drain(h.outbox()) { item, _ ->
+            sent += item.itemKey
+            if (item.itemKey == movie("tt1").itemKey) TraktScrobbleDelivery.RETRYABLE else TraktScrobbleDelivery.SENT
+        }
+        assertEquals(listOf(movie("tt1").itemKey, movie("tt2").itemKey), sent)
+        assertEquals(1, result.sent)
+        assertEquals(listOf(movie("tt1").itemKey), h.pending().map { it.itemKey })
+    }
+
+    @Test
+    fun noAuthStopsTheDrain() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.nowMs += 1
+        h.queueOffline(movie("tt2"), 30f)
+        var calls = 0
+        h.drain(h.outbox()) { _, _ -> calls++; TraktScrobbleDelivery.NOT_READY }
+        assertEquals(1, calls)
+        assertEquals(2, h.pending().size)
+    }
+
+    @Test
+    fun aWipeDuringAMutationIsNotWrittenBack() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        val id = h.pending().single().id
+        // The platform sign-out wipe lands while recordFailedAttempt is between read and write.
+        h.onLoad = {
+            h.onLoad = null
+            h.queue.invalidate()
+            h.storage.clear()
+        }
+        h.queue.recordFailedAttempt(1, id, maxAttempts = 5)
+        assertTrue(h.storage.isEmpty())
+    }
+
+    @Test
+    fun clearProfileAndWipeAllEraseUnderTheLock() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.activeProfile = 2
+        h.outbox().sendStop(2, movie("tt2"), 30f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
+        h.queue.clearProfile(1)
+        assertNull(h.storage[1])
+        assertEquals(1, h.pending(2).size)
+        h.queue.wipeAll(1..6)
+        assertTrue(h.storage.isEmpty())
+    }
+
+    @Test
+    fun remoteRowsMatchByAnySharedIdAndEpisodeNumber() {
+        val m = TraktPendingScrobbleItem.from(movie("tt0111161"))
+        assertTrue(m.matches(moviePlay("TT0111161", 0)))
+        assertTrue(!m.matches(moviePlay("tt9", 0)))
+        val e = TraktPendingScrobbleItem.from(episode(2, 5))
+        assertTrue(e.matches(episodePlay(2, 5, 0)))
+        assertTrue(!e.matches(episodePlay(2, 6, 0)))
+        assertTrue(!e.matches(moviePlay("tt0903747", 0)), "kind must match")
     }
 }

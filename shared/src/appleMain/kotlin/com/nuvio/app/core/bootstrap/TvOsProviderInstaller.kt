@@ -274,6 +274,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
+        // BUG-220: marks in-flight pending-stop writes stale so none is written back after the
+        // on-disk wipe below, and forgets the open session.
+        TraktScrobbleRepository.clearLocalState()
         // MDBList account (upstream 0a654ac4): memory-only — stops a pending device-flow poll and
         // drops the in-memory tokens. The registry fan-out below reaches it too once registered;
         // naming it here keeps the wipe independent of registration order. Its Keychain items are
