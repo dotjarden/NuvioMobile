@@ -287,6 +287,102 @@ final class DetailScrollProbeTests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground, "app must survive the leg-4 scroll pass")
     }
 
+    // MARK: - D-3: the compact logo steps aside for rows in its band
+
+    /// One rest of the D-3 walk: the probe tokens (`compactLogo=shown|hidden`,
+    /// `logoBand=hero|clear|blocked`), the rendered logo's AX presence (`DetailCompactLogo` is
+    /// `.accessibilityHidden(!visible)`), and the "Parental Guide" heading's top on screen.
+    private struct CompactLogoRest {
+        let logo: String
+        let band: String
+        let logoInTree: Bool
+        let headingTop: CGFloat?
+    }
+
+    private func compactLogoRest(_ app: XCUIApplication, _ name: String) -> CompactLogoRest {
+        let probe = app.staticTexts["debug_ux6"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : ""
+        var logo = "missing", band = "missing"
+        for part in text.split(separator: " ") {
+            if part.hasPrefix("compactLogo=") { logo = String(part.dropFirst("compactLogo=".count)) }
+            if part.hasPrefix("logoBand=") { band = String(part.dropFirst("logoBand=".count)) }
+        }
+        let logoInTree = app.descendants(matching: .any).matching(identifier: "detail_compact_logo").firstMatch.exists
+        let heading = app.staticTexts["Parental Guide"]
+        let headingTop = heading.exists ? heading.frame.minY : nil
+        let rest = CompactLogoRest(logo: logo, band: band, logoInTree: logoInTree, headingTop: headingTop)
+        let line = "\(name): compactLogo=\(logo) logoBand=\(band) ax=\(logoInTree) heading=\(headingTop.map { String(format: "%.1f", $0) } ?? "none")"
+        let attachment = XCTAttachment(string: line + " | " + text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[D3] \(line)")
+        return rest
+    }
+
+    /// D-3 (design review 2026-10-22; review P3-1): opens the first fixture title that carries a
+    /// Parental Guide row (The Simpsons and Animals are the review's titles; TMDB on), walks Down
+    /// one rest at a time and checks the band against the heading's on-screen geometry:
+    ///
+    /// - The oracle: the Parental Guide row's top (its heading) in [−40, 92) means its lead — the
+    ///   heading and its one chip line, ~100 pt — overlaps the 36–108 band past the 16 pt rest
+    ///   tolerance, so the band MUST read `blocked` (or `hero`, before the clearance) and the
+    ///   rendered logo must be out of the AX tree. −40 is where the row ANCHORED ABOVE the next row
+    ///   rests (its bottom at 72, `screenRest − 36`), which is exactly the review's photo.
+    /// - Required: at least one such rest reads `blocked`, and a later rest reads `clear` with the
+    ///   logo back in the tree.
+    /// - Every rest: the probe's `compactLogo=` agrees with the rendered logo's AX presence.
+    ///
+    /// No fixture title with a Parental Guide row (the guide is fetched by IMDb id): skipped with
+    /// the reason; Les Condés, the probe file's usual title, has none.
+    func testCompactLogoStepsAsideForRowsInItsBand() throws {
+        let app = launchToHome(extraArguments: detailScrollProbeLaunchArguments()
+                                   + ["-debug.tmdbEnabledOverride", "YES", "-detail_trailer_autoplay", "NO"])
+        let route = DetailEntryRoute(test: self, app: app)
+        let targets = [DetailEntryRoute.Target(query: "The Simpsons", type: "series"),
+                       DetailEntryRoute.Target(query: "Animals", type: "movie"),
+                       DetailEntryRoute.Target(query: "Dune", type: "movie"),
+                       DetailEntryRoute.Target(query: "Severance", type: "series")]
+        var opened: String?
+        for target in targets {
+            guard route.openDetailBySearchIfFound(targets: [target]) else { continue }
+            if app.staticTexts["Parental Guide"].waitForExistence(timeout: 15) {
+                opened = target.query
+                break
+            }
+            add(XCTAttachment(string: "NOTE: '\(target.query)' opened with no Parental Guide row; trying the next title."))
+            press(.menu, times: 1, gap: 2)
+        }
+        guard let title = opened else {
+            throw XCTSkip("No fixture title opened with a Parental Guide row (\(targets.map(\.query))); the band fade was not exercised.")
+        }
+        add(XCTAttachment(string: "D-3 walk on '\(title)'"))
+
+        var sawBlockedInBand = false
+        var sawClearAfter = false
+        for step in 1...14 {
+            press(.down, times: 1, gap: 1.8)
+            let rest = compactLogoRest(app, "d3_\(title)_down\(step)")
+            shot(app, "d3_down\(step)_\(rest.logo)_\(rest.band)")
+            XCTAssertNotEqual(rest.logo, "missing", "debug_ux6 must carry compactLogo= (step \(step))")
+            XCTAssertEqual(rest.logoInTree, rest.logo == "shown",
+                           "the rendered logo's AX presence must match the probe (step \(step))")
+            if let top = rest.headingTop, top >= -40, top < 92 {
+                XCTAssertTrue(rest.band == "blocked" || rest.band == "hero",
+                              "Parental Guide heading at \(top) pt: the band must read blocked, read \(rest.band) (step \(step))")
+                XCTAssertFalse(rest.logoInTree, "Parental Guide heading at \(top) pt: the logo must be hidden (step \(step))")
+                if rest.band == "blocked" { sawBlockedInBand = true }
+            } else if sawBlockedInBand, rest.band == "clear" {
+                XCTAssertTrue(rest.logoInTree, "band clear past the Parental Guide row: the logo must be back (step \(step))")
+                sawClearAfter = true
+                break
+            }
+        }
+        XCTAssertTrue(sawBlockedInBand, "no rest put the Parental Guide heading in the band past the hero with logoBand=blocked")
+        XCTAssertTrue(sawClearAfter, "the band never read clear again after the Parental Guide row passed")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     // MARK: - Body-eval growth under the scroll probe (items 6/7 — log-harvested, not asserted here)
 
     /// BUG-41 items 6/7: `DetailView.logBodyEval()` NSLogs `[BUG41] detailBodyEval=N` every 10th
