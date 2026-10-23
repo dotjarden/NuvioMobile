@@ -20,4 +20,11 @@ final class HomeCatalogSeedSettleTests: XCTestCase {
     func testNoCatalogsAtAllSettlesSoACWOnlyHomeSeeds() {
         XCTAssertTrue(HomeCatalogSeedSettle.settles(hasCatalogRow: false, addonsSettled: true, addonCatalogCount: 0))
     }
+
+    func testAFinishedLoadWithNoCatalogRowSettles() {
+        // Review P2-2: eight catalogs in the manifests, all hidden or extras-only; the refresh ran
+        // and finished with no row.
+        XCTAssertTrue(HomeCatalogSeedSettle.settles(hasCatalogRow: false, addonsSettled: true, addonCatalogCount: 8, loadFinishedEmpty: true))
+        XCTAssertFalse(HomeCatalogSeedSettle.settles(hasCatalogRow: false, addonsSettled: true, addonCatalogCount: 8, loadFinishedEmpty: false))
+    }
 }

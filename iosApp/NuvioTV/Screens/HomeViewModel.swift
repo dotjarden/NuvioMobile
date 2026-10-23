@@ -451,6 +451,9 @@ final class HomeViewModel: ObservableObject {
         // for a newly selected empty profile.
         lastRefreshSignature = ""
         lastManifestSignature = ""
+        // BUG-223 review P2-1: profile-scoped too; a switch must not reuse the last profile's count.
+        addonBootstrapSettled = false
+        addonCatalogCount = 0
         didSeed = false
         seedFailed = false
         seedAttempt += 1
@@ -1192,13 +1195,19 @@ final class HomeViewModel: ObservableObject {
     private func settleCatalogSeedIfDue(built: [HomeRow]) {
         guard rowsGate.isOpen, !catalogRowsSettledAfterGateOpen else { return }
         let hasCatalogRow = built.contains { if case .catalog = $0 { return true } else { return false } }
+        // Review P2-2: the manifest count includes catalogs Kotlin never turns into rows (required
+        // extras such as search, rows disabled in Home Rows, empty catalogs), so a Home with every
+        // catalog row hidden would wait the backstop every launch. A finished load with no catalog
+        // row (`isLoading` false after a refresh ran) is the no-catalog verdict too.
+        let loadFinishedEmpty = !isLoading && !lastManifestSignature.isEmpty
         guard HomeCatalogSeedSettle.settles(hasCatalogRow: hasCatalogRow,
                                             addonsSettled: addonBootstrapSettled,
-                                            addonCatalogCount: addonCatalogCount) else { return }
+                                            addonCatalogCount: addonCatalogCount,
+                                            loadFinishedEmpty: loadFinishedEmpty) else { return }
         catalogRowsSettledAfterGateOpen = true
         if HomeHeroProbe.enabled {
-            HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=%@ sinceLaunch=%dms", vmId,
-                                     hasCatalogRow ? "catalogRow" : "noCatalogs", HomeHeroProbe.sinceLaunchMs))
+            let reason = hasCatalogRow ? "catalogRow" : (loadFinishedEmpty ? "loadFinishedEmpty" : "noCatalogs")
+            HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=%@ sinceLaunch=%dms", vmId, reason, HomeHeroProbe.sinceLaunchMs))
         }
     }
 
@@ -1394,6 +1403,13 @@ final class HomeViewModel: ObservableObject {
                                                        manifestsPending: false,
                                                        seedPending: !seedFailed,
                                                        hasRefreshed: !lastManifestSignature.isEmpty)
+            // BUG-223 review P2-1: this branch opens the gate without ever reaching the readings
+            // below, so the panel's seed would wait the full backstop on a profile with no add-ons
+            // but with Continue Watching or a logo folder. No add-ons = no catalogs; settled once
+            // the seed has had its say (it either landed, in which case the list is no longer
+            // empty, or failed).
+            addonCatalogCount = 0
+            addonBootstrapSettled = state.isInitialized && seedFailed
             if bootstrap == .openRowsNoSources {
                 openRowsForNoSourcesBootstrap()
             }
@@ -1415,6 +1431,10 @@ final class HomeViewModel: ObservableObject {
                                                    hasRefreshed: !lastManifestSignature.isEmpty)
         if ready.isEmpty {
             addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
+            // BUG-223 review P2-1: all add-ons disabled or every manifest failed; nothing will
+            // publish a catalog row, so the seed may fall through as soon as fetching is over.
+            addonCatalogCount = 0
+            addonBootstrapSettled = state.isInitialized && !manifestsPending
             // Codex r2 (P1) safety: no enabled add-on has a loaded manifest and none is still
             // fetching one, so nothing will ever call `HomeRepository.refresh` on this profile and
             // `heroGateReleased` can stay false forever. Holding the rows on that would swallow
@@ -1516,7 +1536,11 @@ final class HomeViewModel: ObservableObject {
 /// testable without a view model: a rebuild carried a catalog row, or the add-ons have settled and
 /// declare no catalog at all (nothing is coming). The time backstop lives in the view model.
 nonisolated enum HomeCatalogSeedSettle {
-    static func settles(hasCatalogRow: Bool, addonsSettled: Bool, addonCatalogCount: Int) -> Bool {
-        hasCatalogRow || (addonsSettled && addonCatalogCount == 0)
+    /// `loadFinishedEmpty`: a refresh ran and finished (`isLoading` false, a manifest signature
+    /// recorded) and still produced no catalog row (review P2-2: hidden, extras-only or empty
+    /// catalogs count in the manifests but never become rows).
+    static func settles(hasCatalogRow: Bool, addonsSettled: Bool, addonCatalogCount: Int,
+                        loadFinishedEmpty: Bool = false) -> Bool {
+        hasCatalogRow || (addonsSettled && addonCatalogCount == 0) || loadFinishedEmpty
     }
 }
