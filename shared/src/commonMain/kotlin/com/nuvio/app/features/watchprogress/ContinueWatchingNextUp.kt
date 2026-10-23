@@ -538,11 +538,23 @@ internal class NextUpEngine(
             inputs.historyItems
         }
 
-    suspend fun resolve(inputs: NextUpInputs, limit: Int): List<WatchProgressEntry> =
-        resolveMutex.withLock { resolveLocked(inputs, limit) }
+    /**
+     * [inputs] is read inside the refresh lock, after the generation (review pass 3 P3-1). A
+     * refresh queued behind a slow one used to carry inputs read before it waited, so after a
+     * profile switch in between it could write the outgoing profile's cards and dismiss keys
+     * under the new generation.
+     */
+    suspend fun resolve(inputs: () -> NextUpInputs, limit: Int): List<WatchProgressEntry> =
+        resolveMutex.withLock {
+            val startGeneration = synchronized(lock) { generation }
+            resolveLocked(inputs(), startGeneration, limit)
+        }
 
-    private suspend fun resolveLocked(inputs: NextUpInputs, limit: Int): List<WatchProgressEntry> {
-        val startGeneration = synchronized(lock) { generation }
+    private suspend fun resolveLocked(
+        inputs: NextUpInputs,
+        startGeneration: Long,
+        limit: Int,
+    ): List<WatchProgressEntry> {
         val now = inputs.nowEpochMs
         val source = inputs.source
         val entries = inputs.entries
@@ -857,7 +869,7 @@ object ContinueWatchingNextUp {
     @Throws(Throwable::class)
     suspend fun resolveEntries(limit: Int): List<WatchProgressEntry> {
         ensureInputsLoaded()
-        return withContext(Dispatchers.Default) { engine.resolve(currentInputs(), limit) }
+        return withContext(Dispatchers.Default) { engine.resolve(::currentInputs, limit) }
     }
 
     /** The repositories' current state (StateFlow values: safe to read off main). */

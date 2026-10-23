@@ -98,12 +98,12 @@ class NextUpEngineTest {
         val engine = engine(fakes, this)
         val entries = listOf(progress("tt1", 3, t0, completed = true))
 
-        val first = engine.resolve(inputs(entries), limit = 20)
+        val first = engine.resolve({ inputs(entries) }, limit = 20)
         assertEquals(listOf("tt1:1:4"), first.map { it.videoId })
         assertTrue(first.single().isContinueWatchingNextUp)
         assertEquals(0L, first.single().lastPositionMs)
 
-        assertEquals(first, engine.resolve(inputs(entries), limit = 20))
+        assertEquals(first, engine.resolve({ inputs(entries) }, limit = 20))
         assertEquals(1, fakes.fetches)
     }
 
@@ -115,12 +115,12 @@ class NextUpEngineTest {
         val entries = listOf(progress("tt1", 3, t0, completed = true))
 
         // 20:00 EDT on the 23rd: not out yet, and the "no card" is cached only until 01:00Z.
-        assertTrue(engine.resolve(inputs(entries, now = releaseAt - 3_600_000L), 20).isEmpty())
-        assertTrue(engine.resolve(inputs(entries, now = releaseAt - 60_000L), 20).isEmpty())
+        assertTrue(engine.resolve({ inputs(entries, now = releaseAt - 3_600_000L) }, 20).isEmpty())
+        assertTrue(engine.resolve({ inputs(entries, now = releaseAt - 60_000L) }, 20).isEmpty())
         assertEquals(1, fakes.fetches)
 
         // The first refresh after the instant resolves again, the same local day.
-        val after = engine.resolve(inputs(entries, now = releaseAt + 1_000L), 20)
+        val after = engine.resolve({ inputs(entries, now = releaseAt + 1_000L) }, 20)
         assertEquals(listOf("tt1:1:4"), after.map { it.videoId })
         assertEquals(2, fakes.fetches)
     }
@@ -132,8 +132,8 @@ class NextUpEngineTest {
         val engine = engine(fakes, this)
         val entries = listOf(progress("tt1", 3, t0, completed = true))
 
-        assertTrue(engine.resolve(inputs(entries, now = releaseAt - 1L), 20).isEmpty())
-        assertEquals(listOf("tt1:1:4"), engine.resolve(inputs(entries, now = releaseAt), 20).map { it.videoId })
+        assertTrue(engine.resolve({ inputs(entries, now = releaseAt - 1L) }, 20).isEmpty())
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(entries, now = releaseAt) }, 20).map { it.videoId })
     }
 
     @Test
@@ -145,7 +145,7 @@ class NextUpEngineTest {
         val engine = engine(fakes, this)
         val entries = listOf(progress("tt1", 3, t0, completed = true))
 
-        val inFlight = async { engine.resolve(inputs(entries, profileId = 1), 20) }
+        val inFlight = async { engine.resolve({ inputs(entries, profileId = 1) }, 20) }
         runCurrent()
         assertEquals(1, fakes.fetches)
         engine.reset() // profile switch while the fetch is out
@@ -155,7 +155,7 @@ class NextUpEngineTest {
         assertTrue(engine.dismissKeysSnapshot().isEmpty())
         // Nothing was cached for the old profile: the next refresh fetches again.
         fakes.gate = null
-        assertEquals(listOf("tt1:1:4"), engine.resolve(inputs(entries, profileId = 2), 20).map { it.videoId })
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(entries, profileId = 2) }, 20).map { it.videoId })
         assertEquals(2, fakes.fetches)
     }
 
@@ -166,28 +166,28 @@ class NextUpEngineTest {
         val done = progress("tt1", 3, t0, completed = true)
         val playing = progress("tt1", 4, t0 - 10_000L, completed = false)
 
-        engine.resolve(inputs(listOf(done, playing)), 20)
+        engine.resolve({ inputs(listOf(done, playing)) }, 20)
         assertEquals(1, engine.stageOneBuilds)
         // A playback save: position and time move, nothing else.
         val saved = playing.copy(lastPositionMs = 900_000L, lastUpdatedEpochMs = t0 - 5_000L)
-        engine.resolve(inputs(listOf(done, saved)), 20)
+        engine.resolve({ inputs(listOf(done, saved)) }, 20)
         assertEquals(1, engine.stageOneBuilds)
         // The episode finishes: rebuilt.
-        engine.resolve(inputs(listOf(done, progress("tt1", 4, t0 + 1_000L, completed = true))), 20)
+        engine.resolve({ inputs(listOf(done, progress("tt1", 4, t0 + 1_000L, completed = true))) }, 20)
         assertEquals(2, engine.stageOneBuilds)
 
         // Under Trakt the key carries the minute (its playback seed rule is time-bound)...
         val traktEntries = listOf(done)
-        engine.resolve(inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0), 20)
+        engine.resolve({ inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0) }, 20)
         assertEquals(3, engine.stageOneBuilds)
-        engine.resolve(inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0 + 1_000L), 20)
+        engine.resolve({ inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0 + 1_000L) }, 20)
         assertEquals(3, engine.stageOneBuilds)
-        engine.resolve(inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0 + 61_000L), 20)
+        engine.resolve({ inputs(traktEntries, source = WatchProgressSource.TRAKT, now = t0 + 61_000L) }, 20)
         assertEquals(4, engine.stageOneBuilds)
         // ...and elsewhere it does not.
-        engine.resolve(inputs(traktEntries, now = t0), 20)
+        engine.resolve({ inputs(traktEntries, now = t0) }, 20)
         assertEquals(5, engine.stageOneBuilds)
-        engine.resolve(inputs(traktEntries, now = t0 + 600_000L), 20)
+        engine.resolve({ inputs(traktEntries, now = t0 + 600_000L) }, 20)
         assertEquals(5, engine.stageOneBuilds)
     }
 
@@ -212,7 +212,7 @@ class NextUpEngineTest {
         val fakes = Fakes().apply { metaById["tt1"] = series("tt1", aired, aired, aired, aired) }
         val engine = engine(fakes, this)
         val entries = listOf(progress("tt1", 3, t0, completed = true))
-        val card = engine.resolve(inputs(entries), 20).single()
+        val card = engine.resolve({ inputs(entries) }, 20).single()
         val calls = mutableListOf<String>()
 
         engine.removeFromContinueWatching(
@@ -254,14 +254,14 @@ class NextUpEngineTest {
         val entries = listOf(progress("tt1", 3, t0, completed = true))
         val trakt = { now: Long -> inputs(entries, source = WatchProgressSource.TRAKT, now = now) }
 
-        val card = engine.resolve(trakt(t0 + 1_000L), 20).single()
+        val card = engine.resolve({ trakt(t0 + 1_000L) }, 20).single()
         assertEquals("tt1:1:4", card.videoId)
 
         engine.noteMarkedWatched(card, WatchProgressSource.TRAKT, 1, t0 + 2_000L) { true }
-        assertEquals(listOf("tt1:1:5"), engine.resolve(trakt(t0 + 3_000L), 20).map { it.videoId })
+        assertEquals(listOf("tt1:1:5"), engine.resolve({ trakt(t0 + 3_000L) }, 20).map { it.videoId })
 
         engine.onUnmarkedWatched(listOf(WatchedItem(id = "tt1", type = "series", name = "tt1", season = 1, episode = 4, markedAtEpochMs = 0L)))
-        assertEquals(listOf("tt1:1:4"), engine.resolve(trakt(t0 + 4_000L), 20).map { it.videoId })
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ trakt(t0 + 4_000L) }, 20).map { it.videoId })
     }
 
     @Test
@@ -276,10 +276,10 @@ class NextUpEngineTest {
         val entries = listOf(progress("tt1", 3, t0, completed = true))
         val off = { now: Long -> inputs(entries, now = now, showUnaired = false) }
 
-        assertTrue(engine.resolve(off(t0), 20).isEmpty())
-        assertTrue(engine.resolve(off(t0 + 60_000L), 20).isEmpty())
+        assertTrue(engine.resolve({ off(t0) }, 20).isEmpty())
+        assertTrue(engine.resolve({ off(t0 + 60_000L) }, 20).isEmpty())
         assertEquals(1, fakes.fetches, "the no-card verdict is reused before the release")
-        engine.resolve(off(releaseAt + 1_000L), 20)
+        engine.resolve({ off(releaseAt + 1_000L) }, 20)
         assertEquals(2, fakes.fetches, "and resolved again once the release instant has passed")
     }
 
@@ -288,6 +288,40 @@ class NextUpEngineTest {
         val fakes = Fakes().apply { metaById["tt1"] = series("tt1", aired, aired, aired, aired) }
         val engine = engine(fakes, this)
         val entries = listOf(progress("tt1", 3, t0, completed = true))
-        assertEquals(listOf("tt1:1:4"), engine.resolve(inputs(entries, showUnaired = false), 20).map { it.videoId })
+        assertEquals(listOf("tt1:1:4"), engine.resolve({ inputs(entries, showUnaired = false) }, 20).map { it.videoId })
+    }
+
+    @Test
+    fun aRefreshQueuedBehindASlowOneReadsItsInputsAfterAReset() = runTest {
+        val fakes = Fakes().apply {
+            metaById["tt1"] = series("tt1", aired, aired, aired, aired)
+            metaById["tt2"] = series("tt2", aired, aired, aired, aired)
+            gate = CompletableDeferred()
+        }
+        val engine = engine(fakes, this)
+        var activeProfile = 1
+        val readFor = mutableListOf<Int>()
+        // What the repositories would say at the moment the refresh reads them.
+        val current = {
+            readFor += activeProfile
+            val id = if (activeProfile == 1) "tt1" else "tt2"
+            inputs(listOf(progress(id, 3, t0, completed = true)), profileId = activeProfile)
+        }
+
+        val slow = async { engine.resolve(current, 20) }
+        runCurrent() // profile 1's refresh is out fetching
+        val queued = async { engine.resolve(current, 20) }
+        runCurrent() // waiting on the refresh lock
+        assertEquals(listOf(1), readFor, "the queued refresh has not read its inputs yet")
+
+        engine.reset()
+        activeProfile = 2
+        fakes.gate!!.complete(Unit)
+
+        assertTrue(slow.await().isEmpty(), "profile 1's late result is dropped")
+        assertEquals(listOf("tt2:1:4"), queued.await().map { it.videoId })
+        assertEquals(listOf(1, 2), readFor)
+        // Only profile 2's card left a dismiss key behind.
+        assertEquals(setOf("tt2:1:4"), engine.dismissKeysSnapshot().keys)
     }
 }
