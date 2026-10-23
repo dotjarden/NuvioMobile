@@ -287,6 +287,51 @@ final class DetailScrollProbeTests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground, "app must survive the leg-4 scroll pass")
     }
 
+    // MARK: - D-3: the compact logo steps aside for rows in its band
+
+    /// `debug_ux6`'s D-3 tokens as strings: `compactLogo=shown|hidden`, `logoBand=clear|blocked`.
+    private func compactLogoTokens(_ app: XCUIApplication, _ name: String) -> (logo: String, band: String) {
+        let probe = app.staticTexts["debug_ux6"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : ""
+        var logo = "missing", band = "missing"
+        for part in text.split(separator: " ") {
+            if part.hasPrefix("compactLogo=") { logo = String(part.dropFirst("compactLogo=".count)) }
+            if part.hasPrefix("logoBand=") { band = String(part.dropFirst("logoBand=".count)) }
+        }
+        let attachment = XCTAttachment(string: "\(name): compactLogo=\(logo) logoBand=\(band) | \(text)")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[D3] \(name): compactLogo=\(logo) logoBand=\(band)")
+        return (logo, band)
+    }
+
+    /// D-3 (design review 2026-10-22): walking down a content-rich Cinematic Detail page one press
+    /// at a time, the compact logo (FEAT-60) must never read shown while the band is blocked, and
+    /// must still show somewhere on the walk (the band rule must not retire it). Whether a row ever
+    /// blocks the band depends on the title's rows, so a walk with no `blocked` is a note, not a
+    /// failure; the screenshots at each press are the visual check.
+    func testCompactLogoStepsAsideForRowsInItsBand() throws {
+        let app = launchToHome(extraArguments: detailScrollProbeLaunchArguments())
+        openDeterministicContentRichDetail(app)
+        var trail: [(logo: String, band: String)] = []
+        for step in 1...10 {
+            press(.down, times: 1, gap: 1.6)
+            let tokens = compactLogoTokens(app, "d3_down\(step)")
+            shot(app, "d3_down\(step)_\(tokens.logo)_\(tokens.band)")
+            trail.append(tokens)
+            XCTAssertNotEqual(tokens.logo, "missing", "debug_ux6 must carry compactLogo= at step \(step)")
+            XCTAssertFalse(tokens.logo == "shown" && tokens.band == "blocked",
+                           "the compact logo must not show while a row's lead is in its band (step \(step))")
+        }
+        XCTAssertTrue(trail.contains { $0.logo == "shown" },
+                      "the compact logo never showed on a 10-press walk: the band rule hid it everywhere")
+        if !trail.contains(where: { $0.band == "blocked" }) {
+            add(XCTAttachment(string: "NOTE: no step rested a row's lead in the band on this title; the fade itself was not exercised."))
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     // MARK: - Body-eval growth under the scroll probe (items 6/7 — log-harvested, not asserted here)
 
     /// BUG-41 items 6/7: `DetailView.logBodyEval()` NSLogs `[BUG41] detailBodyEval=N` every 10th
