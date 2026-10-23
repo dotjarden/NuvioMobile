@@ -302,7 +302,7 @@ struct StageStripHome: View {
             onMarkWatched: { entry in
                 // Classic's pair: the episode joins watched history and its half-played progress
                 // row stops showing in the shelf.
-                // FEAT-85 P2-4: under Trakt the mark seeds Up Next at once and refetches the show's progress.
+                // FEAT-85 P2-4: under Trakt the mark seeds Up Next at once; the show's progress is refetched 5 s later.
                 ContinueWatchingNextUp.shared.noteMarkedWatched(entry: entry)
                 WatchedRepository.shared.markWatched(
                     item: WatchingActionsKt.watchedItemFromProgress(

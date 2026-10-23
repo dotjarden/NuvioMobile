@@ -63,7 +63,12 @@ const val ContinueWatchingNextUpResolveLimit = 20
  */
 const val ContinueWatchingNextUpTraktMarkWindowMs = 30L * 60L * 1_000L
 
-/** When the second forced Trakt episode-progress refresh runs after a mark (the push is async). */
+/**
+ * When the forced Trakt episode-progress refetch runs after a mark. Only this delayed call is
+ * made (review round 2 P3-1): an immediate one ran before `markWatched` had pushed the history,
+ * and while it was still in flight Trakt's in-flight guard turned the useful later call into a
+ * no-op.
+ */
 internal const val ContinueWatchingNextUpTraktRefetchDelayMs = 5_000L
 
 /** Parallel metadata fetches per refresh; mobile's `NEXT_UP_RESOLUTION_CONCURRENCY`. */
@@ -494,8 +499,8 @@ object ContinueWatchingNextUp {
     /**
      * Continue Watching › Mark Episode Watched, called before `WatchedRepository.markWatched`.
      * Only Trakt needs it (review P2-4): the mark counts as a seed right away (see
-     * [recentTraktMarks]), and Trakt's progress for the show is refetched now and again after
-     * [ContinueWatchingNextUpTraktRefetchDelayMs], once the async history push has had time to land.
+     * [recentTraktMarks]), and Trakt's progress for the show is refetched once, after
+     * [ContinueWatchingNextUpTraktRefetchDelayMs], when the async history push has had time to land.
      * Any other source sees the mark through watched history already.
      */
     fun noteMarkedWatched(entry: WatchProgressEntry) {
@@ -519,7 +524,6 @@ object ContinueWatchingNextUp {
             recentTraktMarks = activeRecentNextUpMarks(recentTraktMarks, profileId, now)
                 .map { item -> RecentNextUpMark(profileId, item) } + mark
         }
-        WatchProgressRepository.refreshEpisodeProgress(entry.parentMetaId, forceRefresh = true)
         scope.launch {
             delay(ContinueWatchingNextUpTraktRefetchDelayMs)
             if (WatchProgressRepository.activeSourceState.value == WatchProgressSource.TRAKT &&
