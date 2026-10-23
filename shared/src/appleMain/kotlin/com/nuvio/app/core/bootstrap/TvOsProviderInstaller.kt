@@ -61,6 +61,7 @@ import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.upcoming.UpcomingEpisodesRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
+import com.nuvio.app.features.watchprogress.ContinueWatchingNextUp
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
@@ -257,6 +258,8 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // Home "Upcoming" row: in-memory per-show cache only (no persisted store, hence no
         // AccountDataStores entry) — cleared here so the next account never sees this one's shows.
         UpcomingEpisodesRepository.clearLocalState()
+        // FEAT-85 Up Next: in-memory resolved next episodes (no persisted store either).
+        ContinueWatchingNextUp.clearLocalState()
         CollectionMobileSettingsRepository.clearLocalState()
         CollectionRepository.clearLocalState()
         // UX-14 (beta.12, Codex gate 2): FolderDetailRepository now RETAINS state across screen

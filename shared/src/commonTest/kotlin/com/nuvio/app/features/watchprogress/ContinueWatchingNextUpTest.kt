@@ -3,9 +3,12 @@ package com.nuvio.app.features.watchprogress
 import com.nuvio.app.features.watched.WatchedItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-/** tvOS Up Next (fork): seed selection and the row merge in `ContinueWatchingNextUp.kt`. */
+/** FEAT-85 Up Next (based on erdist's patch, GitHub #11): seed selection, merge and dismissal in `ContinueWatchingNextUp.kt`. */
 class ContinueWatchingNextUpTest {
     private val t0 = 1_700_000_000_000L
 
@@ -122,14 +125,139 @@ class ContinueWatchingNextUpTest {
     }
 
     @Test
-    fun mergeKeepsInProgressCardAndSortsByRecency() {
-        val inProgress = listOf(progress("a", 1, 2, t0, completed = false))
+    fun inProgressTieWithTheCompletionSuppressesTheSeries() {
+        val result = seeds(
+            listOf(
+                progress("tt1", 1, 3, t0, completed = true),
+                progress("tt1", 1, 4, t0, completed = false),
+            ),
+        )
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun latestMarkedEpisodeWinsWhenFurthestIsOff() {
+        val result = buildContinueWatchingNextUpSeeds(
+            progressEntries = listOf(progress("tt1", 1, 2, t0 + 5_000, completed = true)),
+            watchedItems = listOf(watched("tt1", 2, 1, t0)),
+            isProgressSeed = { it.shouldUseAsCompletedSeedForContinueWatching() },
+            isDroppedShow = { false },
+            recencyCutoffEpochMs = null,
+            preferFurthestEpisode = false,
+            dismissedNextUpKeys = emptySet(),
+        )
+        assertEquals(ContinueWatchingNextUpSeed("series", "tt1", 1, 2, t0 + 5_000), result.single())
+    }
+
+    @Test
+    fun aDismissalOnlyHidesTheSeedEpisodeItWasMadeFor() {
+        // The phone keys a dismissal by the finished episode; finishing the next one brings the
+        // series back (a new seed, a new key).
+        val result = seeds(
+            entries = listOf(
+                progress("tt1", 1, 3, t0, completed = true),
+                progress("tt1", 1, 4, t0 + 1_000, completed = true),
+            ),
+            dismissed = setOf(nextUpDismissKey("tt1", 1, 3)),
+        )
+        assertEquals(4, result.single().episodeNumber)
+    }
+
+    @Test
+    fun seedsAreMostRecentFirstAndCapped() {
+        val entries = (1..5).map { index -> progress("tt$index", 1, 1, t0 + index, completed = true) }
+        val result = buildContinueWatchingNextUpSeeds(
+            progressEntries = entries,
+            watchedItems = emptyList(),
+            isProgressSeed = { it.shouldUseAsCompletedSeedForContinueWatching() },
+            isDroppedShow = { false },
+            recencyCutoffEpochMs = null,
+            preferFurthestEpisode = true,
+            dismissedNextUpKeys = emptySet(),
+            limit = 3,
+        )
+        assertEquals(listOf("tt5", "tt4", "tt3"), result.map { it.contentId })
+    }
+
+    @Test
+    fun theProviderSeedRuleIsHonoured() {
+        val result = buildContinueWatchingNextUpSeeds(
+            progressEntries = listOf(progress("tt1", 1, 3, t0, completed = true)),
+            watchedItems = emptyList(),
+            isProgressSeed = { false },
+            isDroppedShow = { false },
+            recencyCutoffEpochMs = null,
+            preferFurthestEpisode = true,
+            dismissedNextUpKeys = emptySet(),
+        )
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun mergeKeepsTheMoreRecentCardPerSeries() {
+        // "a": an episode abandoned before a later one was finished, so its next-up is newer and
+        // wins (mobile's rule). "c": the next-up is older than the in-progress card, which stays.
+        val inProgress = listOf(
+            progress("c", 1, 5, t0 + 7_000, completed = false),
+            progress("a", 1, 2, t0, completed = false),
+        )
         val nextUp = listOf(
-            progress("a", 1, 3, t0 + 5_000, completed = false).copy(source = WatchProgressSourceNextUp),
+            progress("a", 1, 4, t0 + 5_000, completed = false).copy(source = WatchProgressSourceNextUp),
             progress("b", 2, 1, t0 + 9_000, completed = false).copy(source = WatchProgressSourceNextUp),
+            progress("c", 1, 4, t0 + 1_000, completed = false).copy(source = WatchProgressSourceNextUp),
         )
         val merged = mergeContinueWatchingWithNextUp(inProgress, nextUp)
-        assertEquals(listOf("b:2:1", "a:1:2"), merged.map { it.videoId })
+        assertEquals(listOf("b:2:1", "c:1:5", "a:1:4"), merged.map { it.videoId })
         assertTrue(merged.first().isContinueWatchingNextUp)
+        assertFalse(merged[1].isContinueWatchingNextUp)
+    }
+
+    @Test
+    fun mergeTieKeepsTheInProgressCard() {
+        val inProgress = listOf(progress("a", 1, 2, t0, completed = false))
+        val nextUp = listOf(progress("a", 1, 3, t0, completed = false).copy(source = WatchProgressSourceNextUp))
+        assertEquals(listOf("a:1:2"), mergeContinueWatchingWithNextUp(inProgress, nextUp).map { it.videoId })
+    }
+
+    @Test
+    fun mergeWithNothingToAddReturnsTheSameList() {
+        val inProgress = listOf(progress("a", 1, 2, t0, completed = false))
+        assertSame(inProgress, mergeContinueWatchingWithNextUp(inProgress, emptyList()))
+    }
+
+    @Test
+    fun withoutDismissedDropsOnlyDismissedNextUpCards() {
+        val nextUpA = progress("a", 1, 4, t0, completed = false).copy(source = WatchProgressSourceNextUp)
+        val nextUpB = progress("b", 2, 1, t0, completed = false).copy(source = WatchProgressSourceNextUp)
+        val inProgressC = progress("c", 1, 1, t0, completed = false)
+        val keys = mapOf(
+            nextUpA.videoId to nextUpDismissKey("a", 1, 3),
+            nextUpB.videoId to nextUpDismissKey("b", 1, 10),
+            // A progress card that happens to share a key is never dropped by this filter.
+            inProgressC.videoId to nextUpDismissKey("c", 1, 1),
+        )
+        val result = withoutDismissedNextUp(
+            entries = listOf(nextUpA, nextUpB, inProgressC),
+            dismissKeyByVideoId = keys,
+            dismissedNextUpKeys = setOf(nextUpDismissKey("a", 1, 3), nextUpDismissKey("c", 1, 1)),
+        )
+        assertEquals(listOf(nextUpB.videoId, inProgressC.videoId), result.map { it.videoId })
+    }
+
+    @Test
+    fun resolveKeyChangesWithEveryInputThatChangesTheAnswer() {
+        val seed = ContinueWatchingNextUpSeed("series", "tt1", 1, 3, t0)
+        val base = nextUpResolveKey(seed, "NUVIO_SYNC", preferFurthestEpisode = true, showUnairedNextUp = true, todayIsoDate = "2026-10-23")
+        val variants = listOf(
+            nextUpResolveKey(seed.copy(episodeNumber = 4), "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed.copy(contentId = "tt2"), "NUVIO_SYNC", true, true, "2026-10-23"),
+            nextUpResolveKey(seed, "TRAKT", true, true, "2026-10-23"),
+            nextUpResolveKey(seed, "NUVIO_SYNC", false, true, "2026-10-23"),
+            nextUpResolveKey(seed, "NUVIO_SYNC", true, false, "2026-10-23"),
+            nextUpResolveKey(seed, "NUVIO_SYNC", true, true, "2026-10-24"),
+        )
+        variants.forEach { assertNotEquals(base, it) }
+        // Re-finishing the same episode later re-dates the card but does not refetch it.
+        assertEquals(base, nextUpResolveKey(seed.copy(markedAtEpochMs = t0 + 1), "NUVIO_SYNC", true, true, "2026-10-23"))
     }
 }
