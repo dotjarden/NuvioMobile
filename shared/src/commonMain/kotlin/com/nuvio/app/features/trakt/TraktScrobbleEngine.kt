@@ -1,5 +1,6 @@
 package com.nuvio.app.features.trakt
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -74,6 +75,7 @@ class TraktScrobbleEngine(
     private val isAuthenticated: () -> Boolean,
     private val authenticatedChanges: () -> Flow<Boolean>,
     private val accountSlug: () -> String?,
+    private val refreshAccount: suspend () -> Unit,
     private val http: suspend (method: String, url: String, body: String, headers: Map<String, String>) -> TraktHttpReply?,
     private val refreshProgress: suspend () -> Unit,
     val queue: TraktPendingScrobbleStopQueue,
@@ -231,7 +233,12 @@ class TraktScrobbleEngine(
         replayRequests.trySend(profileId)
     }
 
-    /** Arms the auth watcher once; true when this call armed it. */
+    /**
+     * Arms the auth watcher once; true when this call armed it. The null-check-then-launch here and
+     * in [ensureReplayWorker] can race (two callers arm two watchers or two workers); that is
+     * harmless: every drain runs under the outbox's drain mutex, so the worst case is one extra,
+     * serialised drain.
+     */
     private fun armAuthWatcher(): Boolean {
         if (authWatcher != null) return false
         authWatcher = scope.launch {
@@ -245,7 +252,16 @@ class TraktScrobbleEngine(
     private fun ensureReplayWorker() {
         if (replayWorker != null) return
         replayWorker = scope.launch {
-            for (profileId in replayRequests) replay(profileId)
+            for (profileId in replayRequests) {
+                // One failed drain must not end the worker, or no later request would ever run.
+                try {
+                    replay(profileId)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    trace("Trakt pending stop replay failed: ${error::class.simpleName}: ${error.message} (kept)")
+                }
+            }
         }
     }
 
@@ -274,9 +290,11 @@ class TraktScrobbleEngine(
     /** Trakt disconnect: drops [profileId]'s queue under the queue lock. */
     suspend fun clearPendingStops(profileId: Int) = queue.clearProfile(profileId)
 
-    /** Non-suspending callers (profile removal): marks in-flight writes stale, then clears under the lock. */
+    /**
+     * Non-suspending callers (profile removal): clears under the lock once any write already
+     * holding it has finished, and bumps only that profile's generation.
+     */
     fun clearPendingStopsAsync(profileId: Int) {
-        queue.invalidate()
         scope.launch { queue.clearProfile(profileId) }
     }
 
@@ -301,10 +319,12 @@ class TraktScrobbleEngine(
 
         override fun accountSlug(): String? = this@TraktScrobbleEngine.accountSlug()
 
+        override suspend fun refreshAccount() = this@TraktScrobbleEngine.refreshAccount()
+
         override suspend fun playback(): List<TraktRemoteProgress>? {
             val movies = get("$TRAKT_API_BASE_URL/sync/playback/movies") ?: return null
             val episodes = get("$TRAKT_API_BASE_URL/sync/playback/episodes") ?: return null
-            return (movies + episodes).mapNotNull { it.toRemote(it.pausedAt) }
+            return (movies + episodes).mapNotNull { row -> row.toRemote(row.pausedAt)?.copy(progress = row.progress) }
         }
 
         override suspend fun playsSince(kind: String, sinceMs: Long): List<TraktRemoteProgress>? {
@@ -399,6 +419,7 @@ class TraktScrobbleEngine(
 private data class PendingStopRemoteRow(
     @SerialName("paused_at") val pausedAt: String? = null,
     @SerialName("watched_at") val watchedAt: String? = null,
+    @SerialName("progress") val progress: Float? = null,
     @SerialName("movie") val movie: PendingStopRemoteMedia? = null,
     @SerialName("show") val show: PendingStopRemoteMedia? = null,
     @SerialName("episode") val episode: PendingStopRemoteEpisode? = null,

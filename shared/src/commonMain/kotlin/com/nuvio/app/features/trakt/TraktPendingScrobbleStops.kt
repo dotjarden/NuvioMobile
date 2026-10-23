@@ -1,6 +1,7 @@
 package com.nuvio.app.features.trakt
 
 import kotlin.concurrent.Volatile
+import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -23,7 +24,9 @@ import kotlinx.serialization.json.Json
  * starts. Before replaying, the drain reads what Trakt holds now (`/sync/playback`, and
  * `/sync/history` since the stop was queued) and drops an entry Trakt already has, or that newer
  * activity elsewhere supersedes, so a replay can neither add a duplicate play nor overwrite newer
- * progress. Entries are bounded per profile and by age (24 h at or above the watched threshold,
+ * progress. The reads are lazy (playback once, history at most once per kind, each when the first
+ * entry needs it): an entry that cannot be checked is never sent, and the drain stops there, but
+ * entries before the failed read may already have been sent. Entries are bounded per profile and by age (24 h at or above the watched threshold,
  * 48 h below it).
  */
 
@@ -123,20 +126,26 @@ data class TraktPendingScrobbleStop(
     val accountSlug: String? = null,
 )
 
-/** A row Trakt holds now: a paused playback ([atMs] = `paused_at`) or a history play (`watched_at`). */
+/**
+ * A row Trakt holds now: a paused playback ([atMs] = `paused_at`, [progress] its percentage) or a
+ * history play (`watched_at`, no progress).
+ */
 data class TraktRemoteProgress(
     val kind: String,
     val ids: TraktExternalIds,
     val season: Int? = null,
     val number: Int? = null,
     val atMs: Long,
+    val progress: Float? = null,
 )
 
 /**
  * The persisted per-profile list. Every mutation is a fresh read-modify-write under one mutex that
- * touches only entries still present, and is not written back when a wipe ([invalidate],
- * [clearProfile], [wipeAll]) happened since it read: a sign-out wipe or a disconnect clear that
- * lands mid-drain is never resurrected.
+ * touches only entries still present, and is not written back when a wipe of its profile
+ * ([clearProfile]) or of every profile ([invalidate], [wipeAll]) happened since it read: a sign-out
+ * wipe or a disconnect clear that lands mid-drain is never resurrected. Generations are kept per
+ * profile (bumped under the lock) plus one global one (bumped by a sign-out, possibly outside the
+ * lock), so clearing one profile never discards another profile's write.
  */
 class TraktPendingScrobbleStopQueue(
     private val load: (profileId: Int) -> String?,
@@ -151,15 +160,21 @@ class TraktPendingScrobbleStopQueue(
     private val serializer = ListSerializer(TraktPendingScrobbleStop.serializer())
 
     @Volatile
-    private var generation = 0L
+    private var globalGeneration = 0L
+
+    // Guarded by [mutex].
+    private val profileGenerations = mutableMapOf<Int, Long>()
 
     /**
-     * Marks every in-flight mutation stale without taking the lock (the platform sign-out wipe
-     * erases the keys itself, outside this queue). Callers then clear under the lock as well.
+     * Marks every profile's in-flight mutation stale without taking the lock (the platform sign-out
+     * wipe erases the keys itself, outside this queue). The caller then runs [wipeAll] as well.
      */
     fun invalidate() {
-        generation += 1
+        globalGeneration += 1
     }
+
+    private fun generationOf(profileId: Int): Pair<Long, Long> =
+        globalGeneration to (profileGenerations[profileId] ?: 0L)
 
     fun maxAgeFor(progress: Float): Long =
         if (progress >= TRAKT_WATCHED_PROGRESS) maxWatchedAgeMs else maxPausedAgeMs
@@ -176,10 +191,10 @@ class TraktPendingScrobbleStopQueue(
 
     /** The profile's live entries, oldest first. Persists the pruning when anything expired. */
     suspend fun pending(profileId: Int): List<TraktPendingScrobbleStop> = mutex.withLock {
-        val gen = generation
+        val gen = generationOf(profileId)
         val stored = read(profileId)
         val pruned = prune(stored).sortedBy { it.createdAtMs }
-        if (pruned.size != stored.size && gen == generation) write(profileId, pruned)
+        if (pruned.size != stored.size && gen == generationOf(profileId)) write(profileId, pruned)
         pruned
     }
 
@@ -209,13 +224,13 @@ class TraktPendingScrobbleStopQueue(
 
     /** Erases [profileId]'s queue under the lock and marks in-flight mutations stale. */
     suspend fun clearProfile(profileId: Int) = mutex.withLock {
-        generation += 1
+        profileGenerations[profileId] = (profileGenerations[profileId] ?: 0L) + 1
         clear(profileId)
     }
 
     /** [clearProfile] for every profile slot (sign-out). */
     suspend fun wipeAll(profileIds: Iterable<Int>) = mutex.withLock {
-        generation += 1
+        globalGeneration += 1
         profileIds.forEach(clear)
     }
 
@@ -223,9 +238,9 @@ class TraktPendingScrobbleStopQueue(
         profileId: Int,
         block: (List<TraktPendingScrobbleStop>) -> List<TraktPendingScrobbleStop>?,
     ) = mutex.withLock {
-        val gen = generation
+        val gen = generationOf(profileId)
         val updated = block(read(profileId)) ?: return@withLock
-        if (gen == generation) write(profileId, updated)
+        if (gen == generationOf(profileId)) write(profileId, updated)
     }
 
     private fun prune(entries: List<TraktPendingScrobbleStop>): List<TraktPendingScrobbleStop> {
@@ -286,12 +301,16 @@ fun classifyTraktScrobbleFailure(status: Int): TraktScrobbleDelivery = when (sta
 }
 
 /**
- * What a drain reads from Trakt before replaying. Each fetch returns null when it failed, and the
- * drain then keeps every remaining entry: an entry that cannot be checked is never replayed.
+ * What a drain reads from Trakt before replaying. Each fetch returns null when it failed; the
+ * entry that needed it is never sent, and the drain stops there (entries before it may already
+ * have been sent: reads are lazy, see the file header).
  */
 interface TraktReplayRemote {
     /** The connected Trakt account's slug, or null when it is not known yet. */
     fun accountSlug(): String?
+
+    /** Fetches the account's user settings (and so its slug); called at most once per drain. */
+    suspend fun refreshAccount()
 
     /** Every paused playback Trakt holds now (`/sync/playback`). */
     suspend fun playback(): List<TraktRemoteProgress>?
@@ -379,8 +398,9 @@ class TraktScrobbleStopOutbox(
     /**
      * Replays [profileId]'s pending stops, oldest first, while that profile stays active. Each
      * entry is first checked against what Trakt holds now ([remote]); an entry Trakt already has,
-     * or that newer activity supersedes, is dropped without a request. A RETRYABLE failure moves on
-     * to the next entry; OFFLINE, NOT_READY or a failed check stops the drain.
+     * or that newer activity supersedes, is dropped without a request. An entry that cannot be
+     * checked is never sent. A RETRYABLE failure moves on to the next entry; OFFLINE, NOT_READY or a
+     * failed check stops the drain.
      */
     suspend fun drain(
         profileId: Int,
@@ -396,6 +416,7 @@ class TraktScrobbleStopOutbox(
             if (entries.isEmpty()) return@withLock TraktPendingStopDrainResult()
             log("Trakt pending stop replay: ${entries.size} pending for profile $profileId")
             val checks = RemoteChecks(remote, sinceMs = entries.minOf { it.createdAtMs } - clockSlackMs)
+            var accountRefreshed = false
             for (entry in entries) {
                 if (activeProfileId() != profileId) break
                 if (openSession == (profileId to entry.itemKey)) continue
@@ -409,7 +430,13 @@ class TraktScrobbleStopOutbox(
                     continue
                 }
                 entry.accountSlug?.let { expected ->
-                    val current = remote.accountSlug()
+                    var current = remote.accountSlug()
+                    if (current == null && !accountRefreshed) {
+                        // The settings fetch at connect time may have failed: try once per drain.
+                        accountRefreshed = true
+                        remote.refreshAccount()
+                        current = remote.accountSlug()
+                    }
                     if (current == null) {
                         log("Trakt pending stop replay deferred id=${entry.id}: Trakt account not known yet (kept)")
                         return@withLock result(profileId, sent, dropped, superseded)
@@ -426,7 +453,7 @@ class TraktScrobbleStopOutbox(
                         log("Trakt pending stop replay deferred id=${entry.id}: Trakt state could not be read (kept)")
                         return@withLock result(profileId, sent, dropped, superseded)
                     }
-                    Verdict.ALREADY_PLAYED, Verdict.NEWER_ON_TRAKT -> {
+                    Verdict.ALREADY_PLAYED, Verdict.ALREADY_PAUSED, Verdict.NEWER_ON_TRAKT -> {
                         queue.remove(profileId, entry.id)
                         log("Trakt pending stop replay skipped id=${entry.id}: ${verdict.reason} (removed)")
                         superseded += 1
@@ -463,6 +490,7 @@ class TraktScrobbleStopOutbox(
     private enum class Verdict(val reason: String) {
         REPLAY("replay"),
         ALREADY_PLAYED("Trakt already has a play since it was queued"),
+        ALREADY_PAUSED("Trakt already holds this position"),
         NEWER_ON_TRAKT("Trakt holds newer progress"),
         UNKNOWN("unknown"),
     }
@@ -494,10 +522,18 @@ class TraktScrobbleStopOutbox(
             val current = playback() ?: return Verdict.UNKNOWN
             val paused = current.filter(entry.item::matches).maxByOrNull { it.atMs }
             if (paused != null) {
-                // Paused on Trakt since this stop was queued: ours landed, or another device is newer.
-                return if (paused.atMs >= since) Verdict.NEWER_ON_TRAKT else Verdict.REPLAY
+                val pausedProgress = paused.progress
+                // Ours: the stop landed and only its answer was lost (any timestamp, any clock skew).
+                if (pausedProgress != null && abs(pausedProgress - entry.progress) <= SAME_POSITION_PERCENT) {
+                    return Verdict.ALREADY_PAUSED
+                }
+                // Newer: paused after this stop was queued (no slack) at a different position, i.e.
+                // another device. An earlier own stop (20 % landed, the final 30 % failed minutes
+                // later) is older than createdAtMs and does not count.
+                if (paused.atMs > entry.createdAtMs) return Verdict.NEWER_ON_TRAKT
             }
-            // No paused row: finished elsewhere since (a newer play) means the position is stale.
+            // No newer paused row: finished elsewhere since (a newer play) means the position is
+            // stale, and a stale paused row must not bring Resume back either.
             val history = plays(entry.item.kind) ?: return Verdict.UNKNOWN
             return if (history.any { entry.item.matches(it) && it.atMs >= since }) Verdict.ALREADY_PLAYED else Verdict.REPLAY
         }
@@ -543,5 +579,8 @@ class TraktScrobbleStopOutbox(
         const val DEFAULT_MAX_REPLAY_ATTEMPTS = 5
         const val MIN_QUEUED_PROGRESS = 1f
         const val DEFAULT_CLOCK_SLACK_MS = 10L * 60 * 1000
+
+        /** A Trakt paused row within this many percentage points of an entry is the entry itself. */
+        const val SAME_POSITION_PERCENT = 1f
     }
 }

@@ -32,6 +32,7 @@ class TraktScrobbleEngineTest {
         var playbackJson = "[]"
         var historyJson = "[]"
         var onPost: (suspend () -> Unit)? = null
+        var throwOnNextCall = false
 
         val queue = TraktPendingScrobbleStopQueue(
             load = { storage[it] },
@@ -46,7 +47,12 @@ class TraktScrobbleEngineTest {
             isAuthenticated = { auth.value },
             authenticatedChanges = { auth },
             accountSlug = { slug },
+            refreshAccount = {},
             http = { method, url, body, _ ->
+                if (throwOnNextCall) {
+                    throwOnNextCall = false
+                    throw IllegalStateException("boom")
+                }
                 calls += Call(method, url, body)
                 when {
                     method == "POST" -> {
@@ -274,5 +280,48 @@ class TraktScrobbleEngineTest {
         h.engine.clearPendingStopsAsync(1)
         runCurrent()
         assertNull(h.storage[1])
+    }
+
+    // ── Review round 2 (P3-d, re-run after a busy drain) ──────────────────────────────────
+
+    @Test
+    fun theReplayWorkerSurvivesAThrownReplay() = runTest {
+        val h = harness()
+        h.leaveStopBehind()
+        h.throwOnNextCall = true
+        h.engine.requestReplay(1)
+        runCurrent()
+        assertEquals(0, h.posts.size)
+        assertEquals(1, h.pending().size, "the failed drain keeps the entry")
+
+        h.engine.requestReplay(1)
+        runCurrent()
+        assertEquals(1, h.posts.size, "the worker is still alive")
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aRequestDuringABusyDrainRunsAnotherDrain() = runTest {
+        val h = harness()
+        h.leaveStopBehind()
+        val other = TraktScrobbleItem.Movie(title = "Other", year = 2001, ids = TraktExternalIds(imdb = "tt2"))
+        h.onPost = {
+            // While the worker's drain is sending, another stop is left behind and a drain requested.
+            h.queue.enqueue(
+                TraktPendingScrobbleStop(
+                    id = "late",
+                    profileId = 1,
+                    itemKey = other.itemKey,
+                    item = TraktPendingScrobbleItem.from(other),
+                    progress = 30f,
+                    createdAtMs = h.nowMs,
+                ),
+            )
+            h.engine.requestReplay(1)
+        }
+        h.engine.requestReplay(1)
+        runCurrent()
+        assertEquals(2, h.posts.size, "the second request is not lost while the first drain runs")
+        assertTrue(h.pending().isEmpty())
     }
 }

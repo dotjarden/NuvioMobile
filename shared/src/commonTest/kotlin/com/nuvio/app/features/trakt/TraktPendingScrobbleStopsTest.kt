@@ -20,8 +20,16 @@ class TraktPendingScrobbleStopsTest {
     ) : TraktReplayRemote {
         var playbackCalls = 0
         val playsCalls = mutableListOf<Pair<String, Long>>()
+        var failPlaysFor: String? = null
+        var refreshes = 0
+        var slugAfterRefresh: String? = null
 
         override fun accountSlug(): String? = slug
+
+        override suspend fun refreshAccount() {
+            refreshes += 1
+            slugAfterRefresh?.let { slug = it }
+        }
 
         override suspend fun playback(): List<TraktRemoteProgress>? {
             playbackCalls += 1
@@ -30,6 +38,7 @@ class TraktPendingScrobbleStopsTest {
 
         override suspend fun playsSince(kind: String, sinceMs: Long): List<TraktRemoteProgress>? {
             playsCalls += kind to sinceMs
+            if (kind == failPlaysFor) return null
             return plays?.filter { it.kind == kind && it.atMs >= sinceMs }
         }
     }
@@ -615,5 +624,115 @@ class TraktPendingScrobbleStopsTest {
         assertTrue(e.matches(episodePlay(2, 5, 0)))
         assertTrue(!e.matches(episodePlay(2, 6, 0)))
         assertTrue(!e.matches(moviePlay("tt0903747", 0)), "kind must match")
+    }
+
+    // ── Review round 2 (P3-a, P3-b, P3-c, P3-f) ───────────────────────────────────────────
+
+    private fun pausedRow(progress: Float?, atMs: Long) = TraktRemoteProgress(
+        kind = "movie",
+        ids = TraktExternalIds(imdb = "tt0111161"),
+        atMs = atMs,
+        progress = progress,
+    )
+
+    private suspend fun Harness.replayCount(): Int {
+        var calls = 0
+        drain(outbox()) { _, _ -> calls++; TraktScrobbleDelivery.SENT }
+        return calls
+    }
+
+    @Test
+    fun anEarlierOwnStopOnTraktDoesNotHideTheFinalOne() = runTest {
+        val h = Harness()
+        val firstStopLandedAt = h.nowMs
+        h.nowMs += 8 * 60 * 1000 // the final 30 % stop fails 8 min after a 20 % stop landed
+        h.queueOffline(movie(), 30f)
+        h.remote.playback = listOf(pausedRow(progress = 20f, atMs = firstStopLandedAt))
+        assertEquals(1, h.replayCount(), "inside the old 10-min slack, but older and at another position")
+    }
+
+    @Test
+    fun aPausedRowAtTheSamePositionIsOurOwnStop() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        // The live stop landed (answer lost); Trakt's paused_at may even read earlier (clock skew).
+        h.remote.playback = listOf(pausedRow(progress = 30.6f, atMs = h.nowMs - 120_000))
+        assertEquals(0, h.replayCount())
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aLaterPausedRowAtAnotherPositionIsNewer() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        h.remote.playback = listOf(pausedRow(progress = 55f, atMs = h.nowMs + 1))
+        assertEquals(0, h.replayCount())
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aRowPausedJustBeforeTheEntryIsNotNewer() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        h.remote.playback = listOf(pausedRow(progress = 55f, atMs = h.nowMs - 5 * 60 * 1000))
+        assertEquals(1, h.replayCount(), "no slack on the paused comparison")
+    }
+
+    @Test
+    fun aStalePausedRowWithALaterPlayDoesNotBringResumeBack() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        h.remote.playback = listOf(pausedRow(progress = 10f, atMs = h.nowMs - 60 * 60 * 1000))
+        h.remote.plays = listOf(moviePlay("tt0111161", atMs = h.nowMs + 30 * 60 * 1000))
+        assertEquals(0, h.replayCount())
+        assertTrue(h.pending().isEmpty())
+    }
+
+    @Test
+    fun aSendFollowedByAReadFailureKeepsTheRest() = runTest {
+        val h = Harness()
+        h.queueOffline(movie(), 30f)
+        h.nowMs += 1
+        h.queueOffline(episode(1, 2), 30f)
+        h.remote.failPlaysFor = "episode"
+        val sent = mutableListOf<String>()
+        val result = h.drain(h.outbox()) { item, _ -> sent += item.itemKey; TraktScrobbleDelivery.SENT }
+        assertEquals(listOf(movie().itemKey), sent, "the movie was checked and sent before the episode read failed")
+        assertEquals(1, result.sent)
+        assertEquals(1, result.kept)
+        assertEquals(listOf(episode(1, 2).itemKey), h.pending().map { it.itemKey })
+    }
+
+    @Test
+    fun anUnknownAccountIsFetchedOnceBeforeWaiting() = runTest {
+        val h = Harness(slug = "alice")
+        h.queueOffline(movie("tt1"), 30f)
+        h.nowMs += 1
+        h.queueOffline(movie("tt2"), 30f)
+        h.remote.slug = null
+        h.remote.slugAfterRefresh = "alice"
+        assertEquals(2, h.replayCount())
+        assertEquals(1, h.remote.refreshes)
+
+        h.queueOffline(movie("tt3"), 30f)
+        h.remote.slug = null
+        h.remote.slugAfterRefresh = null
+        assertEquals(0, h.replayCount(), "still unknown after the fetch: wait")
+        assertEquals(2, h.remote.refreshes)
+        assertEquals(1, h.pending().size)
+    }
+
+    @Test
+    fun clearingOneProfileKeepsAnotherProfilesQueue() = runTest {
+        val h = Harness()
+        h.queueOffline(movie("tt1"), 30f)
+        h.activeProfile = 2
+        h.outbox().sendStop(2, movie("tt2"), 30f) { _, _ -> TraktScrobbleDelivery.OFFLINE }
+        h.queue.clearProfile(2)
+        h.activeProfile = 1
+        h.nowMs += 1
+        h.queueOffline(movie("tt3"), 30f)
+        assertEquals(2, h.pending(1).size, "profile 1 writes are not discarded by profile 2's clear")
+        assertTrue(h.pending(2).isEmpty())
     }
 }

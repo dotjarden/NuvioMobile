@@ -92,6 +92,10 @@ object TraktScrobbleRepository : TrackingScrobbler {
         isAuthenticated = { TraktAuthRepository.isAuthenticated.value },
         authenticatedChanges = { TraktAuthRepository.isAuthenticated },
         accountSlug = { TraktAuthRepository.currentUserSlug() },
+        refreshAccount = {
+            runCatching { TraktAuthRepository.refreshUserSettings() }
+                .onFailure { error -> if (error is CancellationException) throw error }
+        },
         http = { method, url, body, headers ->
             runCatching { httpRequestRaw(method = method, url = url, headers = headers, body = body) }
                 .onFailure { error ->
