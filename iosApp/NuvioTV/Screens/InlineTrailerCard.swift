@@ -2623,7 +2623,7 @@ struct InlineTrailerCard: View {
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
                     // Review r1 P2-2: the morph animates this frame, so the raster cache's bitmaps would
-                    // stretch through it; `animatesSize` routes this surface to the live drawingGroup path.
+                    // stretch through it; `animatesSize` routes this surface to the live layers.
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: geometry.radius),
                                     surface: .posters, railTint: depthRailTintResolved,
                                     animatesSize: true)

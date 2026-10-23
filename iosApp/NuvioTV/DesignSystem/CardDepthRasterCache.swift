@@ -1,8 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// W3-13 (UX-16 / BUG-153 remainder), the Card Depth rendering since Wave 3 (picked by the
-/// `-debug.cardDepthRender` A/B on the Apple TV; the knob is gone): the two gradient layers as bitmaps,
+/// W3-13 (UX-16 / BUG-153 remainder), the Card Depth rendering picked by the `-debug.cardDepthRender`
+/// A/B on the Apple TV (the knob is gone; parked by BUG-221, revived 2026-10-23 without its
+/// `GeometryReader`): the two gradient layers as bitmaps,
 /// rendered ONCE per key with `UIGraphicsImageRenderer` and shared by every card drawing the same
 /// key, instead of CoreGraphics re-filling both gradients on the CPU for every card mount
 /// (`argb32_shade_axial_RGB` in Wave 0's Time Profiler).
@@ -20,7 +21,8 @@ import UIKit
 ///   cards that share a key share an identical bitmap whichever of them asked first.
 ///
 /// `nonisolated`: `NSCache` is thread-safe and the key, path and render helpers are pure, so they
-/// are usable (and unit-testable) off the main actor. `CardDepthOverlay` calls in from its body.
+/// are usable (and unit-testable) off the main actor. `CardDepthBitmapLayers` calls in from its
+/// body, with a size it learned after layout (BUG-221: never from inside a `GeometryReader`).
 nonisolated final class CardDepthRasterCache: @unchecked Sendable {
     static let shared = CardDepthRasterCache()
 
@@ -32,7 +34,7 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
 
     /// The shapes a bitmap can be keyed on. Every `nuvioCardDepth` call site passes one of these
     /// (the cards a `RoundedRectangle` with BUG-91's inner radius, Detail's cast avatar a `Circle`).
-    /// Any other shape has no kind and `CardDepthOverlay` draws the live layers under `drawingGroup` for it.
+    /// Any other shape has no kind and `CardDepthOverlay` draws the live layers for it.
     nonisolated enum ShapeKind: Hashable, Sendable {
         /// Corner size in pt ×100 (width, height) and whether the corners are `.continuous`.
         case roundedRect(cornerWidthX100: Int, cornerHeightX100: Int, continuous: Bool)
@@ -77,6 +79,9 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
 
         static func x100(_ value: Double) -> Int { Int((value * 100).rounded()) }
 
+        /// A bitmap with at least one pixel each way at a real scale; `render` returns nil otherwise.
+        var isDrawable: Bool { pixelWidth > 0 && pixelHeight > 0 && scaleX100 > 0 }
+
         static func pixels(_ points: CGFloat, scale: CGFloat) -> Int { Int((points * scale).rounded()) }
 
         /// The rail bitmap for one card size and one resolved rail setting.
@@ -111,6 +116,32 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
         }
     }
 
+    /// BUG-221: the two keys one `CardDepthBitmapLayers` draws, nil for a layer with nothing to
+    /// draw (no size yet, a zero strength, a zero rail width), which then shows `placeholder`.
+    nonisolated struct LayerKeys: Equatable, Sendable {
+        var sheen: Key?
+        var rail: Key?
+
+        init(size: CGSize, scale: CGFloat, shape: ShapeKind, sheen: Double, edge: Double, lineWidth: CGFloat,
+             stops: (top: Double, mid: Double, bottom: Double), coverage: Double) {
+            let sheenKey = Key.sheen(size: size, scale: scale, shape: shape, sheen: sheen)
+            let railKey = Key.rail(size: size, scale: scale, shape: shape, lineWidth: lineWidth,
+                                   stops: stops, coverage: coverage)
+            self.sheen = sheenKey.isDrawable && sheenKey.sheenX100 > 0 ? sheenKey : nil
+            self.rail = railKey.isDrawable && edge > 0 && railKey.railWidthX100 > 0 ? railKey : nil
+        }
+    }
+
+    /// A fully transparent 1 × 1 bitmap: what a layer shows while it has no key. `.resizable()`
+    /// stretches it to the card, so the layer keeps its slot and draws nothing.
+    static let placeholder: UIImage = {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1), format: format).image { _ in }
+    }()
+
     /// `NSCache` keys must be objects.
     nonisolated private final class KeyBox: NSObject {
         let key: Key
@@ -135,6 +166,13 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
         guard let image = Self.render(key) else { return nil }
         cache.setObject(image, forKey: box, cost: key.pixelWidth * key.pixelHeight * 4)
         return image
+    }
+
+    /// BUG-221: never nil, so the layer's `Image` is always there: the bitmap for `key`, or
+    /// `placeholder` for no key and for a key that renders nothing.
+    func layerImage(for key: Key?) -> UIImage {
+        guard let key else { return Self.placeholder }
+        return image(for: key) ?? Self.placeholder
     }
 
     func removeAll() {

@@ -447,7 +447,7 @@ extension View {
     /// Review r1 P2-2: `animatesSize` (default `false`) marks a surface whose depth-carrying frame
     /// animates (the inline trailer tile's morph). The raster cache keys its bitmaps on the FINAL
     /// layout size and SwiftUI stretches them into the interpolated frame, so such a surface takes
-    /// the `.drawingGroup()` fallback instead, which re-strokes at every interpolated size. Every
+    /// the live layers instead, which re-stroke at every interpolated size. Every
     /// other call site keeps the default.
     func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil, animatesSize: Bool = false) -> some View {
         modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize))
@@ -504,18 +504,19 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 ///   landing is a colour change, not a redraw.
 /// - **Per mount.** The white rail and sheen are bitmaps from `CardDepthRasterCache`, rendered once
 ///   per key and shared by every card of the same size and setting, so only the first card of a key
-///   pays the CPU gradient rasterisation, not every mount and focus move. This is the rendering since Wave 3: the owner's
-///   rig A/B on the Apple TV (Release, Classic Home, 20 down / 20 up) measured 95 / 89 hitches for
-///   the live layers, 84 / 85 for the same layers inside one `.drawingGroup()` and 85 for the
-///   raster cache (Card Depth off: 46-72), and the `-debug.cardDepthRender` knob and the live-layer
-///   variant were deleted with that decision. A shape the cache cannot key (none today: cards pass
+///   pays the CPU gradient rasterisation, not every mount and focus move (`CardDepthBitmapLayers`).
+///   The owner's rig A/B on the Apple TV (Release, Classic Home, 20 down / 20 up) measured 95 / 89
+///   hitches for the live layers, 84 / 85 inside one `.drawingGroup()` and 85 for the raster cache
+///   (Card Depth off: 46-72). A shape the cache cannot key (none today: cards pass
 ///   `RoundedRectangle`, the cast avatar `Circle`), a revived halo, and a surface whose frame
 ///   animates (`animatesSize`, review r1 P2-2: the inline trailer tile, whose bitmaps would
-///   otherwise stretch through the morph) take the fallback: the same SwiftUI layers inside one
-///   `.drawingGroup()` (`liveLayers`).
+///   otherwise stretch through the morph) take the live layers (`liveLayers`).
 ///
-/// The root carries `DebugAXIdentifier("card_depth_rail")` OUTSIDE any `drawingGroup`, so test50
-/// still reads the rail's rect as the artwork's.
+/// BUG-221 (2026-10-22/23): the first cache rendering read its size from a `GeometryReader` and
+/// crashed Home (see `rendered`); the size now arrives through `onGeometryChange`, after layout.
+///
+/// The root carries `DebugAXIdentifier("card_depth_rail")`, so test50 still reads the rail's rect
+/// as the artwork's.
 private struct CardDepthOverlay<S: InsettableShape>: View {
     let shape: S
     let style: CardDepthStyle
@@ -534,10 +535,8 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// Review r1 P2-2: the surface's frame animates (the inline trailer tile's morph). The cached
     /// bitmaps are keyed on the final layout size and would stretch into the interpolated frame (the
     /// side rails thickening by the width ratio, the corners elongating), so it takes the
-    /// `.drawingGroup()` fallback.
+    /// live-layer fallback.
     var animatesSize: Bool = false
-    /// W3-13: the cached bitmaps are keyed on, and rendered at, the screen's pixel scale.
-    @Environment(\.displayScale) private var displayScale
 
     /// Every number the layers draw from, resolved once per body.
     private struct Params {
@@ -571,35 +570,41 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
             // picture" against real geometry instead of hunting a 1-3pt hairline in a screenshot.
             // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift). W3-13: kept
-            // here, outside the fallback's `drawingGroup`.
+            // here, on the root of either rendering.
             .modifier(DebugAXIdentifier("card_depth_rail"))
     }
 
-    /// W3-13 (3): the cached bitmaps, the rendering since Wave 3. The bitmaps carry no halo (inert
+    /// W3-13 (3): the cached bitmaps (`CardDepthBitmapLayers`). The bitmaps carry no halo (inert
     /// since rc14: `railHaloSpread` is 0); a revived halo, or a shape the cache has no kind for,
-    /// takes the `.drawingGroup()` fallback instead of drawing a wrong rail. So does a surface whose
-    /// frame animates (`animatesSize`, review r1 P2-2): a bitmap keyed on the final size would
-    /// stretch through the animation; the live layers re-stroke.
+    /// takes the live layers instead of drawing a wrong rail. So does a surface whose frame animates
+    /// (`animatesSize`, review r1 P2-2): a bitmap keyed on the final size would stretch through the
+    /// animation; the live layers re-stroke. Every input of the branch is fixed per call site (the
+    /// shape's type, `animatesSize`, the always-0 halo), so a card never switches between the two.
     @ViewBuilder
     private func rendered(_ p: Params) -> some View {
-        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV): the raster-cache rendering
-        // (`cachedLayers`, the W3-13 pick) crashed the app within three seconds of Home on every
-        // launch, Stage and Classic, Debug and Release, once Continue Watching differed between the
-        // local snapshot and the pull: `SwiftUICore/DynamicContainer.swift:651: Fatal error` from
-        // `DynamicContainerInfo.tryRemovingItem` under `_AspectRatioLayout.effectiveRatio` inside a
-        // `LazyHStack` row (crash logs `NuvioTV-2026-10-22-1210*.ips`). Card Depth off does not crash,
-        // and making the cached ZStack's structure independent of the cache's answer did not help, so
-        // the GeometryReader-driven overlay is the trigger. The live layers, the rendering every
-        // device pass validated through rc11, ship unchanged (no `.drawingGroup()`: that adds an
-        // offscreen pass per card on the GPU-bound Detail page, BUG-206). `cachedLayers` and
-        // `CardDepthRasterCache` stay for Wave 4 with the device repro (Test 2, Trakt progress, a
-        // title played since the last launch); `animatesSize` and `haloSpread` keep their meaning
-        // for that revival.
-        liveLayers(p)
+        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV; root-caused 2026-10-23 on FA87,
+        // docs/research/card-depth-cache-2026-10-23): the first cache rendering wrapped the bitmaps
+        // in a `GeometryReader` whose content read `proxy.size`. That content is a view body that
+        // depends on a LAYOUT value, so SwiftUI re-evaluates it inside the layout pass. The trap came
+        // from that pass: a row's `LazyHStack` measuring a card (`_AspectRatioLayout` asking its child
+        // for a size) updated a dynamic container under the card, whose item removal asserted
+        // (`DynamicContainerInfo.tryRemovingItem`, `DynamicContainer.swift:651`), ~1.5 s after the
+        // profile pick, during Home's first publishes. The bitmaps were innocent: a `GeometryReader` whose content reads `proxy.size` and
+        // draws only `Color.clear` frames traps the same way (4 / 4), and one that ignores the proxy
+        // around the live layers does not. `CardDepthBitmapLayers` takes the size from
+        // `onGeometryChange` instead (a state write after layout), so nothing in the overlay is
+        // evaluated during layout.
+        if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
+            CardDepthBitmapLayers(kind: kind, sheen: p.sheen, edge: p.edge, lineWidth: p.width,
+                                  stops: p.stops, coverage: p.coverage,
+                                  railSuppressed: railSuppressed, railTint: railTint)
+        } else {
+            liveLayers(p)
+        }
     }
 
-    /// The fallback: the SwiftUI layers (the sheen gradient and the stroked rail), which
-    /// `rendered` draws inside one `.drawingGroup()`.
+    /// The fallback: the SwiftUI layers (the sheen gradient and the stroked rail), drawn without a
+    /// `.drawingGroup()` (that adds an offscreen pass per card on the GPU-bound Detail page, BUG-206).
     private func liveLayers(_ p: Params) -> some View {
         ZStack {
             if p.sheen > 0 {
@@ -618,51 +623,6 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 railVisibility(edgeHighlight(p).colorMultiply(CardDepthStyle.railColor(tint: railTint)))
             }
         }
-    }
-
-    /// The same two layers as shared white bitmaps (`CardDepthRasterCache`). The size
-    /// comes from a `GeometryReader` (a layout pass, no state write); the rail takes the tint by
-    /// multiply and the focus by opacity exactly as the live rail does. The bitmaps are decorative,
-    /// so they stay out of the accessibility tree (the root's `DebugAXIdentifier` is outside).
-    private func cachedLayers(_ p: Params, kind: CardDepthRasterCache.ShapeKind) -> some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV): the two layers used to sit
-            // behind `if let` on the cache lookup, so the ZStack's STRUCTURE depended on the layout
-            // size (nil for a zero proposal and for a failed render). A horizontal row that drops a
-            // card while its cards are measured (`_AspectRatioLayout` reading the card's size runs
-            // this body) then added or removed a child inside the layout pass, and SwiftUI's dynamic
-            // container asserted (`DynamicContainerInfo.tryRemovingItem`, `SwiftUICore/
-            // DynamicContainer.swift:651: Fatal error`) within three seconds of Home on every launch
-            // once Continue Watching changed between the local snapshot and the pull. The structure
-            // now depends on the settings only (`p.sheen`, `p.edge`, both fixed per body); a missing
-            // bitmap draws an empty image, which is what a zero-size card shows anyway.
-            ZStack(alignment: .topLeading) {
-                if p.sheen > 0 {
-                    bitmap(CardDepthRasterCache.shared.image(
-                        for: .sheen(size: size, scale: displayScale, shape: kind, sheen: p.sheen)), size: size)
-                }
-                if p.edge > 0 {
-                    railVisibility(
-                        bitmap(CardDepthRasterCache.shared.image(
-                            for: .rail(size: size, scale: displayScale, shape: kind,
-                                       lineWidth: p.width, stops: p.stops, coverage: p.coverage)), size: size)
-                            .colorMultiply(CardDepthStyle.railColor(tint: railTint))
-                    )
-                }
-            }
-            .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .accessibilityHidden(true)
-        }
-    }
-
-    /// One bitmap layer whose presence never depends on the cache's answer (BUG-221): a nil image
-    /// (zero-size proposal before the first layout, a failed render) draws an empty `UIImage` in the
-    /// same frame instead of removing the layer from the ZStack.
-    private func bitmap(_ image: UIImage?, size: CGSize) -> some View {
-        Image(uiImage: image ?? UIImage())
-            .resizable()
-            .frame(width: size.width, height: size.height)
     }
 
     /// W3-13 (1), value not structure: the rail is always in the tree and focus only flips its
@@ -779,5 +739,55 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// Shared strengths are stored 0…100; the Compose port works in 0…1.
     private func unit(_ value: Int) -> Double {
         min(max(Double(value), 0), 100) / 100
+    }
+}
+
+/// W3-13 (3) + BUG-221: Card Depth's two layers as shared white bitmaps from `CardDepthRasterCache`,
+/// the rendering for every keyable, non-animating card.
+///
+/// The structure is fixed: always the same ZStack of two `Image`s, whatever the settings, the size
+/// or the cache's answer. A layer that has nothing to draw (strength 0, no size yet, a failed
+/// render) shows `CardDepthRasterCache.placeholder`, a transparent pixel, in the same slot.
+///
+/// The size comes from `onGeometryChange`, never a `GeometryReader` (BUG-221, see
+/// `CardDepthOverlay.rendered`): SwiftUI calls the action after layout, the `@State` write lands
+/// in an ordinary update, and the body never depends on a layout value while a layout pass is
+/// running. Until the first report, one update after the card mounts, both layers are the
+/// placeholder. Each `Image` is `.resizable()` and fills the
+/// overlay, which is the box the live layers fill; the bitmap is the same box rounded to whole
+/// pixels, so the stretch is below a pixel.
+///
+/// The rail takes the tint by multiply and the focus by opacity, exactly as the live rail does.
+/// The layers are decorative and stay out of the accessibility tree.
+private struct CardDepthBitmapLayers: View {
+    let kind: CardDepthRasterCache.ShapeKind
+    let sheen: Double
+    let edge: Double
+    let lineWidth: CGFloat
+    let stops: (top: Double, mid: Double, bottom: Double)
+    let coverage: Double
+    let railSuppressed: Bool
+    let railTint: Color?
+    @State private var size: CGSize = .zero
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let keys = CardDepthRasterCache.LayerKeys(size: size, scale: displayScale, shape: kind, sheen: sheen,
+                                                  edge: edge, lineWidth: lineWidth, stops: stops, coverage: coverage)
+        ZStack {
+            Image(uiImage: CardDepthRasterCache.shared.layerImage(for: keys.sheen))
+                .resizable()
+            Image(uiImage: CardDepthRasterCache.shared.layerImage(for: keys.rail))
+                .resizable()
+                .colorMultiply(CardDepthStyle.railColor(tint: railTint))
+                .opacity(railSuppressed ? 0 : 1)
+                .animation(nil, value: railSuppressed)
+        }
+        .accessibilityHidden(true)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { newSize in
+            size = newSize
+        }
     }
 }

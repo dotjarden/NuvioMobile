@@ -276,6 +276,76 @@ final class CardDepthRasterCacheTests: XCTestCase {
         XCTAssertFalse(subtle === cache.image(for: railKey(strength: 28)), "removeAll drops the bitmaps")
     }
 
+    // MARK: - BUG-221: the layer keys and the placeholder (`CardDepthBitmapLayers`)
+
+    private func layerKeys(size: CGSize? = nil, scale: CGFloat = 2, sheen: Double = 0.10,
+                           strength: Int = 28, coverage: Double = 1) -> Cache.LayerKeys {
+        let edge = Double(strength) / 100
+        return Cache.LayerKeys(size: size ?? poster, scale: scale, shape: inner8, sheen: sheen, edge: edge,
+                               lineWidth: CardDepthStyle.railWidth(edgeStrength: strength),
+                               stops: CardDepthStyle.railStops(edge: edge, coverage: coverage), coverage: coverage)
+    }
+
+    func testBeforeTheFirstSizeBothLayersAreThePlaceholder() {
+        let keys = layerKeys(size: .zero)
+        XCTAssertNil(keys.sheen)
+        XCTAssertNil(keys.rail)
+        XCTAssertNil(layerKeys(size: CGSize(width: 126, height: 0)).rail, "one empty axis is no bitmap either")
+        XCTAssertNil(layerKeys(size: CGSize(width: 0.2, height: 193), scale: 1).sheen, "under half a pixel rounds to none")
+    }
+
+    func testAZeroStrengthLayerHasNoKey() {
+        XCTAssertNil(layerKeys(sheen: 0).sheen, "Sheen Off draws the placeholder")
+        XCTAssertNotNil(layerKeys(sheen: 0).rail)
+        XCTAssertNil(layerKeys(strength: 0).rail, "Edge Off draws the placeholder")
+        XCTAssertNotNil(layerKeys(strength: 0).sheen)
+    }
+
+    func testTheLayerKeysAreTheSingleKeys() {
+        let keys = layerKeys(sheen: 0.10, strength: 42, coverage: 0.5)
+        XCTAssertEqual(keys.sheen, Key.sheen(size: poster, scale: 2, shape: inner8, sheen: 0.10))
+        let edge = 0.42
+        XCTAssertEqual(keys.rail, Key.rail(size: poster, scale: 2, shape: inner8,
+                                           lineWidth: CardDepthStyle.railWidth(edgeStrength: 42),
+                                           stops: CardDepthStyle.railStops(edge: edge, coverage: 0.5), coverage: 0.5))
+    }
+
+    /// The layout size is a fraction of a pixel off the key's whole pixels at most, so the
+    /// `.resizable()` bitmap stretches by under one pixel, and sub-pixel jitter keeps the key.
+    func testTheBitmapIsTheLayoutSizeWithinHalfAPixel() throws {
+        for scale: CGFloat in [1, 2] {
+            for size in [CGSize(width: 126, height: 193), CGSize(width: 126.4, height: 192.8),
+                         CGSize(width: 333.25, height: 187.4), CGSize(width: 120, height: 120)] {
+                let key = try XCTUnwrap(layerKeys(size: size, scale: scale).rail)
+                XCTAssertEqual(CGFloat(key.pixelWidth), size.width * scale, accuracy: 0.5)
+                XCTAssertEqual(CGFloat(key.pixelHeight), size.height * scale, accuracy: 0.5)
+            }
+        }
+        XCTAssertEqual(layerKeys(size: CGSize(width: 126.1, height: 193.2)), layerKeys(size: CGSize(width: 126, height: 193)),
+                       "sub-pixel noise shares the bitmaps")
+        XCTAssertNotEqual(layerKeys(size: CGSize(width: 127, height: 193)), layerKeys(size: CGSize(width: 126, height: 193)))
+    }
+
+    func testThePlaceholderIsOneClearPixel() throws {
+        let pixels = try Pixels(Cache.placeholder)
+        XCTAssertEqual(pixels.width, 1)
+        XCTAssertEqual(pixels.height, 1)
+        XCTAssertEqual(pixels.at(0, 0).a, 0, accuracy: 0.001)
+        XCTAssertTrue(Cache.placeholder === Cache.placeholder, "one shared instance")
+    }
+
+    func testALayerImageIsNeverMissing() throws {
+        let cache = CardDepthRasterCache()
+        XCTAssertTrue(cache.layerImage(for: nil) === Cache.placeholder, "no key → the placeholder")
+        XCTAssertTrue(cache.layerImage(for: railKey(size: .zero)) === Cache.placeholder, "an empty key → the placeholder")
+        let key = try XCTUnwrap(layerKeys().rail)
+        let bitmap = cache.layerImage(for: key)
+        XCTAssertFalse(bitmap === Cache.placeholder)
+        XCTAssertTrue(bitmap === cache.image(for: key), "a real key → the cached bitmap")
+        XCTAssertEqual(bitmap.cgImage?.width, key.pixelWidth)
+        XCTAssertEqual(bitmap.cgImage?.height, key.pixelHeight)
+    }
+
     /// Reads a bitmap's pixels back as premultiplied RGBA, 0…1.
     private struct Pixels {
         let width: Int
