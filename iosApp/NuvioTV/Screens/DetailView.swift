@@ -705,6 +705,11 @@ struct DetailView: View {
     /// compact logo's visibility (the D-3 probe reads it too).
     private var compactLogoInRows: Bool { focusedRow != nil && bridgePhase == .idle }
 
+    /// D-3 (review P3-3): only Cinematic has a compact logo, so only Cinematic rows report heights.
+    private var compactLogoRowHeights: Binding<[DetailRowID: CGFloat]>? {
+        detailLayout == .cinematic ? $detailRowHeights : nil
+    }
+
     /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, read at rest
     /// (`settleCompactLogoBand`). Both maps change on layout only.
     /// Cinematic only (Classic has no compact logo). A row that leaves the hierarchy drops its
@@ -787,11 +792,11 @@ struct DetailView: View {
                         // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
                         if sectionStudioLogos {
                             companyLogosRow
-                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         if sectionParentalGuide {
                             parentalGuideSection
-                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
@@ -805,24 +810,24 @@ struct DetailView: View {
                         // A discrete focus region: vertical D-pad moves must land here instead of
                         // geometrically skipping from the info/network chips down to the cast row.
                         .focusSection()
-                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                     }
                     Group {
                         if sectionCast {
                             castRow
-                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         if sectionCollection {
                             collectionRow
-                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         if sectionTrailers {
                             trailersRow
-                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         if sectionMoreLikeThis {
                             moreLikeThisRow
-                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
                         // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
@@ -837,13 +842,13 @@ struct DetailView: View {
                         // before any anchor decision runs.
                         if sectionComments {
                             commentsSection
-                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                         // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
                         // not a Comments-style bail).
                         if detailLayout == .cinematic && sectionAbout {
                             DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
-                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: $detailRowHeights)
+                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                         }
                     }
                 }
