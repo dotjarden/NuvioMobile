@@ -330,4 +330,26 @@ class ContinueWatchingNextUpTest {
         assertEquals(3, seed?.episodeNumber)
         assertEquals("tt1", seed?.contentId)
     }
+
+    @Test
+    fun recentMarksAreScopedToTheProfileAndTheWindow() {
+        val marks = listOf(
+            RecentNextUpMark(1, watched("tt1", 1, 4, t0)),
+            RecentNextUpMark(2, watched("tt2", 1, 1, t0)),
+            RecentNextUpMark(1, watched("tt3", 1, 1, t0 - ContinueWatchingNextUpTraktMarkWindowMs - 1)),
+        )
+        val active = activeRecentNextUpMarks(marks, profileId = 1, nowEpochMs = t0 + 1_000)
+        assertEquals(listOf("tt1"), active.map { it.id })
+    }
+
+    @Test
+    fun aRecentMarkSeedsTheNextEpisodeWhenHistoryIsOff() {
+        // Under Trakt the only "history" is the recent mark: E4 marked from its Up Next card makes
+        // E4 the seed although Trakt's progress still says E3.
+        val result = seeds(
+            entries = listOf(progress("tt1", 1, 3, t0, completed = true)),
+            watched = activeRecentNextUpMarks(listOf(RecentNextUpMark(1, watched("tt1", 1, 4, t0 + 5_000))), 1, t0 + 6_000),
+        )
+        assertEquals(4, result.single().episodeNumber)
+    }
 }

@@ -52,6 +52,8 @@ final class HomeRowActions {
         // history and its half-played progress row stops showing in the shelf.
         // The helper has no default on the Swift side; WatchedRepository
         // restamps the mark time on write anyway (review r2 #6).
+        // FEAT-85 P2-4: under Trakt the mark seeds Up Next at once and refetches the show's progress.
+        ContinueWatchingNextUp.shared.noteMarkedWatched(entry: entry)
         WatchedRepository.shared.markWatched(
             item: WatchingActionsKt.watchedItemFromProgress(
                 entry: entry,

@@ -15,6 +15,10 @@ import com.nuvio.app.features.watching.domain.WatchingContentRef
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -51,6 +55,17 @@ const val WatchProgressSourceNextUp = "nuvio_next_up"
 
 /** How many series are resolved per refresh (each new seed is one metadata fetch). */
 const val ContinueWatchingNextUpResolveLimit = 20
+
+/**
+ * How long an episode marked watched from a Continue Watching card counts as a seed under Trakt
+ * before Trakt's own progress has it (review P2-4). Trakt history usually lands in seconds; the
+ * window only has to outlast a slow sync, and an expired mark that Trakt never confirmed is
+ * exactly the state Trakt reports.
+ */
+const val ContinueWatchingNextUpTraktMarkWindowMs = 30L * 60L * 1_000L
+
+/** When the second forced Trakt episode-progress refresh runs after a mark (the push is async). */
+internal const val ContinueWatchingNextUpTraktRefetchDelayMs = 5_000L
 
 /** Parallel metadata fetches per refresh; mobile's `NEXT_UP_RESOLUTION_CONCURRENCY`. */
 internal const val ContinueWatchingNextUpFetchConcurrency = 4
@@ -237,6 +252,21 @@ fun nextUpSeedAfterRemoval(
 ).firstOrNull()
 
 /**
+ * Pure (unit-tested), review P2-4: the marks still inside [windowMs] for [profileId]. Under Trakt
+ * these stand in for watched history, which Home leaves out there (as mobile does).
+ */
+fun activeRecentNextUpMarks(
+    marks: List<RecentNextUpMark>,
+    profileId: Int,
+    nowEpochMs: Long,
+    windowMs: Long = ContinueWatchingNextUpTraktMarkWindowMs,
+): List<WatchedItem> = marks
+    .filter { mark -> mark.profileId == profileId && nowEpochMs - mark.item.markedAtEpochMs in 0..windowMs }
+    .map { mark -> mark.item }
+
+data class RecentNextUpMark(val profileId: Int, val item: WatchedItem)
+
+/**
  * The inputs a seed's resolution depends on besides the episode metadata. Two refreshes with the
  * same key give the same next episode, so the result is reused instead of refetched; the date is
  * in it so an episode that airs overnight is picked up the next day. The profile is in it so a
@@ -274,6 +304,16 @@ object ContinueWatchingNextUp {
      * is retried on the next refresh.
      */
     private var resolvedByKey: Map<String, WatchProgressEntry?> = emptyMap()
+
+    /**
+     * Review P2-4: episodes marked watched from a Continue Watching card while Trakt is the source.
+     * Trakt's progress only shows the mark after its history push and a refetch, and Home leaves
+     * watched history out under Trakt, so without these the card would not move on until the next
+     * Trakt sync.
+     */
+    private var recentTraktMarks: List<RecentNextUpMark> = emptyList()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Bumped by [clearLocalState]; a refresh that started before it does not write back. */
     private var generation = 0L
@@ -323,11 +363,54 @@ object ContinueWatchingNextUp {
             // The published projection (the same list mobile's Home reads), not a private snapshot.
             entries = WatchProgressRepository.uiState.value.entries,
             watchedItems = if (source == WatchProgressSource.TRAKT) {
-                emptyList()
+                activeRecentNextUpMarks(
+                    marks = synchronized(lock) { recentTraktMarks },
+                    profileId = ProfileRepository.activeProfileId,
+                    nowEpochMs = WatchProgressClock.nowEpochMs(),
+                )
             } else {
                 WatchedRepository.uiState.value.items
             },
         )
+    }
+
+    /**
+     * Continue Watching › Mark Episode Watched, called before `WatchedRepository.markWatched`.
+     * Only Trakt needs it (review P2-4): the mark counts as a seed right away (see
+     * [recentTraktMarks]), and Trakt's progress for the show is refetched now and again after
+     * [ContinueWatchingNextUpTraktRefetchDelayMs], once the async history push has had time to land.
+     * Any other source sees the mark through watched history already.
+     */
+    fun noteMarkedWatched(entry: WatchProgressEntry) {
+        if (WatchProgressRepository.activeSourceState.value != WatchProgressSource.TRAKT) return
+        val season = entry.seasonNumber ?: return
+        val episode = entry.episodeNumber ?: return
+        val now = WatchProgressClock.nowEpochMs()
+        val profileId = ProfileRepository.activeProfileId
+        val mark = RecentNextUpMark(
+            profileId = profileId,
+            item = WatchedItem(
+                id = entry.parentMetaId,
+                type = entry.parentMetaType,
+                name = entry.title,
+                season = season,
+                episode = episode,
+                markedAtEpochMs = now,
+            ),
+        )
+        synchronized(lock) {
+            recentTraktMarks = activeRecentNextUpMarks(recentTraktMarks, profileId, now)
+                .map { item -> RecentNextUpMark(profileId, item) } + mark
+        }
+        WatchProgressRepository.refreshEpisodeProgress(entry.parentMetaId, forceRefresh = true)
+        scope.launch {
+            delay(ContinueWatchingNextUpTraktRefetchDelayMs)
+            if (WatchProgressRepository.activeSourceState.value == WatchProgressSource.TRAKT &&
+                ProfileRepository.activeProfileId == profileId
+            ) {
+                WatchProgressRepository.refreshEpisodeProgress(entry.parentMetaId, forceRefresh = true)
+            }
+        }
     }
 
     private suspend fun resolve(limit: Int): List<WatchProgressEntry> {
@@ -474,6 +557,7 @@ object ContinueWatchingNextUp {
             generation += 1
             resolvedByKey = emptyMap()
             dismissKeysByVideoId = emptyMap()
+            recentTraktMarks = emptyList()
             lastSummary = null
         }
     }
