@@ -278,10 +278,8 @@ final class HomeViewModel: ObservableObject {
     private var inProgressContinueWatching: [WatchProgressEntry] = []
     private var nextUpEntries: [WatchProgressEntry] = []
     private var nextUpTask: Task<Void, Never>?
-    /// Review P3-1: false until this pipeline's first Up Next refresh has started. That first one
-    /// skips the debounce, so a caught-up profile's row (and the hero-off / Stage panels reading
-    /// `continueWatching.first`) is not built twice, 1.5 s apart, on every Home start.
-    private var nextUpStartedThisPipeline = false
+    /// Review P3-1: the pipeline's first Up Next refresh skips the debounce (`NextUpRefreshPacing`).
+    private var nextUpPacing = NextUpRefreshPacing()
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
     private var lastTraktContinueWatchingDaysCap: Int32?
@@ -487,7 +485,7 @@ final class HomeViewModel: ObservableObject {
         nextUpEntries = []
         nextUpTask?.cancel()
         nextUpTask = nil
-        nextUpStartedThisPipeline = false
+        nextUpPacing.reset()
         continueWatchingPosterPattern = ""
         // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
         ArtworkStore.clearFailedURLs()
@@ -1057,17 +1055,23 @@ final class HomeViewModel: ObservableObject {
     private func scheduleNextUpRefresh() {
         nextUpTask?.cancel()
         let gen = pipelineGeneration
-        let debounce = nextUpStartedThisPipeline
+        let delay = nextUpPacing.delayNanoseconds()
         nextUpTask = Task { @MainActor [weak self] in
-            if debounce {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let delay {
+                try? await Task.sleep(nanoseconds: delay)
             } else {
-                // The watchers' attach-time replays all land in the same main-actor turn; one
-                // yield lets them cancel each other so only the last one runs.
+                // The watchers' attach-time replays are queued FIFO on Dispatchers.Main (the main
+                // queue), ahead of this task's first run, which is enqueued behind them. Each one
+                // that lands cancels the task before it, so after one yield only the last runs.
+                // The fast path rests on that ordering, not on the replays sharing one turn.
                 await Task.yield()
             }
             guard !Task.isCancelled else { return }
-            self?.nextUpStartedThisPipeline = true
+            // Scoped, so the model is not held strongly across the resolve below.
+            do {
+                guard let model = self, model.pipelineGeneration == gen else { return }
+                model.nextUpPacing.markStarted()
+            }
             do {
                 let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
                     limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
@@ -1144,7 +1148,7 @@ final class HomeViewModel: ObservableObject {
         watchedWatcher = nil
         cwPreferencesWatcher = nil
         nextUpTask = nil
-        nextUpStartedThisPipeline = false
+        nextUpPacing.reset()
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
@@ -1645,4 +1649,24 @@ nonisolated enum HomeCatalogSeedSettle {
                         loadFinishedEmpty: Bool = false) -> Bool {
         hasCatalogRow || (addonsSettled && addonCatalogCount == 0) || loadFinishedEmpty
     }
+}
+
+/// FEAT-85 review P3-1: how long an Up Next refresh waits. The first refresh of a Home pipeline runs
+/// after one main-actor yield instead of the debounce, so a caught-up profile's Continue Watching
+/// row (and the hero-off / Stage panels reading `continueWatching.first`) is not built twice, 1.5 s
+/// apart, on every Home start. Later refreshes keep the debounce: progress emits on every playback
+/// save while Home sits under the player.
+struct NextUpRefreshPacing: Equatable {
+    static let debounceNanoseconds: UInt64 = 1_500_000_000
+
+    private(set) var hasStarted = false
+
+    /// nil for the pipeline's first refresh (yield once, then run); the debounce after that.
+    func delayNanoseconds() -> UInt64? { hasStarted ? Self.debounceNanoseconds : nil }
+
+    /// A refresh got past its wait: later ones are debounced.
+    mutating func markStarted() { hasStarted = true }
+
+    /// Pipeline teardown or a hard stop: the next pipeline's first refresh is fast again.
+    mutating func reset() { hasStarted = false }
 }

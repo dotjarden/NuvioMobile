@@ -1,6 +1,7 @@
 package com.nuvio.app.features.watchprogress
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.details.seriesPrimaryAction
@@ -407,7 +408,41 @@ internal fun nextUpResolveKey(
     todayIsoDate,
 ).joinToString("|", prefix = "p$profileId|")
 
-object ContinueWatchingNextUp {
+/**
+ * One read of everything a refresh depends on (review round 2 P3-3: built by
+ * [ContinueWatchingNextUp] from the repositories, by tests directly).
+ *
+ * [historyItems] is watched history; [NextUpEngine] uses it for every source but Trakt, where it
+ * substitutes the recent Continue Watching marks (mobile leaves history out under Trakt).
+ */
+internal class NextUpInputs(
+    val profileId: Int,
+    val source: WatchProgressSource,
+    val preferFurthestEpisode: Boolean,
+    val showUnairedNextUp: Boolean,
+    val dismissedNextUpKeys: Set<String>,
+    val nowEpochMs: Long,
+    val todayIsoDate: String,
+    val entries: List<WatchProgressEntry>,
+    val historyItems: List<WatchedItem>,
+    /** The active provider's seed rule ([WatchProgressRepository.shouldUseAsNextUpSeed]). */
+    val isProgressSeed: (entry: WatchProgressEntry, nowEpochMs: Long) -> Boolean,
+)
+
+/**
+ * The stateful half of Up Next (review round 2 P3-3), with its outside world injected so the
+ * cache, generation guard, Trakt marks and removal order are unit-tested. [ContinueWatchingNextUp]
+ * owns the one production instance.
+ */
+internal class NextUpEngine(
+    private val fetchMeta: suspend (type: String, id: String) -> MetaDetails?,
+    private val prepareEntries: suspend (entries: List<WatchProgressEntry>, contentId: String) -> List<WatchProgressEntry>,
+    private val isDroppedShow: (contentId: String) -> Boolean,
+    private val recencyCutoffEpochMs: (nowEpochMs: Long) -> Long?,
+    private val refetchEpisodeProgress: (contentId: String) -> Unit,
+    private val refetchScope: CoroutineScope,
+    private val unairedPolicy: () -> UnairedNextUpPolicy = { ContinueWatchingUnairedNextUpPolicy },
+) {
     private val log = Logger.withTag("CWNextUp")
     private val lock = SynchronizedObject()
 
@@ -435,8 +470,6 @@ object ContinueWatchingNextUp {
      */
     private var recentTraktMarks: List<RecentNextUpMark> = emptyList()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     /**
      * Review P3-2: the inputs stage 1 last ran on. `watchedItems` compares as a list, which is
      * cheap when it is the same `WatchedRepository` snapshot (the usual case: progress saves do
@@ -453,7 +486,11 @@ object ContinueWatchingNextUp {
 
     private var lastStageOne: Pair<SeedStageOneKey, List<ContinueWatchingNextUpSeed>>? = null
 
-    /** Bumped by [clearLocalState]; a refresh that started before it does not write back. */
+    /** Stage-1 rebuilds since construction (tests read it to tell a cache hit from a miss). */
+    internal var stageOneBuilds: Int = 0
+        private set
+
+    /** Bumped by [reset]; a refresh that started before it does not write back. */
     private var generation = 0L
 
     /** Last logged summary, so the probe line prints once per change, not once per refresh. */
@@ -466,117 +503,35 @@ object ContinueWatchingNextUp {
      */
     private val resolveMutex = Mutex()
 
-    /**
-     * Resolves the next-up entries for the active profile and progress source. The work runs on
-     * `Dispatchers.Default` (Home calls this from the main actor). A failed metadata fetch just
-     * leaves that series out of this refresh. `@Throws` so nothing unexpected can abort the process
-     * when called from Swift (`try await`).
-     */
-    @Throws(Throwable::class)
-    suspend fun resolveEntries(limit: Int): List<WatchProgressEntry> {
-        ensureInputsLoaded()
-        return withContext(Dispatchers.Default) { resolveMutex.withLock { resolve(limit) } }
-    }
-
-    /** One read of everything seed selection depends on (StateFlow values: safe off main). */
-    private class SeedInputs(
-        val profileId: Int,
-        val source: WatchProgressSource,
-        val prefs: ContinueWatchingPreferencesUiState,
-        val now: Long,
-        val entries: List<WatchProgressEntry>,
-        val watchedItems: List<WatchedItem>,
-    ) {
-        fun isProgressSeed(entry: WatchProgressEntry): Boolean =
-            WatchProgressRepository.shouldUseAsNextUpSeed(entry, now)
-    }
-
-    private fun seedInputs(): SeedInputs {
-        val source = WatchProgressRepository.activeSourceState.value
-        return SeedInputs(
-            profileId = ProfileRepository.activeProfileId,
-            source = source,
-            prefs = ContinueWatchingPreferencesRepository.uiState.value,
-            now = WatchProgressClock.nowEpochMs(),
-            // The published projection (the same list mobile's Home reads), not a private snapshot.
-            entries = WatchProgressRepository.uiState.value.entries,
-            watchedItems = if (source == WatchProgressSource.TRAKT) {
-                activeRecentNextUpMarks(
-                    marks = synchronized(lock) { recentTraktMarks },
-                    profileId = ProfileRepository.activeProfileId,
-                    nowEpochMs = WatchProgressClock.nowEpochMs(),
-                )
-            } else {
-                WatchedRepository.uiState.value.items
-            },
-        )
-    }
-
-    /**
-     * Continue Watching › Mark Episode Watched, called before `WatchedRepository.markWatched`.
-     * Only Trakt needs it (review P2-4): the mark counts as a seed right away (see
-     * [recentTraktMarks]), and Trakt's progress for the show is refetched once, after
-     * [ContinueWatchingNextUpTraktRefetchDelayMs], when the async history push has had time to land.
-     * Any other source sees the mark through watched history already.
-     */
-    fun noteMarkedWatched(entry: WatchProgressEntry) {
-        if (WatchProgressRepository.activeSourceState.value != WatchProgressSource.TRAKT) return
-        val season = entry.seasonNumber ?: return
-        val episode = entry.episodeNumber ?: return
-        val now = WatchProgressClock.nowEpochMs()
-        val profileId = ProfileRepository.activeProfileId
-        val mark = RecentNextUpMark(
-            profileId = profileId,
-            item = WatchedItem(
-                id = entry.parentMetaId,
-                type = entry.parentMetaType,
-                name = entry.title,
-                season = season,
-                episode = episode,
-                markedAtEpochMs = now,
-            ),
-        )
-        synchronized(lock) {
-            recentTraktMarks = activeRecentNextUpMarks(recentTraktMarks, profileId, now)
-                .map { item -> RecentNextUpMark(profileId, item) } + mark
+    /** The watched items seed selection reads for [inputs] (see [NextUpInputs.historyItems]). */
+    private fun seedWatchedItems(inputs: NextUpInputs): List<WatchedItem> =
+        if (inputs.source == WatchProgressSource.TRAKT) {
+            activeRecentNextUpMarks(
+                marks = synchronized(lock) { recentTraktMarks },
+                profileId = inputs.profileId,
+                nowEpochMs = inputs.nowEpochMs,
+            )
+        } else {
+            inputs.historyItems
         }
-        scope.launch {
-            delay(ContinueWatchingNextUpTraktRefetchDelayMs)
-            if (WatchProgressRepository.activeSourceState.value == WatchProgressSource.TRAKT &&
-                ProfileRepository.activeProfileId == profileId
-            ) {
-                WatchProgressRepository.refreshEpisodeProgress(entry.parentMetaId, forceRefresh = true)
-            }
-        }
-    }
 
-    /**
-     * `WatchedRepository.unmarkWatched` (review round 2 P3-2): an episode unmarked within the mark
-     * window must stop seeding Up Next straight away, not 30 minutes later.
-     */
-    fun onUnmarkedWatched(items: Collection<WatchedItem>) {
-        if (items.isEmpty()) return
-        synchronized(lock) {
-            recentTraktMarks = withoutUnmarkedNextUpMarks(recentTraktMarks, items)
-        }
-    }
+    suspend fun resolve(inputs: NextUpInputs, limit: Int): List<WatchProgressEntry> =
+        resolveMutex.withLock { resolveLocked(inputs, limit) }
 
-    private suspend fun resolve(limit: Int): List<WatchProgressEntry> {
+    private suspend fun resolveLocked(inputs: NextUpInputs, limit: Int): List<WatchProgressEntry> {
         val startGeneration = synchronized(lock) { generation }
-        val inputs = seedInputs()
-        val profileId = inputs.profileId
-        val prefs = inputs.prefs
-        val now = inputs.now
+        val now = inputs.nowEpochMs
         val source = inputs.source
         val entries = inputs.entries
-        val watchedItems = inputs.watchedItems
+        val watchedItems = seedWatchedItems(inputs)
+        val isProgressSeed: (WatchProgressEntry) -> Boolean = { entry -> inputs.isProgressSeed(entry, now) }
         // Review P3-2: stage 1 is rebuilt only when what it reads changed. The provider's Trakt
         // playback seed rule is time-bound (minutes), so under Trakt the key also carries the
         // minute.
         val stageOneKey = SeedStageOneKey(
-            profileId = profileId,
+            profileId = inputs.profileId,
             source = source,
-            preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
+            preferFurthestEpisode = inputs.preferFurthestEpisode,
             minuteBucket = if (source == WatchProgressSource.TRAKT) now / 60_000L else 0L,
             progress = nextUpProgressSignature(entries),
             watchedItems = watchedItems,
@@ -588,32 +543,33 @@ object ContinueWatchingNextUp {
             buildNextUpSeedCandidates(
                 progressEntries = entries,
                 watchedItems = watchedItems,
-                isProgressSeed = inputs::isProgressSeed,
-                preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
-            ).also { built -> synchronized(lock) { lastStageOne = stageOneKey to built } }
+                isProgressSeed = isProgressSeed,
+                preferFurthestEpisode = inputs.preferFurthestEpisode,
+            ).also { built ->
+                synchronized(lock) {
+                    stageOneBuilds += 1
+                    if (generation == startGeneration) lastStageOne = stageOneKey to built
+                }
+            }
         }
         val seeds = filterNextUpSeedCandidates(
             candidates = candidates,
-            isDroppedShow = { contentId -> WatchProgressRepository.isDroppedShow(contentId) },
-            recencyCutoffEpochMs = WatchProgressRepository.activeProviderContinueWatchingCutoffEpochMs(
-                daysCap = TraktSettingsRepository.uiState.value.continueWatchingDaysCap,
-                nowEpochMs = now,
-            ),
-            dismissedNextUpKeys = prefs.dismissedNextUpKeys,
+            isDroppedShow = isDroppedShow,
+            recencyCutoffEpochMs = recencyCutoffEpochMs(now),
+            dismissedNextUpKeys = inputs.dismissedNextUpKeys,
             limit = limit,
         )
-        val todayIsoDate = CurrentDateProvider.todayIsoDate()
         val known = synchronized(lock) { resolvedByKey }
         val semaphore = Semaphore(ContinueWatchingNextUpFetchConcurrency)
         val outcomes = coroutineScope {
             seeds.map { seed ->
                 val key = nextUpResolveKey(
                     seed = seed,
-                    profileId = profileId,
+                    profileId = inputs.profileId,
                     source = source.name,
-                    preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
-                    showUnairedNextUp = prefs.showUnairedNextUp,
-                    todayIsoDate = todayIsoDate,
+                    preferFurthestEpisode = inputs.preferFurthestEpisode,
+                    showUnairedNextUp = inputs.showUnairedNextUp,
+                    todayIsoDate = inputs.todayIsoDate,
                 )
                 async {
                     val cached = known[key]?.takeIf { it.isUsableAt(now) }
@@ -629,16 +585,7 @@ object ContinueWatchingNextUp {
                         )
                     } else {
                         semaphore.withPermit {
-                            resolveSeed(
-                                seed = seed,
-                                key = key,
-                                entries = entries,
-                                watchedItems = watchedItems,
-                                todayIsoDate = todayIsoDate,
-                                nowEpochMs = now,
-                                preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
-                                showUnairedNextUp = prefs.showUnairedNextUp,
-                            )
+                            resolveSeed(seed = seed, key = key, inputs = inputs, watchedItems = watchedItems)
                         }
                     }
                 }
@@ -664,16 +611,7 @@ object ContinueWatchingNextUp {
         return resolved.map { (entry, _) -> entry }
     }
 
-    /** The dismiss keys of the entries the last refresh returned, for [withoutDismissedNextUp]. */
     fun dismissKeysSnapshot(): Map<String, String> = synchronized(lock) { dismissKeysByVideoId }
-
-    /** [withoutDismissedNextUp] against the current preferences and the last refresh's keys. */
-    fun withoutDismissed(entries: List<WatchProgressEntry>): List<WatchProgressEntry> =
-        withoutDismissedNextUp(
-            entries = entries,
-            dismissKeyByVideoId = dismissKeysSnapshot(),
-            dismissedNextUpKeys = ContinueWatchingPreferencesRepository.uiState.value.dismissedNextUpKeys,
-        )
 
     /**
      * Continue Watching › Remove for any card. A next-up card is dismissed (profile-synced; the
@@ -687,49 +625,88 @@ object ContinueWatchingNextUp {
      * Next from history. This keeps tvOS's episode-level clear and adds the synced dismissal, so
      * the series leaves the row here AND the phone hides that Up Next too.
      */
-    fun removeFromContinueWatching(entry: WatchProgressEntry) {
+    fun removeFromContinueWatching(
+        entry: WatchProgressEntry,
+        inputs: () -> NextUpInputs,
+        addDismissedKey: (String) -> Unit,
+        clearProgress: (WatchProgressEntry) -> Unit,
+    ) {
         if (entry.isContinueWatchingNextUp) {
             val key = synchronized(lock) { dismissKeysByVideoId[entry.videoId] } ?: return
-            ContinueWatchingPreferencesRepository.addDismissedNextUpKey(key)
+            addDismissedKey(key)
             return
         }
         if (entry.parentMetaType.isSeriesTypeForContinueWatching()) {
-            ensureInputsLoaded()
-            val inputs = seedInputs()
+            val snapshot = inputs()
             nextUpSeedAfterRemoval(
-                progressEntries = inputs.entries,
-                watchedItems = inputs.watchedItems,
+                progressEntries = snapshot.entries,
+                watchedItems = seedWatchedItems(snapshot),
                 contentId = entry.parentMetaId,
                 removedVideoId = entry.videoId,
-                isProgressSeed = inputs::isProgressSeed,
-                preferFurthestEpisode = inputs.prefs.upNextFromFurthestEpisode,
+                isProgressSeed = { candidate -> snapshot.isProgressSeed(candidate, snapshot.nowEpochMs) },
+                preferFurthestEpisode = snapshot.preferFurthestEpisode,
             )?.let { seed ->
                 // Before the clear: the clear publishes, and the refresh it schedules must already
                 // see the dismissal.
-                ContinueWatchingPreferencesRepository.addDismissedNextUpKey(
-                    nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber),
-                )
+                addDismissedKey(nextUpDismissKey(seed.contentId, seed.seasonNumber, seed.episodeNumber))
             }
         }
-        WatchProgressRepository.clearProgress(videoId = entry.videoId, parentMetaId = entry.parentMetaId)
-    }
-
-    private fun ensureInputsLoaded() {
-        WatchProgressRepository.ensureLoaded()
-        WatchedRepository.ensureLoaded()
-        ContinueWatchingPreferencesRepository.ensureLoaded()
-        TraktSettingsRepository.ensureLoaded()
+        clearProgress(entry)
     }
 
     /**
-     * Profile switch (`TvOsProviderInstaller`'s profile fan-out, next to the Upcoming row's step):
-     * the same reset as the account wipe. The generation bump means a refresh still running for
-     * the outgoing profile cannot write its results or dismiss keys back afterwards.
+     * Continue Watching › Mark Episode Watched, called before `WatchedRepository.markWatched`.
+     * Only Trakt needs it (review P2-4): the mark counts as a seed right away (see
+     * [recentTraktMarks]), and Trakt's progress for the show is refetched once, after
+     * [ContinueWatchingNextUpTraktRefetchDelayMs], when the async history push has had time to land.
+     * Any other source sees the mark through watched history already. Returns whether it recorded
+     * a mark. [isStillCurrent] is asked before the refetch (same source and profile).
      */
-    fun onProfileChanged() = clearLocalState()
+    fun noteMarkedWatched(
+        entry: WatchProgressEntry,
+        source: WatchProgressSource,
+        profileId: Int,
+        nowEpochMs: Long,
+        isStillCurrent: () -> Boolean,
+    ): Boolean {
+        if (source != WatchProgressSource.TRAKT) return false
+        val season = entry.seasonNumber ?: return false
+        val episode = entry.episodeNumber ?: return false
+        val mark = RecentNextUpMark(
+            profileId = profileId,
+            item = WatchedItem(
+                id = entry.parentMetaId,
+                type = entry.parentMetaType,
+                name = entry.title,
+                season = season,
+                episode = episode,
+                markedAtEpochMs = nowEpochMs,
+            ),
+        )
+        synchronized(lock) {
+            recentTraktMarks = activeRecentNextUpMarks(recentTraktMarks, profileId, nowEpochMs)
+                .map { item -> RecentNextUpMark(profileId, item) } + mark
+        }
+        refetchScope.launch {
+            delay(ContinueWatchingNextUpTraktRefetchDelayMs)
+            if (isStillCurrent()) refetchEpisodeProgress(entry.parentMetaId)
+        }
+        return true
+    }
 
-    /** Account wipe (`TvOsAccountDataCleaner`): the cached results name the outgoing account's shows. */
-    fun clearLocalState() {
+    /**
+     * `WatchedRepository.unmarkWatched` (review round 2 P3-2): an episode unmarked within the mark
+     * window must stop seeding Up Next straight away, not 30 minutes later.
+     */
+    fun onUnmarkedWatched(items: Collection<WatchedItem>) {
+        if (items.isEmpty()) return
+        synchronized(lock) {
+            recentTraktMarks = withoutUnmarkedNextUpMarks(recentTraktMarks, items)
+        }
+    }
+
+    /** Profile switch and account wipe: drop everything; an in-flight refresh cannot write back. */
+    fun reset() {
         synchronized(lock) {
             generation += 1
             resolvedByKey = emptyMap()
@@ -754,20 +731,15 @@ object ContinueWatchingNextUp {
     private suspend fun resolveSeed(
         seed: ContinueWatchingNextUpSeed,
         key: String,
-        entries: List<WatchProgressEntry>,
+        inputs: NextUpInputs,
         watchedItems: List<WatchedItem>,
-        todayIsoDate: String,
-        nowEpochMs: Long,
-        preferFurthestEpisode: Boolean,
-        showUnairedNextUp: Boolean,
     ): SeedOutcome {
-        fun settled(entry: WatchProgressEntry?) = SeedOutcome(seed, key, entry, conclusive = true, fetched = true)
+        fun settled(entry: WatchProgressEntry?, recheckAtEpochMs: Long? = null) =
+            SeedOutcome(seed, key, entry, conclusive = true, fetched = true, recheckAtEpochMs = recheckAtEpochMs)
         return try {
-            // `cacheResult = false`: a bulk caller, like the Upcoming sweep. Results are reused
-            // through `resolvedByKey` instead, so a seed is fetched once until it changes.
-            val meta = MetaDetailsRepository.fetch(type = seed.contentType, id = seed.contentId, cacheResult = false)
+            val meta = fetchMeta(seed.contentType, seed.contentId)
                 ?: return SeedOutcome(seed, key, null, conclusive = false, fetched = true)
-            val preparedEntries = WatchProgressRepository.prepareNextUpProgressEntries(entries, seed.contentId)
+            val preparedEntries = prepareEntries(inputs.entries, seed.contentId)
             // The seed's own content ref, as mobile passes `completedEntry.content`: an add-on can
             // answer with an aliased meta id (a tmdb: id for a tt one), and the user's progress,
             // the dismiss key and the in-progress dedup are all keyed by the id they watched under.
@@ -776,9 +748,9 @@ object ContinueWatchingNextUp {
                 content = content,
                 entries = preparedEntries,
                 watchedItems = watchedItems,
-                todayIsoDate = todayIsoDate,
-                preferFurthestEpisode = preferFurthestEpisode,
-                showUnairedNextUp = showUnairedNextUp,
+                todayIsoDate = inputs.todayIsoDate,
+                preferFurthestEpisode = inputs.preferFurthestEpisode,
+                showUnairedNextUp = inputs.showUnairedNextUp,
                 allowRewatch = false,
             ) ?: return settled(null)
             // A resume action means an episode is already in progress: its own card covers it.
@@ -787,15 +759,14 @@ object ContinueWatchingNextUp {
             val episode = action.episodeNumber ?: return settled(null)
             // The seed episode itself is never "next".
             if (season == seed.seasonNumber && episode == seed.episodeNumber) return settled(null)
-            // P2-2: an episode that has not aired gets no card (see [UnairedNextUpPolicy]). No
-            // matching video at all is no card either, as on mobile.
+            // P2-2: an episode that has not aired gets no card (see [UnairedNextUpPolicy]); the
+            // verdict is reused only until its release instant (round 2 P2-1). No matching video
+            // at all is no card either, as on mobile.
             val video = nextUpVideoFor(meta.videos, seed.contentId, season, episode, action.videoId)
                 ?: return settled(null)
-            val airCheck = nextUpAirCheck(video.released, nowEpochMs)
-            if (!airCheck.keep) {
-                return SeedOutcome(seed, key, null, conclusive = true, fetched = true, recheckAtEpochMs = airCheck.recheckAtEpochMs)
-            }
-            SeedOutcome(seed, key, conclusive = true, fetched = true, recheckAtEpochMs = airCheck.recheckAtEpochMs, entry =
+            val airCheck = nextUpAirCheck(video.released, inputs.nowEpochMs, unairedPolicy())
+            if (!airCheck.keep) return settled(null, airCheck.recheckAtEpochMs)
+            settled(
                 WatchProgressEntry(
                     contentType = seed.contentType,
                     parentMetaId = seed.contentId,
@@ -815,6 +786,7 @@ object ContinueWatchingNextUp {
                     isCompleted = false,
                     source = WatchProgressSourceNextUp,
                 ),
+                airCheck.recheckAtEpochMs,
             )
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
@@ -822,4 +794,119 @@ object ContinueWatchingNextUp {
             SeedOutcome(seed, key, null, conclusive = false, fetched = true)
         }
     }
+}
+
+/** The production wiring of [NextUpEngine] over the app's repositories; what Swift calls. */
+object ContinueWatchingNextUp {
+    internal val engine = NextUpEngine(
+        // `cacheResult = false`: a bulk caller, like the Upcoming sweep. Results are reused
+        // through the engine's own cache instead, so a seed is fetched once until it changes.
+        fetchMeta = { type, id -> MetaDetailsRepository.fetch(type = type, id = id, cacheResult = false) },
+        prepareEntries = { entries, contentId -> WatchProgressRepository.prepareNextUpProgressEntries(entries, contentId) },
+        isDroppedShow = { contentId -> WatchProgressRepository.isDroppedShow(contentId) },
+        recencyCutoffEpochMs = { now ->
+            WatchProgressRepository.activeProviderContinueWatchingCutoffEpochMs(
+                daysCap = TraktSettingsRepository.uiState.value.continueWatchingDaysCap,
+                nowEpochMs = now,
+            )
+        },
+        refetchEpisodeProgress = { contentId ->
+            WatchProgressRepository.refreshEpisodeProgress(contentId, forceRefresh = true)
+        },
+        refetchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    )
+
+    /**
+     * Resolves the next-up entries for the active profile and progress source. The work runs on
+     * `Dispatchers.Default` (Home calls this from the main actor). A failed metadata fetch just
+     * leaves that series out of this refresh. `@Throws` so nothing unexpected can abort the process
+     * when called from Swift (`try await`).
+     */
+    @Throws(Throwable::class)
+    suspend fun resolveEntries(limit: Int): List<WatchProgressEntry> {
+        ensureInputsLoaded()
+        return withContext(Dispatchers.Default) { engine.resolve(currentInputs(), limit) }
+    }
+
+    /** The repositories' current state (StateFlow values: safe to read off main). */
+    private fun currentInputs(): NextUpInputs {
+        val prefs = ContinueWatchingPreferencesRepository.uiState.value
+        val source = WatchProgressRepository.activeSourceState.value
+        return NextUpInputs(
+            profileId = ProfileRepository.activeProfileId,
+            source = source,
+            preferFurthestEpisode = prefs.upNextFromFurthestEpisode,
+            showUnairedNextUp = prefs.showUnairedNextUp,
+            dismissedNextUpKeys = prefs.dismissedNextUpKeys,
+            nowEpochMs = WatchProgressClock.nowEpochMs(),
+            todayIsoDate = CurrentDateProvider.todayIsoDate(),
+            // The published projection (the same list mobile's Home reads), not a private snapshot.
+            entries = WatchProgressRepository.uiState.value.entries,
+            // Read only off Trakt; see [NextUpInputs.historyItems].
+            historyItems = if (source == WatchProgressSource.TRAKT) emptyList() else WatchedRepository.uiState.value.items,
+            isProgressSeed = { entry, now -> WatchProgressRepository.shouldUseAsNextUpSeed(entry, now) },
+        )
+    }
+
+    /** The dismiss keys of the entries the last refresh returned, for [withoutDismissedNextUp]. */
+    fun dismissKeysSnapshot(): Map<String, String> = engine.dismissKeysSnapshot()
+
+    /** [withoutDismissedNextUp] against the current preferences and the last refresh's keys. */
+    fun withoutDismissed(entries: List<WatchProgressEntry>): List<WatchProgressEntry> =
+        withoutDismissedNextUp(
+            entries = entries,
+            dismissKeyByVideoId = dismissKeysSnapshot(),
+            dismissedNextUpKeys = ContinueWatchingPreferencesRepository.uiState.value.dismissedNextUpKeys,
+        )
+
+    /** See [NextUpEngine.removeFromContinueWatching]. */
+    fun removeFromContinueWatching(entry: WatchProgressEntry) {
+        engine.removeFromContinueWatching(
+            entry = entry,
+            inputs = {
+                ensureInputsLoaded()
+                currentInputs()
+            },
+            addDismissedKey = ContinueWatchingPreferencesRepository::addDismissedNextUpKey,
+            clearProgress = { card ->
+                WatchProgressRepository.clearProgress(videoId = card.videoId, parentMetaId = card.parentMetaId)
+            },
+        )
+    }
+
+    /** See [NextUpEngine.noteMarkedWatched]. */
+    fun noteMarkedWatched(entry: WatchProgressEntry) {
+        val source = WatchProgressRepository.activeSourceState.value
+        val profileId = ProfileRepository.activeProfileId
+        engine.noteMarkedWatched(
+            entry = entry,
+            source = source,
+            profileId = profileId,
+            nowEpochMs = WatchProgressClock.nowEpochMs(),
+            isStillCurrent = {
+                WatchProgressRepository.activeSourceState.value == source &&
+                    ProfileRepository.activeProfileId == profileId
+            },
+        )
+    }
+
+    /** See [NextUpEngine.onUnmarkedWatched]. */
+    fun onUnmarkedWatched(items: Collection<WatchedItem>) = engine.onUnmarkedWatched(items)
+
+    private fun ensureInputsLoaded() {
+        WatchProgressRepository.ensureLoaded()
+        WatchedRepository.ensureLoaded()
+        ContinueWatchingPreferencesRepository.ensureLoaded()
+        TraktSettingsRepository.ensureLoaded()
+    }
+
+    /**
+     * Profile switch (`TvOsProviderInstaller`'s profile fan-out, next to the Upcoming row's step):
+     * the same reset as the account wipe. The generation bump means a refresh still running for
+     * the outgoing profile cannot write its results or dismiss keys back afterwards.
+     */
+    fun onProfileChanged() = engine.reset()
+
+    /** Account wipe (`TvOsAccountDataCleaner`): the cached results name the outgoing account's shows. */
+    fun clearLocalState() = engine.reset()
 }
