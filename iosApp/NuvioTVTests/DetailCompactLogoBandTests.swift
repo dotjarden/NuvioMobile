@@ -52,13 +52,33 @@ final class DetailCompactLogoBandTests: XCTestCase {
         XCTAssertFalse(Band.blocked(rows: [cast], contentOffset: 1000 + 76), "lead bottom at 36")
     }
 
-    /// Edges touching the band do not count.
+    /// Edges touching the band do not count; the bottom edge has `restTolerance` (16 pt).
     func testEdgesTouchingTheBandAreClear() {
         let row = Row(top: 500, height: parentalHeight)
         XCTAssertFalse(Band.blocked(rows: [row], contentOffset: 500 - 108), "top exactly at the band's bottom")
-        XCTAssertTrue(Band.blocked(rows: [row], contentOffset: 500 - 107))
         XCTAssertFalse(Band.blocked(rows: [row], contentOffset: 500 + parentalHeight - 36), "bottom exactly at the band's top")
         XCTAssertTrue(Band.blocked(rows: [row], contentOffset: 500 + parentalHeight - 37))
+    }
+
+    /// Review P2-2: an anchored row resting a fraction or a few points above `screenRest` must not
+    /// hide the logo with its own heading; past the tolerance its heading is inside the slot.
+    func testRestToleranceAtTheBandBottom() {
+        XCTAssertEqual(Band.restTolerance, 16)
+        let row = Row(top: 500, height: castHeight)
+        XCTAssertFalse(Band.blocked(rows: [row], contentOffset: 500 - 107.5), "fractional rest at 107.5")
+        XCTAssertFalse(Band.blocked(rows: [row], contentOffset: 500 - 92), "rest 16 pt high (92)")
+        XCTAssertTrue(Band.blocked(rows: [row], contentOffset: 500 - 91.5), "heading at 91.5 is inside the slot")
+    }
+
+    /// A row whose lead ends exactly at the band's top is clear, half a point lower blocks; a row
+    /// exactly `leadDepth` tall behaves the same as a taller one.
+    func testLeadExactlyAtLeadDepth() {
+        for height in [Band.leadDepth, castHeight] {
+            let row = Row(top: 1000, height: height)
+            // Lead bottom = screenTop + 112: at 36 when screenTop = −76.
+            XCTAssertFalse(Band.blocked(rows: [row], contentOffset: 1000 + 76), "height \(height): lead bottom at 36")
+            XCTAssertTrue(Band.blocked(rows: [row], contentOffset: 1000 + 75.5), "height \(height): lead bottom at 36.5")
+        }
     }
 
     /// Rows wholly below the band (the next row revealed lower down) or above it are clear.

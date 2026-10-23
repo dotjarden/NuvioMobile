@@ -29,6 +29,11 @@ nonisolated enum DetailCompactLogoBand {
     /// one chip line (≈47 pt) — the Parental Guide row whole, the heading and first card edge of a
     /// shelf row.
     static let leadDepth: CGFloat = 112
+    /// Review P2-2: how far above the band's bottom a row's top may rest and still not count. An
+    /// anchored row rests at `screenRest` (= the band's bottom) give or take a fractional point or a
+    /// small drift the anchor's verify pass does not correct, and its own heading must not hide the
+    /// logo; a top more than this far above the bottom is a heading genuinely inside the slot.
+    static let restTolerance: CGFloat = 16
 
     /// One row's frame in the scroll CONTENT's coordinate space (`DetailRowAnchor.contentSpace`).
     nonisolated struct Row: Equatable, Sendable {
@@ -45,16 +50,16 @@ nonisolated enum DetailCompactLogoBand {
 
     /// True while any row's lead — `[top, top + min(height, leadDepth)]` on screen — overlaps the
     /// band. A row's screen top is `top − contentOffset` (`DetailRowAnchor.scrollTarget`'s doc).
-    /// Edges touching the band do not count: an anchored row's top resting exactly at the band's
-    /// bottom (`screenRest`) leaves the band clear.
+    /// Edges touching the band do not count, and a top within `restTolerance` of the band's bottom
+    /// does not either: an anchored row resting at (or just above) `screenRest` leaves it clear.
     static func blocked(rows: [Row], contentOffset: CGFloat,
-                                    bandTop: CGFloat = bandTop, bandBottom: CGFloat = bandBottom,
-                                    leadDepth: CGFloat = leadDepth) -> Bool {
+                        bandTop: CGFloat = bandTop, bandBottom: CGFloat = bandBottom,
+                        leadDepth: CGFloat = leadDepth, restTolerance: CGFloat = restTolerance) -> Bool {
         rows.contains { row in
             guard row.height > 0 else { return false }
             let screenTop = row.top - contentOffset
             let leadBottom = screenTop + min(row.height, leadDepth)
-            return screenTop < bandBottom && leadBottom > bandTop
+            return screenTop < bandBottom - restTolerance && leadBottom > bandTop
         }
     }
 
