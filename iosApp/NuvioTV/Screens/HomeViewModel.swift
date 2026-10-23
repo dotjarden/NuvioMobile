@@ -215,6 +215,24 @@ final class HomeViewModel: ObservableObject {
     /// returns nil until this reads true, so the panel's first paint is the rows' first paint.
     /// Mirrors `rowsGate.isOpen`; flips in `openRowsGateAndRebuild()` and on `reset()`.
     @Published private(set) var rowsGateOpen = false
+    /// BUG-223 (the UI legs' first full run, 2026-10-22; test31 leg D): `rowsGateOpen` flips the
+    /// moment the gate opens, but on a hero-off profile the gate releases with the sources still
+    /// loading and the catalog rows' first publish lands a rebuild LATER (388 ms on the fixture).
+    /// In that gap `HomeView.heroPanelSeed` fell through to Continue Watching, then repainted the
+    /// first catalog row's title when it arrived: BUG-86's double paint through a narrower door.
+    /// True once a rebuild after the open carried a catalog row, once the add-ons settled with no
+    /// catalog to wait for (a CW-only Home must still seed), or once the open's budget elapsed
+    /// (`catalogSettleBudgetSeconds`, a backstop so a stalled add-on can never blank the panel for
+    /// good). Reset with the gate.
+    @Published private(set) var catalogRowsSettledAfterGateOpen = false
+    /// Stales the backstop timer of an older open (`reset()`, then a re-open).
+    private var catalogSettleGeneration = 0
+    /// The backstop: `HERO_COMMIT_GATE_TIMEOUT_MS`'s 4 s, the launch window every other hold uses.
+    static let catalogSettleBudgetSeconds: TimeInterval = 4
+    /// The add-on watcher's last reading: whether bootstrap has settled and how many catalogs the
+    /// ready manifests declare. Read at rebuild time by `settleCatalogSeedIfDue`.
+    private var addonBootstrapSettled = false
+    private var addonCatalogCount = 0
 
     /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
     /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
@@ -498,6 +516,8 @@ final class HomeViewModel: ObservableObject {
         heroCommitCoordinator.reset()
         rowsGate.reset()
         rowsGateOpen = rowsGate.isOpen
+        catalogRowsSettledAfterGateOpen = false
+        catalogSettleGeneration += 1
         // Internal review r1 (P3): per pipeline RUN, not per process. Left true, a restarted
         // pipeline never marks the `first_hero` milestone again and the launch trace silently
         // loses the measurement for the run that is actually on screen.
@@ -1144,8 +1164,42 @@ final class HomeViewModel: ObservableObject {
         if let held = rowsGate.open() {
             pendingHeldRebuildsProbe = held
         }
+        let opening = !rowsGateOpen
         rowsGateOpen = true
+        // BUG-223: only the closed → open transition arms the hold; a re-open call on an open gate
+        // (`rowsGateReleased` publishes) must not blank a panel that has already painted.
+        if opening { armCatalogSeedSettle() }
         rebuildRows()
+    }
+
+    /// BUG-223: start the catalog hold for this open, with its backstop.
+    private func armCatalogSeedSettle() {
+        catalogRowsSettledAfterGateOpen = false
+        catalogSettleGeneration += 1
+        let generation = catalogSettleGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.catalogSettleBudgetSeconds) { [weak self] in
+            guard let self, self.catalogSettleGeneration == generation,
+                  !self.catalogRowsSettledAfterGateOpen else { return }
+            self.catalogRowsSettledAfterGateOpen = true
+            if HomeHeroProbe.enabled {
+                HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=backstop sinceLaunch=%dms", self.vmId, HomeHeroProbe.sinceLaunchMs))
+            }
+        }
+    }
+
+    /// BUG-223: after a rebuild, let the panel seed fall through to Continue Watching once the
+    /// catalogs have had their say (`HomeCatalogSeedSettle.settles`).
+    private func settleCatalogSeedIfDue(built: [HomeRow]) {
+        guard rowsGate.isOpen, !catalogRowsSettledAfterGateOpen else { return }
+        let hasCatalogRow = built.contains { if case .catalog = $0 { return true } else { return false } }
+        guard HomeCatalogSeedSettle.settles(hasCatalogRow: hasCatalogRow,
+                                            addonsSettled: addonBootstrapSettled,
+                                            addonCatalogCount: addonCatalogCount) else { return }
+        catalogRowsSettledAfterGateOpen = true
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=%@ sinceLaunch=%dms", vmId,
+                                     hasCatalogRow ? "catalogRow" : "noCatalogs", HomeHeroProbe.sinceLaunchMs))
+        }
     }
 
     /// Interleaves catalog sections and collection rows per the Home Rows settings order (enabled
@@ -1184,6 +1238,7 @@ final class HomeViewModel: ObservableObject {
         }
 
         rows = built
+        settleCatalogSeedIfDue(built: built)
 
         // Wave H (BUG-86 diagnostics, deliverable 3): the ordered row IDENTITY list, not merely a
         // count — a reorder with the same count (the launch sync burst's signature move) is exactly
@@ -1414,8 +1469,12 @@ final class HomeViewModel: ObservableObject {
         // collections on the Home path (tvOS previously synced catalogs solely from Settings'
         // onAppear), so rebuildRows() forced every collection row above every catalog row until
         // the user happened to open Settings — the "collections are scrambled" report.
+        // BUG-223: the readings `settleCatalogSeedIfDue` consults (stored whether or not the probe
+        // is on; the probe line below is diagnostics only).
+        addonBootstrapSettled = state.isInitialized
+        addonCatalogCount = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
         if HomeHeroProbe.enabled {
-            let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
+            let catalogs = addonCatalogCount
             let routeLabel = route == .metadataOnly ? "metadataOnly" : "refresh"
             // `bootstrap=` (append-only, Codex round 9): `pre` means this emission arrived before
             // add-on bootstrap settled, `settled` after. Every healthy launch reaches the refresh
@@ -1449,5 +1508,15 @@ final class HomeViewModel: ObservableObject {
         homeWatcher?.cancel()
         noSourcesSyncWatcher?.cancel()
         upcomingWatcher?.cancel()
+    }
+}
+
+/// BUG-223: when the FEAT-15 focus panel's seed may stop waiting for the catalog rows after the
+/// rows gate opened and fall through to Continue Watching (or a folder). Pure, so the rule is
+/// testable without a view model: a rebuild carried a catalog row, or the add-ons have settled and
+/// declare no catalog at all (nothing is coming). The time backstop lives in the view model.
+nonisolated enum HomeCatalogSeedSettle {
+    static func settles(hasCatalogRow: Bool, addonsSettled: Bool, addonCatalogCount: Int) -> Bool {
+        hasCatalogRow || (addonsSettled && addonCatalogCount == 0)
     }
 }

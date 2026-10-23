@@ -365,6 +365,12 @@ struct HomeView: View {
         for row in model.rows {
             if case .catalog(let section) = row, let first = section.items.first { return first }
         }
+        // BUG-223 (2026-10-22): the gate is open but the catalog rows have not published yet (on a
+        // hero-off profile the gate releases with the sources still loading; their rebuild lands a
+        // beat later). A CW or folder seed now would be painted over by the first catalog row's
+        // title 400 ms on: hold for the rows' first publish, the no-catalog verdict or the backstop
+        // (`HomeViewModel.catalogRowsSettledAfterGateOpen`), as the carousel holds for its commit.
+        guard model.catalogRowsSettledAfterGateOpen else { return nil }
         if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
         // BUG-38 round three (Codex r2): a collection-only Home — no catalog rows, no Continue
         // Watching — still has something the panel can represent when a folder carries its own
