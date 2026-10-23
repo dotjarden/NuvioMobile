@@ -123,8 +123,18 @@ object TraktScrobbleRepository : TrackingScrobbler {
         },
         now = TraktPlatformClock::nowEpochMs,
         newId = { "${TraktPlatformClock.nowEpochMs()}-${Random.nextInt(0, Int.MAX_VALUE)}" },
-        log = { message -> log.i { message } },
+        log = ::trace,
     )
+
+    /**
+     * BUG-220 queue/replay lines. Kermit goes to os_log on Apple, which the device console pipe
+     * (`devicectl --console`, scripts/device/console.sh) cannot see, so these are mirrored to
+     * stdout (the SubtitleRepository precedent). They carry item keys and progress, never headers.
+     */
+    private fun trace(message: String) {
+        log.i { message }
+        println("[TraktScrobble] $message")
+    }
     private val minSendIntervalMs = 8_000L
     private val progressWindow = 1.5f
     private val maxStopRetries = 2
@@ -369,7 +379,7 @@ object TraktScrobbleRepository : TrackingScrobbler {
             }
 
             if (response.status in 200..299 || response.status == 409) {
-                if (action == "stop") log.i { "Trakt scrobble stop status=${response.status}${if (replay) " (replay)" else ""}" }
+                if (action == "stop") trace("Trakt scrobble stop status=${response.status}${if (replay) " (replay)" else ""}")
                 wasSent = true
                 break
             }
@@ -380,9 +390,8 @@ object TraktScrobbleRepository : TrackingScrobbler {
                 continue
             }
 
-            log.w {
-                "Failed Trakt scrobble $action: HTTP ${response.status} ${response.statusText.ifBlank { "<no-status-text>" }}"
-            }
+            val failure = "Failed Trakt scrobble $action: HTTP ${response.status} ${response.statusText.ifBlank { "<no-status-text>" }}"
+            if (action == "stop") trace(failure) else log.w { failure }
             return classifyTraktScrobbleFailure(response.status)
         }
 
@@ -435,7 +444,7 @@ object TraktScrobbleRepository : TrackingScrobbler {
             deliver(profileId, "stop", item, progress, replay = true)
         }
         if (result.sent > 0 || result.dropped > 0 || result.kept > 0) {
-            log.i { "Trakt pending stop replay done profile=$profileId sent=${result.sent} kept=${result.kept} dropped=${result.dropped}" }
+            trace("Trakt pending stop replay done profile=$profileId sent=${result.sent} kept=${result.kept} dropped=${result.dropped}")
         }
         if (result.sent > 0) refreshProgressAfterStop()
         return result
