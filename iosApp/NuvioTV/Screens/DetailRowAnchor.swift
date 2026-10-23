@@ -384,20 +384,38 @@ struct DetailRowAnchored: ViewModifier {
     /// content coordinates do not move as the page scrolls, so this changes only on layout.
     let offsets: Binding<[DetailRowID: CGFloat]>
     /// D-3: each row's laid-out height, same cadence as `offsets` (one geometry read feeds both).
+    /// Review P3-2: dropped when the row leaves the hierarchy (a data-driven row that empties after
+    /// it was measured, so the compact logo's band never reads a row that is not there), and
+    /// re-measured when it comes back (a push or cover returning: `remeasure` bumps the reading
+    /// below, which fires `action` again with the same frame). `offsets` keeps its entry either way —
+    /// the anchor and the pop restore read it right after a return.
     let heights: Binding<[DetailRowID: CGFloat]>?
+    @State private var remeasure = 0
+
+    /// The geometry reading plus the re-measure generation, so a bump re-fires `action`.
+    private struct Reading: Equatable {
+        let generation: Int
+        let frame: CGRect
+    }
 
     func body(content: Content) -> some View {
         content
             .id(id)
             .focused(focusedRow, equals: id)
-            .onGeometryChange(for: CGRect.self,
-                              of: { $0.frame(in: .named(DetailRowAnchor.contentSpace)) },
-                              action: { frame in
+            .onGeometryChange(for: Reading.self,
+                              of: { [remeasure] in
+                                  Reading(generation: remeasure,
+                                          frame: $0.frame(in: .named(DetailRowAnchor.contentSpace)))
+                              },
+                              action: { reading in
+                let frame = reading.frame
                 if offsets.wrappedValue[id] != frame.minY { offsets.wrappedValue[id] = frame.minY }
                 if let heights, heights.wrappedValue[id] != frame.height {
                     heights.wrappedValue[id] = frame.height
                 }
             })
+            .onAppear { if heights != nil { remeasure &+= 1 } }
+            .onDisappear { if let heights, heights.wrappedValue[id] != nil { heights.wrappedValue[id] = nil } }
     }
 }
 

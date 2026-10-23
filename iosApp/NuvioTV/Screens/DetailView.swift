@@ -707,8 +707,8 @@ struct DetailView: View {
 
     /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, read at rest
     /// (`settleCompactLogoBand`). Both maps change on layout only.
-    /// Cinematic only (Classic has no compact logo). A row hidden after it was measured keeps a stale
-    /// entry, the `detailRowOffsets` caveat above; sections only toggle in Settings, a fresh page.
+    /// Cinematic only (Classic has no compact logo). A row that leaves the hierarchy drops its
+    /// height (`DetailRowAnchored`, review P3-2), so only rendered rows reach the band.
     private var compactLogoBandRows: [DetailCompactLogoBand.Row] {
         guard detailLayout == .cinematic else { return [] }
         // Sorted so the `.onChange` below compares like with like (dictionary order can shift).
