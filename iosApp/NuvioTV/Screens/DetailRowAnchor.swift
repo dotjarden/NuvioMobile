@@ -393,7 +393,7 @@ struct DetailRowAnchored: ViewModifier {
     @State private var remeasure = 0
 
     /// The geometry reading plus the re-measure generation, so a bump re-fires `action`.
-    private struct Reading: Equatable {
+    private nonisolated struct Reading: Equatable, Sendable {
         let generation: Int
         let frame: CGRect
     }
