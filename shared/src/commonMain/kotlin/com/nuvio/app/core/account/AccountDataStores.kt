@@ -33,6 +33,15 @@ package com.nuvio.app.core.account
 const val MDBLIST_KEYCHAIN_SERVICE = "com.nuvio.media.mdblist"
 
 /**
+ * BUG-220 pending Trakt scrobble-stop queue (`features.trakt.TraktPendingScrobbleStopStorage`):
+ * Apple NSUserDefaults key `"<TRAKT_PENDING_SCROBBLE_STOPS_KEY>_<profileId>"`; Android/JVM the same
+ * key in the [TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES] file. Shared by the storage actuals, the
+ * registry entry below and its tests, so the wipe cannot drift from the store it erases.
+ */
+const val TRAKT_PENDING_SCROBBLE_STOPS_KEY = "trakt_pending_scrobble_stops"
+const val TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES = "nuvio_trakt_pending_scrobbles"
+
+/**
  * How an Apple (iOS/tvOS) `NSUserDefaults` key is actually spelled at the call site. Getting this
  * wrong means the wipe silently misses the data, so each variant mirrors one concrete call shape
  * observed in the storage `actual`s.
@@ -580,6 +589,14 @@ object AccountDataStores {
                 // watch-source outbox, but old installs still hold a stale payload to wipe.
                 AppleKeySpec.ProfileScoped("pending_watch_progress_source"),
             ),
+        ),
+        AccountDataStore(
+            // BUG-220 write-ahead queue of Trakt /scrobble/stop requests not yet acknowledged
+            // (features.trakt.TraktPendingScrobbleStopStorage). Without this entry a stop left
+            // pending at sign-out would be replayed into the next account's Trakt.
+            name = "TraktPendingScrobbleStopStorage",
+            androidPreferences = TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES,
+            appleKeys = listOf(AppleKeySpec.ProfileScoped(TRAKT_PENDING_SCROBBLE_STOPS_KEY)),
         ),
         AccountDataStore(
             name = "TraktCommentsStorage",

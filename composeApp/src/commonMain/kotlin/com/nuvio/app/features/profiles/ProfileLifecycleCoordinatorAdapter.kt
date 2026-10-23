@@ -25,6 +25,7 @@ import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
@@ -41,6 +42,8 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         WatchedRepository.onProfileChanged(profileIndex)
         TraktSettingsRepository.onProfileChanged()
         TraktAuthRepository.onProfileChanged(profileIndex)
+        // BUG-220: replay pending Trakt scrobble stops for the incoming profile.
+        TraktScrobbleRepository.onProfileChanged(profileIndex)
         LibraryRepository.onProfileChanged(profileIndex)
         LibraryDisplaySettingsRepository.onProfileChanged()
         WatchProgressRepository.onProfileChanged(profileIndex)

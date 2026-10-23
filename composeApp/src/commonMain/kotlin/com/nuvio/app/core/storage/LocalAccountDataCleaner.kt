@@ -31,6 +31,7 @@ import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
@@ -75,6 +76,7 @@ internal object LocalAccountDataCleaner {
         CustomPosterUrlRepository.clearLocalState()
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
+        TraktScrobbleRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
         // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …). The
         // two explicit Trakt calls above stay: they clear repository state the registry does not

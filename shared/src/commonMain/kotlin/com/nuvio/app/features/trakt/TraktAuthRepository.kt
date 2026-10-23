@@ -124,7 +124,16 @@ object TraktAuthRepository : TrackingAuthProvider {
      */
     override fun removeStoredProfile(profileId: Int) {
         TraktAuthStorage.savePayload(profileId, "")
+        TraktScrobbleRepository.clearPendingStopsAsync(profileId)
     }
+
+    /**
+     * Slug of the Trakt user connected for the loaded profile, or null before the user settings
+     * were fetched. BUG-220 stamps each pending scrobble stop with it, so a replay never lands in
+     * a different account; a token invalidation followed by a reconnect to the same user still
+     * replays.
+     */
+    fun currentUserSlug(): String? = authState.userSlug?.takeIf(String::isNotBlank)
 
     fun snapshot(profileId: Int = ProfileRepository.activeProfileId): TraktAuthUiState {
         ensureLoaded(profileId)
@@ -543,6 +552,9 @@ object TraktAuthRepository : TrackingAuthProvider {
         }
 
         TraktCredentialSync.deleteRemote(profileId)
+        // BUG-220: a stop queued for this account must never replay into the next one connected
+        // (cleared under the queue lock, so an in-flight drain cannot write it back).
+        TraktScrobbleRepository.clearPendingStops(profileId)
         authState = TraktAuthState()
         persist(profileId)
         publish(
