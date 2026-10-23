@@ -278,9 +278,11 @@ final class StageGate1EvidenceTests: XCTestCase {
 
     // MARK: - OLED True Black (device pass 2026-10-05: light bar on the left edge)
 
-    /// Stage Home with OLED True Black on and off (FA87's guest "Chris" is profile 1, so the
-    /// profile-scoped key is `amoled_enabled_1`), plus two reference legs: OLED with the ambient
-    /// wash off, and Classic with OLED. Screenshots at row 0 and after one Down.
+    /// Stage Home with OLED True Black on and off, plus two reference legs: OLED with the ambient
+    /// wash off, and Classic with OLED. Screenshots at row 0 and after one Down. harness-w4
+    /// (2026-10-23): OLED is set by the DEBUG seam `-debug.amoledEnabledOverride YES|NO`
+    /// (`ThemeSettingsRepository` reads it before the persisted `amoled_enabled`; held in memory,
+    /// never written, never in the sync export), not by the synced `amoled_enabled_<profile>` key.
     ///
     /// The bar: the wash's aspect fill came back 2006 pt wide on Home's 1920x1128.5 tab region,
     /// widened HomeView's root ZStack, and its page background moved to x = 160…1920. Under OLED's
@@ -289,18 +291,12 @@ final class StageGate1EvidenceTests: XCTestCase {
     /// empty band above the stage text (left of the tab bar): the art mask's own ramp moves less than
     /// 4 levels across them, so a step of 8 or more is the bar.
     func testOledBarEvidence() throws {
-        // ui-legs (2026-10-22): `-amoled_enabled_N` is a SYNCED theme key (TvOsThemeSettingsStore
-        // exports it from NSUserDefaults, argument domain included), so a settings push during a
-        // leg would carry it to the signed-in fixture's account. Opt-in only.
-        guard ProcessInfo.processInfo.environment["NUVIO_SYNCED_LAUNCH_ARGS"] == "1" else {
-            throw XCTSkip("launches with the synced key -amoled_enabled_1 — set TEST_RUNNER_NUVIO_SYNCED_LAUNCH_ARGS=1 on a throwaway fixture")
-        }
         let legs: [(name: String, args: [String], checked: Bool)] = [
-            ("oled-on", ["-home_layout", "stage", "-amoled_enabled_1", "YES"], true),
-            ("oled-off", ["-home_layout", "stage", "-amoled_enabled_1", "NO"], true),
-            ("oled-on-washoff", ["-home_layout", "stage", "-amoled_enabled_1", "YES",
+            ("oled-on", ["-home_layout", "stage", "-debug.amoledEnabledOverride", "YES"], true),
+            ("oled-off", ["-home_layout", "stage", "-debug.amoledEnabledOverride", "NO"], true),
+            ("oled-on-washoff", ["-home_layout", "stage", "-debug.amoledEnabledOverride", "YES",
                                  "-home_ambient_background", "NO"], true),
-            ("classic-oled-on", ["-home_layout", "classic", "-amoled_enabled_1", "YES"], false),
+            ("classic-oled-on", ["-home_layout", "classic", "-debug.amoledEnabledOverride", "YES"], false),
         ]
         var report: [String] = []
         for leg in legs {

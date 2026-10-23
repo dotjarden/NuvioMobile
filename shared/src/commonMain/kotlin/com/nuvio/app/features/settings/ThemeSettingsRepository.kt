@@ -25,6 +25,9 @@ object ThemeSettingsRepository {
 
     private var hasLoaded = false
 
+    // DEBUG harness seam (harness-w4, 2026-10-23). See [setDebugAmoledEnabledOverride].
+    private var debugAmoledEnabledOverrideValue: Boolean? = null
+
     fun ensureLoaded() {
         if (hasLoaded) return
         loadFromDisk()
@@ -69,7 +72,10 @@ object ThemeSettingsRepository {
         }
         _selectedTheme.value = theme
         NativeTabControllerProvider.controller.publishAccentColor(theme.nativeTabAccentHex())
-        _amoledEnabled.value = ThemeSettingsStoreProvider.store.loadAmoledEnabled() ?: false
+        // harness-w4: the DEBUG override (in memory only) is consulted before the persisted value.
+        _amoledEnabled.value = debugAmoledEnabledOverrideValue
+            ?: ThemeSettingsStoreProvider.store.loadAmoledEnabled()
+            ?: false
         val liquidGlassEnabled = ThemeSettingsStoreProvider.store.loadLiquidGlassNativeTabBarEnabled() ?: false
         _liquidGlassNativeTabBarEnabled.value = liquidGlassEnabled
         NativeTabControllerProvider.controller.publishLiquidGlassEnabled(liquidGlassEnabled)
@@ -86,6 +92,25 @@ object ThemeSettingsRepository {
         ThemeSettingsStoreProvider.store.saveSelectedTheme(theme.name)
         NativeTabControllerProvider.controller.publishAccentColor(theme.nativeTabAccentHex())
     }
+
+    /**
+     * DEBUG harness seam (harness-w4, 2026-10-23), the twin of
+     * [com.nuvio.app.features.tmdb.TmdbSettingsRepository.setDebugEnabledOverride]: when [value] is
+     * non-null it stands in for the persisted `amoled_enabled` (OLED True Black) in [amoledEnabled],
+     * for this process only (it survives profile switches, which reload from storage). It is never
+     * written to the [ThemeSettingsStore], and the profile-settings sync export
+     * ([ThemeSettingsStore.exportToSyncPayload]) reads storage, so the account's payload keeps the
+     * persisted value. Only the tvOS app's DEBUG build calls this (`AmoledDebugOverride`,
+     * `-debug.amoledEnabledOverride YES|NO`); Release never does. null clears it.
+     */
+    fun setDebugAmoledEnabledOverride(value: Boolean?) {
+        if (debugAmoledEnabledOverrideValue == value) return
+        debugAmoledEnabledOverrideValue = value
+        if (hasLoaded) loadFromDisk()
+    }
+
+    /** The active DEBUG override of `amoled_enabled`, or null (see [setDebugAmoledEnabledOverride]). */
+    fun currentDebugAmoledEnabledOverride(): Boolean? = debugAmoledEnabledOverrideValue
 
     fun setAmoled(enabled: Boolean) {
         ensureLoaded()

@@ -9055,15 +9055,16 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     /// Deep-links into The 100's Detail page with Auto-Play Best Source on for this launch only
-    /// (the fixture profile is id 2 and the synced mode is read from NSUserDefaults as the enum
-    /// name under `stream_auto_play_mode_2`, so nothing is persisted), waits for the action row,
+    /// (harness-w4: `-debug.streamAutoPlayModeOverride FIRST_STREAM`, the DEBUG seam the shared
+    /// `PlayerSettingsRepository` reads before the persisted `stream_auto_play_mode`; it is held in
+    /// memory, never written and never in the sync export), waits for the action row,
     /// and leaves focus on Play. Detail's initial focus is not deterministic on this runtime and
     /// `hasFocus` never reports, so walk Left three times: Play is the leftmost action button.
     /// An earlier probe run can leave the fixture's The 100 marked Watched; restore it first.
     private func launchTheHundredOnPlay(shotPrefix: String) throws -> XCUIApplication {
         let app = launchToHome(extraArguments: [
             "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
-            "-stream_auto_play_mode_2", "FIRST_STREAM",
+            "-debug.streamAutoPlayModeOverride", "FIRST_STREAM",
             "-home_upcoming_row_enabled", "NO",
             "-debug.trailerProbe", "YES",
             "-debug.trailerForceNoTrailer", "YES"
@@ -9172,12 +9173,9 @@ final class NuvioTVUITests: XCTestCase {
     /// does not pick up progress. The mode is a launch-argument override, so there is no toggle to
     /// turn back off.
     func test72AutoPlayFirstPlayAndHoldPlay() throws {
-        // ui-legs (2026-10-22): `-stream_auto_play_mode_2` is a SYNCED key (PlayerSettingsStorage
-        // exports it from NSUserDefaults, argument domain included), so a settings push during the
-        // visit would carry it to the signed-in fixture's account. Opt-in only.
-        guard ProcessInfo.processInfo.environment["NUVIO_SYNCED_LAUNCH_ARGS"] == "1" else {
-            throw XCTSkip("launches with the synced key -stream_auto_play_mode_2 — set TEST_RUNNER_NUVIO_SYNCED_LAUNCH_ARGS=1 on a throwaway fixture")
-        }
+        // harness-w4 (2026-10-23): the mode comes from the DEBUG seam now
+        // (`-debug.streamAutoPlayModeOverride`, see `launchTheHundredOnPlay`), never from the synced
+        // `stream_auto_play_mode_<profile>` key, so the ui-legs opt-in gate is gone.
         var app = try launchTheHundredOnPlay(shotPrefix: "72a")
         if app.buttons["Playback unavailable"].exists {
             throw XCTSkip("Play is disabled (no source can serve The 100 on this fixture)")
