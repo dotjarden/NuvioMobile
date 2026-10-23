@@ -3420,7 +3420,12 @@ struct HomeView: View {
         case 1: count = String(localized: "1 source")
         default: count = String(localized: "\(sources) sources")
         }
-        return name.isEmpty ? count : "\(name) \u{00B7} \(count)"
+        // D-7 (design review 2026-10-22, the BUG-211 rule on the folder line): a folder with no
+        // wordmark bitmap already shows its name as the hero's text stand-in, so the line carries
+        // the count alone ("2 sources", not "Test Folder · 2 sources"). With a wordmark the name is
+        // not otherwise readable and stays in front of the count.
+        let hasWordmark = !(folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return name.isEmpty || !hasWordmark ? count : "\(name) \u{00B7} \(count)"
     }
 
     /// UX-7: adapts a Continue Watching entry to the hero's `MetaPreview` shape so a focused CW
