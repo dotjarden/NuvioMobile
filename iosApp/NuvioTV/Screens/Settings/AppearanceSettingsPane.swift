@@ -548,7 +548,7 @@ private struct ThemePickerRow: View {
 
 /// A single theme swatch: colored circle + name. Selection wears a full-strength ring; focus
 /// wears a slightly lighter ring in the same swatch-contrast color and brightens the label
-/// (platter-free — `.borderless` gives only the system lift, no scale of our own). BUG-65: the
+/// (platter-free — `.borderless` gives only the system lift; D-8 adds our own x1.2 lift). BUG-65: the
 /// focused state used to be label-brightening alone, which the reporter couldn't see; the ring
 /// makes focus self-describing on every swatch including White (`onColor(forFillHex:)` picks a
 /// shade that contrasts the fill, so it can never vanish into it).

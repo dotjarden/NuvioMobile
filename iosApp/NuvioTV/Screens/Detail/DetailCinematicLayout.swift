@@ -90,7 +90,9 @@ nonisolated enum DetailRatings {
     /// the same brand labels and order as the Cinematic strip ("IMDb 8.1  ·  Rotten Tomatoes 91%"),
     /// not the add-on's raw keys ("imdb 8.1   tomatoes 91"). Pure, read by `DetailView.infoRows`.
     static func detailsLine(_ ratings: [DetailRatingEntry]) -> String {
-        ratings.map { "\($0.label) \($0.value)" }.joined(separator: "  \u{00B7}  ")
+        // U+00A0 inside each entry: the line wraps only at the separators, never "Rotten / Tomatoes 91%".
+        ratings.map { "\($0.label) \($0.value)".replacingOccurrences(of: " ", with: "\u{00A0}") }
+            .joined(separator: "  \u{00B7}  ")
     }
 
     /// Brand names stay as they are in every language; "Audience" is the one plain word.
