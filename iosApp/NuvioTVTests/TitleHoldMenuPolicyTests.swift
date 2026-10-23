@@ -129,10 +129,27 @@ final class TitleHoldMenuPolicyTests: XCTestCase {
                        [.playManually, .goToDetails, .startOver, .remove])
     }
 
+    /// FEAT-85: an Up Next card already plays from the beginning, so it has no Start Over; it keeps
+    /// Remove (a synced dismissal) and Mark Episode Watched.
+    func testUpNextEntryHasNoStartOver() {
+        XCTAssertEqual(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: true, isNextUp: true),
+                       [.playManually, .goToDetails, .markEpisodeWatched, .remove])
+    }
+
+    func testIsNextUpDefaultsToFalse() {
+        for isEpisode in [false, true] {
+            XCTAssertEqual(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode),
+                           TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode, isNextUp: false))
+        }
+    }
+
     func testRemoveIsAlwaysLastAndTheOnlyDestructiveAction() {
         for isEpisode in [false, true] {
             let actions = TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode)
             XCTAssertEqual(actions.last, .remove, "isEpisode=\(isEpisode)")
+            let upNext = TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode, isNextUp: true)
+            XCTAssertEqual(upNext.last, .remove, "isEpisode=\(isEpisode) upNext")
+            XCTAssertEqual(upNext.filter(\.isDestructive), [.remove], "isEpisode=\(isEpisode) upNext")
             XCTAssertEqual(actions.filter(\.isDestructive), [.remove], "isEpisode=\(isEpisode)")
         }
     }

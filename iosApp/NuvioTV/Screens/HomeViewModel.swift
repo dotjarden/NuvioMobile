@@ -878,6 +878,13 @@ final class HomeViewModel: ObservableObject {
         }
         cwPreferencesWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] _ in
             guard let self, self.pipelineGeneration == gen else { return }
+            // A dismissal (Remove on an Up Next card, here or synced from the phone) drops its card
+            // now; the re-resolution below only confirms it after the debounce.
+            let kept = ContinueWatchingNextUp.shared.withoutDismissed(entries: self.nextUpEntries)
+            if kept.count != self.nextUpEntries.count {
+                self.nextUpEntries = kept
+                self.publishContinueWatching()
+            }
             self.scheduleNextUpRefresh()
         }
 
@@ -1026,7 +1033,7 @@ final class HomeViewModel: ObservableObject {
     }
 
     /// In-progress entries plus a next-up entry for each series whose last episode is finished
-    /// (shared `mergeContinueWatchingWithNextUp`: a series with an in-progress card keeps that card).
+    /// (shared `mergeContinueWatchingWithNextUp`: one card per series, the more recent one wins).
     private func publishContinueWatching() {
         let next = ContinueWatchingNextUpKt.mergeContinueWatchingWithNextUp(
             inProgress: inProgressContinueWatching,
@@ -1036,9 +1043,12 @@ final class HomeViewModel: ObservableObject {
         refreshShuffleParentIds()
     }
 
-    /// Up Next: resolves the next episode per finished series off the main path. Debounced, because
-    /// progress emits on every playback save while Home sits under the player; each run fetches
-    /// metadata (cached after the first) for at most `ContinueWatchingNextUpResolveLimit` series.
+    /// Up Next: resolves the next episode per finished series. Debounced, because progress emits on
+    /// every playback save while Home sits under the player. The Kotlin side runs on
+    /// `Dispatchers.Default`, reuses a series' result until its seed episode changes (so a refresh
+    /// with nothing new fetches nothing), and fetches at most `ContinueWatchingNextUpResolveLimit`
+    /// series, four at a time. Cancelling this task drops a late result; it does not stop the
+    /// Kotlin call, which finishes and leaves its results cached for the next run.
     private func scheduleNextUpRefresh() {
         nextUpTask?.cancel()
         let gen = pipelineGeneration
@@ -1055,7 +1065,7 @@ final class HomeViewModel: ObservableObject {
                     self.publishContinueWatching()
                 }
             } catch {
-                print("[Home] Up Next resolution failed: \(error)")
+                NSLog("[UpNext] resolution failed: %@", String(describing: error))
             }
         }
     }

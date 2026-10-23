@@ -5653,7 +5653,8 @@ struct ContinueWatchingRow: View {
                             .contextMenu {
                                 // Orivio item 3: the action list and its order come from
                                 // `TitleHoldMenuPolicy` (Mark Episode Watched exists for episodes only).
-                                ForEach(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode(entry)), id: \.self) { action in
+                                ForEach(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode(entry),
+                                                                    isNextUp: entry.isContinueWatchingNextUp), id: \.self) { action in
                                     Button(role: action.isDestructive ? .destructive : nil) {
                                         perform(action, on: entry)
                                     } label: {
@@ -5777,8 +5778,9 @@ struct ContinueWatchingRow: View {
     private func episodeCode(_ entry: WatchProgressEntry) -> String? {
         guard let season = entry.seasonNumber?.intValue, let episode = entry.episodeNumber?.intValue else { return nil }
         let code = String(format: "S%02dE%02d", season, episode)
-        // Up Next card (the episode after the last one finished): say so, since it has no progress bar.
-        if entry.source == ContinueWatchingNextUpKt.WatchProgressSourceNextUp {
+        // FEAT-85: an Up Next card (the episode after the last one finished) says so, since it has
+        // no progress bar to tell it apart from a card that resumes.
+        if entry.isContinueWatchingNextUp {
             return String(localized: "Up Next \u{00B7} \(code)")
         }
         return code

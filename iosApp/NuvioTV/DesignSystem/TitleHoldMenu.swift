@@ -144,11 +144,13 @@ enum TitleHoldMenuPolicy {
     }
 
     /// The menu's items, in display order. "Mark Episode Watched" only exists for an episode
-    /// entry; a movie's card has nothing episode-shaped to mark.
-    static func continueWatchingActions(isEpisode: Bool) -> [CWAction] {
+    /// entry; a movie's card has nothing episode-shaped to mark. An Up Next card (FEAT-85) has no
+    /// "Start Over": it already plays from the beginning, so the item would repeat a plain press.
+    static func continueWatchingActions(isEpisode: Bool, isNextUp: Bool = false) -> [CWAction] {
         var actions: [CWAction] = [.playManually, .goToDetails]
         if isEpisode { actions.append(.markEpisodeWatched) }
-        actions.append(contentsOf: [.startOver, .remove])
+        if !isNextUp { actions.append(.startOver) }
+        actions.append(.remove)
         return actions
     }
 

@@ -57,7 +57,10 @@ final class HomeRowActions {
                 markedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
             )
         )
-        WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
+        // An Up Next card (FEAT-85) has no progress row to clear: the mark alone moves the series on.
+        if !entry.isContinueWatchingNextUp {
+            WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
+        }
     }
 }
 
