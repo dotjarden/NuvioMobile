@@ -10,7 +10,8 @@ import XCTest
 /// never written or synced), launches Stage and Classic Home `launches` times each with the folder
 /// seed the folder legs use, and watches the app for 20 s after the pick: any exit fails the leg.
 ///
-/// `TEST_RUNNER_NUVIO_DEPTH_PROBE_LAUNCHES=<n>` raises the per-layout launch count (default 2).
+/// `TEST_RUNNER_NUVIO_DEPTH_PROBE_LAUNCHES=<n>` raises the per-layout launch count (default 2);
+/// each layout then gets one more launch with Depth Takes Poster Color on (review P3-3).
 /// Helpers are a trimmed copy of `NuvioTVUITests`' (private there; this harness accepts duplication
 /// over shared helpers, see `HeroOffLaunchTests`).
 final class CardDepthCrashProbeUITests: XCTestCase {
@@ -27,7 +28,7 @@ final class CardDepthCrashProbeUITests: XCTestCase {
         Int(ProcessInfo.processInfo.environment["NUVIO_DEPTH_PROBE_LAUNCHES"] ?? "") ?? 2
     }
 
-    private func launch(layout: String, seed: String) -> XCUIApplication {
+    private func launch(layout: String, seed: String, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         let b64 = Data(seed.utf8).base64EncodedString()
         app.launchArguments += ["-home_layout", layout,
@@ -35,7 +36,7 @@ final class CardDepthCrashProbeUITests: XCTestCase {
                                 "-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
                                 "-home_upcoming_row_enabled", "NO",
                                 "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES",
-                                "-debug.cardDepthOn", "YES"]
+                                "-debug.cardDepthOn", "YES"] + extra
         app.launch()
         return app
     }
@@ -65,16 +66,25 @@ final class CardDepthCrashProbeUITests: XCTestCase {
             _ = survives(restored, seconds: 8)
         }
         var exits: [String] = []
+        // Review P3-3: one extra pass per layout in Steven's config, Depth Takes Poster Color on
+        // (`depth_rail_poster_color`, launch-argument domain only, never written): every image load
+        // then samples a rail colour and writes card state, one more update per card while Home's
+        // rows settle. `1`, not `YES`: `@AppStorage` Bools ignore a YES/NO argument (walks.sh, 10-22).
+        let posterColor = ["-depth_rail_poster_color", "1"]
+        var passes: [(layout: String, run: String, extra: [String])] = []
         for layout in ["stage", "classic"] {
-            for run in 1...launches {
-                let app = launch(layout: layout, seed: Self.folderSeedJson)
-                let exitAt = survives(app, seconds: 20)
-                let line = "\(layout) #\(run): " + (exitAt.map { String(format: "EXITED after %.1f s", $0) } ?? "alive 20 s")
-                add(XCTAttachment(string: line))
-                print("[CardDepthCrashProbe] \(line)")
-                if exitAt != nil { exits.append(line) }
-                app.terminate()
-            }
+            for run in 1...launches { passes.append((layout, "#\(run)", [])) }
+            passes.append((layout, "poster-colour", posterColor))
+        }
+        for pass in passes {
+            let layout = pass.layout
+            let app = launch(layout: layout, seed: Self.folderSeedJson, extra: pass.extra)
+            let exitAt = survives(app, seconds: 20)
+            let line = "\(layout) \(pass.run): " + (exitAt.map { String(format: "EXITED after %.1f s", $0) } ?? "alive 20 s")
+            add(XCTAttachment(string: line))
+            print("[CardDepthCrashProbe] \(line)")
+            if exitAt != nil { exits.append(line) }
+            app.terminate()
         }
         XCTAssertTrue(exits.isEmpty, "Home left the foreground with Card Depth on (BUG-221): \(exits)")
     }

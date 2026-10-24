@@ -152,8 +152,10 @@ nonisolated final class CardDepthRasterCache: @unchecked Sendable {
 
     private let cache = NSCache<KeyBox, UIImage>()
 
-    /// A poster rail at 2x is about 0.4 MB; a typical Home holds a handful of keys (one per card
-    /// family and size, two layers each). The limits only bound a pathological spread of sizes.
+    /// One bitmap costs its pixels × 4 bytes: a 220 × 330 pt poster at 2x is 440 × 660 px ≈ 1.16 MB,
+    /// an episode / landscape tile ≈ 1.6 MB, and each card size holds two (rail + sheen). A typical
+    /// Home (a few card families and sizes) holds about 10-15 MB. The 64-entry / 48 MB bounds cover
+    /// that with room for Detail's sizes; past them `NSCache` evicts and the next ask re-renders.
     init(countLimit: Int = 64, totalCostLimit: Int = 48 * 1024 * 1024) {
         cache.countLimit = countLimit
         cache.totalCostLimit = totalCostLimit

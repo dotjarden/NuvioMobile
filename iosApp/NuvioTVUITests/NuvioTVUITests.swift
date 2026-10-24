@@ -5558,8 +5558,12 @@ final class NuvioTVUITests: XCTestCase {
 
         /// The whole measurement for one launch configuration.
         func measure(_ arguments: [String], leg: String, shotName: String) throws -> (card: CGRect, rail: CGRect, artwork: CGRect) {
+            // Card Depth revival review P3-4 (2026-10-23): Card Depth is forced on for this launch
+            // (`-debug.cardDepthOn YES`: master + every surface, DEBUG, never written or synced), so
+            // the leg measures the rail on every fixture instead of skipping when the synced setting
+            // is off; on a RoundedRectangle card that rail is `CardDepthBitmapLayers`.
             let app = launchToHome(
-                extraArguments: ["-debug.cardGeometryProbe", "YES"] + arguments,
+                extraArguments: ["-debug.cardGeometryProbe", "YES", "-debug.cardDepthOn", "YES"] + arguments,
                 forceFreshLaunch: true
             )
             openTab(app, named: "Home")

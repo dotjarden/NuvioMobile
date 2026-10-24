@@ -582,18 +582,23 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// shape's type, `animatesSize`, the always-0 halo), so a card never switches between the two.
     @ViewBuilder
     private func rendered(_ p: Params) -> some View {
-        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV; root-caused 2026-10-23 on FA87,
-        // docs/research/card-depth-cache-2026-10-23): the first cache rendering wrapped the bitmaps
-        // in a `GeometryReader` whose content read `proxy.size`. That content is a view body that
-        // depends on a LAYOUT value, so SwiftUI re-evaluates it inside the layout pass. The trap came
-        // from that pass: a row's `LazyHStack` measuring a card (`_AspectRatioLayout` asking its child
-        // for a size) updated a dynamic container under the card, whose item removal asserted
-        // (`DynamicContainerInfo.tryRemovingItem`, `DynamicContainer.swift:651`), ~1.5 s after the
-        // profile pick, during Home's first publishes. The bitmaps were innocent: a `GeometryReader` whose content reads `proxy.size` and
-        // draws only `Color.clear` frames traps the same way (4 / 4), and one that ignores the proxy
-        // around the live layers does not. `CardDepthBitmapLayers` takes the size from
-        // `onGeometryChange` instead (a state write after layout), so nothing in the overlay is
-        // evaluated during layout.
+        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV; bisected 2026-10-23 on FA87,
+        // docs/research/card-depth-cache-2026-10-23): the first cache rendering was a
+        // `GeometryReader` in this OVERLAY on the card's artwork, whose content read `proxy.size`.
+        // With it, Home trapped ~1.5 s after the profile pick, during the first publishes: a row's
+        // `LazyHStack` measuring a card (`_AspectRatioLayout` asking its child for a size) updated a
+        // dynamic container under the card, whose item removal asserted
+        // (`DynamicContainerInfo.tryRemovingItem`, `DynamicContainer.swift:651`). The bitmaps were
+        // innocent: an overlay `GeometryReader` that reads `proxy.size` and draws only `Color.clear`
+        // frames traps the same way (4 / 4), one that ignores the proxy around the live layers does
+        // not. Reading a size in a `GeometryReader` is not enough on its own: `ShimmerView`
+        // (`CachedAsyncImage.swift`), `PosterCard`'s progress bar and its watch-badge bar all frame
+        // content by `geo.size` inside the same `LazyHStack` cards without crashing. What differs is
+        // the place: a size-reading reader overlaid on the artwork under `_AspectRatioLayout`,
+        // probably while `CachedAsyncImage` swaps its shimmer for the image. The fix is proven by
+        // that bisect, not by a full account of SwiftUI's mechanism: `CardDepthBitmapLayers` takes
+        // the size from `onGeometryChange` (a state write after layout), so nothing in this overlay
+        // depends on a layout value.
         if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
             CardDepthBitmapLayers(kind: kind, sheen: p.sheen, edge: p.edge, lineWidth: p.width,
                                   stops: p.stops, coverage: p.coverage,
