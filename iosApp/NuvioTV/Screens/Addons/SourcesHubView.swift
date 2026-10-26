@@ -37,6 +37,9 @@ struct SourcesHubView: View {
     /// Set when an install succeeds while the sheet is up; the sheet's dismissal then focuses the
     /// new card.
     @State private var focusNewCardAfterInstall = false
+    /// Serial of the newest install outcome the hub has seen; handed to the install sheet so a
+    /// stale outcome never shows when it reopens.
+    @State private var installHandledSerial: Int?
     @State private var toast: String?
     /// Counts toasts shown; the timed clear keys on it, not on the text, so a repeat of the same
     /// text keeps its full time.
@@ -88,7 +91,7 @@ struct SourcesHubView: View {
             .accessibilityIdentifier("addons_hub_root")
         }
         .overlay(alignment: .bottom) { toastView }
-        .sheet(isPresented: $showInstall, onDismiss: focusAfterInstall) { AddonInstallSheet(model: model) }
+        .sheet(isPresented: $showInstall, onDismiss: focusAfterInstall) { AddonInstallSheet(model: model, handledSerial: installHandledSerial) }
         .sheet(item: $detailTarget, onDismiss: {
             // The sheet is gone: now the confirm alert can present.
             if let addon = pendingFromSheet {
@@ -109,15 +112,19 @@ struct SourcesHubView: View {
         }
         .onChange(of: model.installOutcome) { _, outcome in
             guard let outcome else { return }
-            // The install sheet shows its own status line, so no toast while it is up.
+            installHandledSerial = AddonInstallSheet.serial(of: outcome)
+            // The install sheet's status modal says it, so no toast while it is up.
             if showInstall {
                 if case .installed = outcome { focusNewCardAfterInstall = true }
                 return
             }
             switch outcome {
-            case .installed(let name, _): showToast(String(localized: "Installed \(name)."))
+            case .installed(let name, _):
+                showToast(String(localized: "Installed \(name)."))
+                // The sheet was closed mid-install (Menu): it will not run `focusAfterInstall`.
+                focusNewestCard()
             // Fixed text only: the detailed message can embed the full manifest URL (with a
-            // debrid key), so it stays in the install sheet's status line.
+            // debrid key), so it stays in the install sheet's status modal.
             case .failed: showToast(String(localized: "Couldn't install that add-on."))
             }
         }
@@ -310,13 +317,20 @@ struct SourcesHubView: View {
         DispatchQueue.main.async { focusedControl = target.map { "card:" + $0 } ?? "action:install" }
     }
 
-    /// After the install sheet closes following a successful install: focus the new card (the
-    /// last one), else the Install action card.
+    /// After the install sheet closes following a successful install: focus the card of the add-on
+    /// that was installed, else the last card, else the Install action card.
     private func focusAfterInstall() {
         guard focusNewCardAfterInstall else { return }
         focusNewCardAfterInstall = false
+        focusNewestCard()
+    }
+
+    private func focusNewestCard() {
         DispatchQueue.main.async {
-            focusedControl = model.addons.last.map { "card:" + $0.manifestUrl } ?? "action:install"
+            let installed = model.lastInstalledManifestUrl.flatMap { url in
+                model.addons.first { AddonManifestURL.isSameManifest($0.manifestUrl, url) }
+            }
+            focusedControl = (installed ?? model.addons.last).map { "card:" + $0.manifestUrl } ?? "action:install"
         }
     }
 

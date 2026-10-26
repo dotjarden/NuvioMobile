@@ -101,4 +101,43 @@ final class AddonsHubUITests: XCTestCase {
         XCTAssertTrue(element(app, "addons_hub_root").exists, "the hub went away")
         pause(2)
     }
+
+    /// H3: the Install action card opens the install sheet with the URL field focused, and Menu
+    /// closes the sheet with focus back on the Install card. No URL is typed; nothing installs.
+    func testInstallSheetOpensAndCancels() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+                               "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
+        if chris.exists { DetailEntryRoute.selectChrisTile(self, app, timeout: 5) }
+        pause(10)
+
+        openTab(app, named: "Add-ons")
+        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
+        let install = element(app, "addons_hub_action_install")
+        XCTAssertTrue(install.waitForExistence(timeout: 5), "addons_hub_action_install missing")
+
+        remote.press(.down); pause(0.8)
+        if !moveFocus(.down, until: install, max: 3) {
+            if !moveFocus(.left, until: install, max: 3) { _ = moveFocus(.right, until: install, max: 3) }
+        }
+        XCTAssertTrue(install.hasFocus, "the Install action card never took focus; focused: \(focusDump(app))")
+        say("install card focused")
+        pause(2)
+
+        remote.press(.select); pause(1.5)
+        let field = element(app, "addons_hub_install_field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "the install sheet did not open; focused: \(focusDump(app))")
+        XCTAssertTrue(field.hasFocus, "the URL field does not hold focus; focused: \(focusDump(app))")
+        say("sheet open: \(focusDump(app))")
+        pause(2)
+
+        remote.press(.menu); pause(1.5)
+        XCTAssertFalse(element(app, "addons_hub_install_field").exists, "the sheet is still up after Menu")
+        XCTAssertTrue(install.exists && install.hasFocus, "focus did not return to the Install card; focused: \(focusDump(app))")
+        say("sheet closed: \(focusDump(app))")
+        pause(2)
+    }
 }

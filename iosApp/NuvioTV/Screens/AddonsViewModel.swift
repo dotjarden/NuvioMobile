@@ -66,6 +66,9 @@ final class AddonsViewModel: ObservableObject {
     /// row still changes something the hub can observe.
     @Published private(set) var refreshOutcomeSerial = 0
     @Published private(set) var installOutcome: InstallOutcome?
+    /// The normalized manifest URL of the last successful install, so the hub can focus that card.
+    /// Cleared by `start()`.
+    @Published private(set) var lastInstalledManifestUrl: String?
     private var installSerial = 0
     @Published private(set) var isInitialized = false
     @Published private(set) var isReadOnly = false
@@ -75,6 +78,7 @@ final class AddonsViewModel: ObservableObject {
 
     func start() {
         guard watcher == nil else { return }
+        lastInstalledManifestUrl = nil
         let readOnly = AddonRepository.shared.isReadOnly()
         if isReadOnly != readOnly { isReadOnly = readOnly }
         watcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
@@ -141,6 +145,7 @@ final class AddonsViewModel: ObservableObject {
                     self.publishInstallFailure(String(localized: "Couldn't install: \(failure.message)"))
                 } else if let success = result as? AddAddonResultSuccess {
                     self.installSerial += 1
+                    self.lastInstalledManifestUrl = url
                     self.statusMessage = String(localized: "Installed \(success.manifest.name).")
                     self.installOutcome = .installed(name: success.manifest.name, serial: self.installSerial)
                 } else {
