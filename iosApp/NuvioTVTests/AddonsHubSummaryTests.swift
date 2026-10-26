@@ -202,4 +202,66 @@ final class AddonsHubSummaryTests: XCTestCase {
         XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: failed), .failed(message: "nope"))
         XCTAssertEqual(AddonInstallSheet.installPhase(isInstalling: false, outcome: nil), .idle)
     }
+
+    /// H4: collections keep their index; the rest sort stably by add-on position, matched by the
+    /// manifest id in the key (`<manifest.id>:<type>:<catalogId>`), else by title.
+    func testCatalogOrderFollowsAddonsAndPinsCollections() {
+        func item(_ key: String, addon: String, collection: Bool = false) -> HomeCatalogSettingsItem {
+            HomeCatalogSettingsItem(
+                key: key, defaultTitle: key, addonName: addon, customTitle: "", enabled: true,
+                heroSourceEnabled: true, order: 0, isCollection: collection, collectionId: nil, isPinnedToTop: false
+            )
+        }
+        let items = [
+            item("b:movie:b1", addon: "B"), item("a:movie:a1", addon: "A"), item("a:series:a2", addon: "A"),
+            item("collection_shelf", addon: "Collections", collection: true), item("b:movie:b2", addon: "B"),
+        ]
+        XCTAssertEqual(
+            SettingsViewModel.catalogOrderFollowingAddons(items: items, addonIds: ["a", "b"], addonTitles: ["A", "B"]),
+            ["a:movie:a1", "a:series:a2", "b:movie:b1", "collection_shelf", "b:movie:b2"]
+        )
+        // Two add-ons sharing a title: the id still tells them apart.
+        let twins = [item("b:movie:x", addon: "Same"), item("a:movie:y", addon: "Same")]
+        XCTAssertEqual(
+            SettingsViewModel.catalogOrderFollowingAddons(items: twins, addonIds: ["a", "b"], addonTitles: ["Same", "Same"]),
+            ["a:movie:y", "b:movie:x"]
+        )
+        // No id match: falls back to the title; unknown add-ons go last.
+        let legacy = [item("zzz", addon: "Gone"), item("k", addon: "B"), item("j", addon: "A")]
+        XCTAssertEqual(
+            SettingsViewModel.catalogOrderFollowingAddons(items: legacy, addonIds: [], addonTitles: ["A", "B"]),
+            ["j", "k", "zzz"]
+        )
+    }
+
+    func testIdPrefixDropsTypeAndCatalogId() {
+        XCTAssertEqual(SettingsViewModel.idPrefix(of: "com.x.addon:movie:top"), "com.x.addon")
+        XCTAssertEqual(SettingsViewModel.idPrefix(of: "a:b:movie:top"), "a:b")
+        XCTAssertNil(SettingsViewModel.idPrefix(of: "collection_shelf"))
+    }
+
+    /// Where focus lands after a move, from the list after the move.
+    func testMoveLanding() {
+        let none = Set<String>()
+        // Row 0 moved down in [a b c]: now [b a c], a sits at 1 and can go further down.
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "a", direction: 1, orderedKeys: ["b", "a", "c"], pinnedKeys: none), "down:a")
+        // Last row moved down: [b c a], a is at the end.
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "a", direction: 1, orderedKeys: ["b", "c", "a"], pinnedKeys: none), "card:a")
+        // A middle row moved up in [a b c d]: [a c b d], c at 1 can still go up.
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "c", direction: -1, orderedKeys: ["a", "c", "b", "d"], pinnedKeys: none), "up:c")
+        // Moved up to the top: [c a b d].
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "c", direction: -1, orderedKeys: ["c", "a", "b", "d"], pinnedKeys: none), "card:c")
+        // Up to just under a pinned collection: it cannot go further.
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "c", direction: -1, orderedKeys: ["p", "c", "a"], pinnedKeys: ["p"]), "card:c")
+        // Gone from the list: the name area.
+        XCTAssertEqual(CatalogOrderView.moveLanding(key: "z", direction: 1, orderedKeys: ["a"], pinnedKeys: none), "card:z")
+    }
+
+    func testMovesToReachAFinalOrder() {
+        let moves = SettingsViewModel.movesToReach(current: ["c", "a", "b"], desired: ["a", "b", "c"])
+        XCTAssertEqual(moves.map(\.from), [1, 2])
+        XCTAssertEqual(moves.map(\.to), [0, 1])
+        XCTAssertTrue(SettingsViewModel.movesToReach(current: ["a", "b"], desired: ["a", "b"]).isEmpty)
+        XCTAssertTrue(SettingsViewModel.movesToReach(current: ["a", "b"], desired: ["a", "x"]).isEmpty)
+    }
 }

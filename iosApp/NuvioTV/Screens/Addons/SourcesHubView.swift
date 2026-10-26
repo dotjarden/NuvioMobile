@@ -1,8 +1,7 @@
 import SharedCore
 import SwiftUI
 
-/// Where a summary card pushes. `catalogs` is the Home Screen pane for now (H4 swaps in the
-/// catalog order page).
+/// Where a summary card pushes. `catalogs` is the catalog order page.
 enum HubRoute: Hashable {
     case catalogs, services, plugins
 }
@@ -159,7 +158,7 @@ struct SourcesHubView: View {
                 value: Text(String(localized: "\(summary.catalogsOn) of \(summary.catalogsTotal) on Home")),
                 id: "addons_hub_summary_catalogs"
             ) {
-                path.append(.catalogs) // H4: swap for the catalog order page.
+                path.append(.catalogs)
             }
             HubCard(
                 title: String(localized: "Debrid"),
@@ -339,8 +338,8 @@ struct SourcesHubView: View {
     @ViewBuilder
     private func destination(_ route: HubRoute) -> some View {
         switch route {
-        case .catalogs: // H4: the catalog order page replaces this.
-            SettingsPaneScaffold(category: .homeScreen) { HomeScreenSettingsPane(model: settings) }
+        case .catalogs:
+            CatalogOrderView(model: settings)
         case .services:
             SettingsPaneScaffold(category: .services) {
                 ServicesSettingsPane(

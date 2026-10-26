@@ -77,9 +77,9 @@ struct HomeScreenSettingsPane: View {
 
     /// 2026-08-30 fix: replaces the `isExpanded` that used to live inside the now-deleted
     /// `HeroSourcesGroup`/`HomeCatalogsGroup`. Plain `@State`, same behavior as before — no
-    /// persistence, so both sections start collapsed on every (re)visit to Settings.
+    /// persistence, so Hero Sources starts collapsed on every (re)visit to Settings (the catalog list moved
+    /// to the Add-ons hub).
     @State private var heroSourcesExpanded = false
-    @State private var catalogsExpanded = false
 
     /// Home Stage & Strip (H1): the layout this pane is configuring, resolved through
     /// `HomeLayout.resolve` so an unset or unknown stored value reads as Stage, the same as every
@@ -276,33 +276,14 @@ struct HomeScreenSettingsPane: View {
                     descriptionID: .homeCatalogType
                 )
 
-                // Focus note (2026-08-30): same hoist as Hero Sources above — "Catalogs" is a
-                // header row followed, only while expanded, by one `CatalogSettingRow` per
-                // catalog, each its own `SettingsSection` child / List row. This is the group the
-                // device video (2026-08-29) caught rendering blank: `HomeCatalogsGroup` put its
-                // rows' text and reorder chips straight into a shared List row, where none of them
-                // ever got the system's focused-row label inversion, and (independently) none of
-                // them could ever actually receive focus for the reason in the file header
-                // comment. `CatalogSettingRow` is also reshaped below — see its own comment — so a
-                // single row can stay reachable without needing three separate focus targets.
-                SettingsDisclosureRow(
+                // Add-ons hub C, H4 (D3): the catalog list moved to the Add-ons hub; the page is the
+                // same `CatalogOrderView`, pushed from here.
+                SettingsLinkRow(
                     title: String(localized: "Catalogs"),
-                    subtitle: catalogsSummary,
-                    isExpanded: catalogsExpanded && !model.catalogs.isEmpty,
+                    subtitle: String(localized: "\(catalogsSummary) \u{00B7} managed in Add-ons"),
                     descriptionID: .homeCatalogs
                 ) {
-                    catalogsExpanded.toggle()
-                }
-
-                if catalogsExpanded && !model.catalogs.isEmpty {
-                    ForEach(model.catalogs, id: \.key) { item in
-                        CatalogSettingRow(
-                            item: item,
-                            onToggle: { model.toggleCatalog(item) },
-                            onUp: { model.moveUp(item) },
-                            onDown: { model.moveDown(item) }
-                        )
-                    }
+                    CatalogOrderView(model: model)
                 }
             }
         }
@@ -315,10 +296,7 @@ struct HomeScreenSettingsPane: View {
             if !enabled { heroSourcesExpanded = false }
         }
         .onChange(of: model.catalogs.isEmpty) { _, isEmpty in
-            if isEmpty {
-                heroSourcesExpanded = false
-                catalogsExpanded = false
-            }
+            if isEmpty { heroSourcesExpanded = false }
         }
         // The Hero Sources group can also vanish alone: every remaining catalog being a
         // collection removes just that header while the pane and Catalogs group stay.
@@ -661,57 +639,5 @@ private struct HeroSourceRowLabel: View {
             // Never dim what the platter is currently lighting: on the near-white focus platter a
             // 0.4-opacity label is the "vanishes into the platter" failure (BUG-58/65).
             .opacity(dimmed && !isFocused ? Self.inertRowOpacity : 1)
-    }
-}
-
-/// A Home-catalog row: title + add-on, with an enable/disable indicator and reorder via long-press
-/// context menu.
-///
-/// 2026-08-30 fix, full redesign: the previous shape put three independent focus targets (an
-/// enable toggle chip plus up/down reorder chips) inside one row. Hoisting `CatalogSettingRow`
-/// itself out to be its own List row (see the call site above) fixes reachability for the row as a
-/// whole, but three chips *within* one row would just recreate the identical one-focus-target trap
-/// one level down — a List row still exposes only one focus target, so at most one of those three
-/// chips could ever be focused. Rather than hoist the chips too (which would triple the row count
-/// and make "enable" and "reorder" show up as separate list entries), the whole row is now ONE
-/// `Button` whose primary action is the enable toggle, with reorder moved to a long-press
-/// `.contextMenu` (same pattern as the Library tab's remove-from-library menu, see
-/// `LibraryView.swift`). Down/up navigation between catalogs — the reorder gesture people actually
-/// reach for while scanning a list — now just works, and Select+hold reaches the rarer reorder
-/// action without needing its own focus target.
-private struct CatalogSettingRow: View {
-    let item: HomeCatalogSettingsItem
-    let onToggle: () -> Void
-    let onUp: () -> Void
-    let onDown: () -> Void
-
-    var body: some View {
-        Button(action: onToggle) {
-            // D11 V1/V2 (Gate 2 sim pass): the kit row chrome (rest platter, kit insets) and the
-            // kit's capsule switch glyph in place of the old checkmark circle, so an expanded
-            // catalog reads like every toggle row around it. Still one Button (the reorder
-            // context menu needs it); the glyph is decorative, state stays in the accessibility
-            // value below.
-            SettingsRowChrome {
-                SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName, descriptionID: .homeCatalog)
-                    .opacity(item.enabled ? 1 : 0.55)
-            } trailing: {
-                SettingsSwitchGlyph(isOn: item.enabled)
-            }
-        }
-        .contextMenu {
-            Button {
-                onUp()
-            } label: {
-                Label(String(localized: "Move Up"), systemImage: "chevron.up")
-            }
-            Button {
-                onDown()
-            } label: {
-                Label(String(localized: "Move Down"), systemImage: "chevron.down")
-            }
-        }
-        .accessibilityLabel(item.displayTitle)
-        .accessibilityValue(item.enabled ? Text("Enabled") : Text("Disabled"))
     }
 }

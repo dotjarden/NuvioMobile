@@ -106,7 +106,6 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeTrailerStartDelayStage = "home.trailerStartDelayStage"
     case homeCatalogType = "home.catalogType"
     case homeCatalogs = "home.catalogs"
-    case homeCatalog = "home.catalog"
 
     // MARK: Detail Page (names follow DetailSettingsKeys; the pane itself is W2-B)
     case detailLayout = "detail.layout"
@@ -315,7 +314,6 @@ enum SettingsDescriptions {
         case .homeTrailerStartDelayStage: return LocalizedStringResource("Sets how long a trailer preview waits before it starts. Automatic waits until the row stops moving, then one second. Default: Automatic.")
         case .homeCatalogType: return LocalizedStringResource("Adds the type to row names, so a row reads Popular - Movies instead of just Popular. On by default.")
         case .homeCatalogs: return LocalizedStringResource("Opens the list of catalogs that make up your Home rows. Switch each on or off and move them up or down to set the order.")
-        case .homeCatalog: return LocalizedStringResource("Turns this row on or off on Home. Use the arrows to move it up or down.")
 
         // Detail Page
         case .detailLayout: return LocalizedStringResource("Cinematic puts the title over a full-width backdrop. Classic keeps the earlier page layout. Default: Cinematic.")

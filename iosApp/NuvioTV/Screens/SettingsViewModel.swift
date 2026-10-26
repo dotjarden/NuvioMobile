@@ -168,6 +168,14 @@ final class SettingsViewModel: ObservableObject {
     private var episodeShuffleWatcher: FlowWatcher?
     private var debridSourcesWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
+    /// Add-ons hub C, H4: the display titles of the enabled add-ons in installed order, the same
+    /// string the catalog items carry as `addonName` (`HomeCatalogDefinitions`). Set wherever
+    /// `enabledAddons` is set.
+    @Published private(set) var addonOrder: [String] = []
+    /// The same enabled add-ons' manifest ids, in the same order: catalog keys are
+    /// `"<manifest.id>:<type>:<catalogId>"`, so this is the reliable match (titles can repeat or
+    /// be renamed by the user).
+    @Published private(set) var addonIds: [String] = []
 
     func start() {
         guard playerWatcher == nil else { return }
@@ -292,6 +300,8 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? AddonsUiState else { return }
             let enabled = AddonModelsKt.enabledAddons(state.addons)
             self.assign(\.enabledAddons, enabled)
+            self.assign(\.addonOrder, enabled.map(\.displayTitle))
+            self.assign(\.addonIds, enabled.compactMap { $0.manifest?.id })
             // FEAT-10: keep the Search Sources rows in step with the installed addons.
             self.assign(\.searchSourceOptions, SearchRepository.shared.searchCatalogOptions(addons: enabled))
             // "Home Rows blank" bug (docs/steven-batch-plan-2026-08-29.md, "data clobber"):
@@ -844,6 +854,74 @@ final class SettingsViewModel: ObservableObject {
     func moveDown(_ item: HomeCatalogSettingsItem) {
         HomeCatalogSettingsRepository.shared.moveDown(key: item.key)
         refreshHome()
+    }
+
+    /// Add-ons hub C, H4: one-shot "Match add-ons order". Reorders the catalogs to follow the
+    /// installed add-ons' order through `moveByIndex`, which indexes ALL ordered keys, collections
+    /// included, so the plan is computed over every key and never moves a collection. Reads the
+    /// repository's current items (as `move` does), else this model's. Returns the number of moves
+    /// made (0 when Home already follows the add-ons).
+    @discardableResult
+    func matchCatalogsToAddonOrder() -> Int {
+        let repoItems = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? []
+        let items = repoItems.isEmpty ? catalogs : repoItems
+        let current = items.map(\.key)
+        let desired = Self.catalogOrderFollowingAddons(items: items, addonIds: addonIds, addonTitles: addonOrder)
+        let moves = Self.movesToReach(current: current, desired: desired)
+        for (from, to) in moves {
+            HomeCatalogSettingsRepository.shared.moveByIndex(fromIndex: Int32(from), toIndex: Int32(to))
+        }
+        if !moves.isEmpty { refreshHome() }
+        return moves.count
+    }
+
+    /// The manifest id at the front of a catalog key `"<manifest.id>:<type>:<catalogId>"`: the key
+    /// minus its last two components. nil for keys that do not have that shape (collections).
+    nonisolated static func idPrefix(of key: String) -> String? {
+        let parts = key.components(separatedBy: ":")
+        guard parts.count >= 3 else { return nil }
+        return parts.dropLast(2).joined(separator: ":")
+    }
+
+    /// The keys in the order "follow the add-ons" wants: collections keep their current positions;
+    /// the other items are stably sorted by their add-on's position (matched by manifest id, else
+    /// by title; unknown add-ons last, ties by current order).
+    nonisolated static func catalogOrderFollowingAddons(
+        items: [HomeCatalogSettingsItem], addonIds: [String], addonTitles: [String]
+    ) -> [String] {
+        func rank(_ item: HomeCatalogSettingsItem) -> Int {
+            if let id = idPrefix(of: item.key), let byId = addonIds.firstIndex(of: id) { return byId }
+            return addonTitles.firstIndex(of: item.addonName) ?? Int.max
+        }
+        let movable = items.enumerated()
+            .filter { !$0.element.isCollection }
+            .sorted { lhs, rhs in
+                let l = rank(lhs.element)
+                let r = rank(rhs.element)
+                return l != r ? l < r : lhs.offset < rhs.offset
+            }
+            .map(\.element.key)
+        var queue = movable[...]
+        return items.map { item in
+            if item.isCollection { return item.key }
+            return queue.popFirst() ?? item.key
+        }
+    }
+
+    /// The `moveByIndex(from, to)` steps that turn `current` into `desired`: a selection pass that,
+    /// for each index, moves the wanted key from where it now sits. `[]` when equal or when the key
+    /// sets differ.
+    nonisolated static func movesToReach(current: [String], desired: [String]) -> [(from: Int, to: Int)] {
+        guard current != desired, current.count == desired.count, Set(current) == Set(desired),
+              Set(current).count == current.count else { return [] }
+        var working = current
+        var moves: [(from: Int, to: Int)] = []
+        for index in desired.indices where working[index] != desired[index] {
+            guard let from = working.firstIndex(of: desired[index]) else { continue }
+            working.insert(working.remove(at: from), at: index)
+            moves.append((from: from, to: index))
+        }
+        return moves
     }
 
     /// Re-apply the new catalog preferences to Home so the change is visible when the user returns.

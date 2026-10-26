@@ -140,4 +140,68 @@ final class AddonsHubUITests: XCTestCase {
         say("sheet closed: \(focusDump(app))")
         pause(2)
     }
+
+    /// H4: the Catalogs summary card opens the catalogs page; the first row's name area, On/Off,
+    /// Up (disabled on the first row) and Down are reachable by Right; Menu returns to the hub with the
+    /// Catalogs card focused. Never Select on a control: nothing changes on the fixture.
+    func testCatalogsPageOpensFromTheHub() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+                               "-debug.trailerForceNoTrailer", "YES", "-detail_trailer_autoplay", "NO"]
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared")
+        if chris.exists { DetailEntryRoute.selectChrisTile(self, app, timeout: 5) }
+        pause(10)
+
+        openTab(app, named: "Add-ons")
+        XCTAssertTrue(element(app, "addons_hub_root").waitForExistence(timeout: 10), "addons_hub_root never appeared; focused: \(focusDump(app))")
+        let card = element(app, "addons_hub_summary_catalogs")
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "addons_hub_summary_catalogs missing")
+        // Run 1: the page's default focus can already sit on the Add-ons summary card after the tab
+        // Select, so an unconditional Down fell through to the action row. Go Down only while no
+        // summary card has focus, then Right along the row.
+        let summaryIds = ["addons_hub_summary_addons", "addons_hub_summary_catalogs", "addons_hub_summary_debrid", "addons_hub_summary_plugins"]
+        for _ in 0..<4 where !summaryIds.contains(where: { element(app, $0).hasFocus }) {
+            remote.press(.down); pause(0.8)
+        }
+        if !moveFocus(.right, until: card, max: 3) { _ = moveFocus(.left, until: card, max: 4) }
+        XCTAssertTrue(card.hasFocus, "the Catalogs summary card never took focus; focused: \(focusDump(app))")
+        pause(1)
+
+        remote.press(.select); pause(1.5)
+        XCTAssertTrue(element(app, "addons_hub_catalogs_root").waitForExistence(timeout: 5), "the catalogs page did not open; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "addons_hub_catalogs_title").exists, "catalogs title missing")
+        let row0 = element(app, "addons_hub_catalog_0")
+        XCTAssertTrue(row0.waitForExistence(timeout: 10), "no addons_hub_catalog_0 on the fixture; empty=\(element(app, "addons_hub_catalogs_empty").exists)")
+        XCTAssertTrue(moveFocus(.down, until: row0, max: 4), "catalog row 0 never took focus; focused: \(focusDump(app))")
+        let rowCount = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier MATCHES %@", "addons_hub_catalog_[0-9]+")).count
+        say("catalogs page shows \(rowCount) rows")
+        say("catalog row 0 focused")
+        pause(1.5)
+
+        remote.press(.right); pause(0.6)
+        let toggle = element(app, "addons_hub_catalog_0_toggle")
+        XCTAssertTrue(toggle.exists && toggle.hasFocus, "the toggle never took focus; focused: \(focusDump(app))")
+        remote.press(.right); pause(0.6)
+        let up = element(app, "addons_hub_catalog_0_up")
+        let down = element(app, "addons_hub_catalog_0_down")
+        XCTAssertTrue(up.exists, "up control missing")
+        XCTAssertFalse(up.isEnabled, "up should be disabled on the first row")
+        XCTAssertTrue(down.exists, "down control missing")
+        if down.isEnabled {
+            XCTAssertTrue(down.hasFocus, "down never took focus; focused: \(focusDump(app))")
+        } else {
+            XCTAssertTrue(toggle.hasFocus, "focus left the toggle on a one-catalog fixture; focused: \(focusDump(app))")
+        }
+        pause(1.5)
+
+        remote.press(.menu); pause(1.5)
+        XCTAssertFalse(element(app, "addons_hub_catalogs_root").exists, "the catalogs page is still up after Menu")
+        XCTAssertTrue(element(app, "addons_hub_root").exists, "the hub is not showing")
+        XCTAssertTrue(card.exists && card.hasFocus, "focus did not return to the Catalogs card; focused: \(focusDump(app))")
+        say("back on the hub: \(focusDump(app))")
+        pause(2)
+    }
 }
