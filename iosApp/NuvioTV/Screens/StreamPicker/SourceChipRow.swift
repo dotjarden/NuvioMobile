@@ -146,7 +146,10 @@ struct SourceChipRow: View {
 
     /// "Comet · 6"; the count is left out while the add-on is still loading.
     nonisolated static func label(for chip: SourceChip) -> String {
-        guard !chip.isLoading else { return chip.name }
+        // P5 review r1 Q2: no count while loading, and none on a failed chip with nothing listable
+        // (it reads "failed" to VoiceOver and sits on the error tint for the linger); "Comet · 0"
+        // stays for an add-on that answered with nothing.
+        guard !chip.isLoading, !(chip.hasError && chip.count == 0) else { return chip.name }
         return "\(chip.name) \u{00B7} \(chip.count)"
     }
 

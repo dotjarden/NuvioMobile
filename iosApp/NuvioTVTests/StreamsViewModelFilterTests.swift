@@ -117,4 +117,43 @@ final class StreamsViewModelFilterTests: XCTestCase {
         XCTAssertNil(vm.emptyReason)
         XCTAssertTrue(vm.isLoading)
     }
+
+    // MARK: - P5: chip labels and order
+
+    func testChipLabelsFollowTheFanOut() {
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        vm.apply(state(fanOut(loading: true), filter: nil, loading: true))
+
+        // The loading chip leaves its count out, and so does a failed chip with nothing listable
+        // (review r1 Q2: "AIO · 0" beside a spoken "failed" was wrong; it reads "AIO" on its
+        // error tint for the linger).
+        XCTAssertEqual(vm.sourceChips.map(SourceChipRow.label(for:)),
+                       ["Comet \u{00B7} 2", "Torrentio", "AIO"])
+        // `chipsToDrop` is pure: it names the failed empty chip in either state. The settle gate
+        // (drop only once the fan-out has finished) is `StreamPickerView.scheduleErrorChipDrop`.
+        XCTAssertEqual(SourceChipRow.chipsToDrop(vm.sourceChips), ["addon:aio"])
+
+        vm.apply(state(fanOut(), filter: nil, loading: false))
+
+        XCTAssertEqual(vm.sourceChips.map(SourceChipRow.label(for:)),
+                       ["Comet \u{00B7} 2", "Torrentio \u{00B7} 1", "AIO"])
+        XCTAssertEqual(SourceChipRow.chipsToDrop(vm.sourceChips), ["addon:aio"])
+    }
+
+    func testChipOrderIsGroupOrder() {
+        let torrentio = group("Torrentio", id: "addon:torrentio", streams: [
+            stream("T1", url: "https://cdn.example.com/t1.mkv", addonId: "addon:torrentio"),
+        ])
+        let aio = group("AIO", id: "addon:aio", streams: [], error: "HTTP 502")
+        let comet = group("Comet", id: "addon:comet", streams: [
+            stream("C1", url: "https://cdn.example.com/c1.mkv", addonId: "addon:comet"),
+        ])
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        // Not alphabetical (review r1 P2), so a name sort could not pass this.
+        vm.apply(state([torrentio, aio, comet], filter: nil, loading: false))
+
+        XCTAssertEqual(vm.sourceChips.map(\.id), ["addon:torrentio", "addon:aio", "addon:comet"])
+        // Under "All" only the listable groups are listed, in that same order.
+        XCTAssertEqual(vm.groups.map(\.id), ["addon:torrentio", "addon:comet"])
+    }
 }

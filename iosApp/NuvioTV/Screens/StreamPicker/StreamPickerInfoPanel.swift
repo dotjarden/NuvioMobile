@@ -77,6 +77,8 @@ struct StreamPickerInfoPanel: View {
         .padding(.leading, Theme.Spacing.screen)
         .padding(.vertical, Theme.Spacing.screen)
         .padding(.trailing, Theme.Spacing.lg)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("stream_picker_info_panel")
     }
 
     /// Episode: "S1 · E3 · Double Cross · 45 min" (marker and name from
