@@ -551,6 +551,9 @@ object AddonRepository {
         val ctx = AddonProfileProvider.context
         return ctx.activeProfileIndex != null && ctx.activeProfileIndex != 1 && ctx.usesPrimaryAddons
     }
+
+    /** tvOS Add-ons hub: a secondary profile that uses the primary profile's add-ons cannot add, move, enable or remove them; the hub greys its controls. */
+    fun isReadOnly(): Boolean = isUsingPrimaryAddonsFromSecondaryProfile()
 }
 
 private fun ManagedAddon?.toPendingAddon(

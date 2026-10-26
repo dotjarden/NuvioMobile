@@ -6,17 +6,82 @@ import SharedCore
 /// enabled. Backed by the shared `AddonRepository` (NSUserDefaults-persisted on tvOS).
 @MainActor
 final class AddonsViewModel: ObservableObject {
+
+    /// Add-ons hub C, H1: the header counts (`toOverview`): installed and active (enabled with a
+    /// loaded manifest). There is deliberately no catalog count here: `AddonOverview.totalCatalogs`
+    /// counts every catalog of every enabled add-on including search-only ones, which is not what
+    /// the hub shows; the Catalogs card reads `HubSummary.catalogsOn / catalogsTotal` (the Home items).
+    nonisolated struct HubOverview: Equatable {
+        var total: Int
+        var active: Int
+        static let empty = HubOverview(total: 0, active: 0)
+    }
+
+    /// Add-ons hub C, H1: the hub's summary line, composed from the five stores the hub draws on.
+    nonisolated struct HubSummary: Equatable {
+        let addonsInstalled: Int
+        let addonsOn: Int
+        let catalogsOn: Int
+        let catalogsTotal: Int
+        /// Display names of the connected debrid providers.
+        let debridConnected: [String]
+        /// nil = plugins are disabled or unavailable.
+        let plugins: PluginSummary?
+    }
+
+    nonisolated struct PluginSummary: Equatable {
+        let repositories: Int
+        let providers: Int
+    }
+
+    /// What a finished refresh did: add-ons that loaded versus failed (error set, or gone).
+    nonisolated struct RefreshOutcome: Equatable {
+        let succeeded: Int
+        let failed: Int
+    }
+
+    /// Card state, in priority order: refreshing, unavailable, disabled, active.
+    nonisolated enum AddonStatus: Equatable {
+        case active, disabled, refreshing, unavailable
+    }
+
     @Published private(set) var addons: [ManagedAddon] = []
     @Published private(set) var statusMessage: String?
     @Published private(set) var isInstalling = false
+    @Published private(set) var overview = HubOverview.empty
+    @Published private(set) var isRefreshingAny = false
+    /// When a refresh this model started last loaded at least one add-on. Per session, by design:
+    /// it is not persisted and a refresh the repository ran by itself never sets it.
+    @Published private(set) var lastRefreshedAt: Date?
+    @Published private(set) var lastRefreshOutcome: RefreshOutcome?
+    @Published private(set) var isInitialized = false
+    @Published private(set) var isReadOnly = false
 
     private var watcher: FlowWatcher?
+    private var refreshWait: Task<Void, Never>?
 
     func start() {
         guard watcher == nil else { return }
+        let readOnly = AddonRepository.shared.isReadOnly()
+        if isReadOnly != readOnly { isReadOnly = readOnly }
         watcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? AddonsUiState else { return }
-            self.addons = state.addons
+            if state.addons != self.addons { self.addons = state.addons }
+            let summary = AddonModelsKt.toOverview(state.addons)
+            let overview = HubOverview(total: Int(summary.totalAddons), active: Int(summary.activeAddons))
+            if overview != self.overview { self.overview = overview }
+            if self.isInitialized != state.isInitialized { self.isInitialized = state.isInitialized }
+            let readOnly = AddonRepository.shared.isReadOnly()
+            if self.isReadOnly != readOnly { self.isReadOnly = readOnly }
+            // Spinner only; the "Updated" stamp comes from `refreshWait`, never from here.
+            let anyRefreshing = state.addons.contains { $0.isRefreshing }
+            // Review r2: while this model's own refresh wait runs, only IT clears the spinner (the
+            // watcher can see the settled state up to 250 ms before the outcome is published).
+            if anyRefreshing, !self.isRefreshingAny {
+                self.isRefreshingAny = true
+            } else if !anyRefreshing, self.isRefreshingAny, self.refreshWait == nil {
+                self.isRefreshingAny = false
+            }
         }
         AddonRepository.shared.initialize()
     }
@@ -24,11 +89,32 @@ final class AddonsViewModel: ObservableObject {
     func stop() {
         watcher?.cancel()
         watcher = nil
+        refreshWait?.cancel()
+        refreshWait = nil
+        isRefreshingAny = false
     }
 
     func install(_ rawUrl: String) {
-        let url = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !url.isEmpty else { return }
+        let url: String
+        do {
+            url = try AddonManifestURL.normalize(rawUrl)
+        } catch let failure as AddonManifestURL.Failure {
+            // The typed throw is not inferred through a bare `catch` on this toolchain.
+            switch failure {
+            case .empty:
+                return
+            case .unsupportedScheme:
+                statusMessage = String(localized: "Enter a valid addon URL (http or https).")
+                return
+            }
+        } catch {
+            statusMessage = String(localized: "Enter a valid addon URL (http or https).")
+            return
+        }
+        if addons.contains(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) }) {
+            statusMessage = String(localized: "That addon is already installed.")
+            return
+        }
         isInstalling = true
         statusMessage = nil
 
@@ -57,13 +143,175 @@ final class AddonsViewModel: ObservableObject {
         AddonRepository.shared.setAddonEnabled(manifestUrl: addon.manifestUrl, enabled: enabled)
     }
 
+    /// Hub C, H1: moves the add-on with `manifestUrl` up (`delta < 0`) or down; a move off either
+    /// end is a no-op the UI disables rather than clamps. The index comes from the repository's
+    /// CURRENT list, not this model's snapshot, so two quick presses never act on a stale index.
+    func move(manifestUrl: String, by delta: Int) {
+        let current = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
+        guard let index = current.firstIndex(where: { $0.manifestUrl == manifestUrl }),
+              let target = Self.moveTarget(index: index, by: delta, count: current.count) else { return }
+        AddonRepository.shared.moveAddon(fromIndex: Int32(index), toIndex: Int32(target))
+    }
+
+    /// Re-fetches every enabled add-on's manifest.
+    func refreshAll() {
+        AddonRepository.shared.refreshAll()
+        trackRefresh()
+    }
+
+    /// Re-fetches one add-on's manifest, bypassing the cache.
+    func refresh(manifestUrl: String) {
+        AddonRepository.shared.refreshAddon(manifestUrl: manifestUrl, forceRefresh: true)
+        trackRefresh()
+    }
+
+    /// The repository marks `isRefreshing` synchronously before it launches each fetch, so the
+    /// add-ons refreshing right after the call are exactly the ones it started. (Watching the flow
+    /// instead can miss a fast refresh: the StateFlow conflates and skips values equal to the last
+    /// one a collector saw.) None refreshing means nothing started, so there is no stamp. Otherwise
+    /// one task polls the live list every 250 ms, up to 60 s, until they all settle.
+    private func trackRefresh() {
+        let started = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
+        let refreshedUrls = Set(started.filter { $0.isRefreshing }.map { $0.manifestUrl })
+        guard !refreshedUrls.isEmpty else { return }
+        isRefreshingAny = true
+        refreshWait?.cancel()
+        refreshWait = Task { @MainActor [weak self] in
+            var latest = started
+            for _ in 0..<240 {
+                latest = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? []
+                if !latest.contains(where: { refreshedUrls.contains($0.manifestUrl) && $0.isRefreshing }) { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if Task.isCancelled { return }
+            }
+            guard !Task.isCancelled, let self else { return }
+            let outcome = Self.refreshOutcome(addons: latest, refreshedUrls: refreshedUrls)
+            self.lastRefreshOutcome = outcome
+            if outcome.succeeded > 0 { self.lastRefreshedAt = Date() }
+            self.isRefreshingAny = false
+        }
+    }
+
     /// Display name: manifest name once loaded, otherwise the URL.
     func displayName(_ addon: ManagedAddon) -> String {
-        if let name = addon.manifest?.name, !name.isEmpty { return name }
-        return addon.manifestUrl
+        Self.displayTitle(addon)
+    }
+
+    /// Hub C, H1: the shared `displayTitle` (user-set name, else manifest name, else the URL's
+    /// last path segment).
+    nonisolated static func displayTitle(_ addon: ManagedAddon) -> String {
+        addon.displayTitle
+    }
+
+    /// Hub C, H1: the destination index for moving the card at `index` by `delta`, or nil when
+    /// `index` is out of range, `delta` is 0, or the target would leave `0..<count`.
+    nonisolated static func moveTarget(index: Int, by delta: Int, count: Int) -> Int? {
+        guard index >= 0, index < count, delta != 0 else { return nil }
+        let target = index + delta
+        guard target >= 0, target < count else { return nil }
+        return target
+    }
+
+    /// Hub C, H1: pure composition of the hub's summary line. Collections are not catalogs, so
+    /// only `!isCollection` items count; `addonsOn` counts `isActive` (enabled with a manifest).
+    nonisolated static func summary(
+        addons: [ManagedAddon],
+        catalogs: [HomeCatalogSettingsItem],
+        debridConnectedNames: [String],
+        pluginsEnabled: Bool,
+        pluginRepositories: Int,
+        pluginProviders: Int
+    ) -> HubSummary {
+        let plain = catalogs.filter { !$0.isCollection }
+        return HubSummary(
+            addonsInstalled: addons.count,
+            addonsOn: addons.filter { $0.isActive }.count,
+            catalogsOn: plain.filter { $0.enabled }.count,
+            catalogsTotal: plain.count,
+            debridConnected: debridConnectedNames,
+            plugins: pluginsEnabled
+                ? PluginSummary(repositories: pluginRepositories, providers: pluginProviders)
+                : nil
+        )
+    }
+
+    /// Hub C, H1: per refreshed URL, failed when it has an `errorMessage` or left the list,
+    /// succeeded otherwise.
+    nonisolated static func refreshOutcome(addons: [ManagedAddon], refreshedUrls: Set<String>) -> RefreshOutcome {
+        var succeeded = 0
+        var failed = 0
+        for url in refreshedUrls {
+            // Still refreshing when the wait gave up (the 60 s cap) is not a success either.
+            if let addon = addons.first(where: { $0.manifestUrl == url }), addon.errorMessage == nil, !addon.isRefreshing {
+                succeeded += 1
+            } else {
+                failed += 1
+            }
+        }
+        return RefreshOutcome(succeeded: succeeded, failed: failed)
+    }
+
+    /// Hub C, H2: card state. Order matters: refreshing, then unavailable (error and no manifest),
+    /// then disabled, else active.
+    nonisolated static func status(of addon: ManagedAddon) -> AddonStatus {
+        if addon.isRefreshing { return .refreshing }
+        if addon.errorMessage != nil && addon.manifest == nil { return .unavailable }
+        if !addon.enabled { return .disabled }
+        return .active
+    }
+
+    /// Hub C, H2: the host only (no scheme, userinfo, port, path or query), so a keyed URL never
+    /// reaches a card.
+    nonisolated static func host(of manifestUrl: String) -> String {
+        var rest = Substring(manifestUrl)
+        // Review r2: only a `://` whose colon comes before the first `/`, `?` or `#` is the scheme
+        // separator (`x.y/a?u=http://z` has none).
+        let firstBreak = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) ?? rest.endIndex
+        if let sep = rest.range(of: "://"), sep.lowerBound < firstBreak { rest = rest[sep.upperBound...] }
+        let end = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) ?? rest.endIndex
+        var authority = rest[..<end]
+        if let at = authority.lastIndex(of: "@") { authority = authority[authority.index(after: at)...] }
+        if authority.hasPrefix("["), let close = authority.firstIndex(of: "]") {
+            // Review r2: an IPv6 literal keeps its brackets and drops its port.
+            authority = authority[...close]
+        } else if let colon = authority.firstIndex(of: ":") {
+            authority = authority[..<colon]
+        }
+        return String(authority)
+    }
+
+    /// Hub C, H2: resource names as card labels, in manifest order, deduplicated.
+    nonisolated static func resourceLabels(of manifest: AddonManifest) -> [String] {
+        var seen = Set<String>()
+        var labels: [String] = []
+        for resource in manifest.resources {
+            let label: String
+            switch resource.name {
+            case "stream": label = String(localized: "Streams")
+            case "catalog": label = String(localized: "Catalogs")
+            case "subtitles": label = String(localized: "Subtitles")
+            case "meta": label = String(localized: "Metadata")
+            default:
+                // Review r2: an unknown resource name reads as words, not as an identifier.
+                let words = resource.name.replacingOccurrences(of: "_", with: " ")
+                label = words.prefix(1).uppercased() + words.dropFirst()
+            }
+            if seen.insert(label).inserted { labels.append(label) }
+        }
+        return labels
+    }
+
+    /// Hub C, H2: logo URLs of enabled add-ons (non-empty only), first `limit`.
+    nonisolated static func logoUrls(of addons: [ManagedAddon], limit: Int) -> [String] {
+        let urls = addons.compactMap { addon -> String? in
+            guard addon.enabled, let logo = addon.manifest?.logoUrl, !logo.isEmpty else { return nil }
+            return logo
+        }
+        return Array(urls.prefix(max(0, limit)))
     }
 
     deinit {
         watcher?.cancel()
+        refreshWait?.cancel()
     }
 }
