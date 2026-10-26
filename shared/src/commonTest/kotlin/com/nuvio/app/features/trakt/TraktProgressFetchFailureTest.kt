@@ -55,4 +55,31 @@ class TraktProgressFetchFailureTest {
             requireTraktProgressPageSuccess(429, url = "sync/history/episodes")
         }
     }
+
+    @Test
+    fun undecodablePageFailsTheList() = runTest {
+        // Mirrors the repository's page loader: a 200 body that does not decode is a failed page.
+        val decoder = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val ids = collectTraktHiddenShowIds(limit = 2) { page, _ ->
+            if (page == 1) {
+                listOf(show("tt1"), show("tt2"))
+            } else {
+                runCatching {
+                    decoder.decodeFromString<List<TraktHiddenItem>>("<html>not json</html>")
+                }.getOrNull()
+            }
+        }
+        assertNull(ids, "an undecodable page must drop the whole list, not end it early")
+    }
+
+    @Test
+    fun errorStatusOnFirstHistoryPageFails() {
+        val error = assertFailsWith<TraktProgressFetchException> {
+            requireTraktProgressPageSuccess(500, url = "sync/history/episodes")
+        }
+        assertEquals("Trakt request sync/history/episodes failed with HTTP 500", error.message)
+        assertFailsWith<TraktProgressFetchException> {
+            requireTraktProgressPageSuccess(401, url = "sync/history/episodes")
+        }
+    }
 }
