@@ -15,17 +15,19 @@ import XCTest
 /// Knobs: two stream add-ons ("ZZ Picker A" with three direct links, "ZZ Picker B" with two) are
 /// served by `DiscoveryStubServer` and installed through the DEBUG `-debug.addonManifestUrls` knob
 /// on a seed launch (removed again by `-debug.addonManifestRemoveMatching /picker-zz-`, also on a
-/// cleanup launch in a `defer`, so the fixture never keeps them). The add-on stub carries the
+/// cleanup launch in a teardown block registered before the seed, so the fixture never keeps them;
+/// teardown blocks, not `defer`s: `continueAfterFailure = false` unwinds past a `defer`). The add-on stub carries the
 /// manifests and stream lists; a second stub only hosts the media URLs (it answers every path with
 /// 404, so a chosen stream never plays, the leg only needs it chosen). `-debug.streamAutoPlayModeOverride
 /// MANUAL` keeps auto-play from skipping the picker; `-debug.openDeepLink` goes straight to Dune's
 /// Detail page; trailers are forced off so no cover buries Detail.
 ///
-/// Skips only when the Detail page never appears (network / fixture, not the picker). Every
-/// failure after the Play press names the identifiers and labels seen. If the fixture has other
-/// movie stream add-ons installed the row count exceeds 5: the leg then asserts `>= 5`, prints the
-/// chips, skips the stepping assertions (they assume exactly the two stub add-ons) and still
-/// presses the first row.
+/// Skips when the Detail page never appears (network / fixture, not the picker), and, after the
+/// panel, row-count, title and both-stub-chips checks have passed, when the fixture has other
+/// movie stream add-ons installed (more than 5 rows: the stepping checks assume exactly the two
+/// stubs). Every failure after the Play press names the identifiers and labels seen. XCUITest on
+/// this runtime reports `hasFocus` on a chip only while it is selected, so focus on an unselected
+/// chip is proven by the Select that follows (it can only select the chip that holds focus).
 final class StreamPickerUITests: XCTestCase {
     let remote = XCUIRemote.shared
 
@@ -194,19 +196,21 @@ final class StreamPickerUITests: XCTestCase {
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
         ]
 
+        // Cleanup launch (registered BEFORE the seed launch, review r2: `launch` itself can fail
+        // after the seed applied): the remove knob alone, so the fixture never keeps the stub add-ons.
+        addTeardownBlock { [self] in
+            XCUIApplication().terminate()
+            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
+            pause(10)
+            cleanup.terminate()
+        }
+
         // 1. Seed launch: install both add-ons (applied on Home's first add-ons emission).
         let seed = launch(common + [
             "-debug.addonManifestRemoveMatching", Self.stubPrefix,
             "-debug.addonManifestUrls",
             "\(addonStub.origin)/picker-zz-a/manifest.json,\(addonStub.origin)/picker-zz-b/manifest.json",
         ])
-        addTeardownBlock { [self] in
-            // Cleanup launch: the remove knob alone, so the fixture never keeps the stub add-ons.
-            XCUIApplication().terminate()
-            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
-            pause(10)
-            cleanup.terminate()
-        }
         pause(14)
         seed.terminate()
 
@@ -258,6 +262,10 @@ final class StreamPickerUITests: XCTestCase {
         XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5),
                       "the first stream_picker_row never took focus; focused: \(focusDump(app))")
         say("first row focused on open")
+        // Review r2: once the list has scrolled, `boundBy: 0` is the first REALIZED row, so the
+        // first row is known by its label from here on.
+        let firstRowLabel = rows(app).element(boundBy: 0).label
+        let firstRowByLabel = rows(app).matching(NSPredicate(format: "label == %@", firstRowLabel)).firstMatch
         // Review r1 P2: walk Down until the realized count stops growing (capped), then Up until
         // the first row reports focus again (capped), so one dropped press cannot derail the leg.
         var total = rows(app).count
@@ -270,13 +278,15 @@ final class StreamPickerUITests: XCTestCase {
             total = max(total, now)
         }
         var ups = 0
-        while ups < 12, !rows(app).element(boundBy: 0).hasFocus {
+        while ups < 12, !(firstRowByLabel.exists && firstRowByLabel.hasFocus) {
             remote.press(.up)
             pause(0.5)
             ups += 1
         }
-        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5),
+        XCTAssertTrue(waitFocus(firstRowByLabel, timeout: 5),
                       "focus did not return to the first row after the walk (\(ups) Ups); focused: \(focusDump(app))")
+        XCTAssertTrue(rows(app).element(boundBy: 0).hasFocus,
+                      "the first realized row is not the first row after the walk; focused: \(focusDump(app))")
         XCTAssertGreaterThanOrEqual(total, 5,
                                     "expected >= 5 stream_picker_row after walking the list, saw \(total); chips: \(chipLabels(app)) (seed refused or stub unreachable?)")
         let exact = total == 5 && expectedTotal == 5
@@ -292,6 +302,9 @@ final class StreamPickerUITests: XCTestCase {
         XCTAssertTrue(titleAny.waitForExistence(timeout: 10),
                       "no element labelled \"Dune\" in the info panel; focused: \(focusDump(app))")
         say("title shown as \(titleImage.exists ? "image" : "text")")
+        let progress = infoPanel.descendants(matching: .any)["stream_picker_progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5), "stream_picker_progress not under the info panel")
+        say("progress line: \(progress.label)")
 
         // d. Chips.
         let all = chip(app, "all")
