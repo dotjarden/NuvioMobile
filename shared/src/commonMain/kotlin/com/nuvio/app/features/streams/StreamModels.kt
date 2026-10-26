@@ -377,6 +377,15 @@ data class StreamsUiState(
     val allStreams: List<StreamItem>
         get() = filteredGroups.flatMap { it.streams }
 
+    /**
+     * Stream picker A, P0.4 (B-ready seam): the best stream of the filtered groups by
+     * [StreamQualityRank] (resolution > HDR/DV > cached > size, list order on ties), the same
+     * ranking Auto-Play Best Source uses. Direction B's "Best source" card reads it; Direction A
+     * renders nothing from it. Recomputed on access: keep it off hot paths.
+     */
+    val bestCandidate: StreamItem?
+        get() = StreamQualityRank.rankBest(allStreams).firstOrNull()
+
     val hasAnyStreams: Boolean
         get() = groups.any { it.streams.isNotEmpty() }
 }

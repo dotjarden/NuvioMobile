@@ -106,7 +106,11 @@ object StreamsRepository {
 
         activeRequestKey = requestKey
         activeJob?.cancel()
-        _uiState.value = StreamsUiState(requestToken = requestToken)
+        // Stream picker A, P0.1: the per-add-on chip survives a refresh of the same title (tvOS
+        // only, see StreamFilterRetention) and resets on a new one. Every fresh state built below
+        // carries it, and the fan-out drops it if the add-on is no longer asked.
+        val carriedFilter = StreamFilterRetention.carriedFilter(currentState, requestToken)
+        _uiState.value = StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter)
 
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
@@ -135,6 +139,7 @@ object StreamsRepository {
         if (isDirectAutoPlayFlow) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
+                selectedFilter = carriedFilter,
                 isDirectAutoPlayFlow = true,
                 showDirectAutoPlayOverlay = true,
             )
@@ -157,6 +162,7 @@ object StreamsRepository {
                 requestToken = requestToken,
                 groups = listOf(presentedGroup),
                 activeAddonIds = setOf("embedded"),
+                selectedFilter = StreamFilterRetention.validated(carriedFilter, listOf(presentedGroup)),
                 // Embedded streams come from the (installed) meta addon, so they classify as an
                 // installed-addon source for the auto-play scope (Codex r2 on the 58864ec1 port).
                 installedAddonIds = setOf("embedded"),
@@ -179,6 +185,7 @@ object StreamsRepository {
         if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
+                selectedFilter = carriedFilter,
                 isAnyLoading = false,
                 emptyStateReason = StreamsEmptyStateReason.NoAddonsInstalled,
             )
@@ -236,7 +243,7 @@ object StreamsRepository {
             tmdbId != null &&
             StreamVideoIdRemap.wouldReachMoreAddons(videoId, typeStreamIdPrefixes)
         ) {
-            _uiState.value = StreamsUiState(requestToken = requestToken, isAnyLoading = true)
+            _uiState.value = StreamsUiState(requestToken = requestToken, selectedFilter = carriedFilter, isAnyLoading = true)
             // LAZY + assign + start, not a bare `activeJob = scope.launch {}`: the body must not be
             // able to run before the field holds it. It nulls that same field below, and a plain
             // launch could interleave the two so `activeJob` ended up pointing at this finished
@@ -284,6 +291,7 @@ object StreamsRepository {
         if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
+                selectedFilter = carriedFilter,
                 isAnyLoading = false,
                 // BUG-74: a `tmdb:` id that reached here either had no IMDb equivalent or found no
                 // addon willing to take either form. Either way the id — not the user's addon
@@ -319,6 +327,7 @@ object StreamsRepository {
             requestToken = requestToken,
             groups = initialGroups,
             activeAddonIds = initialGroups.map { it.addonId }.toSet(),
+            selectedFilter = StreamFilterRetention.validated(carriedFilter, initialGroups),
             installedAddonIds = streamAddons.map { it.addonId }.toSet(),
             isAnyLoading = isInitiallyLoading,
             emptyStateReason = null,
@@ -530,7 +539,7 @@ object StreamsRepository {
                     StreamDiagnostics.log("fetch ${addon.addonName}: ${StreamDiagnostics.redactUrl(url)}")
 
                     val displayName = addon.addonName
-                    val group = runCatchingUnlessCancelled {
+                    val fetchResult = runCatchingUnlessCancelled {
                         val payload = fetchAddonResponseText(
                             url = url,
                             forceRefresh = forceRefresh,
@@ -541,28 +550,19 @@ object StreamsRepository {
                             addonId = addon.addonId,
                             addonLogo = addon.manifest.logoUrl,
                         )
-                    }.fold(
-                        onSuccess = { streams ->
-                            log.d { "Got ${streams.size} streams from ${displayName}" }
-                            StreamDiagnostics.log("got ${streams.size} from $displayName")
-                            AddonStreamGroup(
-                                addonName = displayName,
-                                addonId = addon.addonId,
-                                streams = streams,
-                                isLoading = false,
-                            )
-                        },
-                        onFailure = { err ->
-                            log.w(err) { "Failed to fetch streams from ${displayName}" }
-                            StreamDiagnostics.log("FAILED $displayName: ${err.message ?: "unknown error"}")
-                            AddonStreamGroup(
-                                addonName = displayName,
-                                addonId = addon.addonId,
-                                streams = emptyList(),
-                                isLoading = false,
-                                error = err.message,
-                            )
-                        },
+                    }.onSuccess { streams ->
+                        log.d { "Got ${streams.size} streams from ${displayName}" }
+                        StreamDiagnostics.log("got ${streams.size} from $displayName")
+                    }.onFailure { err ->
+                        log.w(err) { "Failed to fetch streams from ${displayName}" }
+                        StreamDiagnostics.log("FAILED $displayName: ${err.message ?: "unknown error"}")
+                    }
+                    // Stream picker A, P0.2: a failed add-on becomes an empty group whose `error`
+                    // is always readable (a null exception message no longer reads as "no streams").
+                    val group = addonStreamGroupFromFetch(
+                        addonName = displayName,
+                        addonId = addon.addonId,
+                        result = fetchResult,
                     )
                     publishCompletion(StreamLoadCompletion.Addon(group))
                 }

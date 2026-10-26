@@ -13,4 +13,11 @@ package com.nuvio.app.features.streams
  */
 object StreamPresentationPlatform {
     var filtersApplyToAllStreams: Boolean = false
+
+    /**
+     * Stream picker A, P0.1: `true` when the per-add-on filter (`StreamsUiState.selectedFilter`)
+     * survives a `reload` of the same title instead of resetting to "All". tvOS sets true at
+     * bootstrap for its source chips; mobile keeps upstream's reset. See [StreamFilterRetention].
+     */
+    var selectedFilterSurvivesRefresh: Boolean = false
 }

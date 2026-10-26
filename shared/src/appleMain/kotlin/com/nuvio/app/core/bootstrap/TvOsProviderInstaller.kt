@@ -146,6 +146,10 @@ fun installTvOsSharedProviders() {
     // Only settings reach every add-on's and plugin's streams on tvOS (mobile stays debrid-only).
     com.nuvio.app.features.streams.StreamPresentationPlatform.filtersApplyToAllStreams = true
 
+    // Stream picker A (P0.1): the source chip survives a refresh of the same title; a new title
+    // resets to "All". Mobile keeps upstream's reset-on-refresh.
+    com.nuvio.app.features.streams.StreamPresentationPlatform.selectedFilterSurvivesRefresh = true
+
     // beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source" (the shared FIRST_STREAM mode)
     // picks the best source among those that arrived (resolution > HDR/DV > cached > size), not
     // the first one in list order. Mobile keeps list order.

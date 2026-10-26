@@ -15,6 +15,11 @@ import kotlin.test.assertNull
  * settings-search cases (composeApp UI, no shared/ seam) and the other-profile SharedPreferences
  * assertion (needs the Android handle). The store is reset through `replaceFromSyncPayload`, which
  * clears every synced key for the current profile.
+ *
+ * Stream picker A, P0.3 (decision D1): the default is [StreamBackgroundDefaults.platformDefault]
+ * (Normal on the JVM and iOS, Cinematic on tvOS), so these cases hold on both test targets; the
+ * per-platform value itself is pinned by `StreamBackgroundJvmDefaultTest` and
+ * `StreamBackgroundTvOsDefaultTest`.
  */
 class StreamBackgroundSettingsTest {
     @BeforeTest
@@ -30,24 +35,27 @@ class StreamBackgroundSettingsTest {
     }
 
     @Test
-    fun existingProfilesUseTheAppBackgroundByDefault() {
+    fun existingProfilesUseThePlatformDefaultBackground() {
         StreamBadgeSettingsRepository.ensureLoaded()
-        assertEquals(StreamBackgroundMode.Normal, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
+        assertEquals(StreamBackgroundDefaults.platformDefault, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
     }
 
     @Test
-    fun cinematicBackgroundSurvivesReloadAndSettingsSync() {
-        StreamBadgeSettingsRepository.setBackgroundMode(StreamBackgroundMode.Cinematic)
+    fun explicitBackgroundSurvivesReloadAndSettingsSync() {
+        // The mode that is NOT the platform default (Cinematic on the JVM, Normal on tvOS), so the
+        // call below is a real change that gets written; setting the default is a no-op write.
+        val explicit = StreamBackgroundMode.entries.first { it != StreamBackgroundDefaults.platformDefault }
+        StreamBadgeSettingsRepository.setBackgroundMode(explicit)
         StreamBadgeSettingsRepository.clearLocalState()
         StreamBadgeSettingsRepository.ensureLoaded()
-        assertEquals(StreamBackgroundMode.Cinematic, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
+        assertEquals(explicit, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
 
         val payload = StreamBadgeSettingsStorage.exportToSyncPayload()
-        assertEquals("cinematic", payload.decodeSyncString("stream_background_mode"))
-        StreamBadgeSettingsRepository.setBackgroundMode(StreamBackgroundMode.Normal)
+        assertEquals(explicit.name.lowercase(), payload.decodeSyncString("stream_background_mode"))
+        StreamBadgeSettingsRepository.setBackgroundMode(StreamBackgroundDefaults.platformDefault)
         StreamBadgeSettingsStorage.replaceFromSyncPayload(payload)
         StreamBadgeSettingsRepository.onProfileChanged()
-        assertEquals(StreamBackgroundMode.Cinematic, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
+        assertEquals(explicit, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
     }
 
     @Test
@@ -57,16 +65,16 @@ class StreamBackgroundSettingsTest {
         StreamBadgeSettingsStorage.replaceFromSyncPayload(buildJsonObject {})
         StreamBadgeSettingsRepository.onProfileChanged()
 
-        assertEquals(StreamBackgroundMode.Normal, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
+        assertEquals(StreamBackgroundDefaults.platformDefault, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
         assertNull(StreamBadgeSettingsStorage.loadStreamBackgroundMode())
     }
 
     @Test
-    fun removedAndUnknownBackgroundModesFallBackToNormal() {
+    fun removedAndUnknownBackgroundModesFallBackToThePlatformDefault() {
         listOf("dominantcolor", "unknown").forEach { mode ->
             StreamBadgeSettingsStorage.saveStreamBackgroundMode(mode)
             StreamBadgeSettingsRepository.onProfileChanged()
-            assertEquals(StreamBackgroundMode.Normal, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
+            assertEquals(StreamBackgroundDefaults.platformDefault, StreamBadgeSettingsRepository.uiState.value.backgroundMode)
         }
     }
 }
