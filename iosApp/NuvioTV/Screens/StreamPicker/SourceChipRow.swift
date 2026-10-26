@@ -49,8 +49,15 @@ struct SourceChipRow: View {
     /// How long an error chip with no streams stays after the fan-out finished.
     nonisolated static let errorChipLinger: TimeInterval = 1.6
 
-    /// The chip the row is scrolled to (`.scrollPosition(id:)`); the selected chip after a step.
-    @State private var scrolledChip: String?
+    /// P5 device pass: programmatic scrolling by id (`ScrollViewReader.scrollTo`, then
+    /// `.scrollPosition(id:)`) centred the selected chip on the tvOS 26.5 simulator and never on
+    /// the Living Room box (tvOS 27.2), where only focus-driven scrolling moved the row. The Home
+    /// rows scroll that box by OFFSET (`ScrollPosition.scrollTo(x:)`), so the row does the same:
+    /// each chip reports its frame in the content space, the viewport its width, and a step
+    /// scrolls to the offset that centres the selected chip, clamped to the content.
+    @State private var position = ScrollPosition()
+    @State private var chipFrames: [String: CGRect] = [:]
+    @State private var viewportWidth: CGFloat = 0
 
     var body: some View {
         // Review r1 (P2): a Left/Right on the list moves the selection without focusing a chip, so
@@ -89,24 +96,24 @@ struct SourceChipRow: View {
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.xs)
-                .scrollTargetLayout()
+                .coordinateSpace(name: Self.contentSpace)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(GeometryReader { geo in
+            Color.clear.onChange(of: geo.size.width, initial: true) { _, width in
+                viewportWidth = width
+            }
+        })
+        .onPreferenceChange(ChipFrameKey.self) { chipFrames = $0 }
         // The chip lifts on focus; don't crop the lift (FilterPills guidance).
         .scrollClipDisabled()
-        // P4 device pass: a step onto the last chip left it cut at the panel edge. P5 device pass:
-        // `ScrollViewReader.scrollTo` scrolled on the simulator (tvOS 26.5) and never on the box
-        // (tvOS 27.2), so the row is driven by `.scrollPosition(id:)` as the Home rows and the
-        // Stage strip are. The chip ids are laid out in the same update as the selection, so the
-        // position is written on the next runloop, centred rather than merely "in view".
-        .scrollPosition(id: $scrolledChip, anchor: .center)
+        .scrollPosition($position)
         .onChange(of: selected, initial: true) { _, selected in
+            // The chip frames are laid out in the same update as the selection: scroll on the next
+            // runloop, centred rather than merely "in view" (a step onto the last chip once left it
+            // cut at the panel edge, P4 device pass).
             let key = selected.map(Self.key(for:)) ?? Self.allKey
-            // A binding already holding the key (focus-driven scrolling writes it) would not move
-            // the row: clear it first, then ask for the chip.
-            if scrolledChip == key { scrolledChip = nil }
-            DispatchQueue.main.async {
-                withAnimation(.easeOut(duration: 0.2)) { scrolledChip = key }
-            }
+            DispatchQueue.main.async { scrollToChip(key) }
         }
         .focusSection()
         .focusScope(namespace)
@@ -137,10 +144,33 @@ struct SourceChipRow: View {
         .buttonStyle(.chip(selected: isActive, tint: hasError ? Theme.Palette.error.opacity(0.12) : nil))
         .focused(focus, equals: key)
         .id(key)
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: ChipFrameKey.self, value: [key: geo.frame(in: .named(Self.contentSpace))])
+        })
         .prefersDefaultFocus(isActive, in: namespace)
         .accessibilityLabel(Text(accessibilityLabel))
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier(identifier)
+    }
+
+    nonisolated static let contentSpace = "stream_picker_chip_row.content"
+
+    /// The offset that centres `key` in the viewport, clamped to the content; nothing before the
+    /// frames and the viewport are known (the next selection change tries again).
+    nonisolated static func scrollOffset(for key: String, frames: [String: CGRect], viewportWidth: CGFloat,
+                                         trailingInset: CGFloat = 0) -> CGFloat? {
+        guard viewportWidth > 0, let frame = frames[key] else { return nil }
+        // The frames are in the padded content's space: the trailing padding lies past the last
+        // chip's edge and is part of what can scroll into view.
+        let contentWidth = (frames.values.map(\.maxX).max() ?? 0) + trailingInset
+        let maxOffset = max(contentWidth - viewportWidth, 0)
+        return min(max(frame.midX - viewportWidth / 2, 0), maxOffset)
+    }
+
+    private func scrollToChip(_ key: String) {
+        guard let x = Self.scrollOffset(for: key, frames: chipFrames, viewportWidth: viewportWidth,
+                                        trailingInset: Theme.Spacing.xs) else { return }
+        withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(x: x) }
     }
 
     /// "Comet, 6 sources" / "Comet, loading" / "Comet, failed": the middle dot of `label(for:)` is
@@ -181,5 +211,13 @@ struct SourceChipRow: View {
     /// nothing listable. A failed add-on with streams keeps its chip (and its tint).
     nonisolated static func chipsToDrop(_ chips: [SourceChip]) -> Set<String> {
         Set(chips.filter { $0.hasError && $0.count == 0 }.map(\.id))
+    }
+}
+
+/// The chips' frames in the row's content space, keyed by chip key (`SourceChipRow.scrollToChip`).
+private struct ChipFrameKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }

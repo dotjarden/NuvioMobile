@@ -432,6 +432,14 @@ struct StreamPickerView: View {
                     DispatchQueue.main.async { focusedRow = target }
                     return
                 }
+                // P5 device pass (Living Room box): focus was placed on the first group's row, then
+                // the add-ons that landed next sorted above it, the LazyVStack unrealized that row
+                // and focus fell to NOWHERE (`focused=nil`): every Select was dead until a D-pad
+                // move. Nil focus is never the viewer's choice, so the rule runs again from here.
+                if focusedRow == nil, !loadingCoverVisible {
+                    cancelInitialFocusVerify()
+                    didPlaceListFocus = false
+                }
 
                 // P3.4: move initial focus once streams (first) arrive (`placeInitialListFocus`).
                 // Never while the auto-play overlay holds focus (the list is disabled under it);

@@ -76,4 +76,28 @@ final class SourceChipRowTests: XCTestCase {
         XCTAssertEqual(SourceChipRow.key(for: "addon:comet"), "chip:addon:comet")
         XCTAssertNotEqual(SourceChipRow.allKey, SourceChipRow.refreshKey)
     }
+
+    // MARK: - P5 device pass: offset-driven scroll
+
+    func testScrollOffsetCentresTheChipAndClampsToTheContent() {
+        let frames: [String: CGRect] = [
+            "chip:refresh": CGRect(x: 0, y: 0, width: 60, height: 46),
+            "chip:all": CGRect(x: 70, y: 0, width: 100, height: 46),
+            "chip:a": CGRect(x: 180, y: 0, width: 200, height: 46),
+            "chip:b": CGRect(x: 390, y: 0, width: 200, height: 46),
+            "chip:c": CGRect(x: 600, y: 0, width: 200, height: 46),
+        ]
+        // Content 800 wide, viewport 500: the first chips need no scroll, the middle one centres,
+        // the last one clamps to the end of the content.
+        XCTAssertEqual(SourceChipRow.scrollOffset(for: "chip:all", frames: frames, viewportWidth: 500), 0)
+        XCTAssertEqual(SourceChipRow.scrollOffset(for: "chip:b", frames: frames, viewportWidth: 500), 240)
+        XCTAssertEqual(SourceChipRow.scrollOffset(for: "chip:c", frames: frames, viewportWidth: 500), 300)
+        // The content's trailing padding scrolls into view too.
+        XCTAssertEqual(SourceChipRow.scrollOffset(for: "chip:c", frames: frames, viewportWidth: 500, trailingInset: 8), 308)
+        // Everything fits: never scroll.
+        XCTAssertEqual(SourceChipRow.scrollOffset(for: "chip:c", frames: frames, viewportWidth: 1000), 0)
+        // Unknown chip or no viewport yet: nothing to do.
+        XCTAssertNil(SourceChipRow.scrollOffset(for: "chip:zz", frames: frames, viewportWidth: 500))
+        XCTAssertNil(SourceChipRow.scrollOffset(for: "chip:c", frames: frames, viewportWidth: 0))
+    }
 }
