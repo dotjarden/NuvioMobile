@@ -1333,6 +1333,8 @@ struct HomeView: View {
                     synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
                     forceManual: target.forceManual,
                     startFromBeginning: target.startFromBeginning,
+                    resumePositionMs: target.entry.lastPositionMs > 0 ? target.entry.lastPositionMs : nil,
+                    resumeFraction: Double(target.entry.progressFraction),
                     onOpenTitle: { homePostPlayPending = $0 }
                 )
             }

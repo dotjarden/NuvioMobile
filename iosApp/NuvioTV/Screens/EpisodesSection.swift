@@ -250,6 +250,13 @@ struct EpisodesSection: View {
             postPlayPending = nil
             onPostPlayTitle?(pick)
         }) { route in
+            // P3.3: the episode's saved entry for the resume pill. Review r1: a finished entry
+            // offers nothing (the players start a completed episode from 0).
+            let entry = WatchProgressRepository.shared.progressForVideo(
+                videoId: Self.episodeVideoId(metaId: route.meta.id, episode: route.episode),
+                parentMetaId: route.meta.id,
+                seasonNumber: route.episode.season, episodeNumber: route.episode.episode)
+                .flatMap { $0.isCompleted ? nil : $0 }
             StreamPickerView(
                 type: route.meta.type,
                 videoId: Self.episodeVideoId(metaId: route.meta.id, episode: route.episode),
@@ -264,6 +271,8 @@ struct EpisodesSection: View {
                 synopsis: route.synopsis,
                 meta: PlaybackMeta(details: route.meta),
                 logoUrl: route.meta.logo,
+                resumePositionMs: entry.map { $0.lastPositionMs }.flatMap { $0 > 0 ? $0 : nil },
+                resumeFraction: entry.map { Double($0.progressFraction) },
                 onOpenTitle: onPostPlayTitle == nil ? nil : { postPlayPending = $0 }
             )
         }

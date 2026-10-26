@@ -53155,6 +53155,12 @@
     },
     "%@, 1 source": {
       "extractionState": "manual"
+    },
+    "Resume from %@": {
+      "extractionState": "manual"
+    },
+    "Fetching…": {
+      "extractionState": "manual"
     }
   },
   "version": "1.0"

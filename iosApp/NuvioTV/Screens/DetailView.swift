@@ -1288,10 +1288,18 @@ struct DetailView: View {
             startOverMovie = false
             openPostPlayPick()
         }) {
+            // P3.3: the movie's saved entry, looked up the way `DetailViewModel` does for movies.
+            // Review r1: a finished entry offers nothing (the players start a completed title from
+            // 0, see `MPVPlayerView` / `PlaybackProgressRecorder.resumePositionSec`).
+            let entry = WatchProgressRepository.shared.progressForVideo(
+                videoId: streamVideoId, parentMetaId: streamVideoId, seasonNumber: nil, episodeNumber: nil)
+                .flatMap { $0.isCompleted ? nil : $0 }
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, background: backgroundUrl, synopsis: overview, meta: playbackMeta,
                              logoUrl: logoUrl, forceManual: forceManualPlay,
                              startFromBeginning: startOverMovie,
+                             resumePositionMs: entry.map { $0.lastPositionMs }.flatMap { $0 > 0 ? $0 : nil },
+                             resumeFraction: entry.map { Double($0.progressFraction) },
                              onOpenTitle: { postPlayPending = $0 })
         }
         .navigationDestination(item: $postPlayRoute) { route in
@@ -1314,6 +1322,8 @@ struct DetailView: View {
                 logoUrl: logoUrl,
                 forceManual: route.forceManual,
                 startFromBeginning: route.startFromBeginning,
+                resumePositionMs: route.action.resumePositionMs?.int64Value,
+                resumeFraction: nil,
                 onOpenTitle: { postPlayPending = $0 }
             )
         }

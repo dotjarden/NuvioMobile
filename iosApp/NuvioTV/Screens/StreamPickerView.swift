@@ -12,18 +12,14 @@ import SharedCore
 /// Badges: rows render imported badge-pack chips, the file-size chip, TOP/BOTTOM placement, the
 /// optional addon logo and the "- <Provider> Instant" cached suffix (mobile `StreamCard` parity).
 ///
-/// Grouping: each addon's streams sit under a collapsed-by-default, focusable header (name,
-/// stream count, per-addon loading spinner). Rows only build while their group is expanded — a
-/// `LazyVStack` throughout — so the picker no longer lags while addons are still resolving
-/// (previously every addon's rows were built eagerly in one long always-expanded list). A lone
-/// addon auto-expands; anything past that stays collapsed until picked, and never
-/// auto-collapses/re-expands as later addons stream in.
+/// List: one flat, lazy list of stream rows (`LazyVStack`, so rows build as they scroll into view
+/// and the picker does not lag while addons are still resolving). In the "All" view each addon's
+/// rows sit under a small non-focusable section label (name, plus its own "Fetching…" spinner
+/// while it is still answering); under a source chip the labels are hidden.
 ///
-/// Focus: rows and group headers carry stable focus keys. Initial focus lands on the first
-/// stream row when there's a single, auto-expanded group, otherwise on the first group's header.
-/// Collapsing a group that holds focus retargets focus to that group's header first. (Previously
-/// the dev test-stream button at the bottom was the only focusable view while loading, so focus
-/// landed — and stayed — at the bottom of the list.)
+/// Focus: rows carry stable focus keys. Initial focus lands on the first stream row once streams
+/// arrive. (Previously the dev test-stream button at the bottom was the only focusable view while
+/// loading, so focus landed — and stayed — at the bottom of the list.)
 ///
 /// Auto-Play Best Source (orivio batch item 1): with the "first stream" auto-play mode on and the
 /// picker not forced manual, a visit opens in auto mode — `FirstPlayAutoPlayController` walks the
@@ -64,6 +60,11 @@ struct StreamPickerView: View {
     let forceManual: Bool
     /// "Start Over": every playback this picker starts ignores saved progress.
     let startFromBeginning: Bool
+    /// P3.3: the saved position for the resume pill (nil = none known). Presenters that have an
+    /// entry pass it; the pill is hidden under "Start Over".
+    let resumePositionMs: Int64?
+    /// P3.3: the saved fraction (0...1) when only a percentage is known (Trakt / Simkl rows).
+    let resumeFraction: Double?
     /// A toast shown when the picker opens on its list (the Up Next failover picker's explanation).
     let notice: String?
     /// P5 B22: set by presenters that push a Detail page once the picker closes; forwarded to the
@@ -136,12 +137,6 @@ struct StreamPickerView: View {
     /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
     @State private var toast: String?
     @FocusState private var focusedRow: String?
-    /// Addon ids whose group is currently expanded. Collapsed (absent) by default; see
-    /// `body`'s auto-expand-single-group handling and `toggleExpansion(_:)`.
-    @State private var expandedGroups: Set<String> = []
-    /// Guards the one-time auto-expand check so a second addon streaming in later never
-    /// collapses/re-expands anything under the user (no layout shifts under focus).
-    @State private var didAutoExpand = false
     /// P1: the backdrop read from the details cache when the presenter passed no `background`.
     @State private var peekedBackground: String?
     /// P2: error chips dropped after the fan-out finished (`SourceChipRow.chipsToDrop`); cleared
@@ -180,7 +175,9 @@ struct StreamPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private static let testRowKey = "test-stream"
-    /// Spinner key for a "Try Next Source" resolve (its row may be collapsed or off-screen).
+    /// P3: the zero-height anchor at the top of the list (`scrollTo` target for a chip step).
+    private static let listTopKey = "list-top"
+    /// Spinner key for a "Try Next Source" resolve (its row may be off-screen or filtered out).
     private static let failoverRowKey = "failover-next"
     /// Spinner key while an external hand-off waits for the add-on subtitles (D5) with no row of
     /// its own (the auto path).
@@ -209,6 +206,8 @@ struct StreamPickerView: View {
         logoUrl: String? = nil,
         forceManual: Bool = false,
         startFromBeginning: Bool = false,
+        resumePositionMs: Int64? = nil,
+        resumeFraction: Double? = nil,
         notice: String? = nil,
         onOpenTitle: ((MetaPreview) -> Void)? = nil
     ) {
@@ -217,6 +216,8 @@ struct StreamPickerView: View {
         self.logoUrl = logoUrl
         self.forceManual = forceManual
         self.startFromBeginning = startFromBeginning
+        self.resumePositionMs = resumePositionMs
+        self.resumeFraction = resumeFraction
         self.notice = notice
         self.poster = poster
         self.background = background
@@ -400,16 +401,6 @@ struct StreamPickerView: View {
             }
             .onChange(of: model.groups.map(\.id)) { _, ids in
                 guard !ids.isEmpty else { return }
-                // Auto-expand exactly once, only when the very first batch of groups turns out
-                // to be a single addon. Never re-evaluated afterward, so a second addon
-                // streaming in later doesn't retroactively collapse or expand anything.
-                if !didAutoExpand {
-                    didAutoExpand = true
-                    if ids.count == 1 { expandedGroups = [ids[0]] }
-                }
-                // P2 (review r2): one add-on selected is one group; it opens whenever it lands,
-                // including when it was still loading at the time of the chip step.
-                if model.selectedFilter != nil, ids.count == 1 { expandedGroups.insert(ids[0]) }
                 if filterFocusRequest == .awaitingGroups, let target = firstListFocusTarget {
                     filterFocusRequest = .none
                     didPlaceListFocus = true
@@ -417,23 +408,10 @@ struct StreamPickerView: View {
                     return
                 }
 
-                // Move initial focus once groups (first) arrive: to the first stream row when
-                // there's a single, auto-expanded group (unchanged from before collapsing was
-                // added), otherwise to the first group's header. Never steals focus after the
-                // user has moved it to a real row/header: only fires while focus is nowhere or
-                // on the (now hidden) test button. Never while the auto-play overlay holds focus
-                // (the list is disabled under it); `focusListAfterAutoPlay()` runs when it lifts.
-                guard !loadingCoverVisible else { return }
-                guard listFocusIsPlaceable else { return }
-                // Review r1 (P2 P3): a lone group that is NOT expanded (a filter under the one-shot
-                // auto-expand) has no row in the hierarchy; its header is the target then.
-                if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey {
-                    didPlaceListFocus = true
-                    DispatchQueue.main.async { focusedRow = firstKey }
-                } else if let firstId = ids.first {
-                    didPlaceListFocus = true
-                    DispatchQueue.main.async { focusedRow = Self.headerKey(groupId: firstId) }
-                }
+                // P3.4: move initial focus once streams (first) arrive (`placeInitialListFocus`).
+                // Never while the auto-play overlay holds focus (the list is disabled under it);
+                // `focusListAfterAutoPlay()` runs when it lifts.
+                placeInitialListFocus()
             }
             .onAppear {
                 pickerOnScreen = true
@@ -489,7 +467,7 @@ struct StreamPickerView: View {
                 // A row that left the hierarchy (a chip step changed the filter) makes the engine
                 // fall back onto some chip; that is not a move to forward, and the chip step's own
                 // focus write must win.
-                guard model.groups.contains(where: { Self.headerKey(groupId: $0.id) == old || $0.rowKeys.contains(old) }) else { return }
+                guard model.groups.contains(where: { $0.rowKeys.contains(old) }) else { return }
                 let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
                 guard new != selectedKey else { return }
                 DispatchQueue.main.async { focusedRow = selectedKey }
@@ -623,6 +601,10 @@ struct StreamPickerView: View {
     @ViewBuilder
     private var sourceHeader: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            if let resume = StreamPickerResume.label(positionMs: resumePositionMs, fraction: resumeFraction,
+                                                     startFromBeginning: startsOver) {
+                StreamPickerResumePill(label: resume)
+            }
             // P2: the source chips (refresh, All, one per add-on).
             SourceChipRow(
                 chips: visibleChips,
@@ -674,13 +656,8 @@ struct StreamPickerView: View {
         model.selectFilter(next)
     }
 
-    /// P2: where focus lands in the list after a D-pad chip step: the first row of a lone expanded
-    /// group, else the first group's header (the collapsed headers go in P3).
-    private var firstListFocusTarget: String? {
-        let ids = model.groups.map(\.id)
-        if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey { return firstKey }
-        return ids.first.map { Self.headerKey(groupId: $0) }
-    }
+    /// P2/P3: where focus lands in the list after a D-pad chip step: the first row.
+    private var firstListFocusTarget: String? { model.firstRowKey }
 
     /// P2: once the fan-out has finished, drop the error chips with no streams after the linger;
     /// a new fan-out cancels the drop and shows every chip again.
@@ -731,50 +708,40 @@ struct StreamPickerView: View {
         }
     }
 
-    /// P1: the scrolling body of the source panel: the add-on groups (P3 flattens them), the
-    /// empty-state reason and the dev test stream. Review r1 P2-3 (W3-16 F2): the reader lets a row
+    /// P1/P3: the scrolling body of the source panel: one flat list of rows (section labels in the
+    /// "All" view), the empty-state reason and the dev test stream. Review r1 P2-3 (W3-16 F2): the
+    /// reader lets a row
     /// that grows after its dwell (a long release name, `StreamRowDescription`) re-reveal itself;
     /// UIKit does not scroll for a focused view's later resize. See `streamRowView`.
     private var sourceList: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
-                // Lazy so collapsed groups' rows (the overwhelming majority while addons are
-                // still streaming in) are never built at all — this was the lag source (BUG-5):
-                // a non-lazy VStack built every row of every addon up front.
-                LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
+                // Lazy so rows build only as they scroll into view (BUG-5: a non-lazy VStack built
+                // every row of every addon up front); there are no collapsed groups any more.
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    // P3 (review r1): a fixed anchor for "scroll to the top" (`scrollTo` needs an
+                    // id a lazy stack can resolve; the first row may not be realized yet).
+                    // Negative top padding cancels the stack's `sm` gap after a zero-height child.
+                    Color.clear.frame(height: 0).id(Self.listTopKey).padding(.top, -Theme.Spacing.sm)
+                    // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel` built them, keys
+                    // included); the picker only adds what it alone knows. Computed once per list, not per row.
+                    let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
+                    let defaultPlayerId = activeDefaultExternalPlayer?.id
+                    let showsSectionLabels = model.selectedFilter == nil
                     ForEach(model.groups) { group in
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                            groupHeader(group)
-                            // Collapsed groups render nothing at all (not just off-screen —
-                            // absent from the hierarchy), which is what actually kills the lag:
-                            // the old always-expanded list built every row of every addon.
-                            if expandedGroups.contains(group.id) {
-                                // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel`
-                                // built them, keys included); the picker only adds what it alone
-                                // knows. Computed once per group, not per row.
-                                let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
-                                let defaultPlayerId = activeDefaultExternalPlayer?.id
-                                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                    ForEach(group.rows) { row in
-                                        streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
-                                                      scrollProxy: scrollProxy)
-                                    }
-                                }
-                                .padding(.top, Theme.Spacing.xs)
-                            }
+                        // P3 (D5): one flat list; in the "All" view each add-on's rows sit under its label.
+                        if showsSectionLabels {
+                            StreamSectionLabel(name: group.addonName, isLoading: group.isLoading)
                         }
-                        // Each addon group is its own focus section: D-pad up/down navigates
-                        // between group headers and (when expanded) that group's rows without
-                        // leaking focus into a sibling group's rows.
-                        .focusSection()
+                        ForEach(group.rows) { row in
+                            streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
+                                          scrollProxy: scrollProxy)
+                        }
                     }
 
                     if let reason = model.emptyReason {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                            // Primary reason renders at full text-primary weight — prominent,
-                            // not the muted secondary tone the plain "nothing found" empty
-                            // states get elsewhere on tvOS — since the debrid/filtered case is
-                            // actionable rather than a dead end.
+                        VStack(spacing: Theme.Spacing.xs) {
+                            // Full text-primary weight: the debrid/filtered case is actionable, not a dead end.
                             Text(reason)
                                 .font(Theme.Font.body)
                                 .foregroundStyle(Theme.Palette.textPrimary)
@@ -784,7 +751,11 @@ struct StreamPickerView: View {
                                     .foregroundStyle(Theme.Palette.textSecondary)
                             }
                         }
-                        .padding(.top, Theme.Spacing.xs)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Theme.Spacing.xl)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("stream_picker_empty_reason")
                     }
 
                     // Dev/diagnostics affordance — only when there is nothing real to play, so it
@@ -793,7 +764,7 @@ struct StreamPickerView: View {
                     // bottom of the screen).
                     // P2: never under a source chip — a filtered-empty list is not "nothing to play".
                     if model.groups.isEmpty && !model.isLoading && model.selectedFilter == nil {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        VStack(spacing: Theme.Spacing.sm) {
                             Text("Test")
                                 .font(Theme.Font.sectionTitle)
                                 .foregroundStyle(Theme.Palette.textPrimary)
@@ -806,6 +777,7 @@ struct StreamPickerView: View {
                             .buttonStyle(.glass)
                             .focused($focusedRow, equals: Self.testRowKey)
                         }
+                        .frame(maxWidth: .infinity)
                         .padding(.top, Theme.Spacing.lg)
                     }
                 }
@@ -821,11 +793,7 @@ struct StreamPickerView: View {
             .contentMargins(.bottom, Theme.Spacing.lg, for: .scrollContent)
             // P2: Left/Right on a row switch the source chip (Android TV `StreamScreen`).
             .onMoveCommand { handleListMove($0) }
-            .onChange(of: model.selectedFilter) { _, filter in
-                // P2 (review r1 P3): one add-on selected is one group; open it, so the chip step
-                // lands on its first row rather than on a collapsed header.
-                let ids = model.groups.map(\.id)
-                if filter != nil, ids.count == 1 { expandedGroups.insert(ids[0]) }
+            .onChange(of: model.selectedFilter) { _, _ in
                 // After a D-pad chip step the list shows the new source from the top. Focus is set
                 // on the next runloop (review r1 P2): the LazyVStack may not have realized the
                 // target yet in this tick, and a dropped focus write leaves focus on the old row.
@@ -837,9 +805,9 @@ struct StreamPickerView: View {
                     return
                 }
                 filterFocusRequest = .none
-                // Review r2 (P3): a lazy stack scrolls to an unrealized child only by its ForEach
-                // identity (the group id), so scroll by that first; the header/row id then resolves.
-                if let groupId = ids.first { scrollProxy.scrollTo(groupId, anchor: .top) }
+                // Review r2 / P3 r1: the target is always the first row, so scroll to the fixed
+                // top anchor first (always realized); the row id then resolves.
+                scrollProxy.scrollTo(Self.listTopKey, anchor: .top)
                 scrollProxy.scrollTo(target, anchor: .top)
                 DispatchQueue.main.async { focusedRow = target }
             }
@@ -847,65 +815,10 @@ struct StreamPickerView: View {
                 scheduleErrorChipDrop(loading: loading)
                 // Review r3: a stepped-to add-on that ends with nothing listable retires the request.
                 if !loading, model.groups.isEmpty { filterFocusRequest = .none }
+                // P3.4: a fan-out that ends with no rows never changes the group ids, so the empty
+                // outcome places focus from here (on the "All" chip).
+                if !loading { placeInitialListFocus() }
             }
-        }
-    }
-
-    // MARK: - Group headers
-
-    private static func headerKey(groupId: String) -> String { "header:\(groupId)" }
-
-    /// Collapsed by default: a focusable header row per addon (name, stream count, chevron, and
-    /// a per-addon spinner while that addon is still loading — the shared `AddonStreamGroup`
-    /// carries `isLoading` per addon already, so this reflects real per-addon state rather than
-    /// the global "any addon still loading" flag). Deliberately a plain `Button`, not
-    /// `DisclosureGroup` — tvOS focus/highlight on `DisclosureGroup` is poor and inconsistent
-    /// with the rest of this screen's rows.
-    private func groupHeader(_ group: StreamsViewModel.Group) -> some View {
-        let key = Self.headerKey(groupId: group.id)
-        let isExpanded = expandedGroups.contains(group.id)
-
-        return Button {
-            toggleExpansion(group)
-        } label: {
-            HStack(spacing: Theme.Spacing.sm) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(Theme.Font.body)
-                    .rowTextColor(secondary: true)
-                    .frame(width: 20, alignment: .center)
-                Text(group.addonName)
-                    .font(Theme.Font.sectionTitle)
-                    .rowTextColor()
-                Text(group.streams.count == 1 ? String(localized: "1 stream") : String(localized: "\(group.streams.count) streams"))
-                    .font(Theme.Font.caption)
-                    .rowTextColor(secondary: true)
-                if group.isLoading {
-                    ProgressView().scaleEffect(0.7)
-                }
-                Spacer()
-            }
-            .padding(.vertical, Theme.Spacing.xs + 2)
-            .padding(.horizontal, Theme.Spacing.sm)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.settingsRow)
-        .focused($focusedRow, equals: key)
-        // P2 (review r1): the chip step scrolls to the header; a `scrollTo` needs an id.
-        .id(key)
-    }
-
-    private func toggleExpansion(_ group: StreamsViewModel.Group) {
-        if expandedGroups.contains(group.id) {
-            // Collapsing a group that currently holds focus would otherwise leave focus on a
-            // row that's about to disappear from the hierarchy — retarget to the header first.
-            if let focusedRow, focusedRow.hasPrefix("\(group.id)#") {
-                self.focusedRow = Self.headerKey(groupId: group.id)
-            }
-            expandedGroups.remove(group.id)
-        } else {
-            expandedGroups.insert(group.id)
-            // Expanding keeps focus on the header (SwiftUI doesn't move it on select), matching
-            // the requirement that expand never steals focus.
         }
     }
 
@@ -916,8 +829,8 @@ struct StreamPickerView: View {
     /// focus move: the old `streamRow` method read the parent's `@FocusState` in every built row
     /// (for BUG-16's line limit), so each move re-ran every row's body. The expansion now reads the
     /// style's `\.settingsRowIsFocused` inside the row. `.focused($focusedRow, equals: key)` stays
-    /// HERE, on the call site: initial focus and restore (`focusedRow = firstRowKey`, the collapse
-    /// retarget, `focusListAfterAutoPlay`) go through the parent's binding and the stable row keys.
+    /// HERE, on the call site: initial focus and restore (`placeInitialListFocus`, the chip-step
+    /// request, `focusListAfterAutoPlay`) go through the parent's binding and the stable row keys.
     ///
     /// The closures are not part of the row's identity, so they carry the KEY and look the stream up
     /// when pressed (`liveStream(forRowKey:)`): a debrid preparation that swaps a resolved URL into
@@ -1475,19 +1388,33 @@ struct StreamPickerView: View {
         focusListAfterAutoPlay()
     }
 
-    /// Initial focus for the list once the overlay lifts (same targets as the first-groups rule).
+    /// Initial focus for the list once the overlay lifts (same target as the first-streams rule: the first row).
     private func focusListAfterAutoPlay() {
-        DispatchQueue.main.async {
-            guard listFocusIsPlaceable else { return }
-            let ids = model.groups.map(\.id)
-            if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey {
-                didPlaceListFocus = true
-                focusedRow = firstKey
-            } else if let firstId = ids.first {
-                didPlaceListFocus = true
-                focusedRow = Self.headerKey(groupId: firstId)
-            }
+        DispatchQueue.main.async { placeInitialListFocus() }
+    }
+
+    /// P3.4: the list's initial-focus rule. The first row once the list has rows; once the fan-out
+    /// has finished with none, the "All" chip, so an empty outcome still leaves a control inside
+    /// the panel focused (the empty-pushed-view eject class: Menu with focus stranded on the tab
+    /// bar exits the app). Once per load, and never off a row the viewer moved to
+    /// (`listFocusIsPlaceable`). Nothing while the loading cover is up (the panel is disabled).
+    private func placeInitialListFocus() {
+        guard !loadingCoverVisible, listFocusIsPlaceable else { return }
+        let target: String?
+        if let firstKey = model.firstRowKey {
+            target = firstKey
+        } else if !model.isLoading, model.fanOut.hasOutcome {
+            // Review r1: the selected chip when there is one (a stale-link reload keeps it), "All"
+            // otherwise or when that chip was dropped as an error chip.
+            let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
+            let selectedDropped = model.selectedFilter.map { hiddenErrorChips.contains($0) } ?? false
+            target = selectedDropped ? SourceChipRow.allKey : selectedKey
+        } else {
+            target = nil
         }
+        guard let target else { return }
+        didPlaceListFocus = true
+        DispatchQueue.main.async { focusedRow = target }
     }
 
     /// P2 (review r1, P1): the list's initial-focus rules may move focus: once per load, and only
@@ -1815,13 +1742,20 @@ struct StreamRowView: View, Equatable {
                     StreamRowAddonColumn(name: model.addonName, logo: model.addonLogo)
                 }
             }
-            .padding(.vertical, Theme.Spacing.xs + 2)
-            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(Theme.Spacing.md)
         }
         // `.settingsRow` (platter-free, soft white highlight + accent ring) replaces the system
         // `.glass` style: Liquid Glass's focus platter goes near-white, which made this row's
         // title text (statically `textPrimary`, near-white) unreadable on focus.
         .buttonStyle(.settingsRow)
+        // P3.2: a 12 pt card on `surface` at rest so the row reads inside the panel (upstream mobile
+        // white 5 %, Android TV #1A1A1A). Drawn BEHIND the style: focus keeps `.settingsRow`'s white
+        // platter and lift on top (the native-List pass is a separate debt, not this batch).
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.Palette.surface)
+        )
+        .accessibilityIdentifier("stream_picker_row")
         // FEAT-5: long-press → the OTHER player(s). With the built-in default, the menu offers
         // the installed external players; with an external default (plain Select already hands
         // off) it inverts to offer "Play in NuvioTV Player" plus any non-default externals. The
