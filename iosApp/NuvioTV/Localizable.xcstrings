@@ -245,6 +245,40 @@
         }
       }
     },
+    "%@ connected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ verbunden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ conectado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ connecté"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ connesso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ đã kết nối"
+          }
+        }
+      }
+    },
     "%@ couldn’t be reached.": {
       "extractionState": "manual",
       "localizations": {
@@ -516,6 +550,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ · Phiên đã hết hạn"
+          }
+        }
+      }
+    },
+    "%@ · managed in Add-ons": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · verwaltet unter Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · gestionado en Complementos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · géré dans Addons"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · gestito in Componenti aggiuntivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · quản lý trong addon"
           }
         }
       }
@@ -1308,6 +1376,40 @@
         }
       }
     },
+    "%lld installed · %lld on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld installiert · %lld aktiv"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld instalados · %lld activos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld installés · %lld activés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld installati · %lld attivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld đã cài · %lld đang bật"
+          }
+        }
+      }
+    },
     "%lld links": {
       "localizations": {
         "de": {
@@ -1440,6 +1542,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã bật %lld trên %lld"
+          }
+        }
+      }
+    },
+    "%lld of %lld on Home": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld auf Start"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld en Inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld sur l'accueil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld in Home"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trên %lld ở Trang chủ"
           }
         }
       }
@@ -2090,6 +2226,40 @@
         }
       }
     },
+    "(key hidden)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(Schlüssel verborgen)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(clave oculta)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(clé masquée)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(chiave nascosta)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(khóa đã ẩn)"
+          }
+        }
+      }
+    },
     "+%lld": {
       "localizations": {
         "de": {
@@ -2154,6 +2324,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "+%lld dB"
+          }
+        }
+      }
+    },
+    "+%lld more": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld weitere"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld más"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld de plus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld altri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld nữa"
           }
         }
       }
@@ -5386,6 +5590,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tất cả nguồn"
+          }
+        }
+      }
+    },
+    "Already in add-ons order.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bereits in der Add-ons-Reihenfolge."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ya está en el orden de los complementos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déjà dans l'ordre des addons."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Già nell'ordine degli addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã theo thứ tự addon."
           }
         }
       }
@@ -9470,6 +9708,74 @@
         }
       }
     },
+    "Catalogs now follow your add-ons order.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kataloge folgen jetzt der Reihenfolge deiner Add-ons."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los catálogos ahora siguen el orden de tus complementos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les catalogues suivent désormais l'ordre de vos addons."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I cataloghi ora seguono l'ordine dei tuoi addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh mục giờ theo thứ tự addon của bạn."
+          }
+        }
+      }
+    },
+    "Catalogs: %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kataloge: %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catálogos: %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catalogues : %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cataloghi: %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh mục: %lld"
+          }
+        }
+      }
+    },
     "Centre": {
       "localizations": {
         "de": {
@@ -9772,6 +10078,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang kiểm tra Simkl xem có thay đổi từ ứng dụng khác hoặc trang web…"
+          }
+        }
+      }
+    },
+    "Checking the add-on…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-on wird geprüft…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprobando el complemento…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vérification de l'addon…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifica dell'addon…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang kiểm tra addon…"
           }
         }
       }
@@ -10729,6 +11069,40 @@
         }
       }
     },
+    "Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinématographique place l’illustration du titre derrière la liste des sources, assombrie sur les bords pour que les deux volets restent lisibles. Normal conserve le fond uni de l’application. Par défaut : Cinématographique."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinematográfico coloca la imagen del título detrás de la lista de fuentes, atenuada en los bordes para que ambos paneles se lean bien. Normal mantiene el fondo simple de la app. Por defecto: Cinematográfico."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filmisch legt das Artwork des Titels hinter die Quellenliste, an den Rändern abgedunkelt, damit beide Bereiche lesbar bleiben. Normal behält den schlichten App-Hintergrund bei. Standardmäßig: Filmisch."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinematografico posiziona l’immagine del titolo dietro l’elenco delle sorgenti, attenuata ai bordi così che entrambi i pannelli restino leggibili. Normale mantiene lo sfondo semplice dell’app. Predefinito: Cinematografico."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Điện ảnh đặt hình ảnh của tựa phim phía sau danh sách nguồn, làm tối ở các cạnh để cả hai khung đều dễ đọc. Cơ bản giữ nền ứng dụng đơn giản. Mặc định: Điện ảnh."
+          }
+        }
+      }
+    },
     "Classic": {
       "localizations": {
         "fr": {
@@ -11511,6 +11885,40 @@
         }
       }
     },
+    "Coming in a later beta": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kommt in einer späteren Beta"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Llegará en una beta posterior"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible dans une prochaine bêta"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arriverà in una beta successiva"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sẽ có trong bản beta sau"
+          }
+        }
+      }
+    },
     "Comments": {
       "localizations": {
         "de": {
@@ -11609,6 +12017,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID hãng sản xuất"
+          }
+        }
+      }
+    },
+    "Configure": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konfigurieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configura"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cấu hình"
           }
         }
       }
@@ -12935,6 +13377,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không cài được URL đó."
+          }
+        }
+      }
+    },
+    "Couldn't install that add-on.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Add-on konnte nicht installiert werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo instalar el complemento."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible d'installer cet addon."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile installare questo addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể cài addon đó."
           }
         }
       }
@@ -15557,6 +16033,40 @@
         }
       }
     },
+    "Disabled on Home": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf Start deaktiviert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado en Inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé sur l'accueil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivato in Home"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã tắt trên Trang chủ"
+          }
+        }
+      }
+    },
     "Disconnect": {
       "localizations": {
         "de": {
@@ -15961,6 +16471,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dolby Vision cấu hình 5"
+          }
+        }
+      }
+    },
+    "Done": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listo"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fertig"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fatto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xong"
           }
         }
       }
@@ -17019,6 +17563,40 @@
         }
       }
     },
+    "Enter a valid addon URL (http or https).": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib eine gültige Add-on-URL ein (http oder https)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introduce una URL de complemento válida (http o https)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saisissez une URL d'addon valide (http ou https)."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inserisci un URL di addon valido (http o https)."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhập URL addon hợp lệ (http hoặc https)."
+          }
+        }
+      }
+    },
     "Enter current PIN": {
       "localizations": {
         "de": {
@@ -17933,6 +18511,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nổi bật"
+          }
+        }
+      }
+    },
+    "Fetching its manifest.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manifest wird abgerufen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obteniendo su manifest."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Récupération de son manifest."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recupero del suo manifest."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải manifest của addon."
           }
         }
       }
@@ -18955,6 +19567,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Từ Trakt"
+          }
+        }
+      }
+    },
+    "From a manifest URL": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Über eine Manifest-URL"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desde una URL de manifest"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depuis une URL de manifest"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Da un URL di manifest"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Từ URL manifest"
           }
         }
       }
@@ -21681,6 +22327,40 @@
         }
       }
     },
+    "Install add-on": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-on installieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instalar complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installer l'addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installa addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cài addon"
+          }
+        }
+      }
+    },
     "Install add-ons to customize your Home rows.": {
       "localizations": {
         "de": {
@@ -21851,6 +22531,40 @@
         }
       }
     },
+    "Installed add-ons": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installierte Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Complementos instalados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "addons installés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "addon installati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "addon đã cài"
+          }
+        }
+      }
+    },
     "Installs a plugin repository from its manifest web address. The repository then syncs to your other Nuvio devices.": {
       "localizations": {
         "de": {
@@ -21881,6 +22595,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cài một kho plugin từ địa chỉ web manifest của nó. Kho sau đó đồng bộ với các thiết bị Nuvio khác của bạn."
+          }
+        }
+      }
+    },
+    "It is on and will answer the next search for streams.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Es ist aktiv und beantwortet die nächste Suche nach Streams."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Está activado y responderá a la próxima búsqueda de flujos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il est activé et répondra à la prochaine recherche de flux."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "È attivo e risponderà alla prossima ricerca di stream."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang bật và sẽ trả lời lần tìm nguồn phát tiếp theo."
           }
         }
       }
@@ -24027,6 +24775,40 @@
         }
       }
     },
+    "Manage from phone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Am Telefon verwalten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gestionar desde el teléfono"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gérer depuis le téléphone"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gestisci dal telefono"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quản lý từ điện thoại"
+          }
+        }
+      }
+    },
     "Mark %@ Unwatched": {
       "localizations": {
         "de": {
@@ -24333,6 +25115,40 @@
         }
       }
     },
+    "Match": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Übernehmen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aplicar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appliquer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applica"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp dụng"
+          }
+        }
+      }
+    },
     "Match Content Frame Rate": {
       "localizations": {
         "de": {
@@ -24363,6 +25179,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Khớp tốc độ khung hình nội dung"
+          }
+        }
+      }
+    },
+    "Match add-ons order": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-ons-Reihenfolge übernehmen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aplicar el orden de los complementos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appliquer l'ordre des addons"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applica l'ordine degli addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp dụng thứ tự addon"
+          }
+        }
+      }
+    },
+    "Match add-ons order?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-ons-Reihenfolge übernehmen?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Aplicar el orden de los complementos?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appliquer l'ordre des addons ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applicare l'ordine degli addon?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Áp dụng thứ tự addon?"
           }
         }
       }
@@ -24465,6 +25349,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vừa+"
+          }
+        }
+      }
+    },
+    "Metadata": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metadaten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metadatos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Métadonnées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metadati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siêu dữ liệu"
           }
         }
       }
@@ -24941,6 +25859,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chuyển lên"
+          }
+        }
+      }
+    },
+    "Move down": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach unten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bajar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descendre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sposta giù"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Di xuống"
+          }
+        }
+      }
+    },
+    "Move up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach oben"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subir"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Monter"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sposta su"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Di lên"
           }
         }
       }
@@ -25694,6 +26680,40 @@
         }
       }
     },
+    "No add-ons installed. Install one to get started.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Add-ons installiert. Installiere eines, um loszulegen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay complementos instalados. Instala uno para empezar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun addon installé. Installez-en un pour commencer."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun addon installato. Installane uno per iniziare."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa cài addon nào. Hãy cài một addon để bắt đầu."
+          }
+        }
+      }
+    },
     "No addons installed yet.": {
       "localizations": {
         "de": {
@@ -25826,6 +26846,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa nhập gói huy hiệu nào."
+          }
+        }
+      }
+    },
+    "No catalogs yet. Install an add-on with catalogs first.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch keine Kataloge. Installiere zuerst ein Add-on mit Katalogen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay catálogos. Instala primero un complemento con catálogos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas encore de catalogues. Installez d'abord un addon avec des catalogues."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun catalogo ancora. Installa prima un addon con cataloghi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có danh mục nào. Hãy cài trước một addon có danh mục."
           }
         }
       }
@@ -26955,6 +28009,74 @@
         }
       }
     },
+    "Not connected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht verbunden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No conectado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non connecté"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non connesso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa kết nối"
+          }
+        }
+      }
+    },
+    "Not refreshed yet": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch nicht aktualisiert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no se ha actualizado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas encore actualisé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non ancora aggiornato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa làm mới"
+          }
+        }
+      }
+    },
     "Not set": {
       "localizations": {
         "de": {
@@ -27053,6 +28175,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chưa có gì ở đây."
+          }
+        }
+      }
+    },
+    "Nothing to refresh.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nichts zu aktualisieren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nada que actualizar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rien à actualiser."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Niente da aggiornare."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có gì để làm mới."
           }
         }
       }
@@ -30699,6 +31855,40 @@
         }
       }
     },
+    "Pinned collection": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angeheftete Sammlung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colección fijada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collection épinglée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raccolta fissata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập đã ghim"
+          }
+        }
+      }
+    },
     "Places the badge chips above the stream name instead of below its description.": {
       "localizations": {
         "de": {
@@ -33827,6 +35017,40 @@
         }
       }
     },
+    "Refresh all": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle aktualisieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizar todo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tout actualiser"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiorna tutto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Làm mới tất cả"
+          }
+        }
+      }
+    },
     "Refresh sources": {
       "extractionState": "manual",
       "localizations": {
@@ -33858,6 +35082,142 @@
           "stringUnit": {
             "state": "translated",
             "value": "Làm mới nguồn"
+          }
+        }
+      }
+    },
+    "Refreshed %lld, %lld failed.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld aktualisiert, %lld fehlgeschlagen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld actualizados, %lld con error."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld actualisés, %lld en échec."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld aggiornati, %lld non riusciti."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã làm mới %lld, %lld lỗi."
+          }
+        }
+      }
+    },
+    "Refreshed %lld.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld aktualisiert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld actualizados."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld actualisés."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld aggiornati."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã làm mới %lld."
+          }
+        }
+      }
+    },
+    "Refreshing": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualisation"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizando"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird aktualisiert"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiornamento"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang làm mới"
+          }
+        }
+      }
+    },
+    "Refreshing add-ons (%lld)…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add-ons werden aktualisiert (%lld)…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizando complementos (%lld)…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualisation des addons (%lld)…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiornamento degli addon (%lld)…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang làm mới addon (%lld)…"
           }
         }
       }
@@ -34746,6 +36106,40 @@
         }
       }
     },
+    "Removed %@.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ entfernt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se eliminó %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ supprimé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimosso %@."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã xóa %@."
+          }
+        }
+      }
+    },
     "Removes %@ and its providers.": {
       "localizations": {
         "de": {
@@ -34912,6 +36306,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Thay ảnh danh mục bằng poster từ một dịch vụ như RPDB. Mở một trang để bạn nhập mẫu URL poster."
+          }
+        }
+      }
+    },
+    "Repositories: %lld · Providers: %lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repositorys: %lld · Anbieter: %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repositorios: %lld · Proveedores: %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dépôts : %lld · Fournisseurs : %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repository: %lld · Provider: %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kho: %lld · Nhà cung cấp: %lld"
           }
         }
       }
@@ -36273,6 +37701,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Quét mã, hoặc mở trong trình duyệt bất kỳ:"
+          }
+        }
+      }
+    },
+    "Scan to configure this add-on on your phone.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanne den Code, um dieses Add-on auf deinem Telefon zu konfigurieren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escanea para configurar este complemento en tu teléfono."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scannez pour configurer cet addon sur votre téléphone."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scansiona per configurare questo addon sul telefono."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quét mã để cấu hình addon này trên điện thoại."
           }
         }
       }
@@ -43046,6 +44508,40 @@
         }
       }
     },
+    "Streams": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Streams"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuentes"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Streams"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flussi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nguồn phát"
+          }
+        }
+      }
+    },
     "Streams open in %@. Hold a stream to play it in NuvioTV instead; if %@ can’t open, playback falls back to the built-in player.": {
       "localizations": {
         "de": {
@@ -43688,6 +45184,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chuyển về api.nuvio.tv. Bạn sẽ bị đăng xuất và dữ liệu cục bộ trên Apple TV này sẽ bị xóa."
+          }
+        }
+      }
+    },
+    "Switch each catalog on or off and set the order of your Home rows. Collections appear where Home shows them.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schalte jeden Katalog ein oder aus und lege die Reihenfolge deiner Start-Reihen fest. Sammlungen erscheinen dort, wo Start sie anzeigt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activa o desactiva cada catálogo y define el orden de tus filas de Inicio. Las colecciones aparecen donde Inicio las muestra."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activez ou désactivez chaque catalogue et réglez l'ordre de vos rangées l'accueil. Les collections apparaissent là où l'accueil les affiche."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva o disattiva ogni catalogo e imposta l'ordine delle righe di Home. Le raccolte appaiono dove Home le mostra."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật hoặc tắt từng danh mục và đặt thứ tự các hàng trên Trang chủ. Bộ sưu tập xuất hiện ở nơi Trang chủ hiển thị chúng."
           }
         }
       }
@@ -44947,6 +46477,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Màu chữ"
+          }
+        }
+      }
+    },
+    "That addon is already installed.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet addon est déjà installé."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ese complemento ya está instalado."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Add-on ist bereits installiert."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo addon è già installato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addon này đã được cài đặt."
           }
         }
       }
@@ -46239,6 +47803,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hồ sơ này đã bị khóa."
+          }
+        }
+      }
+    },
+    "This profile uses the primary profile's add-ons. Manage them there.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses Profil nutzt die Add-ons des Hauptprofils. Verwalte sie dort."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este perfil usa los complementos del perfil principal. Gestiónalos allí."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce profil utilise les addons du profil principal. Gérez-les là-bas."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo profilo usa gli addon del profilo principale. Gestiscili lì."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hồ sơ này dùng addon của hồ sơ chính. Hãy quản lý ở đó."
           }
         }
       }
@@ -47978,6 +49576,40 @@
         }
       }
     },
+    "Try again": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erneut versuchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réessayer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riprova"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử lại"
+          }
+        }
+      }
+    },
     "Try with mpv": {
       "localizations": {
         "de": {
@@ -48761,6 +50393,40 @@
         }
       }
     },
+    "Unavailable": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indisponible"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No disponible"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht verfügbar"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non disponibile"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không khả dụng"
+          }
+        }
+      }
+    },
     "Under Search": {
       "localizations": {
         "de": {
@@ -49063,6 +50729,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tập sắp phát sóng"
+          }
+        }
+      }
+    },
+    "Updated %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktualisiert %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizado %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mis à jour %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiornato %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã cập nhật %@"
           }
         }
       }
@@ -49675,6 +51375,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phiên bản"
+          }
+        }
+      }
+    },
+    "Version %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versión %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versione %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phiên bản %@"
           }
         }
       }
@@ -51239,6 +52973,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tập của bạn"
+          }
+        }
+      }
+    },
+    "Your Home rows will be reordered to follow your add-ons, on every device signed in to this profile.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Start-Reihen werden an deine Add-ons angepasst, auf allen Geräten, die bei diesem Profil angemeldet sind."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las filas de Inicio se reordenarán según tus complementos, en todos los dispositivos con sesión iniciada en este perfil."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les rangées de l'accueil seront réordonnées selon vos addons, sur chaque appareil connecté à ce profil."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le righe di Home verranno riordinate in base ai tuoi addon, su tutti i dispositivi collegati a questo profilo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các hàng trên Trang chủ sẽ được sắp xếp lại theo addon của bạn, trên mọi thiết bị đăng nhập vào hồ sơ này."
           }
         }
       }
@@ -52810,6 +54578,40 @@
         }
       }
     },
+    "disabled": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "deaktiviert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "desactivado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "désactivé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "disattivato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "đã tắt"
+          }
+        }
+      }
+    },
     "en": {
       "localizations": {
         "de": {
@@ -52840,6 +54642,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "en"
+          }
+        }
+      }
+    },
+    "enabled": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "aktiviert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "activado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "activé"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "attivato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "đã bật"
           }
         }
       }
@@ -53744,40 +55580,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "−1 s"
-          }
-        }
-      }
-    },
-    "Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.": {
-      "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cinématographique place l’illustration du titre derrière la liste des sources, assombrie sur les bords pour que les deux volets restent lisibles. Normal conserve le fond uni de l’application. Par défaut : Cinématographique."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cinematográfico coloca la imagen del título detrás de la lista de fuentes, atenuada en los bordes para que ambos paneles se lean bien. Normal mantiene el fondo simple de la app. Por defecto: Cinematográfico."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Filmisch legt das Artwork des Titels hinter die Quellenliste, an den Rändern abgedunkelt, damit beide Bereiche lesbar bleiben. Normal behält den schlichten App-Hintergrund bei. Standardmäßig: Filmisch."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cinematografico posiziona l’immagine del titolo dietro l’elenco delle sorgenti, attenuata ai bordi così che entrambi i pannelli restino leggibili. Normale mantiene lo sfondo semplice dell’app. Predefinito: Cinematografico."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Điện ảnh đặt hình ảnh của tựa phim phía sau danh sách nguồn, làm tối ở các cạnh để cả hai khung đều dễ đọc. Cơ bản giữ nền ứng dụng đơn giản. Mặc định: Điện ảnh."
           }
         }
       }

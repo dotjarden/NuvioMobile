@@ -19,6 +19,8 @@ nonisolated enum InstallPhase: Equatable {
 /// `MPVPlayerView.swift:820-845`). A mid-install close is therefore made harmless: the install
 /// keeps running in the view model, a reopened sheet seeds `.checking` while it is still busy,
 /// and the hub toasts and focuses the new card if the add-on lands while the sheet is closed.
+/// DEBUG knob `-debug.installPrefillUrl <url>`: prefills the URL field on appear (typing into the
+/// tvOS field from XCUITest is unreliable); used by `AddonsHubUITests.testInstallReorderPickerAndRemove`.
 /// DEVICE CHECK OWED IN H5: press Menu during Checking on the box, with a slow stub install, and
 /// confirm which of the two happens (swallowed, or closed and recovered).
 struct AddonInstallSheet: View {
@@ -71,6 +73,13 @@ struct AddonInstallSheet: View {
             .onAppear {
                 fieldFocused = true
                 seedPhase()
+                #if DEBUG
+                // `-debug.installPrefillUrl <url>` prefills the field (never persisted, never
+                // written back); used by `AddonsHubUITests.testInstallReorderPickerAndRemove`.
+                if newUrl.isEmpty, let prefill = UserDefaults.standard.string(forKey: "debug.installPrefillUrl"), !prefill.isEmpty {
+                    newUrl = prefill
+                }
+                #endif
             }
             .onChange(of: model.isInstalling) { _, installing in
                 if installing { phase = Self.installPhase(isInstalling: true, outcome: model.installOutcome) }
@@ -163,6 +172,11 @@ private struct StatusModal: View {
     let phase: InstallPhase
     /// The modal's own scope, apart from the form's, for Done / Try again's default focus.
     @Namespace private var focusNamespace
+    /// Where focus sits inside the modal. The form keeps the engine's focus when it is disabled
+    /// underneath an overlay (observed on the FA87 sim: Install stayed focused after Installed),
+    /// so the modal moves focus itself on appear and on every phase change.
+    private enum Target: Hashable { case card, done, retry, cancel }
+    @FocusState private var focus: Target?
     let onDone: () -> Void
     let onRetry: () -> Void
     let onCancel: () -> Void
@@ -171,6 +185,29 @@ private struct StatusModal: View {
         ZStack {
             Color.black.opacity(0.5).ignoresSafeArea()
             card
+        }
+        // Default focus for the engine's own update (the card stops being focusable when
+        // Checking ends, which empties focus on the FA87 sim), plus explicit requests at 50 ms,
+        // 350 ms and 1.25 s after the phase change: a request made in the same pass as the
+        // button's insertion is dropped. The requests stop as soon as anything in the modal holds
+        // focus, so a user who has already moved to Cancel is not pulled back.
+        .defaultFocus($focus, Self.target(for: phase))
+        .task(id: phase) {
+            let target = Self.target(for: phase)
+            for delay in [0.05, 0.3, 0.9] {
+                try? await Task.sleep(for: .seconds(delay))
+                if Task.isCancelled || focus != nil { return }
+                focus = target
+            }
+        }
+    }
+
+    private nonisolated static func target(for phase: InstallPhase) -> Target? {
+        switch phase {
+        case .idle: return nil
+        case .checking: return .card
+        case .installed: return .done
+        case .failed: return .retry
         }
     }
 
@@ -183,7 +220,18 @@ private struct StatusModal: View {
         }
     }
 
-    private var card: some View {
+    /// `.focusable(false)` on the card would make its buttons unreachable too (the FA87 sim kept
+    /// focus on the disabled Install button, then on nothing), so the modifier is only applied
+    /// while Checking, when the card itself must hold focus.
+    @ViewBuilder private var card: some View {
+        if phase == .checking {
+            cardBody.focusable().focused($focus, equals: .card)
+        } else {
+            cardBody
+        }
+    }
+
+    private var cardBody: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             switch phase {
             case .idle:
@@ -203,6 +251,7 @@ private struct StatusModal: View {
                         Text("Done").padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.xxs)
                     }
                     .buttonStyle(.borderedProminent)
+                    .focused($focus, equals: .done)
                     .prefersDefaultFocus(true, in: focusNamespace)
                     .accessibilityIdentifier("addons_hub_install_done")
                 }
@@ -216,12 +265,14 @@ private struct StatusModal: View {
                         Text("Try again").padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.xxs)
                     }
                     .buttonStyle(.borderedProminent)
+                    .focused($focus, equals: .retry)
                     .prefersDefaultFocus(true, in: focusNamespace)
                     .accessibilityIdentifier("addons_hub_install_retry")
                     Button(action: onCancel) {
                         Text("Cancel").padding(.horizontal, Theme.Spacing.md).padding(.vertical, Theme.Spacing.xxs)
                     }
                     .buttonStyle(.bordered)
+                    .focused($focus, equals: .cancel)
                     .accessibilityIdentifier("addons_hub_install_cancel")
                 }
             }
@@ -229,9 +280,8 @@ private struct StatusModal: View {
         .padding(Theme.Spacing.xl)
         .frame(width: 720, alignment: .leading)
         .background(Theme.Palette.surfaceElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.hero))
-        // While checking there is no button: the card itself holds focus so Menu reaches the
-        // sheet's `.onExitCommand` (which swallows it) instead of closing the sheet.
-        .focusable(phase == .checking)
+        // While checking there is no button: the card itself holds focus (see `card`) so Menu
+        // reaches the sheet's `.onExitCommand` (which swallows it) instead of closing the sheet.
         .focusScope(focusNamespace)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
