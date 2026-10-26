@@ -45,12 +45,19 @@ struct AddonInstallSheet: View {
         }
     }
 
+    /// The repository's failure text already opens with "Couldn't install: " (box, 2026-10-26:
+    /// the modal read it twice under its own title); the modal shows only the reason.
+    nonisolated static func reason(_ message: String) -> String {
+        let prefix = "Couldn't install: "
+        return message.hasPrefix(prefix) ? String(message.dropFirst(prefix.count)) : message
+    }
+
     /// The pure phase rule behind `.onChange`: busy wins, then the typed outcome, else idle.
     nonisolated static func installPhase(isInstalling: Bool, outcome: AddonsViewModel.InstallOutcome?) -> InstallPhase {
         if isInstalling { return .checking }
         switch outcome {
         case .installed(let name, _)?: return .installed(name: name)
-        case .failed(let message, _)?: return .failed(message: message)
+        case .failed(let message, _)?: return .failed(message: Self.reason(message))
         case nil: return .idle
         }
     }
