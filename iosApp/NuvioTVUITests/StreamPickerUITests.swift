@@ -266,16 +266,15 @@ final class StreamPickerUITests: XCTestCase {
         // first row is known by its label from here on.
         let firstRowLabel = rows(app).element(boundBy: 0).label
         let firstRowByLabel = rows(app).matching(NSPredicate(format: "label == %@", firstRowLabel)).firstMatch
-        // Review r1 P2: walk Down until the realized count stops growing (capped), then Up until
-        // the first row reports focus again (capped), so one dropped press cannot derail the leg.
+        // Review r1 P2 / r2: press Down `expectedTotal + 2` times (capped; the lazy list grows only
+        // as focus nears its end, so a "stops growing" rule quit too early on run 9) reading the
+        // realized count after each press; the Up walk back is bounded by the first row's label,
+        // so a dropped press cannot derail the leg.
         var total = rows(app).count
-        var stalled = 0
-        for _ in 0..<12 where stalled < 2 {
+        for _ in 0..<min(expectedTotal + 2, 14) {
             remote.press(.down)
             pause(0.5)
-            let now = rows(app).count
-            stalled = now > total ? 0 : stalled + 1
-            total = max(total, now)
+            total = max(total, rows(app).count)
         }
         var ups = 0
         while ups < 12, !(firstRowByLabel.exists && firstRowByLabel.hasFocus) {

@@ -159,6 +159,12 @@ struct StreamPickerView: View {
     /// frame and take focus before any row exists, so "focus is still on a chip" counts as
     /// unplaced until the viewer has acted on a chip. Re-armed by the stale-link reload.
     @State private var didPlaceListFocus = false
+    /// P5 device pass: the viewer pressed a chip, Refresh, or moved along the chips this load. A
+    /// load that empties the list (the repository publishes a fresh state before its first group
+    /// lands, e.g. a re-open of a title whose cached groups the watcher emitted first) re-arms the
+    /// initial-focus rule only while this is false, so a viewer's chip focus is never pulled to the
+    /// list by the refresh they asked for.
+    @State private var viewerChoseChip = false
     /// P2: a D-pad chip step moves focus to the list's first target once the filtered groups land;
     /// a Select on a chip keeps focus on the chip. Three states (review r3): `.pending` from the
     /// step until the filter handler runs; `.awaitingGroups` when the stepped-to add-on had no
@@ -408,7 +414,18 @@ struct StreamPickerView: View {
                 Text(alert.reason)
             }
             .onChange(of: model.groups.map(\.id)) { _, ids in
-                guard !ids.isEmpty else { return }
+                NSLog("[PickerFocus] groups n=%d focused=%@ latch=%d chips=%d", ids.count, Self.focusProbeName(focusedRow), didPlaceListFocus ? 1 : 0, viewerChoseChip ? 1 : 0)
+                guard !ids.isEmpty else {
+                    // P5 device pass (Continue Watching re-open): the watcher first emitted the
+                    // title's cached groups, focus was placed on row 1, then the fresh load emptied
+                    // the list and focus fell to the chips with the latch used up. Re-arm the rule
+                    // (as the stale-link reload does) unless the viewer chose a chip this load.
+                    if !viewerChoseChip {
+                        cancelInitialFocusVerify()
+                        didPlaceListFocus = false
+                    }
+                    return
+                }
                 if filterFocusRequest == .awaitingGroups, let target = firstListFocusTarget {
                     filterFocusRequest = .none
                     didPlaceListFocus = true
@@ -470,6 +487,7 @@ struct StreamPickerView: View {
                     // Review r2 (P3): Left/Right along the chips is the viewer acting on them; the
                     // initial-focus rule must not pull them to the list when the first group lands.
                     didPlaceListFocus = true
+                    viewerChoseChip = true
                     cancelInitialFocusVerify()
                     return
                 }
@@ -626,12 +644,14 @@ struct StreamPickerView: View {
                     // The viewer chose where focus is: the initial-focus rule stands down, and a
                     // chip step's stale focus request (review r3) must not move it to the list.
                     didPlaceListFocus = true
+                    viewerChoseChip = true
                     filterFocusRequest = .none
                     cancelInitialFocusVerify()
                     model.selectFilter(addonId)
                 },
                 onRefresh: {
                     didPlaceListFocus = true
+                    viewerChoseChip = true
                     filterFocusRequest = .none
                     cancelInitialFocusVerify()
                     model.reload()
@@ -1427,6 +1447,7 @@ struct StreamPickerView: View {
             target = nil
         }
         guard let target else { return }
+        NSLog("[PickerFocus] place target=%@ focused=%@", Self.focusProbeName(target), Self.focusProbeName(focusedRow))
         didPlaceListFocus = true
         initialFocusTarget = target
         initialFocusAttempts = 0
@@ -1444,11 +1465,18 @@ struct StreamPickerView: View {
         initialFocusVerifyTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled, let wanted = initialFocusTarget else { return }
+            NSLog("[PickerFocus] verify attempt=%d wanted=%@ focused=%@", initialFocusAttempts,
+                  Self.focusProbeName(wanted), Self.focusProbeName(focusedRow))
             if focusedRow == wanted { initialFocusTarget = nil; return }
             let unplaced = focusedRow == nil || focusedRow?.hasPrefix("chip:") == true
             guard unplaced, initialFocusAttempts < 3 else { initialFocusTarget = nil; return }
+            // P5 device pass (Continue Watching re-open, Living Room box): the first group to
+            // answer placed its row, then the add-ons that landed next sorted ABOVE it, so the
+            // wanted row sat off-screen, unrealized by the LazyVStack, and four writes were
+            // dropped while focus stayed on the refresh chip. Re-target to the CURRENT first row
+            // (realized at the top) whenever the list has one; a chip target stays as asked.
             let target: String
-            if wanted.hasPrefix("chip:") || model.groups.contains(where: { $0.rowKeys.contains(wanted) }) {
+            if wanted.hasPrefix("chip:") {
                 target = wanted
             } else if let first = model.firstRowKey {
                 target = first
@@ -1461,6 +1489,15 @@ struct StreamPickerView: View {
             focusedRow = target
             scheduleInitialFocusVerify()
         }
+    }
+
+    /// Focus keys for the `[PickerFocus]` probes: a row key carries the add-on id, which carries
+    /// the manifest URL (a config leak into console logs, the rig-log staging class), so a row is
+    /// logged by its position only.
+    private static func focusProbeName(_ key: String?) -> String {
+        guard let key else { return "nil" }
+        if key.hasPrefix("chip:") || key == testRowKey { return key }
+        return "row"
     }
 
     /// The viewer acted (a chip press, a move along the chips, a row): no more re-issues.
