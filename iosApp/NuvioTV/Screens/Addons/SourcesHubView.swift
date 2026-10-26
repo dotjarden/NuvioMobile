@@ -196,20 +196,12 @@ struct SourcesHubView: View {
             }
             .focused($focusedControl, equals: "action:install")
 
-            TimelineView(.periodic(from: .now, by: 30)) { _ in
-            HubCard(
-                title: String(localized: "Refresh all"),
-                value: refreshSubtitle,
-                systemImage: "arrow.clockwise",
-                loading: model.isRefreshingAny,
-                id: "addons_hub_action_refresh"
-            ) {
-                let enabled = model.addons.filter { $0.enabled }.count
-                showToast(enabled == 0
-                    ? String(localized: "Nothing to refresh.")
-                    : String(localized: "Refreshing add-ons (\(enabled))…"))
-                model.refreshAll()
-            }
+            // The named relative stamp does not tick by itself: a 30 s timeline re-renders the
+            // card while a stamp exists; before the first refresh the plain card costs nothing.
+            if model.lastRefreshedAt != nil {
+                TimelineView(.periodic(from: .now, by: 30)) { _ in refreshCard }
+            } else {
+                refreshCard
             }
 
             if DebugConfig.showsPhoneManagement {
@@ -224,9 +216,25 @@ struct SourcesHubView: View {
         .focusSection()
     }
 
+    private var refreshCard: some View {
+        HubCard(
+            title: String(localized: "Refresh all"),
+            value: refreshSubtitle,
+            systemImage: "arrow.clockwise",
+            loading: model.isRefreshingAny,
+            id: "addons_hub_action_refresh"
+        ) {
+            let enabled = model.addons.filter { $0.enabled }.count
+            showToast(enabled == 0
+                ? String(localized: "Nothing to refresh.")
+                : String(localized: "Refreshing add-ons (\(enabled))…"))
+            model.refreshAll()
+        }
+    }
+
     /// Named relative wording ("1 minute ago", "now"): `Text(_:style: .relative)` renders
-    /// "1 min, 5 sec" with no "ago" (box, 2026-10-26). The formatter does not tick, so the
-    /// Refresh card sits in a 30 s `TimelineView`.
+    /// "1 min, 5 sec" with no "ago" (box, 2026-10-26). The formatter does not tick; see
+    /// `refreshCard`'s `TimelineView`.
     private var refreshSubtitle: Text {
         guard let stamp = model.lastRefreshedAt else { return Text("Not refreshed yet") }
         return Text("Updated \(stamp, format: .relative(presentation: .named))")

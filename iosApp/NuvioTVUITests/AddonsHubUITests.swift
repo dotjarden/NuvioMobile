@@ -547,11 +547,14 @@ final class AddonsHubUITests: XCTestCase {
         remote.press(.select)
         let didFlip = waitUntil(timeout: 5) { value() == flipped }
         let labelWhenFlipped = row0.label
-        // Restore first (focus is still on the toggle after Select; read it before pressing), and
-        // only if the first Select registered: a dropped Select followed by a restore press would
-        // leave the Chris fixture flipped with nothing to undo it.
-        if didFlip, toggle.hasFocus { remote.press(.select) }
-        let restored = waitUntil(timeout: 5) { value() == before }
+        // Restore first, keyed on the VALUE (a dropped Select followed by a restore press would
+        // leave the Chris fixture flipped with nothing to undo it), up to two presses in case the
+        // restore press itself is dropped; focus is still on the toggle after Select.
+        var restored = value() == before
+        for _ in 0..<2 where !restored {
+            remote.press(.select)
+            restored = waitUntil(timeout: 5) { value() == before }
+        }
 
         XCTAssertTrue(didFlip, "the toggle value never flipped to \(flipped)")
         if flipped == "disabled" {
@@ -583,6 +586,9 @@ final class AddonsHubUITests: XCTestCase {
         let refresh = element(app, "addons_hub_action_refresh")
         XCTAssertTrue(refresh.waitForExistence(timeout: 5), "addons_hub_action_refresh missing")
         say("refresh card before: stamped=\(refresh.label.contains("Updated")) neverRefreshed=\(refresh.label.contains("Not refreshed yet"))")
+        // The stamp is in-memory and only `refreshAll()` writes it, so a fresh launch always
+        // starts unstamped; the Select below is then the only way to "Updated".
+        XCTAssertTrue(refresh.label.contains("Not refreshed yet"), "the Refresh card is already stamped on a fresh launch; label: \(refresh.label)")
         focusActionCard(app, "addons_hub_action_refresh")
         remote.press(.select)
 

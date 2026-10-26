@@ -1563,7 +1563,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld sur %lld sur l'accueil"
+            "value": "%lld sur %lld à l'accueil"
           }
         },
         "it": {
@@ -22548,19 +22548,19 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "addons installés"
+            "value": "Addons installés"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "addon installati"
+            "value": "Addon installati"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "addon đã cài"
+            "value": "Addon đã cài"
           }
         }
       }
@@ -45205,7 +45205,7 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Activez ou désactivez chaque catalogue et réglez l'ordre de vos rangées l'accueil. Les collections apparaissent là où l'accueil les affiche."
+            "value": "Activez ou désactivez chaque catalogue et réglez l'ordre de vos rangées de l'accueil. Les collections apparaissent là où l'accueil les affiche."
           }
         },
         "it": {
@@ -46477,6 +46477,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Màu chữ"
+          }
+        }
+      }
+    },
+    "That URL did not answer with an add-on manifest.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette URL n'a pas renvoyé de manifeste d'addon."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esa URL no devolvió un manifiesto de complemento."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese URL hat kein Add-on-Manifest geliefert."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo URL non ha restituito un manifest dell'addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "URL này không trả về manifest addon."
           }
         }
       }

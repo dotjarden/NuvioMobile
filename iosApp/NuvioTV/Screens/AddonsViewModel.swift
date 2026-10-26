@@ -121,15 +121,15 @@ final class AddonsViewModel: ObservableObject {
             case .empty:
                 return
             case .unsupportedScheme:
-                publishInstallFailure(String(localized: "Enter a valid addon URL (http or https)."))
+                publishInstallFailure(reason: String(localized: "Enter a valid addon URL (http or https)."))
                 return
             }
         } catch {
-            publishInstallFailure(String(localized: "Enter a valid addon URL (http or https)."))
+            publishInstallFailure(reason: String(localized: "Enter a valid addon URL (http or https)."))
             return
         }
         if addons.contains(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) }) {
-            publishInstallFailure(String(localized: "That addon is already installed."))
+            publishInstallFailure(reason: String(localized: "That addon is already installed."))
             return
         }
         isInstalling = true
@@ -140,26 +140,28 @@ final class AddonsViewModel: ObservableObject {
             Task { @MainActor in
                 self.isInstalling = false
                 if let error {
-                    self.publishInstallFailure(String(localized: "Couldn't install: \(error.localizedDescription)"))
+                    self.publishInstallFailure(reason: error.localizedDescription, status: String(localized: "Couldn't install: \(error.localizedDescription)"))
                 } else if let failure = result as? AddAddonResultError {
-                    self.publishInstallFailure(String(localized: "Couldn't install: \(failure.message)"))
+                    self.publishInstallFailure(reason: failure.message, status: String(localized: "Couldn't install: \(failure.message)"))
                 } else if let success = result as? AddAddonResultSuccess {
                     self.installSerial += 1
                     self.lastInstalledManifestUrl = url
                     self.statusMessage = String(localized: "Installed \(success.manifest.name).")
                     self.installOutcome = .installed(name: success.manifest.name, serial: self.installSerial)
                 } else {
-                    self.publishInstallFailure(String(localized: "Couldn't install that URL."))
+                    self.publishInstallFailure(reason: String(localized: "That URL did not answer with an add-on manifest."), status: String(localized: "Couldn't install that URL."))
                 }
             }
         }
     }
 
     /// Sets the status line and the typed outcome together; the serial makes a repeat observable.
-    private func publishInstallFailure(_ message: String) {
+    /// The outcome carries the bare `reason` (the install sheet's modal titles it "Couldn't install
+    /// that add-on." itself, in every language); the status line keeps its own prefixed wording.
+    private func publishInstallFailure(reason: String, status: String? = nil) {
         installSerial += 1
-        statusMessage = message
-        installOutcome = .failed(message: message, serial: installSerial)
+        statusMessage = status ?? reason
+        installOutcome = .failed(message: reason, serial: installSerial)
     }
 
     func remove(_ addon: ManagedAddon) {
