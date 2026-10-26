@@ -226,7 +226,8 @@ struct SourcesHubView: View {
     /// allocated per render.
     private var refreshSubtitle: Text {
         guard let stamp = model.lastRefreshedAt else { return Text("Not refreshed yet") }
-        return Text("Updated \(stamp, style: .relative)")
+        // `.relative` renders "5 sec" / "2 min" with no "ago" (box, 2026-10-26: "Updated 5 sec").
+        return Text("Updated \(stamp, style: .relative) ago")
     }
 
     // MARK: - Installed section

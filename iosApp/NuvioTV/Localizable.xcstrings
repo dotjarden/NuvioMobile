@@ -50733,36 +50733,36 @@
         }
       }
     },
-    "Updated %@": {
+    "Updated %@ ago": {
       "localizations": {
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aktualisiert %@"
+            "value": "Mis à jour il y a %@"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Actualizado %@"
+            "value": "Actualizado hace %@"
           }
         },
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mis à jour %@"
+            "value": "Aktualisiert vor %@"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aggiornato %@"
+            "value": "Aggiornato %@ fa"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Đã cập nhật %@"
+            "value": "Đã cập nhật %@ trước"
           }
         }
       }

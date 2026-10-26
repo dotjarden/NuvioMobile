@@ -27,8 +27,12 @@ struct AddonDetailSheet: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                 Text(AddonsViewModel.displayTitle(addon)).font(Theme.Font.screenTitle)
                 if let manifest = addon.manifest {
-                    if !manifest.description.isEmpty {
-                        Text(manifest.description).font(Theme.Font.body).lineLimit(6)
+                    // Kotlin's `description` bridges as `description_`; plain `.description` is
+                    // NSObject's, i.e. the data class's toString with the keyed transportUrl in it
+                    // (seen on the box 2026-10-26).
+                    let blurb = Self.blurb(of: manifest)
+                    if !blurb.isEmpty {
+                        Text(blurb).font(Theme.Font.body).lineLimit(6)
                     }
                     Text(versionLine(manifest)).font(Theme.Font.meta)
                     Text(AddonsViewModel.resourceLabels(of: manifest).joined(separator: " · ")).font(Theme.Font.meta)
@@ -55,6 +59,9 @@ struct AddonDetailSheet: View {
             qrFor = key
         }
     }
+
+    /// The manifest's own description text (never the bridged object's `description`).
+    nonisolated static func blurb(of manifest: AddonManifest) -> String { manifest.description_ }
 
     /// The configure URL while the QR is wanted, else "" (nothing to build).
     private func qrKey(_ addon: ManagedAddon) -> String {
