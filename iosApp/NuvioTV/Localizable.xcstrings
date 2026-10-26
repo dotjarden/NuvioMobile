@@ -53116,6 +53116,21 @@
           }
         }
       }
+    },
+    "Finding streams… %lld of %lld": {
+      "extractionState": "manual"
+    },
+    "No sources": {
+      "extractionState": "manual"
+    },
+    "1 add-on": {
+      "extractionState": "manual"
+    },
+    "%lld add-ons": {
+      "extractionState": "manual"
+    },
+    "%@ from %@": {
+      "extractionState": "manual"
     }
   },
   "version": "1.0"

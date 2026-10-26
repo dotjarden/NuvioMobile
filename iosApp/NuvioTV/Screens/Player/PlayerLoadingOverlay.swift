@@ -128,13 +128,13 @@ struct PlayerLoadingOverlay: View {
     /// D2 (Steven rc7, "keep only the title"): the one line kept under the logo, series only —
     /// "S1 · E4 · Episode name", or "S1 · E4" when the list has no name. Never the stream's release
     /// name (the old fallback), which the picker cannot know and which made the line jump on the swap.
-    static func episodeLine(season: Int?, episode: Int?, episodes: [MetaVideo]) -> String? {
+    nonisolated static func episodeLine(season: Int?, episode: Int?, episodes: [MetaVideo]) -> String? {
         guard let season, let episode else { return nil }
         let name = episodes.first { $0.season?.intValue == season && $0.episode?.intValue == episode }?.title
         return episodeLine(season: season, episode: episode, episodeName: name)
     }
 
-    static func episodeLine(season: Int, episode: Int, episodeName: String?) -> String {
+    nonisolated static func episodeLine(season: Int, episode: Int, episodeName: String?) -> String {
         let marker = String(localized: "S\(season) · E\(episode)")
         guard let episodeName, !episodeName.isEmpty else { return marker }
         return "\(marker) · \(episodeName)"

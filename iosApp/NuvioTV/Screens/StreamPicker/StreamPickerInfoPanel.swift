@@ -1,0 +1,128 @@
+import SwiftUI
+import SharedCore
+
+/// Stream picker A, P1: the left pane (40 % of the screen). Static, nothing focusable: the title
+/// logo in the Detail logo slot, one facts line (episode marker · name · runtime, or genres · year),
+/// the poster, and a live progress line that counts the fan-out ("Finding streams… 3 of 4") and
+/// settles on the result ("155 sources from 4 add-ons").
+///
+/// The poster is dropped when the pane is under `posterMinimumHeight` points tall, so a small
+/// window (the simulator at a reduced scale, a sheet) never pushes the progress line off the pane.
+struct StreamPickerInfoPanel: View {
+    let title: String
+    let logoUrl: String?
+    let poster: String?
+    let season: Int?
+    let episode: Int?
+    let episodes: [MetaVideo]
+    let meta: PlaybackMeta?
+    let progress: StreamFanOutProgress
+    /// The user's poster corners (Settings › Appearance), the same value `PosterCard` reads.
+    @Environment(\.posterStyle) private var posterStyle
+
+    /// The Detail logo slot: 180 pt high; `TitleLogoHeader` caps the width at its own
+    /// `heroLogoMaxWidth` (520 pt), which the pane's 40 % share (768 pt at 1080p) holds with room.
+    nonisolated static let logoSlotHeight: CGFloat = 180
+    nonisolated static let logoDecodeWidth: CGFloat = 600
+    nonisolated static let posterWidth: CGFloat = 260
+    nonisolated static var posterHeight: CGFloat { posterWidth * 1.5 }
+    /// Below this pane height the poster is hidden (the loading cover and alerts are unaffected).
+    nonisolated static let posterMinimumHeight: CGFloat = 700
+
+    var body: some View {
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                TitleLogoHeader(
+                    title: title,
+                    logoUrl: logoUrl,
+                    textFont: Theme.Font.screenTitle,
+                    slotHeight: Self.logoSlotHeight,
+                    decodeSize: .points(width: Self.logoDecodeWidth, height: Self.logoSlotHeight),
+                    upgrade: .logo
+                )
+                .frame(maxWidth: Self.logoDecodeWidth, alignment: .leading)
+
+                if let facts = Self.factsLine(season: season, episode: episode, episodes: episodes, meta: meta) {
+                    Text(facts)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(2)
+                }
+
+                if geo.size.height >= Self.posterMinimumHeight, let poster, !poster.isEmpty {
+                    CachedAsyncImage(
+                        string: poster,
+                        decodeSize: .points(width: Self.posterWidth, height: Self.posterHeight),
+                        upgrade: .posterLarge
+                    )
+                    .frame(width: Self.posterWidth, height: Self.posterHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius, style: .continuous))
+                    .accessibilityHidden(true)
+                }
+
+                HStack(spacing: Theme.Spacing.sm) {
+                    if progress.isLoading || !progress.hasOutcome {
+                        ProgressView()
+                    }
+                    Text(Self.progressText(progress))
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                .accessibilityIdentifier("stream_picker_progress")
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(.leading, Theme.Spacing.screen)
+        .padding(.vertical, Theme.Spacing.screen)
+        .padding(.trailing, Theme.Spacing.lg)
+    }
+
+    /// Episode: "S1 · E3 · Double Cross · 45 min" (marker and name from
+    /// `PlayerLoadingOverlay.episodeLine`; the episode's own runtime when the catalog has it, else
+    /// the title's). Movie: "Drama · Sci-Fi · 2024" (up to three genres, then the year). nil when
+    /// nothing is known.
+    nonisolated static func factsLine(
+        season: Int?,
+        episode: Int?,
+        episodes: [MetaVideo],
+        meta: PlaybackMeta?
+    ) -> String? {
+        let separator = " \u{00B7} "
+        if let season, let episode {
+            var parts = [PlayerLoadingOverlay.episodeLine(season: season, episode: episode, episodes: episodes) ?? ""]
+            let episodeMinutes: Int? = episodes
+                .first { $0.season?.intValue == season && $0.episode?.intValue == episode }?
+                .runtime?.intValue
+            if let episodeMinutes, episodeMinutes > 0 {
+                parts.append(String(localized: "\(episodeMinutes) min"))
+            } else if let runtime = meta?.runtime, !runtime.isEmpty {
+                parts.append(runtime)
+            }
+            return parts.filter { !$0.isEmpty }.joined(separator: separator)
+        }
+        var parts = Array((meta?.genres ?? []).prefix(3))
+        if let year = meta?.year, !year.isEmpty { parts.append(year) }
+        return parts.isEmpty ? nil : parts.joined(separator: separator)
+    }
+
+    /// Before the first emission and while loading: "Finding streams…", with "3 of 4" once the
+    /// fan-out knows its size. Done: "155 sources from 3 add-ons" (the add-ons that returned
+    /// sources; singular forms kept), or "No sources" when nothing is listable (the empty-state
+    /// reason beside the list says why).
+    nonisolated static func progressText(_ progress: StreamFanOutProgress) -> String {
+        if !progress.hasOutcome || progress.isLoading {
+            guard progress.expected > 0, progress.isLoading else { return String(localized: "Finding streams\u{2026}") }
+            return String(localized: "Finding streams\u{2026} \(progress.answered) of \(progress.expected)")
+        }
+        guard progress.sources > 0 else { return String(localized: "No sources") }
+        let sources = progress.sources == 1
+            ? String(localized: "1 source")
+            : String(localized: "\(progress.sources) sources")
+        let addons = progress.addonsWithSources == 1
+            ? String(localized: "1 add-on")
+            : String(localized: "\(progress.addonsWithSources) add-ons")
+        return String(localized: "\(sources) from \(addons)")
+    }
+}

@@ -259,6 +259,7 @@ struct EpisodesSection: View {
                 episode: route.episode.episode?.value,
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
+                background: route.meta.background,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
                 meta: PlaybackMeta(details: route.meta),

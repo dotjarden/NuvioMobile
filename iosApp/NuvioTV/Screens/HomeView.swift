@@ -1328,6 +1328,7 @@ struct HomeView: View {
                     // Info header: series poster + the entry's episode still / pause synopsis when
                     // present (blank values count as missing).
                     poster: target.entry.poster,
+                    background: { let b: String? = target.entry.background; return (b ?? "").isEmpty ? nil : b }(),
                     episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
                     synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
                     forceManual: target.forceManual,

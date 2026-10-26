@@ -69,6 +69,9 @@ final class StreamsViewModel: ObservableObject {
     /// read by the picker's `FirstPlayAutoPlayController`. Unfiltered: the playability filter in
     /// `apply(_:)` shapes the visible list only. Republished only when a field actually changes.
     @Published private(set) var autoPlayFeed = FirstPlayAutoPlayFeed.empty
+    /// Stream picker A (P1): how far the fan-out is, for the info panel's progress line. Counts the
+    /// shared groups (one per add-on asked, listable or not) and the listable sources.
+    @Published private(set) var fanOut = StreamFanOutProgress()
 
     private var watcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
@@ -97,6 +100,11 @@ final class StreamsViewModel: ObservableObject {
     // MARK: - Derived badge-setting conveniences (defaults mirror the shared repository)
 
     var showFileSizeBadges: Bool { badgeSettings?.showFileSizeBadges ?? true }
+    /// Stream picker A (P1): the backdrop mode; the platform default (Cinematic on tvOS, decision
+    /// D1) until the settings watcher has emitted.
+    var backgroundMode: StreamBackgroundMode {
+        badgeSettings?.backgroundMode ?? StreamBackgroundDefaults.shared.platformDefault
+    }
     var showAddonLogo: Bool { badgeSettings?.showAddonLogo ?? false }
     var badgesOnTop: Bool { badgeSettings?.badgePlacement == .top }
 
@@ -278,6 +286,15 @@ final class StreamsViewModel: ObservableObject {
                          rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)
         }
         if next != groups { groups = next }
+        let progress = StreamFanOutProgress(
+            answered: state.groups.filter { !$0.isLoading }.count,
+            expected: state.groups.count,
+            sources: next.reduce(0) { $0 + $1.streams.count },
+            addonsWithSources: next.count,
+            isLoading: loading,
+            hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
+        )
+        if progress != fanOut { fanOut = progress }
         let first = next.first?.rowKeys.first
         if firstRowKey != first { firstRowKey = first }
 
@@ -379,6 +396,26 @@ final class StreamsViewModel: ObservableObject {
         debridWatcher?.cancel()
         healthWatcher?.cancel()
     }
+}
+
+// MARK: - Fan-out progress (stream picker A, P1)
+
+/// What the info panel's progress line reads: add-ons answered of add-ons asked, the listable
+/// source count, and whether anything is still loading. Equatable so an unchanged value is not
+/// republished.
+nonisolated struct StreamFanOutProgress: Equatable {
+    /// Add-ons that have answered (with or without sources).
+    var answered = 0
+    /// Add-ons asked in this fan-out (one shared group each).
+    var expected = 0
+    /// Listable sources across every answered add-on.
+    var sources = 0
+    /// Add-ons that returned at least one listable source (the "from N add-ons" count).
+    var addonsWithSources = 0
+    var isLoading = false
+    /// The shared repository has said something for this request (groups or an empty-state
+    /// reason). False before the first emission, when nothing is known yet (review r1 P3).
+    var hasOutcome = false
 }
 
 // MARK: - Row model (W3-16)

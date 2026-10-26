@@ -49,6 +49,9 @@ struct StreamPickerView: View {
     /// omits them). `poster` is the catalog/series poster (also persisted as the parent artwork by
     /// the progress recorder); `episodeStill` is the 16:9 episode image shown in preference to it.
     let poster: String?
+    /// Stream picker A (P1): the title's backdrop for `StreamPickerBackdrop`. Presenters with the
+    /// catalog record pass it; the others leave nil and the picker reads the details cache.
+    let background: String?
     let episodeStill: String?
     let synopsis: String?
     /// Title-level facts for the player's Info tab chips (nil when the caller has no meta).
@@ -139,6 +142,8 @@ struct StreamPickerView: View {
     /// Guards the one-time auto-expand check so a second addon streaming in later never
     /// collapses/re-expands anything under the user (no layout shifts under focus).
     @State private var didAutoExpand = false
+    /// P1: the backdrop read from the details cache when the presenter passed no `background`.
+    @State private var peekedBackground: String?
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
     /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21,
@@ -175,6 +180,7 @@ struct StreamPickerView: View {
         episode: Int? = nil,
         episodes: [MetaVideo] = [],
         poster: String? = nil,
+        background: String? = nil,
         episodeStill: String? = nil,
         synopsis: String? = nil,
         meta: PlaybackMeta? = nil,
@@ -191,6 +197,7 @@ struct StreamPickerView: View {
         self.startFromBeginning = startFromBeginning
         self.notice = notice
         self.poster = poster
+        self.background = background
         self.episodeStill = episodeStill
         self.synopsis = synopsis
         self.type = type
@@ -266,6 +273,11 @@ struct StreamPickerView: View {
                 let details = try await MetaDetailsRepository.shared.fetchChecked(
                     type: type, id: parentMetaId, cacheResult: true
                 )
+                // P1 (review r1): the same record carries the backdrop the picker lacked on this path.
+                if background == nil {
+                    let fetchedBackground: String? = details?.background
+                    if let fetchedBackground, !fetchedBackground.isEmpty { peekedBackground = fetchedBackground }
+                }
                 let videos = details?.videos ?? []
                 guard !videos.isEmpty else { return }
                 fetchedEpisodes = videos
@@ -275,119 +287,37 @@ struct StreamPickerView: View {
         }
     }
 
+    /// Stream picker A, P1 (`docs/stream-picker-addons-plan-2026-10-25.md` §2): two panes over a
+    /// backdrop. Left, `StreamPickerInfoPanel` (static: logo, facts, poster, fan-out progress);
+    /// right, `StreamPickerSourcePanel` (one material panel holding the header, the scrolling list
+    /// and a footer). The loading cover, the toast and the alerts sit above both, unchanged.
     var body: some View {
         NavigationStack {
-            // Review r1 P2-3 (W3-16 F2): the reader lets a row that grows after its dwell (a long
-            // release name, `StreamRowDescription`) re-reveal itself; UIKit does not scroll for a
-            // focused view's later resize. See `streamRowView`.
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    // Lazy so collapsed groups' rows (the overwhelming majority while addons are
-                    // still streaming in) are never built at all — this was the lag source (BUG-5):
-                    // a non-lazy VStack built every row of every addon up front.
-                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
-                        // FEAT-42: one heading — the title's logo when it loads, else the plain text
-                        // title (mobile shows the series/movie logo on its stream-list screen too).
-                        // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo, decoded for the header's slot.
-                        TitleLogoHeader(title: title, logoUrl: logoUrl,
-                                        decodeSize: .points(width: 600, height: 120), upgrade: .logo)
-
-                        // BUG-21 follow-up: the active debrid credential failed auth on a recent
-                        // call — without this banner the only symptom is every resolve failing
-                        // while Settings still says "Connected". Not focusable; purely advisory.
-                        if let warning = model.credentialWarning {
-                            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.yellow)
-                                Text(warning)
-                                    .font(Theme.Font.caption)
-                                    .foregroundStyle(Theme.Palette.textPrimary)
-                            }
-                            .padding(Theme.Spacing.md)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(.yellow.opacity(0.12))
-                            )
-                            .frame(maxWidth: 1100, alignment: .leading)
+            ZStack {
+                StreamPickerBackdrop(mode: model.backgroundMode,
+                                     imageURL: backdropArt.primary, fallbackURL: backdropArt.fallback)
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        StreamPickerInfoPanel(
+                            title: title,
+                            logoUrl: logoUrl,
+                            poster: poster,
+                            season: season,
+                            episode: episode,
+                            episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
+                            meta: meta,
+                            progress: model.fanOut
+                        )
+                        .frame(width: geo.size.width * Self.infoPaneFraction)
+                        StreamPickerSourcePanel(content: .list) {
+                            sourceHeader
+                        } panelBody: {
+                            sourceList
+                        } footer: {
+                            EmptyView()
                         }
-
-                        if model.isLoading {
-                            HStack(spacing: Theme.Spacing.md) {
-                                ProgressView()
-                                Text("Finding streams\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
-                            }
-                        }
-
-                        ForEach(model.groups) { group in
-                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                groupHeader(group)
-                                // Collapsed groups render nothing at all (not just off-screen —
-                                // absent from the hierarchy), which is what actually kills the lag:
-                                // the old always-expanded list built every row of every addon.
-                                if expandedGroups.contains(group.id) {
-                                    // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel`
-                                    // built them, keys included); the picker only adds what it alone
-                                    // knows. Computed once per group, not per row.
-                                    let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
-                                    let defaultPlayerId = activeDefaultExternalPlayer?.id
-                                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                        ForEach(group.rows) { row in
-                                            streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
-                                                          scrollProxy: scrollProxy)
-                                        }
-                                    }
-                                    .padding(.top, Theme.Spacing.xs)
-                                }
-                            }
-                            // Each addon group is its own focus section: D-pad up/down navigates
-                            // between group headers and (when expanded) that group's rows without
-                            // leaking focus into a sibling group's rows.
-                            .focusSection()
-                        }
-
-                        if let reason = model.emptyReason {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                                // Primary reason renders at full text-primary weight — prominent,
-                                // not the muted secondary tone the plain "nothing found" empty
-                                // states get elsewhere on tvOS — since the debrid/filtered case is
-                                // actionable rather than a dead end.
-                                Text(reason)
-                                    .font(Theme.Font.body)
-                                    .foregroundStyle(Theme.Palette.textPrimary)
-                                if let hint = model.emptyReasonHint {
-                                    Text(hint)
-                                        .font(Theme.Font.caption)
-                                        .foregroundStyle(Theme.Palette.textSecondary)
-                                }
-                            }
-                            .padding(.top, Theme.Spacing.xs)
-                        }
-
-                        // Dev/diagnostics affordance — only when there is nothing real to play, so it
-                        // can never steal initial focus from the stream list (the old always-visible
-                        // button was the only focusable view while loading → focus started at the
-                        // bottom of the screen).
-                        if model.groups.isEmpty && !model.isLoading {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                Text("Test")
-                                    .font(Theme.Font.sectionTitle)
-                                    .foregroundStyle(Theme.Palette.textPrimary)
-                                Button {
-                                    selected = context(url: testStreamURL, stream: nil)
-                                } label: {
-                                    Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
-                                        .padding(.vertical, Theme.Spacing.xs)
-                                }
-                                .buttonStyle(.glass)
-                                .focused($focusedRow, equals: Self.testRowKey)
-                            }
-                            .padding(.top, Theme.Spacing.lg)
-                        }
+                        .frame(width: geo.size.width * (1 - Self.infoPaneFraction))
                     }
-                    .padding(Theme.Spacing.screen)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // Under the loading cover nothing in the list may take focus or a Select.
-                    .disabled(loadingCoverVisible)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -472,6 +402,12 @@ struct StreamPickerView: View {
             }
             .onAppear {
                 pickerOnScreen = true
+                if background == nil, peekedBackground == nil {
+                    // P1: launch paths without the catalog record (Home continue-watching, deep
+                    // links) get the title's backdrop from the details cache when it is there.
+                    let cached: String? = MetaDetailsRepository.shared.peek(type: type, id: parentMetaId)?.background
+                    peekedBackground = (cached ?? "").isEmpty ? nil : cached
+                }
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
                 // opens instead of requiring an app relaunch. First, so an auto-play start already
@@ -611,6 +547,129 @@ struct StreamPickerView: View {
 
     /// Menu on the cover cancels auto mode only while auto mode is working; a held cover swallows it.
     private var loadingCoverCancels: Bool { loadingCoverMessage != nil }
+
+    /// P1: the info pane's share of the screen width (Android TV and the upstream tablet layout: 40/60).
+    private static let infoPaneFraction: CGFloat = 0.4
+
+    /// P1: the backdrop art. The title's backdrop comes from the presenter (`background`), else
+    /// from the details cache (`peekedBackground`, read once on appear); `StreamPickerBackdrop.plan`
+    /// picks the episode still over it and the poster under it.
+    private var backdropArt: (primary: String?, fallback: String?) {
+        StreamPickerBackdrop.plan(episodeStill: episodeStill, background: background ?? peekedBackground, poster: poster)
+    }
+
+    /// P1: the source panel's header. Today only the BUG-21 credential banner: the active debrid
+    /// credential failed auth on a recent call; without it the only symptom is every resolve
+    /// failing while Settings still says "Connected". Not focusable; purely advisory. P2 adds the
+    /// chip row and P3 the resume pill above it.
+    @ViewBuilder
+    private var sourceHeader: some View {
+        if let warning = model.credentialWarning {
+            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text(warning)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            .padding(Theme.Spacing.md)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.yellow.opacity(0.12))
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// P1: the scrolling body of the source panel: the add-on groups (P3 flattens them), the
+    /// empty-state reason and the dev test stream. Review r1 P2-3 (W3-16 F2): the reader lets a row
+    /// that grows after its dwell (a long release name, `StreamRowDescription`) re-reveal itself;
+    /// UIKit does not scroll for a focused view's later resize. See `streamRowView`.
+    private var sourceList: some View {
+        ScrollViewReader { scrollProxy in
+            ScrollView {
+                // Lazy so collapsed groups' rows (the overwhelming majority while addons are
+                // still streaming in) are never built at all — this was the lag source (BUG-5):
+                // a non-lazy VStack built every row of every addon up front.
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
+                    ForEach(model.groups) { group in
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            groupHeader(group)
+                            // Collapsed groups render nothing at all (not just off-screen —
+                            // absent from the hierarchy), which is what actually kills the lag:
+                            // the old always-expanded list built every row of every addon.
+                            if expandedGroups.contains(group.id) {
+                                // W3-16 (F1/F4): the rows are prebuilt values (`StreamsViewModel`
+                                // built them, keys included); the picker only adds what it alone
+                                // knows. Computed once per group, not per row.
+                                let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
+                                let defaultPlayerId = activeDefaultExternalPlayer?.id
+                                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                    ForEach(group.rows) { row in
+                                        streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
+                                                      scrollProxy: scrollProxy)
+                                    }
+                                }
+                                .padding(.top, Theme.Spacing.xs)
+                            }
+                        }
+                        // Each addon group is its own focus section: D-pad up/down navigates
+                        // between group headers and (when expanded) that group's rows without
+                        // leaking focus into a sibling group's rows.
+                        .focusSection()
+                    }
+
+                    if let reason = model.emptyReason {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            // Primary reason renders at full text-primary weight — prominent,
+                            // not the muted secondary tone the plain "nothing found" empty
+                            // states get elsewhere on tvOS — since the debrid/filtered case is
+                            // actionable rather than a dead end.
+                            Text(reason)
+                                .font(Theme.Font.body)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            if let hint = model.emptyReasonHint {
+                                Text(hint)
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            }
+                        }
+                        .padding(.top, Theme.Spacing.xs)
+                    }
+
+                    // Dev/diagnostics affordance — only when there is nothing real to play, so it
+                    // can never steal initial focus from the stream list (the old always-visible
+                    // button was the only focusable view while loading → focus started at the
+                    // bottom of the screen).
+                    if model.groups.isEmpty && !model.isLoading {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text("Test")
+                                .font(Theme.Font.sectionTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            Button {
+                                selected = context(url: testStreamURL, stream: nil)
+                            } label: {
+                                Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
+                                    .padding(.vertical, Theme.Spacing.xs)
+                            }
+                            .buttonStyle(.glass)
+                            .focused($focusedRow, equals: Self.testRowKey)
+                        }
+                        .padding(.top, Theme.Spacing.lg)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Under the loading cover nothing in the list may take focus or a Select.
+                .disabled(loadingCoverVisible)
+            }
+            // Review r1 (P2): the inset lives inside the scroll content, so the focused row's lift
+            // and shadow are not clipped at the panel edge (the ScrollView clips its content).
+            // Review r2: `lg` below too, for the last row's shadow tail (radius 16, y 8).
+            .contentMargins(.horizontal, Theme.Spacing.lg, for: .scrollContent)
+            .contentMargins(.top, Theme.Spacing.md, for: .scrollContent)
+            .contentMargins(.bottom, Theme.Spacing.lg, for: .scrollContent)
+        }
+    }
 
     // MARK: - Group headers
 

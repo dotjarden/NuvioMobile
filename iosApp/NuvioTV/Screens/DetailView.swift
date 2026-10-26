@@ -1289,7 +1289,7 @@ struct DetailView: View {
             openPostPlayPick()
         }) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
-                             poster: posterUrl, synopsis: overview, meta: playbackMeta,
+                             poster: posterUrl, background: backgroundUrl, synopsis: overview, meta: playbackMeta,
                              logoUrl: logoUrl, forceManual: forceManualPlay,
                              startFromBeginning: startOverMovie,
                              onOpenTitle: { postPlayPending = $0 })
@@ -1307,6 +1307,7 @@ struct DetailView: View {
                 episode: route.action.episodeNumber?.value,
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
+                background: backgroundUrl,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
                 meta: playbackMeta,
