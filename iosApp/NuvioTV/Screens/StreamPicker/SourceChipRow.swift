@@ -91,7 +91,13 @@ struct SourceChipRow: View {
             // The chip lifts on focus; don't crop the lift (FilterPills guidance).
             .scrollClipDisabled()
             .onChange(of: selected, initial: true) { _, selected in
-                proxy.scrollTo(selected.map(Self.key(for:)) ?? Self.allKey)
+                // P4 device pass: a step onto the last chip left it cut at the panel edge. The chip
+                // ids are laid out in the same update as the selection, so scroll on the next
+                // runloop, and ask for the chip centred rather than merely "in view".
+                let key = selected.map(Self.key(for:)) ?? Self.allKey
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(key, anchor: .center) }
+                }
             }
         }
         .focusSection()

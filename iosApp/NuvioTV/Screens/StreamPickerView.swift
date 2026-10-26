@@ -146,6 +146,14 @@ struct StreamPickerView: View {
     /// P2: the last Left/Right the list turned into a chip step (Android TV's 112 ms throttle). A
     /// reference box, not a value, so the stamp never invalidates the picker's body (review r1).
     @State private var chipMoveThrottle = ChipMoveThrottle()
+    /// P4 device pass: the initial placement is VERIFIED, not fire-and-forget. On the box the first
+    /// write raced the LazyVStack's row realization and the chip row's own default focus, and the
+    /// one-shot latch then stood down with focus on the "All" chip. The target is kept until focus
+    /// is seen on it; while focus is still nowhere or on a chip the viewer has not acted on, the
+    /// write is re-issued (350 ms apart, three times at most). Any viewer action clears it.
+    @State private var initialFocusTarget: String?
+    @State private var initialFocusAttempts = 0
+    @State private var initialFocusVerifyTask: Task<Void, Never>?
     /// P2 (review r1, P1): the list's initial-focus rules fire once per load. Before P2 they fired
     /// while focus was nowhere or on the test button; now the chips are focusable from the first
     /// frame and take focus before any row exists, so "focus is still on a chip" counts as
@@ -449,6 +457,7 @@ struct StreamPickerView: View {
                 invalidateYouTubeResolve()
                 errorChipTask?.cancel()
                 errorChipTask = nil
+                cancelInitialFocusVerify()
                 model.stop()
             }
             // P2 (review r1 Q1): `prefersDefaultFocus` is documented for default focus, not for a
@@ -461,6 +470,7 @@ struct StreamPickerView: View {
                     // Review r2 (P3): Left/Right along the chips is the viewer acting on them; the
                     // initial-focus rule must not pull them to the list when the first group lands.
                     didPlaceListFocus = true
+                    cancelInitialFocusVerify()
                     return
                 }
                 // Review r2 (P2): only a real directional move, from a key the list still holds.
@@ -617,11 +627,13 @@ struct StreamPickerView: View {
                     // chip step's stale focus request (review r3) must not move it to the list.
                     didPlaceListFocus = true
                     filterFocusRequest = .none
+                    cancelInitialFocusVerify()
                     model.selectFilter(addonId)
                 },
                 onRefresh: {
                     didPlaceListFocus = true
                     filterFocusRequest = .none
+                    cancelInitialFocusVerify()
                     model.reload()
                 }
             )
@@ -993,6 +1005,7 @@ struct StreamPickerView: View {
             // result set is old, so re-fetch (focus is preserved; see onChange guard).
             if result is DirectDebridPlayableResult.Stale {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
+                cancelInitialFocusVerify()
                 didPlaceListFocus = false
                 model.reload(forceManual: !autoPlayArmed)
             }
@@ -1137,6 +1150,7 @@ struct StreamPickerView: View {
             showToast(Self.resolveFailureMessage(result))
             if result is DirectDebridPlayableResult.Stale {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
+                cancelInitialFocusVerify()
                 didPlaceListFocus = false
                 model.reload(forceManual: !autoPlayArmed)
             }
@@ -1414,7 +1428,46 @@ struct StreamPickerView: View {
         }
         guard let target else { return }
         didPlaceListFocus = true
+        initialFocusTarget = target
+        initialFocusAttempts = 0
         DispatchQueue.main.async { focusedRow = target }
+        scheduleInitialFocusVerify()
+    }
+
+    /// P4 device pass: 350 ms after a placement, check that focus arrived. A dropped write (the row
+    /// was not realized yet) or the engine's own default focus (the chip row) leaves it nil or on a
+    /// chip: write the target again, up to three times. Focus anywhere else means the viewer moved
+    /// it, and the request ends. A target that left the list (the filter changed) is replaced by the
+    /// current first row.
+    private func scheduleInitialFocusVerify() {
+        initialFocusVerifyTask?.cancel()
+        initialFocusVerifyTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let wanted = initialFocusTarget else { return }
+            if focusedRow == wanted { initialFocusTarget = nil; return }
+            let unplaced = focusedRow == nil || focusedRow?.hasPrefix("chip:") == true
+            guard unplaced, initialFocusAttempts < 3 else { initialFocusTarget = nil; return }
+            let target: String
+            if wanted.hasPrefix("chip:") || model.groups.contains(where: { $0.rowKeys.contains(wanted) }) {
+                target = wanted
+            } else if let first = model.firstRowKey {
+                target = first
+            } else {
+                initialFocusTarget = nil
+                return
+            }
+            initialFocusAttempts += 1
+            initialFocusTarget = target
+            focusedRow = target
+            scheduleInitialFocusVerify()
+        }
+    }
+
+    /// The viewer acted (a chip press, a move along the chips, a row): no more re-issues.
+    private func cancelInitialFocusVerify() {
+        initialFocusVerifyTask?.cancel()
+        initialFocusVerifyTask = nil
+        initialFocusTarget = nil
     }
 
     /// P2 (review r1, P1): the list's initial-focus rules may move focus: once per load, and only
