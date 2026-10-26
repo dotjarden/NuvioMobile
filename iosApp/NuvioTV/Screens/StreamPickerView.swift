@@ -144,6 +144,28 @@ struct StreamPickerView: View {
     @State private var didAutoExpand = false
     /// P1: the backdrop read from the details cache when the presenter passed no `background`.
     @State private var peekedBackground: String?
+    /// P2: error chips dropped after the fan-out finished (`SourceChipRow.chipsToDrop`); cleared
+    /// when a fan-out starts again.
+    @State private var hiddenErrorChips: Set<String> = []
+    @State private var errorChipTask: Task<Void, Never>?
+    /// P2: the last Left/Right the list turned into a chip step (Android TV's 112 ms throttle). A
+    /// reference box, not a value, so the stamp never invalidates the picker's body (review r1).
+    @State private var chipMoveThrottle = ChipMoveThrottle()
+    /// P2 (review r1, P1): the list's initial-focus rules fire once per load. Before P2 they fired
+    /// while focus was nowhere or on the test button; now the chips are focusable from the first
+    /// frame and take focus before any row exists, so "focus is still on a chip" counts as
+    /// unplaced until the viewer has acted on a chip. Re-armed by the stale-link reload.
+    @State private var didPlaceListFocus = false
+    /// P2: a D-pad chip step moves focus to the list's first target once the filtered groups land;
+    /// a Select on a chip keeps focus on the chip. Three states (review r3): `.pending` from the
+    /// step until the filter handler runs; `.awaitingGroups` when the stepped-to add-on had no
+    /// rows yet, completed by the groups handler alone (the two handlers fire in the same update
+    /// in no fixed order, so each completes only its own stage).
+    @State private var filterFocusRequest: FilterFocusRequest = .none
+
+    enum FilterFocusRequest { case none, pending, awaitingGroups }
+    /// P2: anchors `.prefersDefaultFocus` on the selected chip, so Up from the first row lands on it.
+    @Namespace private var chipFocusNamespace
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
     /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21,
@@ -385,6 +407,15 @@ struct StreamPickerView: View {
                     didAutoExpand = true
                     if ids.count == 1 { expandedGroups = [ids[0]] }
                 }
+                // P2 (review r2): one add-on selected is one group; it opens whenever it lands,
+                // including when it was still loading at the time of the chip step.
+                if model.selectedFilter != nil, ids.count == 1 { expandedGroups.insert(ids[0]) }
+                if filterFocusRequest == .awaitingGroups, let target = firstListFocusTarget {
+                    filterFocusRequest = .none
+                    didPlaceListFocus = true
+                    DispatchQueue.main.async { focusedRow = target }
+                    return
+                }
 
                 // Move initial focus once groups (first) arrive: to the first stream row when
                 // there's a single, auto-expanded group (unchanged from before collapsing was
@@ -393,10 +424,14 @@ struct StreamPickerView: View {
                 // on the (now hidden) test button. Never while the auto-play overlay holds focus
                 // (the list is disabled under it); `focusListAfterAutoPlay()` runs when it lifts.
                 guard !loadingCoverVisible else { return }
-                guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
-                if ids.count == 1, let firstKey = model.firstRowKey {
+                guard listFocusIsPlaceable else { return }
+                // Review r1 (P2 P3): a lone group that is NOT expanded (a filter under the one-shot
+                // auto-expand) has no row in the hierarchy; its header is the target then.
+                if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey {
+                    didPlaceListFocus = true
                     DispatchQueue.main.async { focusedRow = firstKey }
                 } else if let firstId = ids.first {
+                    didPlaceListFocus = true
                     DispatchQueue.main.async { focusedRow = Self.headerKey(groupId: firstId) }
                 }
             }
@@ -434,7 +469,30 @@ struct StreamPickerView: View {
             .onDisappear {
                 pickerOnScreen = false
                 invalidateYouTubeResolve()
+                errorChipTask?.cancel()
+                errorChipTask = nil
                 model.stop()
+            }
+            // P2 (review r1 Q1): `prefersDefaultFocus` is documented for default focus, not for a
+            // directional move into the chip section, so Up from a row may land on the nearest
+            // chip. A move from a non-chip onto a chip other than the selected one is sent on to
+            // the selected chip; chip-to-chip moves (Left/Right along the row) are left alone.
+            .onChange(of: focusedRow) { old, new in
+                guard let new, new.hasPrefix("chip:"), let old else { return }
+                if old.hasPrefix("chip:") {
+                    // Review r2 (P3): Left/Right along the chips is the viewer acting on them; the
+                    // initial-focus rule must not pull them to the list when the first group lands.
+                    didPlaceListFocus = true
+                    return
+                }
+                // Review r2 (P2): only a real directional move, from a key the list still holds.
+                // A row that left the hierarchy (a chip step changed the filter) makes the engine
+                // fall back onto some chip; that is not a move to forward, and the chip step's own
+                // focus write must win.
+                guard model.groups.contains(where: { Self.headerKey(groupId: $0.id) == old || $0.rowKeys.contains(old) }) else { return }
+                let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
+                guard new != selectedKey else { return }
+                DispatchQueue.main.async { focusedRow = selectedKey }
             }
             // Review r2 P3-2: every playback start (a row, "Try Next Source", auto-play, the Up
             // Next hand-off — every `selected = …` site) supersedes a YouTube resolve in flight.
@@ -558,12 +616,104 @@ struct StreamPickerView: View {
         StreamPickerBackdrop.plan(episodeStill: episodeStill, background: background ?? peekedBackground, poster: poster)
     }
 
-    /// P1: the source panel's header. Today only the BUG-21 credential banner: the active debrid
-    /// credential failed auth on a recent call; without it the only symptom is every resolve
-    /// failing while Settings still says "Connected". Not focusable; purely advisory. P2 adds the
-    /// chip row and P3 the resume pill above it.
+    /// P1/P2: the source panel's header: the source chip row (P2), then the BUG-21 credential
+    /// banner (the active debrid credential failed auth on a recent call; without it the only
+    /// symptom is every resolve failing while Settings still says "Connected"; not focusable,
+    /// purely advisory). P3 adds the resume pill above the chips.
     @ViewBuilder
     private var sourceHeader: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // P2: the source chips (refresh, All, one per add-on).
+            SourceChipRow(
+                chips: visibleChips,
+                selected: model.selectedFilter,
+                anyLoading: model.isLoading,
+                focus: $focusedRow,
+                namespace: chipFocusNamespace,
+                onSelect: { addonId in
+                    // The viewer chose where focus is: the initial-focus rule stands down, and a
+                    // chip step's stale focus request (review r3) must not move it to the list.
+                    didPlaceListFocus = true
+                    filterFocusRequest = .none
+                    model.selectFilter(addonId)
+                },
+                onRefresh: {
+                    didPlaceListFocus = true
+                    filterFocusRequest = .none
+                    model.reload()
+                }
+            )
+            credentialBanner
+        }
+        // Review r1 (P2 P3): same as the list — nothing behind the loading cover takes a press.
+        .disabled(loadingCoverVisible)
+    }
+
+    /// P2: the chips minus the error chips dropped after the fan-out finished.
+    private var visibleChips: [SourceChip] {
+        hiddenErrorChips.isEmpty ? model.sourceChips : model.sourceChips.filter { !hiddenErrorChips.contains($0.id) }
+    }
+
+    /// P2: Left/Right on the list (full-width rows give the focus engine no horizontal target, so
+    /// the press reaches `onMoveCommand`) step the selected chip with wrap, throttled. Up/Down can
+    /// arrive here too (hardware showed on 2026-09-30 that `onMoveCommand` also fires after the
+    /// engine moved focus, see `HomeView.handleRowsMove`), and are ignored on purpose.
+    private func handleListMove(_ direction: MoveCommandDirection) {
+        let step: SourceChipRow.StepDirection
+        switch direction {
+        case .left: step = .previous
+        case .right: step = .next
+        default: return
+        }
+        guard chipMoveThrottle.allows(now: CFAbsoluteTimeGetCurrent()) else { return }
+        let chips = visibleChips
+        guard !chips.isEmpty else { return }
+        let next = SourceChipRow.step(from: model.selectedFilter, chipIds: chips.map(\.id), direction: step)
+        guard next != model.selectedFilter else { return }
+        filterFocusRequest = .pending
+        model.selectFilter(next)
+    }
+
+    /// P2: where focus lands in the list after a D-pad chip step: the first row of a lone expanded
+    /// group, else the first group's header (the collapsed headers go in P3).
+    private var firstListFocusTarget: String? {
+        let ids = model.groups.map(\.id)
+        if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey { return firstKey }
+        return ids.first.map { Self.headerKey(groupId: $0) }
+    }
+
+    /// P2: once the fan-out has finished, drop the error chips with no streams after the linger;
+    /// a new fan-out cancels the drop and shows every chip again.
+    private func scheduleErrorChipDrop(loading: Bool) {
+        errorChipTask?.cancel()
+        errorChipTask = nil
+        if loading {
+            if !hiddenErrorChips.isEmpty { hiddenErrorChips = [] }
+            return
+        }
+        guard model.sourceChips.contains(where: { $0.hasError && $0.count == 0 }) else { return }
+        errorChipTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(SourceChipRow.errorChipLinger))
+            guard !Task.isCancelled else { return }
+            let dropped = SourceChipRow.chipsToDrop(model.sourceChips)
+            guard !dropped.isEmpty else { return }
+            // A dropped chip that was selected: its group is gone from the list anyway, show All.
+            if let selected = model.selectedFilter, dropped.contains(selected) {
+                model.selectFilter(nil)
+            }
+            // Focus on any dropped chip (review r2): move it to the selected chip (or "All")
+            // instead of wherever the engine lands when the chip vanishes.
+            if let focused = focusedRow, dropped.contains(where: { SourceChipRow.key(for: $0) == focused }) {
+                let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
+                focusedRow = dropped.contains(where: { SourceChipRow.key(for: $0) == selectedKey }) ? SourceChipRow.allKey : selectedKey
+            }
+            hiddenErrorChips = dropped
+        }
+    }
+
+    /// BUG-21: the credential banner (see `sourceHeader`).
+    @ViewBuilder
+    private var credentialBanner: some View {
         if let warning = model.credentialWarning {
             HStack(alignment: .top, spacing: Theme.Spacing.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -641,7 +791,8 @@ struct StreamPickerView: View {
                     // can never steal initial focus from the stream list (the old always-visible
                     // button was the only focusable view while loading → focus started at the
                     // bottom of the screen).
-                    if model.groups.isEmpty && !model.isLoading {
+                    // P2: never under a source chip — a filtered-empty list is not "nothing to play".
+                    if model.groups.isEmpty && !model.isLoading && model.selectedFilter == nil {
                         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                             Text("Test")
                                 .font(Theme.Font.sectionTitle)
@@ -668,6 +819,35 @@ struct StreamPickerView: View {
             .contentMargins(.horizontal, Theme.Spacing.lg, for: .scrollContent)
             .contentMargins(.top, Theme.Spacing.md, for: .scrollContent)
             .contentMargins(.bottom, Theme.Spacing.lg, for: .scrollContent)
+            // P2: Left/Right on a row switch the source chip (Android TV `StreamScreen`).
+            .onMoveCommand { handleListMove($0) }
+            .onChange(of: model.selectedFilter) { _, filter in
+                // P2 (review r1 P3): one add-on selected is one group; open it, so the chip step
+                // lands on its first row rather than on a collapsed header.
+                let ids = model.groups.map(\.id)
+                if filter != nil, ids.count == 1 { expandedGroups.insert(ids[0]) }
+                // After a D-pad chip step the list shows the new source from the top. Focus is set
+                // on the next runloop (review r1 P2): the LazyVStack may not have realized the
+                // target yet in this tick, and a dropped focus write leaves focus on the old row.
+                guard filterFocusRequest == .pending else { return }
+                // Review r2 (P3): no listable rows yet (the add-on is still loading): hand the
+                // request to the groups onChange, which completes it when its streams land.
+                guard let target = firstListFocusTarget else {
+                    filterFocusRequest = .awaitingGroups
+                    return
+                }
+                filterFocusRequest = .none
+                // Review r2 (P3): a lazy stack scrolls to an unrealized child only by its ForEach
+                // identity (the group id), so scroll by that first; the header/row id then resolves.
+                if let groupId = ids.first { scrollProxy.scrollTo(groupId, anchor: .top) }
+                scrollProxy.scrollTo(target, anchor: .top)
+                DispatchQueue.main.async { focusedRow = target }
+            }
+            .onChange(of: model.isLoading, initial: true) { _, loading in
+                scheduleErrorChipDrop(loading: loading)
+                // Review r3: a stepped-to add-on that ends with nothing listable retires the request.
+                if !loading, model.groups.isEmpty { filterFocusRequest = .none }
+            }
         }
     }
 
@@ -710,6 +890,8 @@ struct StreamPickerView: View {
         }
         .buttonStyle(.settingsRow)
         .focused($focusedRow, equals: key)
+        // P2 (review r1): the chip step scrolls to the header; a `scrollTo` needs an id.
+        .id(key)
     }
 
     private func toggleExpansion(_ group: StreamsViewModel.Group) {
@@ -897,6 +1079,8 @@ struct StreamPickerView: View {
             // The toast promises a refresh — deliver it: stale cached links mean the whole
             // result set is old, so re-fetch (focus is preserved; see onChange guard).
             if result is DirectDebridPlayableResult.Stale {
+                // P2: the list empties and focus falls to the chips; let the rule place it again.
+                didPlaceListFocus = false
                 model.reload(forceManual: !autoPlayArmed)
             }
         }
@@ -1039,6 +1223,8 @@ struct StreamPickerView: View {
             }
             showToast(Self.resolveFailureMessage(result))
             if result is DirectDebridPlayableResult.Stale {
+                // P2: the list empties and focus falls to the chips; let the rule place it again.
+                didPlaceListFocus = false
                 model.reload(forceManual: !autoPlayArmed)
             }
         }
@@ -1292,14 +1478,24 @@ struct StreamPickerView: View {
     /// Initial focus for the list once the overlay lifts (same targets as the first-groups rule).
     private func focusListAfterAutoPlay() {
         DispatchQueue.main.async {
-            guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
+            guard listFocusIsPlaceable else { return }
             let ids = model.groups.map(\.id)
             if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey {
+                didPlaceListFocus = true
                 focusedRow = firstKey
             } else if let firstId = ids.first {
+                didPlaceListFocus = true
                 focusedRow = Self.headerKey(groupId: firstId)
             }
         }
+    }
+
+    /// P2 (review r1, P1): the list's initial-focus rules may move focus: once per load, and only
+    /// while focus is nowhere, on the hidden test button, or on a chip the viewer has not acted on.
+    private var listFocusIsPlaceable: Bool {
+        guard !didPlaceListFocus else { return false }
+        guard let focusedRow else { return true }
+        return focusedRow == Self.testRowKey || focusedRow.hasPrefix("chip:")
     }
 
     // MARK: - Failover (orivio batch item 2)
@@ -1970,5 +2166,18 @@ enum ExternalSubtitleHandOff {
     private static func playerSettings() -> PlayerSettingsUiState? {
         PlayerSettingsRepository.shared.ensureLoaded()
         return PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+    }
+}
+
+/// P2: the Left/Right repeat throttle for the chip step, as a reference so the stamp is not view
+/// state (a `@State` value would re-run the picker's body on every press).
+nonisolated final class ChipMoveThrottle {
+    private var lastAt: CFAbsoluteTime = 0
+
+    /// True when `now` is at least `SourceChipRow.moveRepeatInterval` after the last allowed press.
+    func allows(now: CFAbsoluteTime) -> Bool {
+        guard now - lastAt >= SourceChipRow.moveRepeatInterval else { return false }
+        lastAt = now
+        return true
     }
 }

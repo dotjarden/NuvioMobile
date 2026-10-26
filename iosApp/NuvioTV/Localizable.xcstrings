@@ -53131,6 +53131,30 @@
     },
     "%@ from %@": {
       "extractionState": "manual"
+    },
+    "Refresh sources": {
+      "extractionState": "manual"
+    },
+    "All sources": {
+      "extractionState": "manual"
+    },
+    "%@, loading": {
+      "extractionState": "manual"
+    },
+    "%@, failed": {
+      "extractionState": "manual"
+    },
+    "%@, %lld sources": {
+      "extractionState": "manual"
+    },
+    "%@ couldn’t be reached.": {
+      "extractionState": "manual"
+    },
+    "%@ returned no playable sources.": {
+      "extractionState": "manual"
+    },
+    "%@, 1 source": {
+      "extractionState": "manual"
     }
   },
   "version": "1.0"

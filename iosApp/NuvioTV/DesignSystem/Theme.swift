@@ -23,6 +23,9 @@ enum Theme {
         /// re-evaluated when ContentView re-identifies the tree on a theme change, so plain static
         /// access everywhere keeps working. `nonisolated(unsafe)`: only mutated on the main actor.
         nonisolated(unsafe) static var accent = Color(hex: 0xE53935)
+        /// Error tint (stream picker A, P2: a source chip whose add-on failed; Android TV's
+        /// `error` role). Used at low opacity as a fill, never as text on its own.
+        static let error = Color(hex: 0xE5484D)
         /// Focus ring / highlight (brighter accent). Mutable — follows the theme with `accent`.
         nonisolated(unsafe) static var accentFocus = Color(hex: 0xFF5252)
         /// Text/icon color for content drawn ON an `accent`/`accentFocus` fill (selected chips,

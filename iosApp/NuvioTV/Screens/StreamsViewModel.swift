@@ -72,6 +72,12 @@ final class StreamsViewModel: ObservableObject {
     /// Stream picker A (P1): how far the fan-out is, for the info panel's progress line. Counts the
     /// shared groups (one per add-on asked, listable or not) and the listable sources.
     @Published private(set) var fanOut = StreamFanOutProgress()
+    /// Stream picker A (P2): one chip per add-on of the fan-out, in the shared group order, with
+    /// its listable count and fetch state. Every add-on asked, not only the listable ones.
+    @Published private(set) var sourceChips: [SourceChip] = []
+    /// Stream picker A (P2): the shared per-add-on filter (`StreamsUiState.selectedFilter`); nil is
+    /// "All". `groups` is already filtered by it.
+    @Published private(set) var selectedFilter: String?
 
     private var watcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
@@ -232,13 +238,21 @@ final class StreamsViewModel: ObservableObject {
         )
     }
 
-    /// Full re-fetch — used when a debrid resolve reports the picked link went stale
-    /// (mobile shows the same "Refreshing results" toast and reloads). Uses the repository's
-    /// reload() so the addon fetch carries forceRefresh=true and bypasses the HTTP cache —
-    /// a stale-link retry that re-reads a cached stream list would just re-pick the dead link.
+    /// Stream picker A (P2): select a source chip; nil is "All". The repository republishes and
+    /// `apply(_:)` rebuilds `groups` from the filtered groups.
+    func selectFilter(_ addonId: String?) {
+        StreamsRepository.shared.selectFilter(addonId: addonId)
+    }
+
+    /// Full re-fetch — the refresh chip (P2), and the stale-link path (a debrid resolve reports
+    /// the picked link went stale; mobile shows the same "Refreshing results" toast and reloads).
+    /// Uses the repository's reload() so the addon fetch carries forceRefresh=true and bypasses
+    /// the HTTP cache — a stale-link retry that re-reads a cached stream list would just re-pick
+    /// the dead link. No `clear()` first (P0.1 / P2): the repository starts the same request
+    /// token afresh itself, and that is what lets the selected source chip survive the refresh
+    /// (`StreamFilterRetention`); a `clear()` emptied the token and reset the chip to "All".
     func reload(forceManual: Bool = true) {
         lastState = nil
-        StreamsRepository.shared.clear()
         StreamsRepository.shared.reload(
             type: type,
             videoId: videoId,
@@ -271,8 +285,29 @@ final class StreamsViewModel: ObservableObject {
         var previous: [String: Group] = [:]
         for group in groups where previous[group.id] == nil { previous[group.id] = group }
 
-        let next: [Group] = state.groups.compactMap { group in
-            let playable = group.streams.filter { Self.isListable(stream: $0, debridEnabled: debridEnabled) }
+        // P2: every add-on of the fan-out with its listable streams, computed ONCE per group (W3-16's
+        // budget: `isListable` is three Kotlin bridge reads per stream). The chips see every add-on;
+        // the list sees only the selected one (`selectedFilter`), or all of them.
+        let filter: String? = state.selectedFilter
+        let listed: [(group: AddonStreamGroup, playable: [StreamItem])] = state.groups.map { group in
+            (group, group.streams.filter { Self.isListable(stream: $0, debridEnabled: debridEnabled) })
+        }
+        let chips: [SourceChip] = listed.map { entry in
+            SourceChip(
+                id: entry.group.addonId,
+                name: entry.group.addonName,
+                count: entry.playable.count,
+                isLoading: entry.group.isLoading,
+                error: { let e: String? = entry.group.error; return (e ?? "").isEmpty ? nil : e }()
+            )
+        }
+        if chips != sourceChips { sourceChips = chips }
+        if filter != selectedFilter { selectedFilter = filter }
+
+        let next: [Group] = listed.compactMap { entry in
+            let group = entry.group
+            guard filter == nil || group.addonId == filter else { return nil }
+            let playable = entry.playable
             guard !playable.isEmpty else { return nil }
             if let old = previous[group.addonId], old.display == display,
                old.addonName == group.addonName, old.streams == playable {
@@ -286,11 +321,12 @@ final class StreamsViewModel: ObservableObject {
                          rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)
         }
         if next != groups { groups = next }
+        // The info pane's progress counts the whole fan-out, whatever chip is selected.
         let progress = StreamFanOutProgress(
             answered: state.groups.filter { !$0.isLoading }.count,
             expected: state.groups.count,
-            sources: next.reduce(0) { $0 + $1.streams.count },
-            addonsWithSources: next.count,
+            sources: chips.reduce(0) { $0 + $1.count },
+            addonsWithSources: chips.filter { $0.count > 0 }.count,
             isLoading: loading,
             hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
         )
@@ -300,17 +336,25 @@ final class StreamsViewModel: ObservableObject {
 
         var reason: String?
         var hint: String?
-        if next.isEmpty && !loading {
-            // The shared repository's `emptyStateReason` only covers "we truly found nothing"
-            // (no addons, fetch failed, etc.) — it has no concept of the local playability
-            // filter above, so a title with plenty of raw torrent results but no debrid
-            // connection still reports `NoStreamsFound`-adjacent nils here. Detect that case
-            // ourselves: shared handed us streams, but every one of them got filtered out.
-            let rawCount = state.groups.reduce(0) { $0 + $1.streams.count }
-            if rawCount > 0 {
-                (reason, hint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
+        // `hasOutcome` (review r2): a reload first emits an empty, non-loading state for a frame;
+        // no reason for that one, it is not a verdict.
+        if next.isEmpty && !loading && progress.hasOutcome {
+            if let filter, let chip = chips.first(where: { $0.id == filter }) {
+                // P2 (review r1): one add-on is selected and it has nothing listable: say so about
+                // THAT add-on, never the whole fan-out's counts or debrid hints.
+                (reason, hint) = Self.describeFilteredSource(chip)
             } else {
-                (reason, hint) = Self.describe(state.emptyStateReason)
+                // The shared repository's `emptyStateReason` only covers "we truly found nothing"
+                // (no addons, fetch failed, etc.) — it has no concept of the local playability
+                // filter above, so a title with plenty of raw torrent results but no debrid
+                // connection still reports `NoStreamsFound`-adjacent nils here. Detect that case
+                // ourselves: shared handed us streams, but every one of them got filtered out.
+                let rawCount = state.filteredGroups.reduce(0) { $0 + $1.streams.count }
+                if rawCount > 0 {
+                    (reason, hint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
+                } else {
+                    (reason, hint) = Self.describe(state.emptyStateReason)
+                }
             }
         }
         if emptyReason != reason { emptyReason = reason }
@@ -363,6 +407,15 @@ final class StreamsViewModel: ObservableObject {
         }
         let reason = String(localized: "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link.")
         return (reason, nil)
+    }
+
+    /// P2: the empty state for one selected add-on: its failure (the shared `error` as the hint),
+    /// or simply nothing playable from it.
+    static func describeFilteredSource(_ chip: SourceChip) -> (String, String?) {
+        if let error = chip.error, !error.isEmpty {
+            return (String(localized: "\(chip.name) couldn\u{2019}t be reached."), error)
+        }
+        return (String(localized: "\(chip.name) returned no playable sources."), nil)
     }
 
     /// BUG-74: `NoCompatibleAddons` used to assert "only a metadata catalog (Cinemeta) is set up",
