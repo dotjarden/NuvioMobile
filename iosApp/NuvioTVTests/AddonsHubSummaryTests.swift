@@ -154,4 +154,40 @@ final class AddonsHubSummaryTests: XCTestCase {
         ]
         XCTAssertEqual(AddonsViewModel.logoUrls(of: list, limit: 2), ["https://a/l.png", "https://e/l.png"])
     }
+
+    /// Review r1: two identical outcomes in a row carry different serials, so `onChange` (which
+    /// compares with `==`) fires for the second one. Uses the real view model: an unsupported
+    /// scheme fails in the synchronous validation path, with no network.
+    @MainActor
+    func testRepeatedInstallFailuresGetDifferentSerials() {
+        let model = AddonsViewModel()
+        model.install("ftp://x.y/a")
+        guard case .failed(let firstMessage, let firstSerial)? = model.installOutcome else {
+            return XCTFail("first install did not fail: \(String(describing: model.installOutcome))")
+        }
+        model.install("ftp://x.y/a")
+        guard case .failed(let secondMessage, let secondSerial)? = model.installOutcome else {
+            return XCTFail("second install did not fail: \(String(describing: model.installOutcome))")
+        }
+        XCTAssertEqual(firstMessage, secondMessage)
+        XCTAssertNotEqual(firstSerial, secondSerial)
+    }
+
+    /// Review r2: with no manifest and no user-set name the title is the host, never the URL's
+    /// last path segment (which can be a key).
+    func testDisplayTitleFallsBackToTheHostWithoutAManifest() {
+        let keyed = ManagedAddon(
+            manifestUrl: "https://torbox.example.com/torbox=SECRETKEY/manifest.json", manifest: nil,
+            userSetName: nil, enabled: true, isRefreshing: false, errorMessage: nil
+        )
+        XCTAssertEqual(AddonsViewModel.displayTitle(keyed), "torbox.example.com")
+        let named = ManagedAddon(
+            manifestUrl: keyed.manifestUrl, manifest: nil,
+            userSetName: "Mine", enabled: true, isRefreshing: false, errorMessage: nil
+        )
+        XCTAssertEqual(AddonsViewModel.displayTitle(named), "Mine")
+        XCTAssertEqual(
+            AddonsViewModel.displayTitle(addon("a", manifest: manifest("a", catalogs: 0), enabled: true)), "a"
+        )
+    }
 }

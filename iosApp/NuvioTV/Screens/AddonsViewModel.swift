@@ -40,6 +40,14 @@ final class AddonsViewModel: ObservableObject {
         let failed: Int
     }
 
+    /// Review r1: a typed install result. The serial increments per outcome, so two identical
+    /// outcomes in a row (the same failure twice) still compare unequal and fire `onChange`; the UI
+    /// never has to read the localized `statusMessage` to know what happened.
+    nonisolated enum InstallOutcome: Equatable {
+        case installed(name: String, serial: Int)
+        case failed(message: String, serial: Int)
+    }
+
     /// Card state, in priority order: refreshing, unavailable, disabled, active.
     nonisolated enum AddonStatus: Equatable {
         case active, disabled, refreshing, unavailable
@@ -54,6 +62,11 @@ final class AddonsViewModel: ObservableObject {
     /// it is not persisted and a refresh the repository ran by itself never sets it.
     @Published private(set) var lastRefreshedAt: Date?
     @Published private(set) var lastRefreshOutcome: RefreshOutcome?
+    /// Increments each time `lastRefreshOutcome` is published, so an identical outcome twice in a
+    /// row still changes something the hub can observe.
+    @Published private(set) var refreshOutcomeSerial = 0
+    @Published private(set) var installOutcome: InstallOutcome?
+    private var installSerial = 0
     @Published private(set) var isInitialized = false
     @Published private(set) var isReadOnly = false
 
@@ -104,15 +117,15 @@ final class AddonsViewModel: ObservableObject {
             case .empty:
                 return
             case .unsupportedScheme:
-                statusMessage = String(localized: "Enter a valid addon URL (http or https).")
+                publishInstallFailure(String(localized: "Enter a valid addon URL (http or https)."))
                 return
             }
         } catch {
-            statusMessage = String(localized: "Enter a valid addon URL (http or https).")
+            publishInstallFailure(String(localized: "Enter a valid addon URL (http or https)."))
             return
         }
         if addons.contains(where: { AddonManifestURL.isSameManifest($0.manifestUrl, url) }) {
-            statusMessage = String(localized: "That addon is already installed.")
+            publishInstallFailure(String(localized: "That addon is already installed."))
             return
         }
         isInstalling = true
@@ -123,16 +136,25 @@ final class AddonsViewModel: ObservableObject {
             Task { @MainActor in
                 self.isInstalling = false
                 if let error {
-                    self.statusMessage = String(localized: "Couldn't install: \(error.localizedDescription)")
+                    self.publishInstallFailure(String(localized: "Couldn't install: \(error.localizedDescription)"))
                 } else if let failure = result as? AddAddonResultError {
-                    self.statusMessage = String(localized: "Couldn't install: \(failure.message)")
+                    self.publishInstallFailure(String(localized: "Couldn't install: \(failure.message)"))
                 } else if let success = result as? AddAddonResultSuccess {
+                    self.installSerial += 1
                     self.statusMessage = String(localized: "Installed \(success.manifest.name).")
+                    self.installOutcome = .installed(name: success.manifest.name, serial: self.installSerial)
                 } else {
-                    self.statusMessage = String(localized: "Couldn't install that URL.")
+                    self.publishInstallFailure(String(localized: "Couldn't install that URL."))
                 }
             }
         }
+    }
+
+    /// Sets the status line and the typed outcome together; the serial makes a repeat observable.
+    private func publishInstallFailure(_ message: String) {
+        installSerial += 1
+        statusMessage = message
+        installOutcome = .failed(message: message, serial: installSerial)
     }
 
     func remove(_ addon: ManagedAddon) {
@@ -187,6 +209,7 @@ final class AddonsViewModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             let outcome = Self.refreshOutcome(addons: latest, refreshedUrls: refreshedUrls)
             self.lastRefreshOutcome = outcome
+            self.refreshOutcomeSerial += 1
             if outcome.succeeded > 0 { self.lastRefreshedAt = Date() }
             self.isRefreshingAny = false
         }
@@ -197,10 +220,12 @@ final class AddonsViewModel: ObservableObject {
         Self.displayTitle(addon)
     }
 
-    /// Hub C, H1: the shared `displayTitle` (user-set name, else manifest name, else the URL's
-    /// last path segment).
+    /// Hub C, H1: the shared `displayTitle` (user-set name, else manifest name). With neither, the
+    /// host: the shared fallback is the URL's last path segment, which can be a key.
     nonisolated static func displayTitle(_ addon: ManagedAddon) -> String {
-        addon.displayTitle
+        let userSet = addon.userSetName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if addon.manifest == nil && userSet.isEmpty { return host(of: addon.manifestUrl) }
+        return addon.displayTitle
     }
 
     /// Hub C, H1: the destination index for moving the card at `index` by `delta`, or nil when
