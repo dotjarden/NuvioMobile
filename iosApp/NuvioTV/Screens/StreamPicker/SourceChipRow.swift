@@ -115,6 +115,10 @@ struct SourceChipRow: View {
             let key = selected.map(Self.key(for:)) ?? Self.allKey
             DispatchQueue.main.async { scrollToChip(key) }
         }
+        // Review: a chip laid out (or re-measured, its count replacing the spinner) after the
+        // selection changed, or a viewport that arrives late, re-centres the selected chip.
+        .onChange(of: chipFrames[selectedKey]) { _, _ in scrollToChip(selectedKey) }
+        .onChange(of: viewportWidth) { _, _ in scrollToChip(selectedKey) }
         .focusSection()
         .focusScope(namespace)
         .accessibilityIdentifier("stream_picker_chip_row")
@@ -167,9 +171,14 @@ struct SourceChipRow: View {
         return min(max(frame.midX - viewportWidth / 2, 0), maxOffset)
     }
 
+    private var selectedKey: String { selected.map(Self.key(for:)) ?? Self.allKey }
+
     private func scrollToChip(_ key: String) {
         guard let x = Self.scrollOffset(for: key, frames: chipFrames, viewportWidth: viewportWidth,
                                         trailingInset: Theme.Spacing.xs) else { return }
+        // Review: a binding that still holds this offset (focus-driven scrolling may not write it
+        // back) would not move the row; nudge it off the value first.
+        if position.point?.x == x { position.scrollTo(x: x + 1) }
         withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(x: x) }
     }
 

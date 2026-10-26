@@ -436,7 +436,9 @@ struct StreamPickerView: View {
                 // the add-ons that landed next sorted above it, the LazyVStack unrealized that row
                 // and focus fell to NOWHERE (`focused=nil`): every Select was dead until a D-pad
                 // move. Nil focus is never the viewer's choice, so the rule runs again from here.
-                if focusedRow == nil, !loadingCoverVisible {
+                // Review: nil is also what focus reads behind the player cover and the failover
+                // alert; the rule must not write focus behind either.
+                if focusedRow == nil, !loadingCoverVisible, selected == nil, manualFailureAlert == nil {
                     cancelInitialFocusVerify()
                     didPlaceListFocus = false
                 }
@@ -1035,6 +1037,7 @@ struct StreamPickerView: View {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
                 cancelInitialFocusVerify()
                 didPlaceListFocus = false
+                viewerChoseChip = false
                 model.reload(forceManual: !autoPlayArmed)
             }
         }
@@ -1180,6 +1183,7 @@ struct StreamPickerView: View {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
                 cancelInitialFocusVerify()
                 didPlaceListFocus = false
+                viewerChoseChip = false
                 model.reload(forceManual: !autoPlayArmed)
             }
         }
@@ -1504,8 +1508,9 @@ struct StreamPickerView: View {
     /// logged by its position only.
     private static func focusProbeName(_ key: String?) -> String {
         guard let key else { return "nil" }
-        if key.hasPrefix("chip:") || key == testRowKey { return key }
-        return "row"
+        // Review: an add-on chip's key is "chip:<add-on id>", and that id carries the manifest URL.
+        if key == SourceChipRow.allKey || key == SourceChipRow.refreshKey || key == testRowKey { return key }
+        return key.hasPrefix("chip:") ? "chip" : "row"
     }
 
     /// The viewer acted (a chip press, a move along the chips, a row): no more re-issues.

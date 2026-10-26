@@ -523,6 +523,10 @@ final class StreamPickerUITests: XCTestCase {
         let refresh = element(app, "stream_picker_chip_refresh")
         func rowFrame() -> String { "refresh.minX=\(refresh.frame.minX) last.maxX=\(last.frame.maxX)" }
         say("overflow: panel=\(panel.frame) \(rowFrame()) all=\(chip(app, "all").frame) last(\(lastIndex))=\(last.frame) before the step")
+        // Review: the leg must prove an overflow first, else a row that fits passes with no scroll.
+        XCTAssertGreaterThan(last.frame.maxX, panel.frame.maxX,
+                             "the chip row does not overflow the panel with \(names.count) stub add-ons: last=\(last.frame) panel=\(panel.frame)")
+        let refreshBefore = refresh.frame.minX
 
         remote.press(.left)
         XCTAssertTrue(waitUntil(timeout: 5) { last.isSelected }, "Left from the first row did not wrap to the last chip; chips: \(chipLabels(app))")
@@ -530,6 +534,8 @@ final class StreamPickerUITests: XCTestCase {
         say("overflow: \(rowFrame()) all=\(chip(app, "all").frame) last(\(lastIndex))=\(last.frame) after the step")
         XCTAssertLessThanOrEqual(last.frame.maxX, panel.frame.maxX - 8,
                                  "the selected last chip is not inside the panel: last=\(last.frame) panel=\(panel.frame) \(rowFrame())")
+        XCTAssertLessThan(refresh.frame.minX, refreshBefore - 100,
+                          "the row did not scroll: refresh.minX \(refreshBefore) -> \(refresh.frame.minX)")
         XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5), "the step moved focus off the list; focused: \(focusDump(app))")
     }
 }
