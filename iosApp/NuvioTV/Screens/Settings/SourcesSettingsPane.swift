@@ -8,6 +8,8 @@ import SharedCore
 struct SourcesSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
     @ObservedObject var plugins: PluginsViewModel
+    /// P4.1: the shared badge/picker settings (Source Background lives with them in the shared repository).
+    @ObservedObject var badges: BadgeSettingsViewModel
     /// B6: device-local Search layout. Read through `SearchRowsMode.resolve` so a stale or
     /// unknown stored value shows the default.
     @AppStorage(SearchRowsMode.defaultsKey) private var searchRowsModeRaw = SearchRowsMode.defaultValue.rawValue
@@ -118,6 +120,18 @@ struct SourcesSettingsPane: View {
                         descriptionID: .sourcesCachedOnlyFilter
                     )
                 }
+            }
+
+            // Stream picker A, P4.1 (decision D1): the picker's backdrop. Cinematic by default on tvOS;
+            // Normal is today's plain background. Stored with the badge settings (per profile, synced).
+            SettingsSection(String(localized: "Source List")) {
+                SettingsPickerRow(
+                    title: String(localized: "Source Background"),
+                    selection: Binding(get: { badges.backgroundMode }, set: { badges.setBackgroundMode($0) }),
+                    options: SourceSettingOptions.backgroundModes,
+                    descriptionID: .sourcesBackground,
+                    label: SourceSettingOptions.backgroundModeName(for:)
+                )
             }
 
             SettingsSection(String(localized: "Metadata (TMDB)")) {
@@ -550,6 +564,16 @@ private enum SourceSettingOptions {
     static let sortKeys = ["default", "quality", "sizeDesc", "sizeAsc"]
     static let minimumQualityKeys = ["any", "720", "1080", "2160"]
     static let featureFilterKeys = ["any", "only", "exclude"]
+
+    /// P4.1: the picker backdrop choices, Cinematic first (the tvOS default).
+    static let backgroundModes: [StreamBackgroundMode] = [.cinematic, .normal]
+
+    static func backgroundModeName(for mode: StreamBackgroundMode) -> String {
+        switch mode {
+        case .normal: return String(localized: "Normal")
+        default: return String(localized: "Cinematic")
+        }
+    }
 
     static func sortName(forKey key: String) -> String {
         switch key {

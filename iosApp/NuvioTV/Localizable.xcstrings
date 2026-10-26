@@ -245,6 +245,41 @@
         }
       }
     },
+    "%@ couldn’t be reached.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht erreichbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo conectar con %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ est injoignable."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile raggiungere %@."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể kết nối tới %@."
+          }
+        }
+      }
+    },
     "%@ f=%lld t=%lld y=%lld i=%lld r=%lld": {
       "localizations": {
         "de": {
@@ -275,6 +310,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ f=%lld t=%lld y=%lld i=%lld r=%lld"
+          }
+        }
+      }
+    },
+    "%@ from %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ von %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ de %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ depuis %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ da %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ từ %@"
           }
         }
       }
@@ -343,6 +413,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Còn lại %@"
+          }
+        }
+      }
+    },
+    "%@ returned no playable sources.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ hat keine abspielbaren Quellen geliefert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no devolvió fuentes reproducibles."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’a renvoyé aucune source lisible."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ non ha restituito sorgenti riproducibili."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ không trả về nguồn phát nào."
           }
         }
       }
@@ -479,6 +584,146 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ · v%@"
+          }
+        }
+      }
+    },
+    "%@, %lld sources": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %lld Quellen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %lld fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %lld sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %lld sorgenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, %lld nguồn"
+          }
+        }
+      }
+    },
+    "%@, 1 source": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, 1 Quelle"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, 1 fuente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, 1 source"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, 1 sorgente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, 1 nguồn"
+          }
+        }
+      }
+    },
+    "%@, failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, fehlgeschlagen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, error"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, échec"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, non riuscito"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, lỗi"
+          }
+        }
+      }
+    },
+    "%@, loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, wird geladen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, cargando"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, chargement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, caricamento"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@, đang tải"
           }
         }
       }
@@ -820,6 +1065,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã gỡ %lld addon%@"
+          }
+        }
+      }
+    },
+    "%lld add-ons": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Add-ons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld complementos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld addons"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld componenti aggiuntivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld addon"
           }
         }
       }
@@ -2146,6 +2426,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 (tệp này không có âm thanh thay thế)"
+          }
+        }
+      }
+    },
+    "1 add-on": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Add-on"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 complemento"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 addon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 componente aggiuntivo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 addon"
           }
         }
       }
@@ -5036,6 +5351,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tất cả nguồn tìm kiếm đang tắt"
+          }
+        }
+      }
+    },
+    "All sources": {
+      "extractionState": "manual",
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toutes les sources"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todas las fuentes"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Quellen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tutte le sorgenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tất cả nguồn"
           }
         }
       }
@@ -17587,6 +17937,41 @@
         }
       }
     },
+    "Fetching…": {
+      "extractionState": "manual",
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Récupération…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Obteniendo…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird abgerufen…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recupero in corso…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tải…"
+          }
+        }
+      }
+    },
     "File Size Badges": {
       "localizations": {
         "de": {
@@ -17787,6 +18172,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tìm nguồn phát…"
+          }
+        }
+      }
+    },
+    "Finding streams… %lld of %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Streams werden gesucht… %lld von %lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando streams… %lld de %lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche des streams… %lld sur %lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerca flussi… %lld di %lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tìm nguồn phát… %lld trên %lld"
           }
         }
       }
@@ -25921,6 +26341,41 @@
         }
       }
     },
+    "No sources": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Quellen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune source"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna sorgente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có nguồn"
+          }
+        }
+      }
+    },
     "No stream details yet.": {
       "localizations": {
         "de": {
@@ -26359,6 +26814,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Không add-on nào của bạn cung cấp luồng cho tiêu đề này."
+          }
+        }
+      }
+    },
+    "Normal": {
+      "extractionState": "manual",
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cơ bản"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal"
           }
         }
       }
@@ -33337,6 +33827,41 @@
         }
       }
     },
+    "Refresh sources": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen aktualisieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizar fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualiser les sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiorna sorgenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Làm mới nguồn"
+          }
+        }
+      }
+    },
     "Region": {
       "localizations": {
         "de": {
@@ -34693,6 +35218,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phân giải các nguồn đã lưu đệm hàng đầu thành liên kết trực tiếp khi danh sách nguồn đang mở, để Phát bắt đầu ngay."
+          }
+        }
+      }
+    },
+    "Resume from %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fortsetzen ab %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reanudar desde %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reprendre à %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riprendi da %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp tục từ %@"
           }
         }
       }
@@ -41226,6 +41786,41 @@
         }
       }
     },
+    "Source Background": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellenhintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondo de fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrière-plan des sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfondo sorgenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nền nguồn"
+          }
+        }
+      }
+    },
     "Source Filters": {
       "localizations": {
         "de": {
@@ -41256,6 +41851,41 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bộ lọc nguồn"
+          }
+        }
+      }
+    },
+    "Source List": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellenliste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista de fuentes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste des sources"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elenco sorgenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách nguồn"
           }
         }
       }
@@ -51667,6 +52297,7 @@
         }
       }
     },
+    "debug_ux6 dark=%lld trailer=%lld glass=%lld ab=%lld scrolling=%lld anchor=%@ geo=%@ compactLogo=%@ logoBand=%@": {},
     "declared %@ Mb/s": {
       "localizations": {
         "de": {
@@ -53117,50 +53748,39 @@
         }
       }
     },
-    "Finding streams… %lld of %lld": {
-      "extractionState": "manual"
-    },
-    "No sources": {
-      "extractionState": "manual"
-    },
-    "1 add-on": {
-      "extractionState": "manual"
-    },
-    "%lld add-ons": {
-      "extractionState": "manual"
-    },
-    "%@ from %@": {
-      "extractionState": "manual"
-    },
-    "Refresh sources": {
-      "extractionState": "manual"
-    },
-    "All sources": {
-      "extractionState": "manual"
-    },
-    "%@, loading": {
-      "extractionState": "manual"
-    },
-    "%@, failed": {
-      "extractionState": "manual"
-    },
-    "%@, %lld sources": {
-      "extractionState": "manual"
-    },
-    "%@ couldn’t be reached.": {
-      "extractionState": "manual"
-    },
-    "%@ returned no playable sources.": {
-      "extractionState": "manual"
-    },
-    "%@, 1 source": {
-      "extractionState": "manual"
-    },
-    "Resume from %@": {
-      "extractionState": "manual"
-    },
-    "Fetching…": {
-      "extractionState": "manual"
+    "Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinématographique place l’illustration du titre derrière la liste des sources, assombrie sur les bords pour que les deux volets restent lisibles. Normal conserve le fond uni de l’application. Par défaut : Cinématographique."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinematográfico coloca la imagen del título detrás de la lista de fuentes, atenuada en los bordes para que ambos paneles se lean bien. Normal mantiene el fondo simple de la app. Por defecto: Cinematográfico."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filmisch legt das Artwork des Titels hinter die Quellenliste, an den Rändern abgedunkelt, damit beide Bereiche lesbar bleiben. Normal behält den schlichten App-Hintergrund bei. Standardmäßig: Filmisch."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinematografico posiziona l’immagine del titolo dietro l’elenco delle sorgenti, attenuata ai bordi così che entrambi i pannelli restino leggibili. Normale mantiene lo sfondo semplice dell’app. Predefinito: Cinematografico."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Điện ảnh đặt hình ảnh của tựa phim phía sau danh sách nguồn, làm tối ở các cạnh để cả hai khung đều dễ đọc. Cơ bản giữ nền ứng dụng đơn giản. Mặc định: Điện ảnh."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

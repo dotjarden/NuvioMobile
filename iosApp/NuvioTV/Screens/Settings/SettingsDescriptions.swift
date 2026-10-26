@@ -157,6 +157,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesDvFilter = "sources.dvFilter"
     case sourcesHdrFilter = "sources.hdrFilter"
     case sourcesCachedOnlyFilter = "sources.cachedOnlyFilter"
+    case sourcesBackground = "sources.background"
     case sourcesTmdbEnrichment = "sources.tmdbEnrichment"
     case sourcesTmdbKey = "sources.tmdbKey"
     case sourcesTmdbReleaseDates = "sources.tmdbReleaseDates"
@@ -363,6 +364,7 @@ enum SettingsDescriptions {
         case .sourcesDvFilter: return LocalizedStringResource("Any shows all sources. Only keeps Dolby Vision sources. Exclude hides them.")
         case .sourcesHdrFilter: return LocalizedStringResource("Any shows all sources. Only keeps HDR sources. Exclude hides them.")
         case .sourcesCachedOnlyFilter: return LocalizedStringResource("Hides sources your debrid service has not cached. This row only appears once a debrid service is connected. Off by default.")
+        case .sourcesBackground: return LocalizedStringResource("Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.")
         case .sourcesTmdbEnrichment: return LocalizedStringResource("Adds cast profiles, studios, collections and better artwork from TMDB to titles you open. It uses a key built into the app. Off by default.")
         case .sourcesTmdbKey: return LocalizedStringResource("Lets you use your own TMDB API key instead of the built-in one. Leave it empty to keep the built-in key. Removing your key goes back to the built-in one.")
         case .sourcesTmdbReleaseDates: return LocalizedStringResource("Uses TMDB's air dates instead of the dates your add-ons report. Off by default.")

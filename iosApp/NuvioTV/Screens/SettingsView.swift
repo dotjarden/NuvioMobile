@@ -210,7 +210,7 @@ struct SettingsView: View {
         case .player:
             PlayerSettingsPane(model: model)
         case .sources:
-            SourcesSettingsPane(model: model, plugins: plugins)
+            SourcesSettingsPane(model: model, plugins: plugins, badges: badges)
         case .subtitlesAudio:
             SubtitlesAudioSettingsPane(model: model)
         case .about:

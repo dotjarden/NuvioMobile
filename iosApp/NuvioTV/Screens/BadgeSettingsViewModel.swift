@@ -38,6 +38,11 @@ final class BadgeSettingsViewModel: ObservableObject {
     var showFileSizeBadges: Bool { state?.showFileSizeBadges ?? true }
     var showAddonLogo: Bool { state?.showAddonLogo ?? false }
     var badgesOnTop: Bool { state?.badgePlacement == .top }
+    /// Stream picker A (P4.1): the picker's backdrop mode; the platform default (Cinematic on tvOS,
+    /// decision D1) until the repository has emitted.
+    var backgroundMode: StreamBackgroundMode {
+        state?.backgroundMode ?? StreamBackgroundDefaults.shared.platformDefault
+    }
 
     // MARK: - Actions (thin passthroughs to the shared repository)
 
@@ -81,6 +86,10 @@ final class BadgeSettingsViewModel: ObservableObject {
 
     func setBadgesOnTop(_ top: Bool) {
         StreamBadgeSettingsRepository.shared.setBadgePlacement(placement: top ? .top : .bottom)
+    }
+
+    func setBackgroundMode(_ mode: StreamBackgroundMode) {
+        StreamBadgeSettingsRepository.shared.setBackgroundMode(mode: mode)
     }
 
     /// Short display label for an imported pack (URL tail without query noise).
