@@ -447,4 +447,89 @@ final class StreamPickerUITests: XCTestCase {
             if element(app, "stream_picker_source_panel").exists || element(app, "detail_hero").exists { break }
         }
     }
+
+    // MARK: - Chip row overflow
+
+    /// P5 device pass: with seven stub add-ons the chip row overflows the panel. Left from the first
+    /// row wraps the selection to the LAST chip; the row must scroll that chip inside the panel
+    /// (the P4 device-pass fix, `865ba971a`, which the box showed as a no-op: the chip stayed cut
+    /// at the panel edge). Prints the chip row's and the panel's frames so a layout cause (a chip
+    /// row laid out wider than the panel) can be told from a scroll that never ran.
+    func testChipRowScrollsTheSelectedChipIntoView() throws {
+        let mediaStub = DiscoveryStubServer()
+        try mediaStub.start()
+        addTeardownBlock { mediaStub.stop() }
+        let media = mediaStub.origin
+        let names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]
+        var routes: [(prefix: String, body: String)] = []
+        for (index, name) in names.enumerated() {
+            let prefix = "/picker-zz-\(index)/"
+            routes.append((prefix: "\(prefix)manifest.json", body: manifest(id: "zz.picker.\(index)", name: "ZZ \(name)")))
+            routes.append((prefix: "\(prefix)stream/movie/", body: streams([
+                ("ZZ \(name)\\n1080p", "Dune 2021 1080p \(name)", "\(index).mp4"),
+            ], prefix: prefix, media: media)))
+        }
+        let addonStub = DiscoveryStubServer(routes: routes)
+        try addonStub.start()
+        addTeardownBlock { addonStub.stop() }
+
+        let common = [
+            "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+            "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
+            "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+        ]
+        addTeardownBlock { [self] in
+            XCUIApplication().terminate()
+            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
+            pause(10)
+            cleanup.terminate()
+        }
+        let urls = names.indices.map { "\(addonStub.origin)/picker-zz-\($0)/manifest.json" }.joined(separator: ",")
+        let seed = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix, "-debug.addonManifestUrls", urls])
+        pause(16)
+        seed.terminate()
+
+        let app = launch(common + [
+            "-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+            "-detail_layout", "cinematic", "-home_upcoming_row_enabled", "NO",
+        ])
+        var detailUp = false
+        for _ in 0..<90 {
+            if element(app, "detail_hero").exists || element(app, "detail_action_play").exists { detailUp = true; break }
+            pause(0.5)
+        }
+        if !detailUp { throw XCTSkip("the deep link never produced a Detail page — network or fixture, not the picker") }
+        var playFocused = false
+        for _ in 0..<60 {
+            let label = focusedLabel(app)
+            if label.hasPrefix("Play") || label.hasPrefix("Resume") { playFocused = true; break }
+            pause(0.25)
+        }
+        guard playFocused else { XCTFail("focus never reached Play/Resume on Detail; focused: \(focusDump(app))"); return }
+        remote.press(.select)
+
+        // `.firstMatch`: the container identifiers resolve to more than one node (run 1 of this leg).
+        let panel = app.descendants(matching: .any).matching(identifier: "stream_picker_source_panel").firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 20), "stream_picker_source_panel never appeared")
+        XCTAssertTrue(waitUntil(timeout: 20) { chipLabels(app).count >= names.count },
+                      "expected \(names.count) chips, saw \(chipLabels(app))")
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 10),
+                      "the first row never took focus; focused: \(focusDump(app))")
+        let lastIndex = chipLabels(app).count - 1
+        let last = chip(app, "\(lastIndex)")
+        // The chip row's own identifier (a ScrollView with a focus section) is not exposed on this
+        // runtime (run 2: no match), so the row is read through its chips: the refresh chip's
+        // leading edge and the last chip's trailing edge.
+        let refresh = element(app, "stream_picker_chip_refresh")
+        func rowFrame() -> String { "refresh.minX=\(refresh.frame.minX) last.maxX=\(last.frame.maxX)" }
+        say("overflow: panel=\(panel.frame) \(rowFrame()) all=\(chip(app, "all").frame) last(\(lastIndex))=\(last.frame) before the step")
+
+        remote.press(.left)
+        XCTAssertTrue(waitUntil(timeout: 5) { last.isSelected }, "Left from the first row did not wrap to the last chip; chips: \(chipLabels(app))")
+        pause(1.5)
+        say("overflow: \(rowFrame()) all=\(chip(app, "all").frame) last(\(lastIndex))=\(last.frame) after the step")
+        XCTAssertLessThanOrEqual(last.frame.maxX, panel.frame.maxX - 8,
+                                 "the selected last chip is not inside the panel: last=\(last.frame) panel=\(panel.frame) \(rowFrame())")
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5), "the step moved focus off the list; focused: \(focusDump(app))")
+    }
 }

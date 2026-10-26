@@ -49,11 +49,13 @@ struct SourceChipRow: View {
     /// How long an error chip with no streams stays after the fan-out finished.
     nonisolated static let errorChipLinger: TimeInterval = 1.6
 
+    /// The chip the row is scrolled to (`.scrollPosition(id:)`); the selected chip after a step.
+    @State private var scrolledChip: String?
+
     var body: some View {
         // Review r1 (P2): a Left/Right on the list moves the selection without focusing a chip, so
         // the row scrolls the selected chip into view itself.
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
+        ScrollView(.horizontal) {
                 HStack(spacing: Theme.Spacing.sm) {
                     Button(action: onRefresh) {
                         Image(systemName: "arrow.clockwise")
@@ -87,17 +89,23 @@ struct SourceChipRow: View {
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.xs)
-            }
-            // The chip lifts on focus; don't crop the lift (FilterPills guidance).
-            .scrollClipDisabled()
-            .onChange(of: selected, initial: true) { _, selected in
-                // P4 device pass: a step onto the last chip left it cut at the panel edge. The chip
-                // ids are laid out in the same update as the selection, so scroll on the next
-                // runloop, and ask for the chip centred rather than merely "in view".
-                let key = selected.map(Self.key(for:)) ?? Self.allKey
-                DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(key, anchor: .center) }
-                }
+                .scrollTargetLayout()
+        }
+        // The chip lifts on focus; don't crop the lift (FilterPills guidance).
+        .scrollClipDisabled()
+        // P4 device pass: a step onto the last chip left it cut at the panel edge. P5 device pass:
+        // `ScrollViewReader.scrollTo` scrolled on the simulator (tvOS 26.5) and never on the box
+        // (tvOS 27.2), so the row is driven by `.scrollPosition(id:)` as the Home rows and the
+        // Stage strip are. The chip ids are laid out in the same update as the selection, so the
+        // position is written on the next runloop, centred rather than merely "in view".
+        .scrollPosition(id: $scrolledChip, anchor: .center)
+        .onChange(of: selected, initial: true) { _, selected in
+            let key = selected.map(Self.key(for:)) ?? Self.allKey
+            // A binding already holding the key (focus-driven scrolling writes it) would not move
+            // the row: clear it first, then ask for the chip.
+            if scrolledChip == key { scrolledChip = nil }
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.2)) { scrolledChip = key }
             }
         }
         .focusSection()
