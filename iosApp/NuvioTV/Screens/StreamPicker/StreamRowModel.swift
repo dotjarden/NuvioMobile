@@ -52,6 +52,10 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     let badgesOnTop: Bool
     /// The inline add-on label (logo + name) on line 1 is drawn ("Show Add-on Logo").
     let showsAddonColumn: Bool
+    /// The add-on's name is drawn on line 1 (review r1 R1-2): always on a headline row, whose title
+    /// no longer carries it, else exactly when "Show Add-on Logo" is on. The logo itself stays behind
+    /// `showsAddonColumn`.
+    let showsAddonName: Bool
     let addonName: String
     /// The add-on's logo URL, nil when it has none.
     let addonLogo: String?
@@ -89,6 +93,19 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     var hasVideoLine: Bool { !videoFacts.isEmpty }
     /// Fact line 2 (audio, languages, cached state) is drawn.
     var hasAudioLine: Bool { !audioFacts.isEmpty || cachedState != nil }
+
+    /// What VoiceOver reads for the row: the headline (or title), the HDR mark, the add-on name on a
+    /// headline row, the size, the fact lines and the cached words.
+    @MainActor var spokenLabel: String {
+        var parts: [String] = [headline ?? title]
+        if let hdrMark { parts.append(hdrMark) }
+        if showsAddonName || headline != nil, !addonName.isEmpty { parts.append(addonName) }
+        if let sizeBytes { parts.append(StreamFileSizeChip.label(for: sizeBytes)) }
+        parts += videoFacts
+        parts += audioFacts
+        if let cachedState { parts.append(StreamRowFacts.cachedText(cachedState)) }
+        return parts.joined(separator: ", ")
+    }
 
     /// The part the picker's own state decides (spinner, rejected caption, players).
     func applying(isResolving: Bool, failedRecently: Bool, players: [StreamRowPlayer],
@@ -140,6 +157,7 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             sizeBytes: sizeBytes,
             badgesOnTop: display.badgesOnTop,
             showsAddonColumn: display.showAddonLogo,
+            showsAddonName: (headline != nil || display.showAddonLogo) && !stream.addonName.isEmpty,
             addonName: stream.addonName,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
             isYouTube: StreamPickerView.isYouTubeResolved(stream),

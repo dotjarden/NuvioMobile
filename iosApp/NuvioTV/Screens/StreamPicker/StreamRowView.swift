@@ -80,6 +80,7 @@ struct StreamRowView: View, Equatable {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .fill(Theme.Palette.surface)
         )
+        .accessibilityLabel(Text(verbatim: model.spokenLabel))
         .accessibilityIdentifier("stream_picker_row")
         // FEAT-5: long-press → the OTHER player(s). With the built-in default, the menu offers
         // the installed external players; with an external default (plain Select already hands
@@ -121,8 +122,8 @@ struct StreamRowView: View, Equatable {
             if model.isResolving {
                 ProgressView().scaleEffect(0.7)
             }
-            if model.showsAddonColumn {
-                StreamRowAddonLabel(name: model.addonName, logo: model.addonLogo)
+            if model.showsAddonName {
+                StreamRowAddonLabel(name: model.addonName, logo: model.showsAddonColumn ? model.addonLogo : nil)
             }
             Spacer(minLength: Theme.Spacing.sm)
             if let bytes = model.sizeBytes {

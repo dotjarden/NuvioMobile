@@ -309,15 +309,39 @@ final class StreamRowModelTests: XCTestCase {
     /// `.some(nil)` sets an optional field to nil; the default leaves it as it was.
     private func copy(_ m: StreamRowModel, resolution: Int?? = .none, headline: String?? = .none,
                       hdrMark: String?? = .none, videoFacts: [String]? = nil, audioFacts: [String]? = nil,
-                      cachedState: StreamRowCachedState?? = .none) -> StreamRowModel {
+                      cachedState: StreamRowCachedState?? = .none, showsAddonName: Bool? = nil) -> StreamRowModel {
         StreamRowModel(
             key: m.key, title: m.title, description: m.description, badges: m.badges, sizeBytes: m.sizeBytes,
-            badgesOnTop: m.badgesOnTop, showsAddonColumn: m.showsAddonColumn, addonName: m.addonName,
+            badgesOnTop: m.badgesOnTop, showsAddonColumn: m.showsAddonColumn, showsAddonName: showsAddonName ?? m.showsAddonName, addonName: m.addonName,
             addonLogo: m.addonLogo, isYouTube: m.isYouTube, playbackKey: m.playbackKey,
             resolution: resolution ?? m.resolution, headline: headline ?? m.headline,
             hdrMark: hdrMark ?? m.hdrMark, videoFacts: videoFacts ?? m.videoFacts,
             audioFacts: audioFacts ?? m.audioFacts, cachedState: cachedState ?? m.cachedState
         )
+    }
+
+    func testTheAddonNameIsAlwaysDrawnOnAHeadlineRow() {
+        let headlineStream = stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC", addonName: "Comet",
+                                    addonLogo: "https://cdn.example.com/logo.png")
+        let off = make(headlineStream, display: StreamRowDisplay(showAddonLogo: false))
+        XCTAssertNotNil(off.headline)
+        XCTAssertTrue(off.showsAddonName, "the headline replaced the title, so the name is drawn")
+        XCTAssertFalse(off.showsAddonColumn, "the logo stays behind the setting")
+        XCTAssertTrue(off.spokenLabel.contains("Comet"), off.spokenLabel)
+        let on = make(headlineStream, display: StreamRowDisplay(showAddonLogo: true))
+        XCTAssertTrue(on.showsAddonName)
+        XCTAssertTrue(on.showsAddonColumn)
+    }
+
+    func testATitleFallbackRowFollowsTheSetting() {
+        let plain = stream(name: "Stream", description: "release", addonName: "Comet")
+        let off = make(plain, display: StreamRowDisplay(showAddonLogo: false))
+        XCTAssertNil(off.headline)
+        XCTAssertFalse(off.showsAddonName)
+        XCTAssertFalse(off.spokenLabel.contains("Comet"))
+        let on = make(plain, display: StreamRowDisplay(showAddonLogo: true))
+        XCTAssertTrue(on.showsAddonName)
+        XCTAssertTrue(on.showsAddonColumn)
     }
 
     func testEachReadableRowFieldAloneBreaksEquality() {
@@ -327,6 +351,7 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(base, copy(base, headline: .some("720p")), "headline")
         XCTAssertNotEqual(base, copy(base, hdrMark: .some("HDR10")), "hdrMark")
         XCTAssertNotEqual(base, copy(base, hdrMark: .some(nil)), "hdrMark cleared")
+        XCTAssertNotEqual(base, copy(base, showsAddonName: !base.showsAddonName), "showsAddonName")
         XCTAssertNotEqual(base, copy(base, videoFacts: base.videoFacts + ["AV1"]), "videoFacts")
         XCTAssertNotEqual(base, copy(base, audioFacts: base.audioFacts + ["French"]), "audioFacts")
         XCTAssertNotEqual(base, copy(base, cachedState: .some(.instant(provider: "Real-Debrid"))), "cachedState")
