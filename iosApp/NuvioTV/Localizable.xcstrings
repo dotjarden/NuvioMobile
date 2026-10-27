@@ -41012,10 +41012,10 @@
         }
       }
     },
-    "Shows the add-on's logo and name next to each source's quality.": {
+    "Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline.": {
       "extractionState": "manual"
     },
-    "Shows the add-on's logo and name next to each source's quality. Off by default.": {
+    "Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline; this also adds it to the other rows. Off by default.": {
       "extractionState": "manual"
     },
     "Shows the full biography": {

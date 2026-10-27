@@ -291,7 +291,7 @@ enum SettingsDescriptions {
         case .appearanceCardDepthSurface: return LocalizedStringResource("Turns the depth effect on or off for this kind of card. Each kind is on by default.")
         case .appearanceCardDepthReset: return LocalizedStringResource("Puts all card depth settings back to their defaults, which also turns card depth off.")
         case .appearanceBadgesFileSize: return LocalizedStringResource("Shows each stream's file size, such as 4.2 GB, at the end of its first line. On by default.")
-        case .appearanceBadgesAddonLogo: return LocalizedStringResource("Shows the add-on's logo and name next to each source's quality. Off by default.")
+        case .appearanceBadgesAddonLogo: return LocalizedStringResource("Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline; this also adds it to the other rows. Off by default.")
         case .appearanceBadgesAboveTitle: return LocalizedStringResource("Places the badge chips above the quality line instead of at the bottom of the row.")
         case .appearanceBadgePack: return LocalizedStringResource("Set Active makes this badge pack decide which chips appear on streams. Delete removes the pack from this Apple TV.")
         case .appearanceBadgeImport: return LocalizedStringResource("Adds a badge pack from a JSON web address. Packs you import in the Nuvio phone app sync here on their own.")

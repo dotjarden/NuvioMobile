@@ -333,6 +333,17 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertTrue(on.showsAddonColumn)
     }
 
+    func testTheSpokenLabelCarriesFailedYouTubeAndBadges() {
+        let s = stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC", ytId: "abc123", badges: [badge("DV")])
+        let model = make(s)
+        XCTAssertFalse(model.spokenLabel.contains("Failed recently"))
+        let failed = model.applying(isResolving: false, failedRecently: true, players: [], defaultPlayerId: nil)
+        XCTAssertTrue(failed.spokenLabel.hasSuffix("Failed recently"), failed.spokenLabel)
+        XCTAssertTrue(failed.spokenLabel.contains("DV"), "badge names are read")
+        XCTAssertEqual(failed.isYouTube, model.isYouTube)
+        if model.isYouTube { XCTAssertTrue(failed.spokenLabel.contains("YouTube")) }
+    }
+
     func testATitleFallbackRowFollowsTheSetting() {
         let plain = stream(name: "Stream", description: "release", addonName: "Comet")
         let off = make(plain, display: StreamRowDisplay(showAddonLogo: false))

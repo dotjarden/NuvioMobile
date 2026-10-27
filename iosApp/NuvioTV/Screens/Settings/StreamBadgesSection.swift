@@ -45,7 +45,7 @@ struct StreamBadgesSection: View {
         )
         SettingsToggleRow(
             title: String(localized: "Show Add-on Logo"),
-            subtitle: String(localized: "Shows the add-on's logo and name next to each source's quality."),
+            subtitle: String(localized: "Shows the add-on's logo next to each source. The add-on name always shows on rows with a quality headline."),
             isOn: Binding(get: { badges.showAddonLogo }, set: { badges.setShowAddonLogo($0) }),
             descriptionID: .appearanceBadgesAddonLogo
         )

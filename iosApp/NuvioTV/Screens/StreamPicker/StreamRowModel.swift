@@ -94,16 +94,22 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// Fact line 2 (audio, languages, cached state) is drawn.
     var hasAudioLine: Bool { !audioFacts.isEmpty || cachedState != nil }
 
-    /// What VoiceOver reads for the row: the headline (or title), the HDR mark, the add-on name on a
-    /// headline row, the size, the fact lines and the cached words.
+    /// What VoiceOver reads for the row, in the order it is drawn: the badge names (when on top),
+    /// the headline (or title), the HDR mark, the add-on name, the size, the fact lines, the cached
+    /// words, the badge names (when below), "YouTube" and "Failed recently".
     @MainActor var spokenLabel: String {
-        var parts: [String] = [headline ?? title]
+        let badgeNames = badges.map(\.name)
+        var parts: [String] = badgesOnTop ? badgeNames : []
+        parts.append(headline ?? title)
         if let hdrMark { parts.append(hdrMark) }
-        if showsAddonName || headline != nil, !addonName.isEmpty { parts.append(addonName) }
+        if showsAddonName { parts.append(addonName) }
         if let sizeBytes { parts.append(StreamFileSizeChip.label(for: sizeBytes)) }
         parts += videoFacts
         parts += audioFacts
         if let cachedState { parts.append(StreamRowFacts.cachedText(cachedState)) }
+        if !badgesOnTop { parts += badgeNames }
+        if isYouTube { parts.append("YouTube") }
+        if failedRecently { parts.append(String(localized: "Failed recently")) }
         return parts.joined(separator: ", ")
     }
 
