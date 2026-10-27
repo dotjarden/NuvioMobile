@@ -6,9 +6,24 @@ import SharedCore
 /// Polish D1/W3-16 F2: a row at rest draws no file line, so a description never changes a resting row's height.
 @MainActor
 final class StreamRowDescriptionTests: XCTestCase {
-    // `StreamRowDwell` (and its pure `showsLine(focused:dwelled:hasText:)`) is `private` to
-    // StreamRowView.swift, so the truth table cannot be called from here; the dwell task is device-pass
-    // step 4.
+    func testRestStateDrawsNoFileLine() {
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: false, hasText: true))
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: false, hasText: true))
+    }
+
+    func testDwelledFocusedRowWithTextDrawsTheFileLine() {
+        XCTAssertTrue(StreamRowDwell.showsLine(focused: true, dwelled: true, hasText: true))
+    }
+
+    func testNoTextNeverDraws() {
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: true, hasText: false))
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: false, hasText: false))
+    }
+
+    func testLosingFocusCollapsesEvenAfterTheDwell() {
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: true, hasText: true))
+        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: true, hasText: false))
+    }
 
     private func model(description: String?) -> StreamRowModel {
         let hints = StreamBehaviorHints(bingeGroup: nil, notWebReady: false, videoHash: nil, videoSize: nil,
