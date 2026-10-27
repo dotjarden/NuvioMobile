@@ -8527,76 +8527,8 @@
     "Badge chips render above the quality line.": {
       "extractionState": "manual"
     },
-    "Badge chips render above the stream name.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badge-Chips werden über dem Stream-Namen angezeigt."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Los chips de insignia se renderizan encima del nombre del stream."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Les badges s'affichent au-dessus du nom du stream."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "I chip dei badge vengono visualizzati sopra il nome del flusso."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Huy hiệu hiển thị phía trên tên luồng."
-          }
-        }
-      }
-    },
     "Badge chips render at the bottom of the row.": {
       "extractionState": "manual"
-    },
-    "Badge chips render below the stream description.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badge-Chips werden unter der Stream-Beschreibung angezeigt."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Los chips de insignia se renderizan debajo de la descripción del stream."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Les badges s'affichent sous la description du stream."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "I chip dei badge vengono visualizzati sotto la descrizione del flusso."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Huy hiệu hiển thị phía dưới mô tả luồng."
-          }
-        }
-      }
     },
     "Badge import failed.": {
       "localizations": {
@@ -31922,40 +31854,6 @@
     "Places the badge chips above the quality line instead of at the bottom of the row.": {
       "extractionState": "manual"
     },
-    "Places the badge chips above the stream name instead of below its description.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Platziert die Badge-Chips über dem Stream-Namen statt unter dessen Beschreibung."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Coloca los chips de insignias encima del nombre del stream en lugar de debajo de su descripción."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Place les pastilles de badges au-dessus du nom du stream plutôt que sous sa description."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mette i chip dei badge sopra il nome dello stream invece che sotto la sua descrizione."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Đặt các chip huy hiệu phía trên tên luồng thay vì bên dưới phần mô tả của nó."
-          }
-        }
-      }
-    },
     "Plain background": {
       "localizations": {
         "de": {
@@ -40190,40 +40088,6 @@
         }
       }
     },
-    "Show each result's add-on logo and name on the right of the row.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeige das Add-on-Logo und den Namen jedes Ergebnisses auf der rechten Seite der Reihe."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra el logo y el nombre del complemento de cada resultado a la derecha de la fila."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche le logo et le nom de l'addon de chaque résultat à droite de la ligne."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra il logo e il nome del addon di ogni risultato a destra della riga."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiện logo và tên addon của từng kết quả ở bên phải hàng."
-          }
-        }
-      }
-    },
     "Show posters without a title label": {
       "localizations": {
         "de": {
@@ -40424,40 +40288,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiển thị tiêu đề, nguồn và thời gian còn lại sau khi tạm dừng một chút (trình phát mpv)"
-          }
-        }
-      }
-    },
-    "Show the video size (GB/MB) as a chip on stream results.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeige die Videogröße (GB/MB) als Chip auf Stream-Ergebnissen."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostrar el tamaño del vídeo (GB/MB) como chip en resultados de stream."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche la taille de la vidéo (Go/Mo) sous forme de badge sur les résultats de streams."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra la dimensione del video (GB/MB) come chip nei risultati dei flussi."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiện dung lượng video (GB/MB) dưới dạng nhãn trên kết quả luồng."
           }
         }
       }
@@ -40730,40 +40560,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiện mã ngắn để nhập trên điện thoại (đăng nhập bằng thiết bị)."
-          }
-        }
-      }
-    },
-    "Shows each stream's file size, such as 4.2 GB, as a small chip in the source list. On by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeigt die Dateigröße jedes Streams, etwa 4,2 GB, als kleinen Chip in der Quellenliste. Standardmäßig ein."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra el tamaño de archivo de cada stream, como 4,2 GB, en un pequeño chip de la lista de fuentes. Activado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche la taille du fichier de chaque stream, par exemple 4,2 Go, dans une petite pastille de la liste des sources. Activé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra la dimensione del file di ogni stream, come 4,2 GB, in un piccolo chip nella lista delle fonti. Attivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiển thị dung lượng tệp của từng luồng, như 4,2 GB, dưới dạng chip nhỏ trong danh sách nguồn. Mặc định bật."
           }
         }
       }
@@ -41221,40 +41017,6 @@
     },
     "Shows the add-on's logo and name next to each source's quality. Off by default.": {
       "extractionState": "manual"
-    },
-    "Shows the add-on's logo and name on the right of each source. Off by default.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeigt Logo und Namen des Add-ons rechts neben jeder Quelle. Standardmäßig aus."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra el logotipo y el nombre del complemento a la derecha de cada fuente. Desactivado por defecto."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affiche le logo et le nom de l’add-on à droite de chaque source. Désactivé par défaut."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra il logo e il nome dell’add-on a destra di ogni fonte. Disattivato per impostazione predefinita."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiển thị logo và tên add-on ở bên phải mỗi nguồn. Mặc định tắt."
-          }
-        }
-      }
     },
     "Shows the full biography": {
       "localizations": {

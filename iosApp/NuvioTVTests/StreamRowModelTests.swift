@@ -24,6 +24,7 @@ final class StreamRowModelTests: XCTestCase {
         name: String? = "Torrentio 4K",
         description: String? = "Movie.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HEVC-GROUP",
         url: String? = "https://cdn.example.com/movie.mkv",
+        infoHash: String? = nil,
         ytId: String? = nil,
         addonId: String = "addon:x",
         addonName: String = "Add-on",
@@ -33,7 +34,7 @@ final class StreamRowModelTests: XCTestCase {
         cache: StreamDebridCacheStatus? = nil
     ) -> StreamItem {
         StreamItem(
-            name: name, title: nil, description: description, url: url, infoHash: nil, fileIdx: nil,
+            name: name, title: nil, description: description, url: url, infoHash: infoHash, fileIdx: nil,
             externalUrl: nil, ytId: ytId, sources: [], sourceName: nil, addonName: addonName, addonId: addonId,
             addonLogo: addonLogo, streamType: nil, behaviorHints: hints(size: size),
             clientResolve: nil, debridCacheStatus: cache, externalSubtitles: [], badges: badges
@@ -78,6 +79,14 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertEqual(model.playbackKey, s.playbackStreamKey)
         XCTAssertFalse(model.playbackKey.isEmpty)
         XCTAssertTrue(model.hasBadgeRow)
+        // Readable-row fields (the default fixture parses as 2160p WEB-DL HEVC, DV, Atmos DD+).
+        XCTAssertEqual(model.resolution, 2160)
+        XCTAssertEqual(model.headline, "4K")
+        XCTAssertEqual(model.title, "Torrentio 4K", "with a headline the title is the plain label")
+        XCTAssertEqual(model.hdrMark, "DV")
+        XCTAssertTrue(model.hasVideoLine)
+        XCTAssertTrue(model.hasAudioLine)
+        XCTAssertNil(model.cachedState, "a plain HTTP link is not a debrid candidate")
         // The four view-state inputs start empty.
         XCTAssertFalse(model.isResolving)
         XCTAssertFalse(model.failedRecently)
@@ -99,7 +108,7 @@ final class StreamRowModelTests: XCTestCase {
                      "the size chip is off: no size, so no chip")
         XCTAssertNil(make(stream(size: nil), display: StreamRowDisplay(showFileSize: true)).sizeBytes)
         XCTAssertFalse(make(stream(size: nil)).hasBadgeRow, "no badges and no size: no badge row")
-        XCTAssertTrue(make(stream(size: 5)).hasBadgeRow)
+        XCTAssertFalse(make(stream(size: 5)).hasBadgeRow, "the size moved to the headline line: it no longer makes a badge row")
         XCTAssertTrue(make(stream(badges: [badge("HDR")])).hasBadgeRow)
     }
 
@@ -168,7 +177,8 @@ final class StreamRowModelTests: XCTestCase {
     }
 
     func testTheInstantSuffixTitleIsPartOfEquality() {
-        let hit = stream(cache: cached())
+        // No resolution: with a headline the title never carries the suffix (D3), so this case needs a title-led row.
+        let hit = stream(name: "Torrentio", description: "release", cache: cached())
         let off = StreamRowModel.make(stream: hit, key: "k", display: StreamRowDisplay(instantSuffix: false),
                                       providerLabel: { $0.providerName })
         let on = StreamRowModel.make(stream: hit, key: "k", display: StreamRowDisplay(instantSuffix: true),
@@ -197,6 +207,99 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertEqual(uhd.resolution, 2160)
         XCTAssertEqual(fhd.resolution, 1080)
         XCTAssertNil(make(stream(name: "Torrentio", description: "Movie.2024.WEB-DL")).resolution)
+    }
+
+    // MARK: - Readable row fields (polish D1/D3)
+
+    private let torrentHash = "0123456789abcdef0123456789abcdef01234567"
+
+    func testMakeDerivesTheFactLines() {
+        let model = make(stream())
+        XCTAssertEqual(model.videoFacts.count, 2, "source type and codec: \(model.videoFacts)")
+        XCTAssertEqual(model.videoFacts.first, "WEB-DL")
+        XCTAssertEqual(model.audioFacts.first, "Atmos DD+", "the parser reads no channel layout from DDP5.1: \(model.audioFacts)")
+    }
+
+    func testAStreamWithNoResolutionShowsItsTitle() {
+        let model = make(stream(name: "Stream", description: "release"))
+        XCTAssertNil(model.resolution)
+        XCTAssertNil(model.headline)
+        XCTAssertNil(model.hdrMark, "no headline, no mark")
+        XCTAssertEqual(model.title, "Stream")
+    }
+
+    func testNoResolutionPlusCachedKeepsTheSuffixAndDropsTheGlyph() {
+        let s = stream(name: "Torrentio", description: "release", url: nil, infoHash: torrentHash, cache: cached())
+        let model = make(s, display: StreamRowDisplay(instantSuffix: true))
+        XCTAssertNil(model.headline)
+        XCTAssertTrue(model.title.contains("Instant"), model.title)
+        XCTAssertNil(model.cachedState, "exactly one of the title and the glyph says Instant")
+    }
+
+    func testAHeadlineMovesInstantFromTheTitleToTheGlyph() {
+        let s = stream(name: "Torrentio", description: "Movie.2024.2160p.WEB-DL", url: nil, infoHash: torrentHash,
+                       cache: cached())
+        let model = make(s, display: StreamRowDisplay(instantSuffix: true))
+        XCTAssertEqual(model.headline, "4K")
+        XCTAssertEqual(model.title, "Torrentio", "no suffix with a headline")
+        XCTAssertEqual(model.cachedState, .instant(provider: "Real-Debrid"))
+    }
+
+    func testNoResolutionCachedWithTheSuffixOffShowsTheGlyph() {
+        let s = stream(name: "Torrentio", description: "release", url: nil, infoHash: torrentHash, cache: cached())
+        let model = make(s, display: StreamRowDisplay(instantSuffix: false))
+        XCTAssertEqual(model.title, "Torrentio")
+        XCTAssertEqual(model.cachedState, .instant(provider: "Real-Debrid"))
+    }
+
+    func testAPlainHttpStreamWithACachedStatusHasNoGlyph() {
+        let model = make(stream(cache: cached()), display: StreamRowDisplay(instantSuffix: true))
+        XCTAssertNil(model.cachedState, "facts.cached is nil for a direct link")
+    }
+
+    // MARK: - Equality of the readable row fields
+
+    func testTheHeadlineAndHdrMarkArePartOfEquality() {
+        let dv = make(stream(name: "T", description: "Movie.2024.2160p.WEB-DL.DV.HEVC"))
+        let hdr10 = make(stream(name: "T", description: "Movie.2024.2160p.WEB-DL.HDR10.HEVC"))
+        XCTAssertEqual(dv.headline, hdr10.headline)
+        XCTAssertNotEqual(dv.hdrMark, hdr10.hdrMark)
+        XCTAssertNotEqual(dv, hdr10)
+        let hd = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.DV.HEVC"))
+        XCTAssertNotEqual(dv.headline, hd.headline)
+        XCTAssertNotEqual(dv, hd)
+    }
+
+    func testTheVideoFactsArePartOfEquality() {
+        let web = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC"))
+        let blu = make(stream(name: "T", description: "Movie.2024.1080p.BluRay.HEVC"))
+        XCTAssertNotEqual(web.videoFacts, blu.videoFacts)
+        XCTAssertNotEqual(web, blu)
+    }
+
+    func testTheAudioFactsArePartOfEquality() {
+        let ddp = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.DDP5.1.HEVC"))
+        let aac = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.AAC.HEVC"))
+        XCTAssertNotEqual(ddp.audioFacts, aac.audioFacts)
+        XCTAssertNotEqual(ddp, aac)
+        let withLanguage = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.AAC.HEVC.FRENCH"))
+        XCTAssertNotEqual(aac, withLanguage, "a language was added to the audio line")
+    }
+
+    func testTheCachedStateIsPartOfEquality() {
+        func model(_ cache: StreamDebridCacheStatus?, torrent: Bool) -> StreamRowModel {
+            make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL", url: torrent ? nil : "https://cdn.example.com/a.mkv",
+                        infoHash: torrent ? torrentHash : nil, cache: cache))
+        }
+        let instant = model(cached(), torrent: true)
+        let notCached = model(StreamDebridCacheStatus(providerId: "rd", providerName: "Real-Debrid", state: .notCached,
+                                                      cachedName: nil, cachedSize: nil), torrent: true)
+        let plain = model(nil, torrent: false)
+        XCTAssertEqual(instant.cachedState, .instant(provider: "Real-Debrid"))
+        XCTAssertNil(plain.cachedState)
+        XCTAssertNotEqual(instant, plain)
+        XCTAssertNotEqual(instant.cachedState, notCached.cachedState)
+        XCTAssertNotEqual(instant, notCached)
     }
 
     func testTheKeyTitleDescriptionAndBadgesArePartOfEquality() {

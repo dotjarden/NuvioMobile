@@ -324,9 +324,10 @@ final class StreamPickerUITests: XCTestCase {
                            "chip labels: \(labels)")
             XCTAssertFalse(chip(app, "2").exists, "unexpected stream_picker_chip_2: \(chip(app, "2").label)")
 
-            // e. Section labels under "All".
+            // e. Section labels under "All". The default grouping is Quality (polish D4), so the
+            // labels are the tiers of the stub streams (4K, 1080p, 720p, SD), not one per add-on.
             let sections = app.descendants(matching: .any).matching(identifier: "stream_picker_section_label").count
-            XCTAssertEqual(sections, 2, "stream_picker_section_label count under All")
+            XCTAssertEqual(sections, 4, "stream_picker_section_label count under All (quality tiers)")
         }
 
         // f. Initial focus on the first row (P4 device-pass fix 865ba971a) was read in b, before
@@ -446,6 +447,145 @@ final class StreamPickerUITests: XCTestCase {
             pause(1)
             if element(app, "stream_picker_source_panel").exists || element(app, "detail_hero").exists { break }
         }
+    }
+
+    // MARK: - Tier headers
+
+    private func sectionLabels(_ app: XCUIApplication) -> Set<String> {
+        let nodes = app.descendants(matching: .any).matching(identifier: "stream_picker_section_label").allElementsBoundByIndex
+        return Set(nodes.map(\.label))
+    }
+
+    /// Polish D4: under All the Quality grouping lists the rows under tier headings ("4K · 1",
+    /// "1080p · 2", "720p · 1", "SD · 1" for the stubs), whose counts sum to the row total; Down walks
+    /// rows only; a selected chip keeps the tier headings (the add-on grouping's "no labels under a
+    /// chip" rule does not apply). The lazy list realizes only the headings near the viewport, so
+    /// the headings are collected over a Down walk.
+    func testTierHeadersGroupTheAllView() throws {
+        addTeardownBlock { [self] in
+            let attachment = XCTAttachment(string: printed.joined(separator: "\n"))
+            attachment.name = "picker-leg-log"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let mediaStub = DiscoveryStubServer()
+        try mediaStub.start()
+        addTeardownBlock { mediaStub.stop() }
+        let media = mediaStub.origin
+        let addonStub = DiscoveryStubServer(routes: [
+            (prefix: "/picker-zz-a/manifest.json", body: manifest(id: "zz.picker.a", name: "ZZ Picker A")),
+            (prefix: "/picker-zz-a/stream/movie/", body: streams([
+                ("ZZ A\\n1080p", "Dune 2021 1080p WEB-DL", "a1.mp4"),
+                ("ZZ A\\n720p", "Dune 2021 720p WEB", "a2.mp4"),
+                ("ZZ A\\n480p", "Dune 2021 480p", "a3.mp4"),
+            ], prefix: "/picker-zz-a/", media: media)),
+            (prefix: "/picker-zz-b/manifest.json", body: manifest(id: "zz.picker.b", name: "ZZ Picker B")),
+            (prefix: "/picker-zz-b/stream/movie/", body: streams([
+                ("ZZ B\\n2160p", "Dune 2021 2160p", "b1.mp4"),
+                ("ZZ B\\n1080p", "Dune 2021 1080p", "b2.mp4"),
+            ], prefix: "/picker-zz-b/", media: media)),
+        ])
+        try addonStub.start()
+        addTeardownBlock { addonStub.stop() }
+
+        let common = [
+            "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+            "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
+            "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+        ]
+        addTeardownBlock { [self] in
+            XCUIApplication().terminate()
+            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
+            pause(10)
+            cleanup.terminate()
+        }
+        let seed = launch(common + [
+            "-debug.addonManifestRemoveMatching", Self.stubPrefix,
+            "-debug.addonManifestUrls",
+            "\(addonStub.origin)/picker-zz-a/manifest.json,\(addonStub.origin)/picker-zz-b/manifest.json",
+        ])
+        pause(14)
+        seed.terminate()
+        let app = launch(common + [
+            "-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+            "-detail_layout", "cinematic", "-home_upcoming_row_enabled", "NO",
+        ])
+
+        var detailUp = false
+        for _ in 0..<90 {
+            if element(app, "detail_hero").exists || element(app, "detail_action_play").exists {
+                detailUp = true
+                break
+            }
+            pause(0.5)
+        }
+        if !detailUp {
+            throw XCTSkip("the deep link never produced a Detail page — network or fixture, not the picker")
+        }
+        var playFocused = false
+        for _ in 0..<60 {
+            let label = focusedLabel(app)
+            if label.hasPrefix("Play") || label.hasPrefix("Resume") {
+                playFocused = true
+                break
+            }
+            pause(0.25)
+        }
+        guard playFocused else {
+            XCTFail("focus never reached Play/Resume on Detail; focused: \(focusDump(app))")
+            return
+        }
+        remote.press(.select)
+        XCTAssertTrue(element(app, "stream_picker_source_panel").waitForExistence(timeout: 20),
+                      "stream_picker_source_panel never appeared; focused: \(focusDump(app))")
+        XCTAssertTrue(waitRows(app, 3, atLeast: true, timeout: 20),
+                      "expected >= 3 stream_picker_row on open, saw \(rows(app).count); chips: \(chipLabels(app))")
+        let expectedTotal = chipLabels(app).compactMap { parseChip($0).count }.reduce(0, +)
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 5),
+                      "the first stream_picker_row never took focus; focused: \(focusDump(app))")
+
+        // Collect the headings across a Down walk to the end of the list; focus must stay on rows.
+        var seen = sectionLabels(app)
+        var total = rows(app).count
+        for _ in 0..<min(expectedTotal + 2, 14) {
+            remote.press(.down)
+            pause(0.5)
+            seen.formUnion(sectionLabels(app))
+            total = max(total, rows(app).count)
+            XCTAssertFalse(focusDump(app).contains("id=stream_picker_section_label"),
+                           "Down focused a section label; focused: \(focusDump(app))")
+        }
+        say("tier headings under All = \(seen.sorted()), rows = \(total), chip counts sum = \(expectedTotal)")
+        guard total == 5, expectedTotal == 5 else {
+            throw XCTSkip("fixture has extra movie stream add-ons (\(chipLabels(app)), \(total) rows): the tier counts assume the two stubs alone")
+        }
+        XCTAssertEqual(seen, ["4K · 1", "1080p · 2", "720p · 1", "SD · 1"], "tier headings under All")
+        let counts = seen.compactMap { label in label.split(separator: "·").last.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } }
+        XCTAssertEqual(counts.reduce(0, +), expectedTotal, "heading counts must sum to the chip counts")
+
+        // Back to the first row, then step the selection to "ZZ Picker A" with Right.
+        var ups = 0
+        while ups < 12, rows(app).element(boundBy: 0).exists, !rows(app).element(boundBy: 0).hasFocus {
+            remote.press(.up)
+            pause(0.5)
+            ups += 1
+        }
+        var aSelected = false
+        for index in 0..<2 where parseChip(chip(app, "\(index)").label).name == "ZZ Picker A" {
+            for _ in 0...2 {
+                remote.press(.right)
+                if waitUntil(timeout: 3, { chip(app, "\(index)").isSelected }) { aSelected = true; break }
+            }
+        }
+        XCTAssertTrue(aSelected, "could not select the ZZ Picker A chip; chips: \(chipLabels(app)); focused: \(focusDump(app))")
+        XCTAssertTrue(waitRows(app, 3, timeout: 10), "rows after selecting ZZ Picker A: \(rows(app).count)")
+        var selectedSeen = Set<String>()
+        _ = waitUntil(timeout: 5) {
+            selectedSeen.formUnion(sectionLabels(app))
+            return selectedSeen.count >= 3
+        }
+        XCTAssertEqual(selectedSeen, ["1080p · 1", "720p · 1", "SD · 1"],
+                       "tier headings remain with a chip selected; saw \(selectedSeen.sorted())")
     }
 
     // MARK: - Chip row overflow
