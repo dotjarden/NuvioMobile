@@ -5,17 +5,22 @@ import SharedCore
 /// compared, see `StreamPickerView.streamRowView`). Reads NOTHING from the picker: not the focus
 /// state, not the resolve spinner, not the rejected set — the model carries them.
 ///
-/// BUG-16's expansion (a focused row shows its whole release name) reads the row style's
-/// `\.settingsRowIsFocused` inside `StreamRowDescription`, so a focus move re-evaluates that one
-/// leaf, never the row or its siblings.
+/// Polish D1: four lines. Line 1 is the headline (resolution) with the HDR mark, spinner, inline
+/// add-on label and size; lines 2 and 3 are the fact lines; line 4 is the release file name, drawn
+/// only after a focus dwell (BUG-16's "never truncated" still holds: the dwelled line is whole).
+/// The dwell reads the row style's `\.settingsRowIsFocused` inside `StreamRowDwell`, a background
+/// host, so a focus move re-evaluates that one leaf, never the row or its siblings.
 struct StreamRowView: View, Equatable {
     let model: StreamRowModel
     let onSelect: () -> Void
     let onBuiltIn: () -> Void
     let onExternal: (String) -> Void
-    /// Review r1 P2-3: called once the description's dwell has grown the focused row and it has
+    /// Review r1 P2-3: called once the file line's dwell has grown the focused row and it has
     /// laid out (the picker scrolls it back on screen). Not compared, like the other closures.
     var onExpanded: () -> Void = {}
+
+    /// Shown once the focused row has dwelled; flipped only by `StreamRowDwell`.
+    @State private var fileLineShown = false
 
     nonisolated static func == (lhs: StreamRowView, rhs: StreamRowView) -> Bool {
         lhs.model == rhs.model
@@ -26,47 +31,42 @@ struct StreamRowView: View, Equatable {
         let _ = HomeBodyCounter.tick("StreamRow")
         #endif
         Button(action: onSelect) {
-            HStack(alignment: .center, spacing: Theme.Spacing.lg) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    if model.hasBadgeRow && model.badgesOnTop {
-                        StreamRowBadges(badges: model.badges, sizeBytes: model.sizeBytes)
-                    }
-                    HStack(spacing: Theme.Spacing.sm) {
-                        Text(model.title)
-                            .font(Theme.Font.body)
-                            .rowTextColor()
-                            .lineLimit(2)
-                        if model.isResolving {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                    if let description = model.description {
-                        StreamRowDescription(text: description, onExpanded: onExpanded)
-                    }
-                    if model.hasBadgeRow && !model.badgesOnTop {
-                        StreamRowBadges(badges: model.badges, sizeBytes: model.sizeBytes)
-                    }
-                    // Batch D U2: the add-on gave only a YouTube video id — the row plays after an
-                    // on-device resolve (the spinner above), so say where the video comes from.
-                    if model.isYouTube {
-                        Text(verbatim: "YouTube")
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
-                    // Orivio batch item 2: this link failed recently for this title, so the
-                    // automatic pickers skip it. Still selectable by hand.
-                    if model.failedRecently {
-                        Text("Failed recently")
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                if model.hasBadgeRow && model.badgesOnTop {
+                    StreamRowBadges(badges: model.badges)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if model.showsAddonColumn {
-                    StreamRowAddonColumn(name: model.addonName, logo: model.addonLogo)
+                headlineLine
+                if model.hasVideoLine {
+                    StreamRowFactLine.video(model.videoFacts)
+                }
+                if model.hasAudioLine {
+                    StreamRowFactLine.audio(model.audioFacts, cached: model.cachedState)
+                }
+                if fileLineShown, let description = model.description {
+                    StreamRowFileLine(text: description)
+                }
+                if model.hasBadgeRow && !model.badgesOnTop {
+                    StreamRowBadges(badges: model.badges)
+                }
+                // Batch D U2: the add-on gave only a YouTube video id — the row plays after an
+                // on-device resolve (the spinner above), so say where the video comes from.
+                if model.isYouTube {
+                    Text(verbatim: "YouTube")
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
+                }
+                // Orivio batch item 2: this link failed recently for this title, so the
+                // automatic pickers skip it. Still selectable by hand.
+                if model.failedRecently {
+                    Text("Failed recently")
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // The dwell host: always present, no layout space, the only view that reads focus.
+            .background(StreamRowDwell(isShown: $fileLineShown, hasText: model.description != nil,
+                                       onExpanded: onExpanded))
             .padding(Theme.Spacing.md)
         }
         // `.settingsRow` (platter-free, soft white highlight + accent ring) replaces the system
@@ -93,51 +93,175 @@ struct StreamRowView: View, Equatable {
             onBuiltIn: onBuiltIn
         ))
     }
+
+    /// Line 1: headline (or the title when the release names no resolution), HDR mark, spinner,
+    /// inline add-on label, then the size at the trailing edge. The headline/title carry layout
+    /// priority and the size is `fixedSize`, so the line can never widen the row.
+    private var headlineLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
+            if let headline = model.headline {
+                Text(verbatim: headline)
+                    .font(Theme.Font.body.weight(.bold))
+                    .rowTextColor()
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if let mark = model.hdrMark {
+                    Text(verbatim: mark)
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
+                        .lineLimit(1)
+                }
+            } else {
+                Text(model.title)
+                    .font(Theme.Font.body)
+                    .rowTextColor()
+                    .lineLimit(2)
+                    .layoutPriority(1)
+            }
+            if model.isResolving {
+                ProgressView().scaleEffect(0.7)
+            }
+            if model.showsAddonColumn {
+                StreamRowAddonLabel(name: model.addonName, logo: model.addonLogo)
+            }
+            Spacer(minLength: Theme.Spacing.sm)
+            if let bytes = model.sizeBytes {
+                Text(verbatim: StreamFileSizeChip.label(for: bytes))
+                    .font(Theme.Font.metaStrong)
+                    .rowTextColor()
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+    }
 }
 
-/// The release name under a row's title: 3 lines while browsing, the whole name on the focused row.
-///
-/// BUG-16 (final form): release names are dot/underscore-separated with no break points, so no
-/// fixed cap fits all of them ("works for some links but not all" — the reporter, on the 3-line
-/// beta.7 fix); expanding the row under focus guarantees the name you're actually reading is never
-/// truncated, without a marquee and without inflating every row in the list.
-///
-/// W3-16 (BUG-207, F2): the expansion used to follow focus at once, so every Down/Up changed two
-/// rows' heights while the engine scrolled a lazy stack on estimated heights. It now waits for a
-/// dwell (`StreamRowDescription.dwell`): a browsing move changes no height at all. The collapse on
-/// losing focus is immediate (derived from focus), and neither direction animates.
-///
-/// Review r1 P2-3: once grown, the row calls `onExpanded` (the picker's minimal `scrollTo`), so a
-/// row near the bottom edge does not leave the end of its name below the fold.
-private struct StreamRowDescription: View {
-    let text: String
-    let onExpanded: () -> Void
-    /// ~0.5 s of the row holding focus before it grows.
-    static let dwell: Duration = .milliseconds(500)
-    /// After the grow, one frame or so for the taller row to lay out before the reveal is asked for:
-    /// a `scrollTo` issued in the same update would measure the row at its 3-line height.
-    static let revealDelay: Duration = .milliseconds(20)
+/// The two fact lines under the headline, each one `Text` built by concatenation so it truncates
+/// as a unit and takes the row's secondary colour (`RowTextColor` is a view modifier, so one colour
+/// per `Text`; emphasis is by weight). Line 1 terms are `metaStrong`; line 2 is `meta`.
+private enum StreamRowFactLine {
+    private static let separator = " \u{00B7} "
 
-    @Environment(\.settingsRowIsFocused) private var focused
-    @State private var dwelled = false
+    /// Fact line 1: source type and codec, every term bold.
+    static func video(_ terms: [String]) -> some View {
+        var line = Text(verbatim: "")
+        for (index, term) in terms.enumerated() {
+            // Text interpolation keeps each span's own font token ('+' on Text is deprecated).
+            let span = Text(verbatim: term).font(Theme.Font.metaStrong)
+            if index > 0 {
+                line = Text("\(line)\(Text(verbatim: separator).font(Theme.Font.meta))\(span)")
+            } else {
+                line = span
+            }
+        }
+        return line
+            .rowTextColor(secondary: true)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    /// Fact line 2: audio and languages, then the cached glyph and words (D3). The glyph is a
+    /// `Text(Image)` so it inherits the line's colour, platter-safe.
+    static func audio(_ terms: [String], cached: StreamRowCachedState?) -> some View {
+        var line = Text(verbatim: "")
+        for (index, term) in terms.enumerated() {
+            let span = Text(verbatim: term)
+            line = index > 0 ? Text("\(line)\(Text(verbatim: separator))\(span)") : span
+        }
+        if let cached {
+            let glyph = Text(Image(systemName: StreamRowFacts.cachedSymbol(cached)))
+            let words = Text(verbatim: StreamRowFacts.cachedText(cached))
+            let tail = Text("\(glyph)\(Text(verbatim: " "))\(words)")
+            line = terms.isEmpty ? tail : Text("\(line)\(Text(verbatim: separator))\(tail)")
+        }
+        return line
+            .font(Theme.Font.meta)
+            .rowTextColor(secondary: true)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+}
+
+/// Polish D1: the add-on's logo (when it has one) and name, inline on the headline line. Drawn only
+/// for "Show Add-on Logo". Replaces the old trailing `StreamRowAddonColumn`.
+private struct StreamRowAddonLabel: View {
+    let name: String
+    let logo: String?
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            if let logo, let url = URL(string: logo) {
+                // Cached + downsampled: the same logo repeats on every row of a group, and the
+                // uncached `AsyncImage` refetched and re-decoded it as each row was realized.
+                // Clear while loading and on failure: add-on logos often 404, and a shimmer or
+                // grey film tile on every row of the group is noise.
+                CachedAsyncImage(url: url, contentMode: .fit, decodeSize: .points(width: 28, height: 28),
+                                 loading: { Color.clear }, failure: { Color.clear })
+                    .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.chip))
+            }
+            Text(name)
+                .font(Theme.Font.caption)
+                .rowTextColor(secondary: true)
+                .lineLimit(1)
+        }
+    }
+}
+
+/// The release file name, the row's fourth line: the whole description, monospaced, never clamped
+/// (BUG-16: release names are dot/underscore-separated with no break points, so no fixed cap fits).
+private struct StreamRowFileLine: View {
+    let text: String
 
     var body: some View {
         Text(text)
-            .font(Theme.Font.caption)
+            .font(Theme.Font.caption.monospaced())
             .rowTextColor(secondary: true)
-            .lineLimit(focused && dwelled ? nil : 3)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The dwell host of the file line (BUG-16, W3-16 F2, review r1 P2-3). At rest the row draws NO
+/// file line; after ~0.5 s of the row holding focus it is shown in full, and it collapses at once
+/// on losing focus. Neither direction animates. A browsing move therefore changes no row height
+/// (F2). Lives in a `.background` so it adds no layout space and is the only view reading focus.
+///
+/// Once the row has grown it calls `onExpanded` (the picker's `scrollTo(key, anchor: nil)`), which
+/// scrolls only when the grown row overflows, so a row near the bottom edge does not leave its file
+/// name below the fold.
+private struct StreamRowDwell: View {
+    @Binding var isShown: Bool
+    let hasText: Bool
+    let onExpanded: () -> Void
+    /// ~0.5 s of the row holding focus before the file line appears.
+    static let dwell: Duration = .milliseconds(500)
+    /// After the grow, one frame or so for the taller row to lay out before the reveal is asked for:
+    /// a `scrollTo` issued in the same update would measure the row at its old height.
+    static let revealDelay: Duration = .milliseconds(20)
+
+    @Environment(\.settingsRowIsFocused) private var focused
+
+    /// The line is drawn only for a focused, dwelled row that has a description.
+    static func showsLine(focused: Bool, dwelled: Bool, hasText: Bool) -> Bool {
+        focused && dwelled && hasText
+    }
+
+    var body: some View {
+        Color.clear
             .task(id: focused) {
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 guard focused else {
-                    withTransaction(transaction) { dwelled = false }
+                    withTransaction(transaction) { isShown = false }
                     return
                 }
                 try? await Task.sleep(for: Self.dwell)
                 guard !Task.isCancelled else { return }
-                withTransaction(transaction) { dwelled = true }
+                withTransaction(transaction) {
+                    isShown = Self.showsLine(focused: true, dwelled: true, hasText: hasText)
+                }
+                guard hasText else { return }
                 // Review r1 P2-3: reveal the grown row once it has laid out. Focus leaving in the
                 // meantime cancels this task (its id is `focused`), so a departed row never scrolls.
                 try? await Task.sleep(for: Self.revealDelay)
@@ -150,26 +274,25 @@ private struct StreamRowDescription: View {
 /// BUG-16: the badge row of a stream row — `ViewThatFits` over a ladder of candidates.
 private struct StreamRowBadges: View {
     let badges: [StreamBadgeInfo]
-    let sizeBytes: Int64?
 
     var body: some View {
         // BUG-16: this used to be one plain HStack with up to 8 badge chips (each up to
-        // `StreamBadgeMetrics.maxImageWidth` = 180pt for image-based community badge packs) plus
-        // the size chip — none of them width-flexible. An HStack whose children are all
+        // `StreamBadgeMetrics.maxImageWidth` = 150pt (180 before polish D2) for image-based
+        // community badge packs) — none of them width-flexible. An HStack whose children are all
         // non-shrinking ignores the width it's offered and reports the full sum of its children
         // back to its parent instead. That inflated "ideal" width bubbled up through the
         // title/description VStack and the row's outer HStack, widening the *whole row* — and
         // since every row shares one LazyVStack, effectively the whole list — past the screen.
-        // The addon-logo column and the tail end of the badges/size chip then rendered off the
+        // The add-on logo and the tail end of the badges then rendered off the
         // trailing edge, which is what testers saw as "no space left" for title/size/seeders.
         //
         // Fix: hand `ViewThatFits` a ladder of candidates from "every badge" down to "just an
         // overflow count", widest first. It measures each against the width actually left over
-        // once title/description and the addon-logo column have claimed theirs, and renders the
+        // once the other lines and the add-on logo have claimed theirs, and renders the
         // first one that fits — so this row can never again demand more width than it's given.
-        // The size chip is pinned first in every candidate since it's core metadata (like
-        // seeders), not decoration, and every candidate shares the same fixed container height,
-        // so switching between them never changes the row's height class.
+        // Every candidate shares the same fixed container height, so switching between them never
+        // changes the row's height class. (Polish D1: the size moved to the headline line; this
+        // row holds badges only.)
         let displayBadges = Array(badges.prefix(8))
         let hiddenBeyondCap = max(0, badges.count - 8)
         ViewThatFits(in: .horizontal) {
@@ -184,15 +307,12 @@ private struct StreamRowBadges: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// One `ViewThatFits` candidate: the size chip (if any) + the first `visibleCount` badges + a
+    /// One `ViewThatFits` candidate: the first `visibleCount` badges + a
     /// non-focusable "+N" overflow chip for everything else. `hiddenCount` folds in both badges
     /// dropped by this candidate and any beyond the 8-badge display cap, so the count the user sees
     /// is always accurate.
     private func variant(displayBadges: [StreamBadgeInfo], visibleCount: Int, hiddenCount: Int) -> some View {
         HStack(spacing: Theme.Spacing.xs) {
-            if let sizeBytes {
-                StreamFileSizeChip(bytes: sizeBytes)
-            }
             ForEach(Array(displayBadges.prefix(visibleCount).enumerated()), id: \.offset) { _, badge in
                 StreamBadgeChipView(badge: badge)
             }
@@ -200,32 +320,6 @@ private struct StreamRowBadges: View {
                 BadgeOverflowChip(count: hiddenCount)
             }
         }
-    }
-}
-
-/// The trailing add-on column of a row: logo (when it has one) over the add-on's name.
-private struct StreamRowAddonColumn: View {
-    let name: String
-    let logo: String?
-
-    var body: some View {
-        VStack(spacing: Theme.Spacing.xxs) {
-            if let logo, let url = URL(string: logo) {
-                // Cached + downsampled: the same logo repeats on every row of a group, and the
-                // uncached `AsyncImage` refetched and re-decoded it as each row was realized.
-                // Clear while loading and on failure, like the old AsyncImage: add-on logos often
-                // 404, and a shimmer or grey film tile on every row of the group is noise.
-                CachedAsyncImage(url: url, contentMode: .fit, decodeSize: .points(width: 44, height: 44),
-                                 loading: { Color.clear }, failure: { Color.clear })
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            Text(name)
-                .font(Theme.Font.caption)
-                .rowTextColor(secondary: true)
-                .lineLimit(1)
-        }
-        .frame(width: 150)
     }
 }
 

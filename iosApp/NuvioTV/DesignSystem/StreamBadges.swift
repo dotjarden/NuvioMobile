@@ -10,13 +10,21 @@ import ImageIO
 ///   scaled ~2x for the living-room viewing distance.
 /// - Badges without an image fall back to a text chip in the badge's own colors (today's
 ///   behavior, kept so text-only packs still render).
-/// - `StreamFileSizeChip` is the "2.3 GB" companion chip (mobile `StreamFileSizeBadge`).
+/// - `StreamFileSizeChip` is the "2.3 GB" companion chip (mobile `StreamFileSizeBadge`); polish
+///   D1 moved the size to the row's headline line, so the view has no call site now (its
+///   `label(for:)` formatter is what the row uses).
 enum StreamBadgeMetrics {
-    static let containerHeight: CGFloat = 40
-    static let imageHeight: CGFloat = 30
+    // Polish D2: 34 / 26 / 150 (were 40 / 30 / 180) so a badge row sits under the fact lines
+    // instead of out-shouting them.
+    static let containerHeight: CGFloat = 34
+    static let imageHeight: CGFloat = 26
     static let minImageWidth: CGFloat = 60
-    static let maxImageWidth: CGFloat = 180
+    static let maxImageWidth: CGFloat = 150
     static let cornerRadius: CGFloat = 8
+    /// D2 outline chip: letter-spacing in points (not a font size; the token is untouched).
+    static let outlineTracking: CGFloat = 0.4
+    /// D2 outline chip: stroke opacity (white) at rest.
+    static let outlineStrokeOpacity: Double = 0.18
 }
 
 /// W3-16 (F1): a plain-Swift copy of the shared `StreamBadge` (a Kotlin data class), so a stream
@@ -57,6 +65,23 @@ struct StreamBadgeChipView: View {
     // FlatControlStyles.swift), so reading it here lets the chip pick focus-safe fixed colors
     // instead of trusting the pack.
     @Environment(\.isFocused) private var isFocused
+    /// BUG-65: like `RowTextColor`, the outline chip also reads the row style's focus key.
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+
+    /// How a text chip is drawn (polish D2).
+    enum TextChipStyle: Equatable {
+        /// No fill, a hairline capsule stroke, the row's own text colour.
+        case outline
+        /// The pack's own colours (BUG-28 / BUG-43 logic in `effectiveTextChipColors`).
+        case packColors
+    }
+
+    /// D2: a pack that sets a parseable `tagColor` keeps its colours; with none, the monochrome
+    /// outline chip. The pack's `textColor` / `borderColor` are ignored on the outline chip: a
+    /// `textColor` with no `tagColor` was authored for a fill this chip does not draw.
+    static func textChipStyle(tagColorHex: String) -> TextChipStyle {
+        Theme.Palette.luminance(fromHexString: tagColorHex) == nil ? .outline : .packColors
+    }
 
     var body: some View {
         if badge.imageURL.isEmpty {
@@ -108,7 +133,35 @@ struct StreamBadgeChipView: View {
         .clipShape(shape)
     }
 
+    @ViewBuilder
     private var textChip: some View {
+        switch Self.textChipStyle(tagColorHex: badge.tagColor) {
+        case .outline: outlineChip
+        case .packColors: packTextChip
+        }
+    }
+
+    /// D2 outline chip. Reads BOTH focus sources (BUG-65): the stroke flips on the white platter,
+    /// where a white 0.18 stroke would vanish; the text follows `rowTextColor`.
+    private var outlineChip: some View {
+        let focused = isFocused || rowFocused
+        return Text(badge.name)
+            .font(Theme.Font.caption.weight(.semibold))
+            .tracking(StreamBadgeMetrics.outlineTracking)
+            .rowTextColor()
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .frame(height: StreamBadgeMetrics.containerHeight)
+            .overlay(
+                Capsule().strokeBorder(
+                    focused ? Theme.Palette.onFocusPlatter.opacity(0.3)
+                            : Color.white.opacity(StreamBadgeMetrics.outlineStrokeOpacity),
+                    lineWidth: 1)
+            )
+    }
+
+    /// The pre-D2 text chip, kept intact for packs with a `tagColor` (BUG-28 / BUG-43).
+    private var packTextChip: some View {
         let decision = Self.effectiveTextChipColors(
             textColorHex: badge.textColor,
             tagColorHex: badge.tagColor,
@@ -124,6 +177,7 @@ struct StreamBadgeChipView: View {
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .padding(.vertical, Theme.Spacing.xxs)
+            .frame(height: StreamBadgeMetrics.containerHeight)
             .background(background, in: Capsule())
             .overlay(
                 Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
@@ -327,7 +381,7 @@ private enum BadgeImageMemory {
 private actor BadgeImageCache {
     static let shared = BadgeImageCache()
 
-    /// Longest decoded side in pixels: chip max width (180 pt) at the 4K UI scale (2x), rounded up.
+    /// Longest decoded side in pixels: chip max width (150 pt) at the 4K UI scale (2x), rounded up.
     /// Keeps every thumbnail ≤ ~0.6 MB regardless of the source PNG's size.
     private static let maxPixelSize: CGFloat = 400
 

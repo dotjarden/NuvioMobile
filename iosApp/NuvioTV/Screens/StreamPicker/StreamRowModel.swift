@@ -11,7 +11,7 @@ nonisolated struct StreamRowDisplay: Equatable {
     var showFileSize = true
     /// Badges above the title instead of below it.
     var badgesOnTop = false
-    /// The add-on column (logo + name) on the row's trailing edge.
+    /// The inline add-on label (logo + name) on the row's first line.
     var showAddonLogo = false
     /// The Instant suffix on debrid-cached rows (debrid resolution on, no custom name template).
     var instantSuffix = false
@@ -39,15 +39,17 @@ nonisolated struct StreamRowPlayer: Equatable {
 nonisolated struct StreamRowModel: Equatable, Identifiable {
     /// The focus key (`"<groupId>#<identity>"`), stable across republishes.
     let key: String
-    /// The row title, with the "- <Provider> Instant" suffix on a debrid-cached torrent row.
+    /// The row title. With a `headline` it is the plain stream label (the cached glyph carries the
+    /// Instant state); without one it keeps the "- <Provider> Instant" suffix on a cached torrent row.
     let title: String
     /// The add-on's description (release name), nil when empty or absent.
     let description: String?
     let badges: [StreamBadgeInfo]
-    /// The file-size chip's bytes; nil when the chip is off or the stream has no size.
+    /// The size text's bytes (`StreamFacts.sizeBytes`); nil when File Size Badges is off or the
+    /// stream has no size.
     let sizeBytes: Int64?
     let badgesOnTop: Bool
-    /// The add-on column (logo + name) is drawn.
+    /// The inline add-on label (logo + name) on line 1 is drawn ("Show Add-on Logo").
     let showsAddonColumn: Bool
     let addonName: String
     /// The add-on's logo URL, nil when it has none.
@@ -58,6 +60,16 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     let playbackKey: String
     /// polish D4: `StreamFacts.resolution`, drives the tier. Nil when the release names none.
     let resolution: Int?
+    /// D1: "4K" / "1440p" / "1080p" / "720p" / "SD"; nil shows `title` on line 1 instead.
+    let headline: String?
+    /// D1: the HDR mark beside the headline ("DV · HDR10"); nil when `headline` is nil.
+    let hdrMark: String?
+    /// D1: fact line 1 terms (source type, codec).
+    let videoFacts: [String]
+    /// D1: fact line 2 terms before the cached part (audio, languages).
+    let audioFacts: [String]
+    /// D3: the cached part of fact line 2; already nil when the title carries the Instant suffix.
+    let cachedState: StreamRowCachedState?
 
     /// This row's debrid / YouTube resolve is in flight (the spinner beside the title).
     var isResolving = false
@@ -70,8 +82,12 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
 
     var id: String { key }
 
-    /// A size chip and/or badges are drawn.
-    var hasBadgeRow: Bool { !badges.isEmpty || sizeBytes != nil }
+    /// The badge row is drawn (the size moved to line 1 and no longer makes one).
+    var hasBadgeRow: Bool { !badges.isEmpty }
+    /// Fact line 1 (source type, codec) is drawn.
+    var hasVideoLine: Bool { !videoFacts.isEmpty }
+    /// Fact line 2 (audio, languages, cached state) is drawn.
+    var hasAudioLine: Bool { !audioFacts.isEmpty || cachedState != nil }
 
     /// The part the picker's own state decides (spinner, rejected caption, players).
     func applying(isResolving: Bool, failedRecently: Bool, players: [StreamRowPlayer],
@@ -95,23 +111,46 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     ) -> StreamRowModel {
         // Kotlin nullable Strings surface as non-optional Swift String, so widen explicitly.
         let desc: String? = stream.description_
-        let rawSize: Int64? = stream.behaviorHints.videoSize?.int64Value
         let logo: String? = stream.addonLogo
         let badges: [StreamBadge] = stream.badges
+        // The parser runs once per stream, here, never in a body (W3-16 F4); every derived field
+        // below comes from this one value.
         let facts = StreamFactsParser.shared.parse(stream: stream)
+        let resolution: Int? = facts.resolution.map { Int($0.intValue) }
+        let headline = StreamRowFacts.headline(forResolution: resolution)
+        // Exactly one of the title and the glyph says "Instant" (D3). With a headline the title is
+        // the plain label and the glyph carries it; without one the title keeps the suffix, and the
+        // glyph is dropped when the suffix was appended.
+        let plainTitle: String = stream.streamLabel
+        let fullTitle = title(for: stream, instantSuffix: display.instantSuffix, providerLabel: providerLabel)
+        let titleCarriesInstant = headline == nil && fullTitle != plainTitle
+        var provider: String?
+        if let status = stream.debridCacheStatus, status.state == .cached {
+            provider = providerLabel(status)
+        }
+        let cached: Bool? = facts.cached?.boolValue
+        let sizeBytes: Int64? = display.showFileSize ? facts.sizeBytes?.int64Value : nil
+        let languages: [String] = facts.languages
         return StreamRowModel(
             key: key,
-            title: title(for: stream, instantSuffix: display.instantSuffix, providerLabel: providerLabel),
+            title: headline != nil ? plainTitle : fullTitle,
             description: (desc ?? "").isEmpty ? nil : desc,
             badges: badges.map { StreamBadgeInfo($0) },
-            sizeBytes: display.showFileSize ? rawSize : nil,
+            sizeBytes: sizeBytes,
             badgesOnTop: display.badgesOnTop,
             showsAddonColumn: display.showAddonLogo,
             addonName: stream.addonName,
             addonLogo: (logo ?? "").isEmpty ? nil : logo,
             isYouTube: StreamPickerView.isYouTubeResolved(stream),
             playbackKey: stream.playbackStreamKey,
-            resolution: facts.resolution.map { Int($0.intValue) }
+            resolution: resolution,
+            headline: headline,
+            hdrMark: headline == nil ? nil : StreamRowFacts.hdrMark(facts.hdr),
+            videoFacts: StreamRowFacts.videoFacts(sourceType: facts.sourceType, codec: facts.codec),
+            audioFacts: StreamRowFacts.audioFacts(audio: facts.audio, languages: languages,
+                                                  locale: Locale.current),
+            cachedState: titleCarriesInstant ? nil
+                : StreamRowFacts.cachedState(cached: cached, provider: provider)
         )
     }
 
