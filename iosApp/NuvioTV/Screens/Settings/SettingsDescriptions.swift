@@ -157,6 +157,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case sourcesHdrFilter = "sources.hdrFilter"
     case sourcesCachedOnlyFilter = "sources.cachedOnlyFilter"
     case sourcesBackground = "sources.background"
+    case sourcesGrouping = "sources.grouping"
     case sourcesTmdbEnrichment = "sources.tmdbEnrichment"
     case sourcesTmdbKey = "sources.tmdbKey"
     case sourcesTmdbReleaseDates = "sources.tmdbReleaseDates"
@@ -289,9 +290,9 @@ enum SettingsDescriptions {
         case .appearanceCardDepthCoverage: return LocalizedStringResource("Sets how far down the card the edge highlight reaches: just the top, half the card, or all the way around.")
         case .appearanceCardDepthSurface: return LocalizedStringResource("Turns the depth effect on or off for this kind of card. Each kind is on by default.")
         case .appearanceCardDepthReset: return LocalizedStringResource("Puts all card depth settings back to their defaults, which also turns card depth off.")
-        case .appearanceBadgesFileSize: return LocalizedStringResource("Shows each stream's file size, such as 4.2 GB, as a small chip in the source list. On by default.")
-        case .appearanceBadgesAddonLogo: return LocalizedStringResource("Shows the add-on's logo and name on the right of each source. Off by default.")
-        case .appearanceBadgesAboveTitle: return LocalizedStringResource("Places the badge chips above the stream name instead of below its description.")
+        case .appearanceBadgesFileSize: return LocalizedStringResource("Shows each stream's file size, such as 4.2 GB, at the end of its first line. On by default.")
+        case .appearanceBadgesAddonLogo: return LocalizedStringResource("Shows the add-on's logo and name next to each source's quality. Off by default.")
+        case .appearanceBadgesAboveTitle: return LocalizedStringResource("Places the badge chips above the quality line instead of at the bottom of the row.")
         case .appearanceBadgePack: return LocalizedStringResource("Set Active makes this badge pack decide which chips appear on streams. Delete removes the pack from this Apple TV.")
         case .appearanceBadgeImport: return LocalizedStringResource("Adds a badge pack from a JSON web address. Packs you import in the Nuvio phone app sync here on their own.")
 
@@ -363,6 +364,7 @@ enum SettingsDescriptions {
         case .sourcesHdrFilter: return LocalizedStringResource("Any shows all sources. Only keeps HDR sources. Exclude hides them.")
         case .sourcesCachedOnlyFilter: return LocalizedStringResource("Hides sources your debrid service has not cached. This row only appears once a debrid service is connected. Off by default.")
         case .sourcesBackground: return LocalizedStringResource("Cinematic puts the title's artwork behind the source list, dimmed at the edges so both panes read. Normal keeps the plain app background. Default: Cinematic.")
+        case .sourcesGrouping: return LocalizedStringResource("Quality lists sources under 4K, 1080p, 720p and SD headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.")
         case .sourcesTmdbEnrichment: return LocalizedStringResource("Adds cast profiles, studios, collections and better artwork from TMDB to titles you open. It uses a key built into the app. Off by default.")
         case .sourcesTmdbKey: return LocalizedStringResource("Lets you use your own TMDB API key instead of the built-in one. Leave it empty to keep the built-in key. Removing your key goes back to the built-in one.")
         case .sourcesTmdbReleaseDates: return LocalizedStringResource("Uses TMDB's air dates instead of the dates your add-ons report. Off by default.")

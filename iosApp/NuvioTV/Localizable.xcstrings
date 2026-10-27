@@ -143,6 +143,9 @@
         }
       }
     },
+    "%@ Instant": {
+      "extractionState": "manual"
+    },
     "%@ MB used": {
       "localizations": {
         "de": {
@@ -5015,6 +5018,9 @@
         }
       }
     },
+    "Add-on": {
+      "extractionState": "manual"
+    },
     "Add-ons": {
       "localizations": {
         "de": {
@@ -8518,6 +8524,9 @@
         }
       }
     },
+    "Badge chips render above the quality line.": {
+      "extractionState": "manual"
+    },
     "Badge chips render above the stream name.": {
       "localizations": {
         "de": {
@@ -8551,6 +8560,9 @@
           }
         }
       }
+    },
+    "Badge chips render at the bottom of the row.": {
+      "extractionState": "manual"
     },
     "Badge chips render below the stream description.": {
       "localizations": {
@@ -20047,6 +20059,9 @@
         }
       }
     },
+    "Group Sources By": {
+      "extractionState": "manual"
+    },
     "Grouped by type": {
       "localizations": {
         "de": {
@@ -22599,6 +22614,9 @@
         }
       }
     },
+    "Instant": {
+      "extractionState": "manual"
+    },
     "It is on and will answer the next search for streams.": {
       "localizations": {
         "de": {
@@ -23380,6 +23398,9 @@
           }
         }
       }
+    },
+    "Latino": {
+      "extractionState": "manual"
     },
     "Layout": {
       "localizations": {
@@ -25999,6 +26020,9 @@
         }
       }
     },
+    "Multi": {
+      "extractionState": "manual"
+    },
     "Music": {
       "localizations": {
         "de": {
@@ -27940,6 +27964,9 @@
           }
         }
       }
+    },
+    "Not cached": {
+      "extractionState": "manual"
     },
     "Not cached on your debrid service.": {
       "localizations": {
@@ -31243,6 +31270,9 @@
         }
       }
     },
+    "Other": {
+      "extractionState": "manual"
+    },
     "Outline": {
       "localizations": {
         "de": {
@@ -31888,6 +31918,9 @@
           }
         }
       }
+    },
+    "Places the badge chips above the quality line instead of at the bottom of the row.": {
+      "extractionState": "manual"
     },
     "Places the badge chips above the stream name instead of below its description.": {
       "localizations": {
@@ -34098,6 +34131,9 @@
           }
         }
       }
+    },
+    "Quality lists sources under 4K, 1080p, 720p and SD headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.": {
+      "extractionState": "manual"
     },
     "Quick install (from DebugConfig)": {
       "localizations": {
@@ -40732,6 +40768,12 @@
         }
       }
     },
+    "Shows each stream's file size, such as 4.2 GB, at the end of its first line.": {
+      "extractionState": "manual"
+    },
+    "Shows each stream's file size, such as 4.2 GB, at the end of its first line. On by default.": {
+      "extractionState": "manual"
+    },
     "Shows or hides the About section with the title's details. On by default.": {
       "localizations": {
         "de": {
@@ -41173,6 +41215,12 @@
           }
         }
       }
+    },
+    "Shows the add-on's logo and name next to each source's quality.": {
+      "extractionState": "manual"
+    },
+    "Shows the add-on's logo and name next to each source's quality. Off by default.": {
+      "extractionState": "manual"
     },
     "Shows the add-on's logo and name on the right of each source. Off by default.": {
       "localizations": {

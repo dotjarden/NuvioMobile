@@ -43,6 +43,9 @@ final class BadgeSettingsViewModel: ObservableObject {
     var backgroundMode: StreamBackgroundMode {
         state?.backgroundMode ?? StreamBackgroundDefaults.shared.platformDefault
     }
+    /// Polish batch D5: how the picker groups its source rows (Quality or Add-on). Quality is the
+    /// default before the repository has emitted.
+    var groupingMode: StreamGroupingMode { state?.groupingMode ?? .quality }
 
     // MARK: - Actions (thin passthroughs to the shared repository)
 
@@ -90,6 +93,10 @@ final class BadgeSettingsViewModel: ObservableObject {
 
     func setBackgroundMode(_ mode: StreamBackgroundMode) {
         StreamBadgeSettingsRepository.shared.setBackgroundMode(mode: mode)
+    }
+
+    func setGroupingMode(_ mode: StreamGroupingMode) {
+        StreamBadgeSettingsRepository.shared.setGroupingMode(mode: mode)
     }
 
     /// Short display label for an imported pack (URL tail without query noise).

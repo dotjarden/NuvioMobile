@@ -132,6 +132,15 @@ struct SourcesSettingsPane: View {
                     descriptionID: .sourcesBackground,
                     label: SourceSettingOptions.backgroundModeName(for:)
                 )
+                // Polish batch D5: how the picker groups its rows. Default Quality, stored with the
+                // badge settings (per profile on this Apple TV, not synced).
+                SettingsPickerRow(
+                    title: String(localized: "Group Sources By"),
+                    selection: Binding(get: { badges.groupingMode }, set: { badges.setGroupingMode($0) }),
+                    options: SourceSettingOptions.groupingModes,
+                    descriptionID: .sourcesGrouping,
+                    label: SourceSettingOptions.groupingModeName(for:)
+                )
             }
 
             SettingsSection(String(localized: "Metadata (TMDB)")) {
@@ -572,6 +581,16 @@ private enum SourceSettingOptions {
         switch mode {
         case .normal: return String(localized: "Normal")
         default: return String(localized: "Cinematic")
+        }
+    }
+
+    /// Polish batch D5: the source grouping choices, Quality first (the default).
+    static let groupingModes: [StreamGroupingMode] = [.quality, .addon]
+
+    static func groupingModeName(for mode: StreamGroupingMode) -> String {
+        switch mode {
+        case .addon: return String(localized: "Add-on")
+        default: return String(localized: "Quality")
         }
     }
 

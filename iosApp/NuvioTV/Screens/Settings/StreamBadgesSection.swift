@@ -39,21 +39,21 @@ struct StreamBadgesSection: View {
 
         SettingsToggleRow(
             title: String(localized: "File Size Badges"),
-            subtitle: String(localized: "Show the video size (GB/MB) as a chip on stream results."),
+            subtitle: String(localized: "Shows each stream's file size, such as 4.2 GB, at the end of its first line."),
             isOn: Binding(get: { badges.showFileSizeBadges }, set: { badges.setShowFileSizeBadges($0) }),
             descriptionID: .appearanceBadgesFileSize
         )
         SettingsToggleRow(
             title: String(localized: "Show Add-on Logo"),
-            subtitle: String(localized: "Show each result's add-on logo and name on the right of the row."),
+            subtitle: String(localized: "Shows the add-on's logo and name next to each source's quality."),
             isOn: Binding(get: { badges.showAddonLogo }, set: { badges.setShowAddonLogo($0) }),
             descriptionID: .appearanceBadgesAddonLogo
         )
         SettingsToggleRow(
             title: String(localized: "Badges Above Title"),
             subtitle: badges.badgesOnTop
-                ? String(localized: "Badge chips render above the stream name.")
-                : String(localized: "Badge chips render below the stream description."),
+                ? String(localized: "Badge chips render above the quality line.")
+                : String(localized: "Badge chips render at the bottom of the row."),
             isOn: Binding(get: { badges.badgesOnTop }, set: { badges.setBadgesOnTop($0) }),
             descriptionID: .appearanceBadgesAboveTitle
         )
