@@ -230,7 +230,7 @@ private struct StreamRowFileLine: View {
 /// Once the row has grown it calls `onExpanded` (the picker's `scrollTo(key, anchor: nil)`), which
 /// scrolls only when the grown row overflows, so a row near the bottom edge does not leave its file
 /// name below the fold.
-private struct StreamRowDwell: View {
+struct StreamRowDwell: View {
     @Binding var isShown: Bool
     let hasText: Bool
     let onExpanded: () -> Void
