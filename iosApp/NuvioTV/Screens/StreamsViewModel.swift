@@ -53,6 +53,9 @@ final class StreamsViewModel: ObservableObject {
     @Published private(set) var emptyReasonHint: String?
     /// Focus key of the first stream row; the picker moves initial focus here when rows arrive.
     @Published private(set) var firstRowKey: String?
+    /// Polish D4: the list's labelled sections (quality tiers or add-on groups) over the same rows
+    /// and keys as `groups`. Built in `apply(_:)`, published with a guarded write.
+    @Published private(set) var sections: [StreamListSection] = []
     /// Shared badge settings (imported packs, file-size toggle, placement, addon logo).
     @Published private(set) var badgeSettings: StreamBadgeSettingsUiState?
     /// Whether in-app debrid can resolve torrent results (drives filtering + "Instant" suffix).
@@ -113,6 +116,8 @@ final class StreamsViewModel: ObservableObject {
     }
     var showAddonLogo: Bool { badgeSettings?.showAddonLogo ?? false }
     var badgesOnTop: Bool { badgeSettings?.badgePlacement == .top }
+    /// Polish D5: how the list is sectioned; Quality until the settings watcher has emitted.
+    var groupingMode: StreamGroupingMode { badgeSettings?.groupingMode ?? .quality }
 
     /// What shapes a prebuilt row (W3-16 F4): the badge settings plus the Instant suffix.
     private var rowDisplay: StreamRowDisplay {
@@ -122,6 +127,9 @@ final class StreamsViewModel: ObservableObject {
 
     /// The display settings the current `groups` were built with.
     private var appliedDisplay = StreamRowDisplay()
+    /// The grouping mode and chip filter the current `sections` were built with (polish D4).
+    private var appliedGrouping: StreamGroupingMode = .quality
+    private var appliedSectionsFilter: String?
 
     /// Row keys keyed by the stream's identity, not its position: add-ons stream in and the
     /// shared sort reorders, and a positional key moved focus and the resolve spinner onto a
@@ -266,7 +274,7 @@ final class StreamsViewModel: ObservableObject {
     /// Re-derives the groups when only the row display settings moved (badge settings, Instant
     /// suffix) since the last `apply(_:)`; a no-op before the first emission or when they are equal.
     private func reapplyIfDisplayChanged() {
-        guard let last = lastState, rowDisplay != appliedDisplay else { return }
+        guard let last = lastState, rowDisplay != appliedDisplay || groupingMode != appliedGrouping else { return }
         apply(last)
     }
 
@@ -314,13 +322,29 @@ final class StreamsViewModel: ObservableObject {
                 return old.withLoading(group.isLoading)
             }
             let keys = Self.rowKeys(groupId: group.addonId, streams: playable)
+            #if DEBUG
+            let rowsStart = CFAbsoluteTimeGetCurrent()
+            #endif
             let rows = zip(keys, playable).map { key, stream in
                 StreamRowModel.make(stream: stream, key: key, display: display)
             }
+            #if DEBUG
+            StreamProbe.log("rows built n=\(rows.count) ms=\(Int((CFAbsoluteTimeGetCurrent() - rowsStart) * 1000))")
+            #endif
             return Group(id: group.addonId, addonName: group.addonName, streams: playable,
                          rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)
         }
+        // Polish D4: sections are rebuilt only when the groups, the mode or the filter moved; one
+        // tier-bridge call per build. Compared BEFORE `groups` is overwritten.
+        let mode = groupingMode
+        let sectionsStale = next != groups || mode != appliedGrouping || filter != appliedSectionsFilter
         if next != groups { groups = next }
+        let nextSections = sectionsStale
+            ? StreamListSection.build(groups: next, mode: mode, selectedFilter: filter)
+            : sections
+        if nextSections != sections { sections = nextSections }
+        appliedGrouping = mode
+        appliedSectionsFilter = filter
         // The info pane's progress counts the whole fan-out, whatever chip is selected.
         let progress = StreamFanOutProgress(
             answered: state.groups.filter { !$0.isLoading }.count,
@@ -331,7 +355,7 @@ final class StreamsViewModel: ObservableObject {
             hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
         )
         if progress != fanOut { fanOut = progress }
-        let first = next.first?.rowKeys.first
+        let first = nextSections.first?.rows.first?.key
         if firstRowKey != first { firstRowKey = first }
 
         var reason: String?

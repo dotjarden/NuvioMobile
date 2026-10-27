@@ -769,13 +769,15 @@ struct StreamPickerView: View {
                     // included); the picker only adds what it alone knows. Computed once per list, not per row.
                     let players = externalPlayers.map { StreamRowPlayer(id: $0.id, name: $0.name) }
                     let defaultPlayerId = activeDefaultExternalPlayer?.id
-                    let showsSectionLabels = model.selectedFilter == nil
-                    ForEach(model.groups) { group in
-                        // P3 (D5): one flat list; in the "All" view each add-on's rows sit under its label.
-                        if showsSectionLabels {
-                            StreamSectionLabel(name: group.addonName, isLoading: group.isLoading)
+                    // Polish D4: the list iterates the view model's sections (quality tiers, or the
+                    // add-on groups in Add-on mode). A label is a non-focusable header; in the All view
+                    // add-on labels carry the spinner, tier labels (also under a chip) carry a count.
+                    ForEach(model.sections) { section in
+                        if section.showsLabel {
+                            StreamSectionLabel(name: section.title, isLoading: section.isLoading,
+                                               count: section.count)
                         }
-                        ForEach(group.rows) { row in
+                        ForEach(section.rows) { row in
                             streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
                                           scrollProxy: scrollProxy)
                         }
