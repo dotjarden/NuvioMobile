@@ -190,6 +190,15 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(with([infuse], nil), with([infuse], "infuse"), "the default changed")
     }
 
+    func testTheResolutionIsPartOfEquality() {
+        let uhd = make(stream(name: "Torrentio", description: "Movie.2024.2160p.WEB-DL.HEVC-GROUP"))
+        let fhd = make(stream(name: "Torrentio", description: "Movie.2024.1080p.WEB-DL.HEVC-GROUP"))
+        XCTAssertNotEqual(uhd, fhd)
+        XCTAssertEqual(uhd.resolution, 2160)
+        XCTAssertEqual(fhd.resolution, 1080)
+        XCTAssertNil(make(stream(name: "Torrentio", description: "Movie.2024.WEB-DL")).resolution)
+    }
+
     func testTheKeyTitleDescriptionAndBadgesArePartOfEquality() {
         XCTAssertNotEqual(base(), make(stream(size: 2_000_000_000, badges: [badge("4K")]), key: "addon:x#other"))
         XCTAssertNotEqual(base(), make(stream(name: "Other", size: 2_000_000_000, badges: [badge("4K")])))
