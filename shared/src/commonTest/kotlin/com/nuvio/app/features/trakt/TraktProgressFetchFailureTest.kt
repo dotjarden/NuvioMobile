@@ -57,23 +57,22 @@ class TraktProgressFetchFailureTest {
     }
 
     @Test
-    fun undecodablePageFailsTheList() = runTest {
-        // Mirrors the repository's page loader: a 200 body that does not decode is a failed page.
-        val decoder = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    fun nullPageResultFailsTheHiddenShowList() = runTest {
+        // Checks only that a null page result (what the repository's loader returns for an
+        // undecodable body) makes the whole collected list null. The repository's own inline
+        // decode in fetchHiddenShowIds is NOT exercised: it has no seam, and an undecodable-body
+        // test needs a refactor like upstream's readAllTraktPages, which the fork does not have.
         val ids = collectTraktHiddenShowIds(limit = 2) { page, _ ->
-            if (page == 1) {
-                listOf(show("tt1"), show("tt2"))
-            } else {
-                runCatching {
-                    decoder.decodeFromString<List<TraktHiddenItem>>("<html>not json</html>")
-                }.getOrNull()
-            }
+            if (page == 1) listOf(show("tt1"), show("tt2")) else null
         }
-        assertNull(ids, "an undecodable page must drop the whole list, not end it early")
+        assertNull(ids, "a null page must drop the whole list, not end it early")
     }
 
     @Test
-    fun errorStatusOnFirstHistoryPageFails() {
+    fun pageStatusErrorMessageNamesTheEndpoint() {
+        // Checks requireTraktProgressPageSuccess directly (exception type and message). It does
+        // not walk the history pages: the undecodable-page throw in the private
+        // fetchRecentEpisodeHistoryEntries is untested for lack of a seam.
         val error = assertFailsWith<TraktProgressFetchException> {
             requireTraktProgressPageSuccess(500, url = "sync/history/episodes")
         }
