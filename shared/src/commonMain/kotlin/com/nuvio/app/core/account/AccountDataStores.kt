@@ -373,6 +373,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("show_addon_logo"),
                 AppleKeySpec.ProfileScoped("stream_badge_placement"),
                 AppleKeySpec.ProfileScoped("stream_background_mode"),
+                AppleKeySpec.ProfileScoped("stream_grouping_mode"),
                 // Legacy key this store still reads for migration.
                 AppleKeySpec.ProfileScoped("debrid_stream_badge_rules"),
             ),

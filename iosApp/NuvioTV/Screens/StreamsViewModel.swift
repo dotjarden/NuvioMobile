@@ -171,14 +171,11 @@ final class StreamsViewModel: ObservableObject {
 
         watcher = FlowWatcherKt.watch(StreamsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? StreamsUiState else { return }
-            self.lastState = state
-            self.apply(state)
+            self.receive(state)
         }
         badgeWatcher = FlowWatcherKt.watch(StreamBadgeSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? StreamBadgeSettingsUiState else { return }
-            self.badgeSettings = value
-            // The prebuilt rows carry these settings (W3-16 F4): rebuild only if they moved.
-            self.reapplyIfDisplayChanged()
+            self.receive(badgeSettings: value)
         }
         debridWatcher = FlowWatcherKt.watch(DebridSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? DebridSettings else { return }
@@ -269,6 +266,20 @@ final class StreamsViewModel: ObservableObject {
             episode: episode,
             manualSelection: forceManual
         )
+    }
+
+    /// The stream flow's emission: remembered for a display-only re-apply, then applied. A seam so a
+    /// test can drive the view model without the repositories.
+    func receive(_ state: StreamsUiState) {
+        lastState = state
+        apply(state)
+    }
+
+    /// The badge-settings flow's emission. The prebuilt rows carry these settings (W3-16 F4): rebuild
+    /// only if they moved. A seam for tests, like `receive(_:)`.
+    func receive(badgeSettings value: StreamBadgeSettingsUiState) {
+        badgeSettings = value
+        reapplyIfDisplayChanged()
     }
 
     /// Re-derives the groups when only the row display settings moved (badge settings, Instant

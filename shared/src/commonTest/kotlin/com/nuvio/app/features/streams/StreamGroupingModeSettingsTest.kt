@@ -1,11 +1,14 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.core.account.AccountDataStores
+import com.nuvio.app.core.account.AppleKeySpec
 import kotlinx.serialization.json.buildJsonObject
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * "Group Sources By" (polish D5, Q1 = profile-local): default Quality, persists across reloads,
@@ -63,5 +66,12 @@ class StreamGroupingModeSettingsTest {
         StreamBadgeSettingsRepository.onProfileChanged()
         assertEquals(StreamGroupingMode.ADDON, StreamBadgeSettingsRepository.uiState.value.groupingMode)
         assertEquals("addon", StreamBadgeSettingsStorage.loadStreamGroupingMode())
+    }
+
+    @Test
+    fun newKeysAreRegisteredForSignOutWipe() {
+        val scoped = AccountDataStores.all.flatMap { it.appleKeys }
+            .filterIsInstance<AppleKeySpec.ProfileScoped>().map { it.base }
+        assertTrue("stream_grouping_mode" in scoped)
     }
 }

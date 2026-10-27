@@ -6,23 +6,20 @@ import SharedCore
 /// Polish D1/W3-16 F2: a row at rest draws no file line, so a description never changes a resting row's height.
 @MainActor
 final class StreamRowDescriptionTests: XCTestCase {
-    func testRestStateDrawsNoFileLine() {
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: false, hasText: true))
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: false, hasText: true))
-    }
-
-    func testDwelledFocusedRowWithTextDrawsTheFileLine() {
-        XCTAssertTrue(StreamRowDwell.showsLine(focused: true, dwelled: true, hasText: true))
-    }
-
-    func testNoTextNeverDraws() {
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: true, hasText: false))
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: true, dwelled: false, hasText: false))
-    }
-
-    func testLosingFocusCollapsesEvenAfterTheDwell() {
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: true, hasText: true))
-        XCTAssertFalse(StreamRowDwell.showsLine(focused: false, dwelled: true, hasText: false))
+    /// Of the eight focus / dwell / text combinations exactly one draws the file line. The dwell
+    /// timing itself (500 ms, the unanimated collapse) is a `.task` that needs a live focus engine:
+    /// device step 4 covers it, not a unit test.
+    func testExactlyOneCombinationDrawsTheFileLine() {
+        let flags = [false, true]
+        var shown: [String] = []
+        for focused in flags {
+            for dwelled in flags {
+                for hasText in flags where StreamRowDwell.showsLine(focused: focused, dwelled: dwelled, hasText: hasText) {
+                    shown.append("focused=\(focused) dwelled=\(dwelled) hasText=\(hasText)")
+                }
+            }
+        }
+        XCTAssertEqual(shown, ["focused=true dwelled=true hasText=true"], "only a focused, dwelled row with text")
     }
 
     private func model(description: String?) -> StreamRowModel {

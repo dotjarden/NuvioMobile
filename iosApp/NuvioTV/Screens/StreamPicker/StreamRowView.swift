@@ -136,49 +136,61 @@ struct StreamRowView: View, Equatable {
     }
 }
 
-/// The two fact lines under the headline, each one `Text` built by concatenation so it truncates
-/// as a unit and takes the row's secondary colour (`RowTextColor` is a view modifier, so one colour
-/// per `Text`; emphasis is by weight). Line 1 terms are `metaStrong`; line 2 is `meta`.
+/// The two fact lines under the headline. Terms are joined into one `AttributedString` with a font
+/// per run, so the line truncates as a unit and takes the row's secondary colour (`RowTextColor` is
+/// a view modifier, so one colour per line; emphasis is by weight). `Text(AttributedString)` makes no
+/// `LocalizedStringKey` (an interpolated `Text` made a `%@%@%@` catalog key), and `Text + Text` is
+/// deprecated. Line 1 terms are `metaStrong`; line 2 is `meta`.
 private enum StreamRowFactLine {
     private static let separator = " \u{00B7} "
 
-    /// Fact line 1: source type and codec, every term bold.
-    static func video(_ terms: [String]) -> some View {
-        var line = Text(verbatim: "")
+    /// The terms joined by the separator, each term in `termFont` and the separator in `separatorFont`.
+    private static func joined(_ terms: [String], termFont: Font, separatorFont: Font) -> AttributedString {
+        var line = AttributedString()
         for (index, term) in terms.enumerated() {
-            // Text interpolation keeps each span's own font token ('+' on Text is deprecated).
-            let span = Text(verbatim: term).font(Theme.Font.metaStrong)
             if index > 0 {
-                line = Text("\(line)\(Text(verbatim: separator).font(Theme.Font.meta))\(span)")
-            } else {
-                line = span
+                var sep = AttributedString(separator)
+                sep.font = separatorFont
+                line.append(sep)
             }
+            var span = AttributedString(term)
+            span.font = termFont
+            line.append(span)
         }
         return line
+    }
+
+    /// Fact line 1: source type and codec, every term bold.
+    static func video(_ terms: [String]) -> some View {
+        Text(joined(terms, termFont: Theme.Font.metaStrong, separatorFont: Theme.Font.meta))
             .rowTextColor(secondary: true)
             .lineLimit(1)
             .truncationMode(.tail)
     }
 
-    /// Fact line 2: audio and languages, then the cached glyph and words (D3). The glyph is a
-    /// `Text(Image)` so it inherits the line's colour, platter-safe.
+    /// Fact line 2: audio and languages, then the cached glyph and words (D3). An attributed string
+    /// cannot hold an image, so the glyph and words sit after the terms in an `HStack`: the terms
+    /// truncate first and the cached state stays visible. The glyph is a `Text(Image)`, which
+    /// inherits the line's colour, platter-safe.
     static func audio(_ terms: [String], cached: StreamRowCachedState?) -> some View {
-        var line = Text(verbatim: "")
-        for (index, term) in terms.enumerated() {
-            let span = Text(verbatim: term)
-            line = index > 0 ? Text("\(line)\(Text(verbatim: separator))\(span)") : span
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if !terms.isEmpty {
+                let head = joined(terms, termFont: Theme.Font.meta, separatorFont: Theme.Font.meta)
+                Text(cached == nil ? head : head + AttributedString(separator))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if let cached {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xs) {
+                    Text(Image(systemName: StreamRowFacts.cachedSymbol(cached)))
+                    Text(verbatim: StreamRowFacts.cachedText(cached))
+                        .lineLimit(1)
+                }
+                .fixedSize()
+            }
         }
-        if let cached {
-            let glyph = Text(Image(systemName: StreamRowFacts.cachedSymbol(cached)))
-            let words = Text(verbatim: StreamRowFacts.cachedText(cached))
-            let tail = Text("\(glyph)\(Text(verbatim: " "))\(words)")
-            line = terms.isEmpty ? tail : Text("\(line)\(Text(verbatim: separator))\(tail)")
-        }
-        return line
-            .font(Theme.Font.meta)
-            .rowTextColor(secondary: true)
-            .lineLimit(1)
-            .truncationMode(.tail)
+        .font(Theme.Font.meta)
+        .rowTextColor(secondary: true)
     }
 }
 
@@ -281,7 +293,7 @@ private struct StreamRowBadges: View {
         // community badge packs) — none of them width-flexible. An HStack whose children are all
         // non-shrinking ignores the width it's offered and reports the full sum of its children
         // back to its parent instead. That inflated "ideal" width bubbled up through the
-        // title/description VStack and the row's outer HStack, widening the *whole row* — and
+        // row's content VStack, widening the *whole row* — and
         // since every row shares one LazyVStack, effectively the whole list — past the screen.
         // The add-on logo and the tail end of the badges then rendered off the
         // trailing edge, which is what testers saw as "no space left" for title/size/seeders.

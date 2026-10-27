@@ -200,7 +200,7 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(with([infuse], nil), with([infuse], "infuse"), "the default changed")
     }
 
-    func testTheResolutionIsPartOfEquality() {
+    func testTheResolutionIsDerivedFromTheRelease() {
         let uhd = make(stream(name: "Torrentio", description: "Movie.2024.2160p.WEB-DL.HEVC-GROUP"))
         let fhd = make(stream(name: "Torrentio", description: "Movie.2024.1080p.WEB-DL.HEVC-GROUP"))
         XCTAssertNotEqual(uhd, fhd)
@@ -259,7 +259,7 @@ final class StreamRowModelTests: XCTestCase {
 
     // MARK: - Equality of the readable row fields
 
-    func testTheHeadlineAndHdrMarkArePartOfEquality() {
+    func testTheHeadlineAndHdrMarkAreDerivedFromTheRelease() {
         let dv = make(stream(name: "T", description: "Movie.2024.2160p.WEB-DL.DV.HEVC"))
         let hdr10 = make(stream(name: "T", description: "Movie.2024.2160p.WEB-DL.HDR10.HEVC"))
         XCTAssertEqual(dv.headline, hdr10.headline)
@@ -270,14 +270,14 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(dv, hd)
     }
 
-    func testTheVideoFactsArePartOfEquality() {
+    func testTheVideoFactsAreDerivedFromTheRelease() {
         let web = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.HEVC"))
         let blu = make(stream(name: "T", description: "Movie.2024.1080p.BluRay.HEVC"))
         XCTAssertNotEqual(web.videoFacts, blu.videoFacts)
         XCTAssertNotEqual(web, blu)
     }
 
-    func testTheAudioFactsArePartOfEquality() {
+    func testTheAudioFactsAreDerivedFromTheRelease() {
         let ddp = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.DDP5.1.HEVC"))
         let aac = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.AAC.HEVC"))
         XCTAssertNotEqual(ddp.audioFacts, aac.audioFacts)
@@ -286,7 +286,7 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(aac, withLanguage, "a language was added to the audio line")
     }
 
-    func testTheCachedStateIsPartOfEquality() {
+    func testTheCachedStateIsDerivedFromTheCacheStatus() {
         func model(_ cache: StreamDebridCacheStatus?, torrent: Bool) -> StreamRowModel {
             make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL", url: torrent ? nil : "https://cdn.example.com/a.mkv",
                         infoHash: torrent ? torrentHash : nil, cache: cache))
@@ -300,6 +300,40 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(instant, plain)
         XCTAssertNotEqual(instant.cachedState, notCached.cachedState)
         XCTAssertNotEqual(instant, notCached)
+    }
+
+    // MARK: - Equality of the readable row fields (one field at a time)
+
+    /// A copy of `m` through the memberwise init with only the named fields replaced, so the two
+    /// models differ in that one field alone (`description` and the playback key stay equal).
+    /// `.some(nil)` sets an optional field to nil; the default leaves it as it was.
+    private func copy(_ m: StreamRowModel, resolution: Int?? = .none, headline: String?? = .none,
+                      hdrMark: String?? = .none, videoFacts: [String]? = nil, audioFacts: [String]? = nil,
+                      cachedState: StreamRowCachedState?? = .none) -> StreamRowModel {
+        StreamRowModel(
+            key: m.key, title: m.title, description: m.description, badges: m.badges, sizeBytes: m.sizeBytes,
+            badgesOnTop: m.badgesOnTop, showsAddonColumn: m.showsAddonColumn, addonName: m.addonName,
+            addonLogo: m.addonLogo, isYouTube: m.isYouTube, playbackKey: m.playbackKey,
+            resolution: resolution ?? m.resolution, headline: headline ?? m.headline,
+            hdrMark: hdrMark ?? m.hdrMark, videoFacts: videoFacts ?? m.videoFacts,
+            audioFacts: audioFacts ?? m.audioFacts, cachedState: cachedState ?? m.cachedState
+        )
+    }
+
+    func testEachReadableRowFieldAloneBreaksEquality() {
+        let base = make(stream(name: "T", description: "Movie.2024.1080p.WEB-DL.DV.HEVC"))
+        XCTAssertEqual(base, copy(base), "the helper changes nothing by itself")
+        XCTAssertNotEqual(base, copy(base, resolution: .some(720)), "resolution")
+        XCTAssertNotEqual(base, copy(base, headline: .some("720p")), "headline")
+        XCTAssertNotEqual(base, copy(base, hdrMark: .some("HDR10")), "hdrMark")
+        XCTAssertNotEqual(base, copy(base, hdrMark: .some(nil)), "hdrMark cleared")
+        XCTAssertNotEqual(base, copy(base, videoFacts: base.videoFacts + ["AV1"]), "videoFacts")
+        XCTAssertNotEqual(base, copy(base, audioFacts: base.audioFacts + ["French"]), "audioFacts")
+        XCTAssertNotEqual(base, copy(base, cachedState: .some(.instant(provider: "Real-Debrid"))), "cachedState")
+        XCTAssertNotEqual(copy(base, cachedState: .some(.instant(provider: "A"))),
+                          copy(base, cachedState: .some(.instant(provider: "B"))), "cachedState provider")
+        XCTAssertNotEqual(copy(base, cachedState: .some(.instant(provider: nil))),
+                          copy(base, cachedState: .some(.notCached)), "cachedState case")
     }
 
     func testTheKeyTitleDescriptionAndBadgesArePartOfEquality() {

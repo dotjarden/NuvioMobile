@@ -197,4 +197,9 @@ class StreamFactsParserTest {
     fun plainDtsIsKept() {
         assertEquals("DTS 5.1", audioOf("Movie.2020.1080p.BluRay.DTS 5.1-GRP"))
     }
+
+    @Test
+    fun dtsEsDropsPlainDts() {
+        assertEquals("DTS-ES 5.1", audioOf("Movie.2020.1080p.BluRay.DTS-ES 5.1-GRP"))
+    }
 }

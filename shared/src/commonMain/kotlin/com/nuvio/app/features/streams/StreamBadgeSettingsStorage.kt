@@ -13,6 +13,7 @@ expect object StreamBadgeSettingsStorage {
     fun saveStreamBackgroundMode(mode: String)
     fun loadStreamGroupingMode(): String?
     fun saveStreamGroupingMode(mode: String)
+    /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
     fun clearStreamGroupingMode()
     fun loadStreamBadgePlacement(): String?
     fun saveStreamBadgePlacement(placement: String)

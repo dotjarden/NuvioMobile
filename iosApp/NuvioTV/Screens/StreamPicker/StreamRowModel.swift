@@ -27,8 +27,9 @@ nonisolated struct StreamRowPlayer: Equatable {
 /// W3-16 (F1/F4, BUG-207): everything a stream row shows, as one plain value. Built in two steps:
 ///
 /// - `make(stream:key:display:)`, once per stream in `StreamsViewModel.apply(_:)`: the focus key,
-///   the title (with the Instant suffix), the description, the badges, the size, the add-on column,
-///   the YouTube flag and the playback key (one SHA-256 pair, so a row body never recomputes it);
+///   the title (the plain label with a headline, else with the Instant suffix), the description, the
+///   badges, the size, the inline add-on label, the headline and fact lines, the YouTube flag and
+///   the playback key (one SHA-256 pair, so a row body never recomputes it);
 /// - `applying(...)`, in the picker's body: the four things only the picker knows — the debrid
 ///   spinner, the "Failed recently" caption, and the external players with their default.
 ///

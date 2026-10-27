@@ -419,7 +419,9 @@ private actor BadgeImageCache {
     }
 }
 
-/// "2.3 GB" / "740 MB" chip from `behaviorHints.videoSize` (mobile `StreamFileSizeBadge`).
+/// "2.3 GB" / "740 MB" chip from `behaviorHints.videoSize` (mobile `StreamFileSizeBadge`). No call
+/// site since polish D1 (rows draw the size as plain text via `label(for:)`); the view is kept for
+/// Direction C's best-pick card.
 struct StreamFileSizeChip: View {
     let bytes: Int64
 

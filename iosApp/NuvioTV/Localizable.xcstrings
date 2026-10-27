@@ -34030,7 +34030,7 @@
         }
       }
     },
-    "Quality lists sources under 4K, 1080p, 720p and SD headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.": {
+    "Quality lists sources under 4K, 1440p, 1080p, 720p, SD and Other headings, keeping each add-on's order inside them. Add-on lists each add-on's sources under its own name. Default: Quality.": {
       "extractionState": "manual"
     },
     "Quick install (from DebugConfig)": {

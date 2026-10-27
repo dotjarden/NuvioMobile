@@ -750,11 +750,11 @@ struct StreamPickerView: View {
         }
     }
 
-    /// P1/P3: the scrolling body of the source panel: one flat list of rows (section labels in the
-    /// "All" view), the empty-state reason and the dev test stream. Review r1 P2-3 (W3-16 F2): the
-    /// reader lets a row
-    /// that grows after its dwell (a long release name, `StreamRowDescription`) re-reveal itself;
-    /// UIKit does not scroll for a focused view's later resize. See `streamRowView`.
+    /// P1/P3: the scrolling body of the source panel: the sections (`model.sections`: quality tiers or
+    /// add-on groups, each with an optional label) over one row per stream, the empty-state reason and
+    /// the dev test stream. Review r1 P2-3 (W3-16 F2): the reader lets a row that grows after its
+    /// dwell (the release-name file line, `StreamRowDwell`) re-reveal itself; UIKit does not scroll
+    /// for a focused view's later resize. See `streamRowView`.
     private var sourceList: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
@@ -880,8 +880,8 @@ struct StreamPickerView: View {
     /// when pressed (`liveStream(forRowKey:)`): a debrid preparation that swaps a resolved URL into
     /// the same row (`replacePreparedStream`) must reach the press, whether or not the row redrew.
     ///
-    /// Review r1 P2-3: the dwell (`StreamRowDescription.dwell`) grows the focused row AFTER the
-    /// engine scrolled it into view at its 3-line height, so on the bottom-most visible row (and
+    /// Review r1 P2-3: the dwell (`StreamRowDwell.dwell`) grows the focused row AFTER the
+    /// engine scrolled it into view at its resting height, so on the bottom-most visible row (and
     /// always on the last one) the full name could sit below the fold, and Down, the only way on,
     /// collapses it. `onExpanded` runs once the grown row has laid out and asks the list for a
     /// minimal reveal (`anchor: nil`): it scrolls only when the row overflows, by the overflow. No

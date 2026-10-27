@@ -140,4 +140,45 @@ final class StreamsViewModelSectionsTests: XCTestCase {
         XCTAssertTrue(vm.sections.isEmpty)
         XCTAssertNil(vm.firstRowKey)
     }
+
+    // MARK: - re-apply and rebuild paths (review r1)
+
+    private func settings(_ mode: StreamGroupingMode) throws -> StreamBadgeSettingsUiState {
+        StreamBadgeSettingsRepository.shared.ensureLoaded()
+        let base = try XCTUnwrap(StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)
+        return StreamBadgeSettingsUiState(
+            rules: base.rules, showFileSizeBadges: base.showFileSizeBadges, showAddonLogo: base.showAddonLogo,
+            badgePlacement: base.badgePlacement, backgroundMode: base.backgroundMode, groupingMode: mode
+        )
+    }
+
+    func testAGroupingModeFlipReappliesTheLastState() throws {
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        vm.receive(badgeSettings: try settings(.quality))
+        vm.receive(state([groupA(), groupB()]))
+        XCTAssertEqual(vm.sections.map(\.title), ["4K", "1080p", "720p", "Other"])
+        let groupsBefore = vm.groups
+        vm.receive(badgeSettings: try settings(.addon))
+        XCTAssertEqual(vm.groupingMode, .addon)
+        XCTAssertEqual(vm.sections.map(\.title), ["Add A", "Add B"], "one section per add-on after the flip")
+        XCTAssertEqual(vm.groups, groupsBefore, "only the sections moved; no row was rebuilt")
+        XCTAssertEqual(vm.firstRowKey, vm.groups[0].rowKeys.first, "Add-on mode focuses the first add-on row")
+        vm.receive(badgeSettings: try settings(.quality))
+        XCTAssertEqual(vm.sections.map(\.title), ["4K", "1080p", "720p", "Other"], "and back")
+    }
+
+    func testAFilterChangeWithTheSameGroupsStillRebuildsTheSections() throws {
+        // One add-on in the state either way, so the groups compare equal; only the filter differs.
+        let vm = StreamsViewModel(type: "movie", videoId: "tt1")
+        vm.receive(badgeSettings: try settings(.addon))
+        let only = [groupA()]
+        vm.receive(state(only, filter: nil))
+        XCTAssertEqual(vm.sections.map(\.showsLabel), [true], "the All view labels the add-on")
+        let groupsBefore = vm.groups
+        vm.receive(state(only, filter: "a"))
+        XCTAssertEqual(vm.groups, groupsBefore, "the group list is unchanged")
+        XCTAssertEqual(vm.sections.map(\.showsLabel), [false], "a chip hides the add-on label")
+        vm.receive(state(only, filter: nil))
+        XCTAssertEqual(vm.sections.map(\.showsLabel), [true])
+    }
 }
