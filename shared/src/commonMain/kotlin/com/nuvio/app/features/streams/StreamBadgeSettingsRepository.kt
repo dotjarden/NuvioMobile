@@ -22,11 +22,18 @@ data class StreamBadgeSettingsUiState(
     val showAddonLogo: Boolean = false,
     val badgePlacement: StreamBadgePlacement = StreamBadgePlacement.BOTTOM,
     val backgroundMode: StreamBackgroundMode = StreamBackgroundDefaults.platformDefault,
+    val groupingMode: StreamGroupingMode = StreamGroupingMode.QUALITY,
 )
 
 enum class StreamBackgroundMode {
     Normal,
     Cinematic,
+}
+
+/** Stream picker "Group Sources By" (polish D5). Profile-local: never synced. */
+enum class StreamGroupingMode {
+    QUALITY,
+    ADDON,
 }
 
 enum class StreamBadgePlacement {
@@ -50,6 +57,7 @@ object StreamBadgeSettingsRepository {
     private var showAddonLogo = false
     private var badgePlacement = StreamBadgePlacement.BOTTOM
     private var backgroundMode = StreamBackgroundDefaults.platformDefault
+    private var groupingMode = StreamGroupingMode.QUALITY
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -67,6 +75,7 @@ object StreamBadgeSettingsRepository {
         showAddonLogo = false
         badgePlacement = StreamBadgePlacement.BOTTOM
         backgroundMode = StreamBackgroundDefaults.platformDefault
+        groupingMode = StreamGroupingMode.QUALITY
         _uiState.value = StreamBadgeSettingsUiState()
     }
 
@@ -172,6 +181,14 @@ object StreamBadgeSettingsRepository {
         StreamBadgeSettingsStorage.saveStreamBackgroundMode(mode.name.lowercase())
     }
 
+    fun setGroupingMode(mode: StreamGroupingMode) {
+        ensureLoaded()
+        if (groupingMode == mode) return
+        groupingMode = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamGroupingMode(mode.name.lowercase())
+    }
+
     private fun loadFromDisk() {
         hasLoaded = true
         val storedRules = parseStreamBadgeRules(StreamBadgeSettingsStorage.loadStreamBadgeRules())
@@ -186,6 +203,9 @@ object StreamBadgeSettingsRepository {
         backgroundMode = StreamBadgeSettingsStorage.loadStreamBackgroundMode()
             ?.let { storedMode -> StreamBackgroundMode.entries.firstOrNull { it.name.equals(storedMode, ignoreCase = true) } }
             ?: StreamBackgroundDefaults.platformDefault
+        groupingMode = StreamBadgeSettingsStorage.loadStreamGroupingMode()
+            ?.let { stored -> StreamGroupingMode.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamGroupingMode.QUALITY
         badgePlacement = StreamBadgeSettingsStorage.loadStreamBadgePlacement()
             ?.let { storedPlacement ->
                 StreamBadgePlacement.entries.firstOrNull { placement ->
@@ -207,6 +227,7 @@ object StreamBadgeSettingsRepository {
             showAddonLogo = showAddonLogo,
             badgePlacement = badgePlacement,
             backgroundMode = backgroundMode,
+            groupingMode = groupingMode,
         )
     }
 

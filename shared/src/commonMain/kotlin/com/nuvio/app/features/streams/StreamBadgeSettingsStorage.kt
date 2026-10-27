@@ -11,6 +11,9 @@ expect object StreamBadgeSettingsStorage {
     fun saveShowAddonLogo(enabled: Boolean)
     fun loadStreamBackgroundMode(): String?
     fun saveStreamBackgroundMode(mode: String)
+    fun loadStreamGroupingMode(): String?
+    fun saveStreamGroupingMode(mode: String)
+    fun clearStreamGroupingMode()
     fun loadStreamBadgePlacement(): String?
     fun saveStreamBadgePlacement(placement: String)
     fun loadLegacyDebridStreamBadgeRules(): String?

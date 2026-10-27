@@ -98,7 +98,17 @@ object StreamFactsParser {
         val known = tags.filter { it != DebridStreamAudioTag.UNKNOWN }
         // "Dolby Digital Plus" matches both DD+ and the plain DD token in the filter parser; one
         // label is enough here.
-        val formats = if (DebridStreamAudioTag.DD_PLUS in known) known - DebridStreamAudioTag.DD else known
+        var formats = if (DebridStreamAudioTag.DD_PLUS in known) known - DebridStreamAudioTag.DD else known
+        // The DTS token also matches inside "DTS-HD" / "DTS-HD MA", so keep only the most specific.
+        if (DebridStreamAudioTag.DTS_HD_MA in formats) {
+            formats = formats - DebridStreamAudioTag.DTS_HD - DebridStreamAudioTag.DTS
+        }
+        if (DebridStreamAudioTag.DTS_HD in formats ||
+            DebridStreamAudioTag.DTS_X in formats ||
+            DebridStreamAudioTag.DTS_ES in formats
+        ) {
+            formats = formats - DebridStreamAudioTag.DTS
+        }
         val layout = channels.filter { it != DebridStreamAudioChannel.UNKNOWN }
         val parts = formats.map { it.label } + layout.map { it.label }
         return parts.joinToString(" ").ifEmpty { null }

@@ -167,4 +167,34 @@ class StreamFactsParserTest {
     private companion object {
         const val GB = 1_000_000_000L
     }
+
+    private fun audioOf(description: String): String? = StreamFactsParser.parse(
+        StreamItem(
+            name = "Test",
+            description = description,
+            url = "https://example.com/play",
+            addonName = "Test",
+            addonId = "test",
+        ),
+    ).audio
+
+    @Test
+    fun dtsHdMaKeepsOnlyTheMostSpecificTag() {
+        assertEquals("DTS-HD MA 7.1", audioOf("Movie.2020.2160p.BluRay.DTS-HD MA 7.1-GRP"))
+    }
+
+    @Test
+    fun dtsHdDropsPlainDts() {
+        assertEquals("DTS-HD 5.1", audioOf("Movie.2020.1080p.BluRay.DTS-HD 5.1-GRP"))
+    }
+
+    @Test
+    fun dtsXDropsPlainDts() {
+        assertEquals("DTS:X 7.1", audioOf("Movie.2020.2160p.BluRay.DTS:X 7.1-GRP"))
+    }
+
+    @Test
+    fun plainDtsIsKept() {
+        assertEquals("DTS 5.1", audioOf("Movie.2020.1080p.BluRay.DTS 5.1-GRP"))
+    }
 }
