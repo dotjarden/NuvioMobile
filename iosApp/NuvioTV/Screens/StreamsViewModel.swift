@@ -37,11 +37,20 @@ final class StreamsViewModel: ObservableObject {
         /// Mirrors the shared `AddonStreamGroup.isLoading` — this addon hasn't finished
         /// responding yet (more streams may still arrive). Drives the per-group header spinner.
         let isLoading: Bool
+        /// Direction C: the parsed facts of `streams` (from `factsCache`), kept for the best pick so a
+        /// republish never re-reads the cache. Derived from `streams`, so `==` skips them.
+        let facts: [StreamFacts]
 
-        /// The same group with a new loading flag (rows and keys are reused as built).
+        /// The same group with a new loading flag (rows, keys and facts are reused as built).
         func withLoading(_ loading: Bool) -> Group {
             Group(id: id, addonName: addonName, streams: streams, rowKeys: rowKeys, rows: rows,
-                  display: display, isLoading: loading)
+                  display: display, isLoading: loading, facts: facts)
+        }
+
+        static func == (lhs: Group, rhs: Group) -> Bool {
+            lhs.id == rhs.id && lhs.addonName == rhs.addonName && lhs.streams == rhs.streams
+                && lhs.rowKeys == rhs.rowKeys && lhs.rows == rhs.rows && lhs.display == rhs.display
+                && lhs.isLoading == rhs.isLoading
         }
     }
 
@@ -81,6 +90,28 @@ final class StreamsViewModel: ObservableObject {
     /// Stream picker A (P2): the shared per-add-on filter (`StreamsUiState.selectedFilter`); nil is
     /// "All". `groups` is already filtered by it.
     @Published private(set) var selectedFilter: String?
+    /// Direction C: the panel body. Published with a guarded write.
+    @Published private(set) var panelBody = StreamPickerBodyModel()
+
+    /// The visit's body mode: decided once (`start()`, or the first `apply` in tests), `.list` after Show all.
+    private var visitMode: StreamPickerSourceContent?
+    /// Tiers expanded this load (section ids). Cleared on a new load, a filter change and a grouping flip.
+    private var expandedSections: Set<String> = []
+    /// `RejectedStreamLinks` keys for this title, pushed by the picker (`setRejectedKeys`).
+    private var rejectedKeys: Set<String> = []
+    /// The last published selection with its gate inputs. Cleared on a new load.
+    private var pickAnchor: StreamBestPickAnchor?
+    /// Inputs of the last pick, so an unchanged republish skips the Kotlin call.
+    private var lastPickCachedOnly: Bool?
+    private var lastPickDebridKey: String?
+    /// The fan-out's progress in the current filter at the last `apply`, reused by the body actions.
+    private var lastAnswered = 0
+    private var lastSettled = true
+    /// Risks fallback switch. W1d may flip it to `.onCompletion`; nobody else edits it.
+    static var bestPickUpgradePolicy: StreamBestPickUpgradePolicy = .perAnswer
+    /// Seams (tests replace them): "Source List Opens With" and the walk's Cached Sources Only.
+    var listOpensWith: () -> StreamListOpensWith = StreamsViewModel.liveListOpensWith
+    var autoPlayCachedOnly: () -> Bool = StreamsViewModel.liveAutoPlayCachedOnly
 
     private var watcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
@@ -134,7 +165,13 @@ final class StreamsViewModel: ObservableObject {
     let factsCache = StreamFactsCache()
 
     /// Drops the parsed facts so none cross titles or a refresh.
-    func resetForNewLoad() { factsCache.clear() }
+    func resetForNewLoad() {
+        factsCache.clear()
+        expandedSections = []
+        pickAnchor = nil
+        lastPickCachedOnly = nil
+        lastPickDebridKey = nil
+    }
 
     /// Row keys keyed by the stream's identity, not its position: add-ons stream in and the
     /// shared sort reorders, and a positional key moved focus and the resolve spinner onto a
@@ -174,6 +211,7 @@ final class StreamsViewModel: ObservableObject {
 
         StreamBadgeSettingsRepository.shared.ensureLoaded()
         DebridSettingsRepository.shared.ensureLoaded()
+        if visitMode == nil { resolveVisitMode() }
 
         watcher = FlowWatcherKt.watch(StreamsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? StreamsUiState else { return }
@@ -188,12 +226,17 @@ final class StreamsViewModel: ObservableObject {
             let canResolve = value.canResolvePlayableLinks
             let instant = canResolve && !value.hasCustomStreamFormatting
             if self.instantSuffixEnabled != instant { self.instantSuffixEnabled = instant }
+            let previousResolverId = self.activeResolverProviderId
             self.activeResolverProviderId = canResolve ? value.activeResolverProviderId : nil
             self.updateCredentialWarning()
             if self.debridResolveEnabled != canResolve {
                 self.debridResolveEnabled = canResolve
                 // Filtering depends on this flag — re-derive the visible groups.
                 if let last = self.lastState { self.apply(last) }
+            } else if previousResolverId != self.activeResolverProviderId, let last = self.lastState {
+                // Direction C: the best pick's eligibility reads the active resolver. An identical
+                // republish publishes nothing, so this costs only the pick.
+                self.apply(last)
             } else {
                 self.reapplyIfDisplayChanged()
             }
@@ -344,19 +387,24 @@ final class StreamsViewModel: ObservableObject {
             let rowsStart = CFAbsoluteTimeGetCurrent()
             let missesBefore = factsCache.missCount
             #endif
-            let rows = zip(keys, playable).map { key, stream in
-                StreamRowModel.make(stream: stream, facts: factsCache.facts(forKey: key, stream: stream),
-                                    key: key, display: display)
+            let facts = zip(keys, playable).map { key, stream in
+                factsCache.facts(forKey: key, stream: stream)
+            }
+            let rows = zip(zip(keys, playable), facts).map { pair, f in
+                StreamRowModel.make(stream: pair.1, facts: f, key: pair.0, display: display)
             }
             #if DEBUG
             StreamProbe.log("rows built n=\(rows.count) parsed=\(factsCache.missCount - missesBefore) ms=\(Int((CFAbsoluteTimeGetCurrent() - rowsStart) * 1000))")
             #endif
             return Group(id: group.addonId, addonName: group.addonName, streams: playable,
-                         rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)
+                         rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading,
+                         facts: facts)
         }
         // Polish D4: sections are rebuilt only when the groups, the mode or the filter moved; one
         // tier-bridge call per build. Compared BEFORE `groups` is overwritten.
         let mode = groupingMode
+        let previousFilter = appliedSectionsFilter
+        let previousGrouping = appliedGrouping
         let sectionsStale = next != groups || mode != appliedGrouping || filter != appliedSectionsFilter
         if next != groups { groups = next }
         let nextSections = sectionsStale
@@ -376,6 +424,22 @@ final class StreamsViewModel: ObservableObject {
         )
         if progress != fanOut { fanOut = progress }
         let first = nextSections.first?.rows.first?.key
+
+        // Direction C: expansion is per filter and grouping (a different list).
+        if sectionsStale && (filter != previousFilter || mode != previousGrouping) { expandedSections = [] }
+        if visitMode == nil { resolveVisitMode() }
+        let answeredNow = state.filteredGroups.filter { !$0.isLoading }.count
+        let settledNow = !state.filteredGroups.contains { $0.isLoading }
+        let cachedOnly = (visitMode == .tiers) ? autoPlayCachedOnly() : false
+        let debridKey = "\(debridEnabled)|\(activeResolverProviderId ?? "")"
+        let pickNeeded = visitMode == .tiers
+            && (sectionsStale || cachedOnly != lastPickCachedOnly || debridKey != lastPickDebridKey
+                || answeredNow != lastAnswered || settledNow != lastSettled)
+        lastAnswered = answeredNow
+        lastSettled = settledNow
+        if pickNeeded { lastPickDebridKey = debridKey }
+        rebuildPanelBody(pickNeeded: pickNeeded, cachedOnly: cachedOnly, firstKey: first)
+
         if firstRowKey != first { firstRowKey = first }
 
         var reason: String?
@@ -418,6 +482,105 @@ final class StreamsViewModel: ObservableObject {
             hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
         )
         if feed != autoPlayFeed { autoPlayFeed = feed }
+    }
+
+    // MARK: - Direction C: the panel body
+
+    /// Direction C D1: "Show all" for this visit. Rebuilds `panelBody` as `.list`
+    /// (`firstFocusKey` = `firstRowKey`).
+    func showAll() {
+        visitMode = .list
+        rebuildPanelBody(pickNeeded: false, cachedOnly: lastPickCachedOnly ?? false, firstKey: firstRowKey)
+    }
+
+    /// Direction C D5: expand one section for this load (no collapse). No-op for an unknown id.
+    func expandSection(_ id: String) {
+        guard visitMode == .tiers, sections.contains(where: { $0.id == id }),
+              !expandedSections.contains(id) else { return }
+        expandedSections.insert(id)
+        rebuildPanelBody(pickNeeded: false, cachedOnly: lastPickCachedOnly ?? false, firstKey: firstRowKey)
+    }
+
+    /// Direction C D8: the picker's `rejectedKeys` (re-read at the moments they change). Guarded.
+    func setRejectedKeys(_ keys: Set<String>) {
+        guard keys != rejectedKeys else { return }
+        rejectedKeys = keys
+        guard visitMode == .tiers else { return }
+        let cachedOnly = lastPickCachedOnly ?? autoPlayCachedOnly()
+        rebuildPanelBody(pickNeeded: true, cachedOnly: cachedOnly, firstKey: firstRowKey)
+    }
+
+    /// `.tiers` unless "Source List Opens With" (or the DEBUG knob) says Full List.
+    private func resolveVisitMode() {
+        visitMode = (listOpensWith() == .fullList) ? .list : .tiers
+    }
+
+    /// Rebuilds `panelBody` from the published sections and the pick anchor; a body equal to the
+    /// published one is not written. `.list` is the A list untouched.
+    private func rebuildPanelBody(pickNeeded: Bool, cachedOnly: Bool, firstKey: String?) {
+        let mode = visitMode ?? .tiers
+        let next: StreamPickerBodyModel
+        if mode == .list {
+            next = StreamPickerBodyModel.build(mode: .list, sections: sections, firstRowKey: firstKey,
+                                               selection: .none, settled: lastSettled, expanded: [])
+        } else {
+            if pickNeeded { runBestPick(cachedOnly: cachedOnly) }
+            next = StreamPickerBodyModel.build(mode: .tiers, sections: sections, firstRowKey: firstKey,
+                                               selection: pickAnchor?.selection ?? .none,
+                                               settled: lastSettled, expanded: expandedSections)
+        }
+        if next != panelBody { panelBody = next }
+    }
+
+    /// One Kotlin call over the facts the groups already hold (no parsing), then the upgrade gate.
+    private func runBestPick(cachedOnly: Bool) {
+        #if DEBUG
+        let start = CFAbsoluteTimeGetCurrent()
+        #endif
+        let streams = groups.flatMap(\.streams)
+        let facts = groups.flatMap(\.facts)
+        let rows = groups.flatMap(\.rows)
+        var fresh = StreamBestPickSelection.none
+        var eligibleKeys: Set<String> = []
+        var eligibleCount = 0
+        if !rows.isEmpty {
+            let rejected = rows.map { KotlinBoolean(bool: !rejectedKeys.isEmpty && rejectedKeys.contains($0.playbackKey)) }
+            let result = StreamBestPick.shared.pick(
+                streams: streams, facts: facts, rejected: rejected, debridEnabled: debridResolveEnabled,
+                activeResolverProviderId: activeResolverProviderId, cachedOnly: cachedOnly)
+            let ranked = result.ranked.map { $0.intValue }
+            eligibleCount = ranked.count
+            eligibleKeys = Set(ranked.map { rows[$0].key })
+            fresh = StreamBestPickSelection(
+                bestKey: result.best.map { rows[$0.intValue].key },
+                fhdKey: result.bestFhd.map { rows[$0.intValue].key },
+                directKey: result.bestDirect.map { rows[$0.intValue].key })
+        }
+        let availableKeys = Set(rows.filter { !rejectedKeys.contains($0.playbackKey) }.map(\.key))
+        pickAnchor = StreamBestPickGate.resolve(
+            previous: pickAnchor, fresh: fresh, eligibleKeys: eligibleKeys, availableKeys: availableKeys,
+            answered: lastAnswered, settled: lastSettled, filter: selectedFilter,
+            policy: Self.bestPickUpgradePolicy)
+        lastPickCachedOnly = cachedOnly
+        #if DEBUG
+        StreamProbe.log("best pick n=\(rows.count) eligible=\(eligibleCount) ms=\(Int((CFAbsoluteTimeGetCurrent() - start) * 1000))")
+        #endif
+    }
+
+    /// The knob wins over the stored setting.
+    static func liveListOpensWith() -> StreamListOpensWith {
+        if let pinned = StreamListOpensWithDebugOverride.mode() { return pinned }
+        let state = StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState
+        return state?.listOpensWith ?? .bestPick
+    }
+
+    /// Cached Sources Only counts only while Auto-Play Best Source is on (the toggle is hidden
+    /// otherwise): the same gate the walk has.
+    static func liveAutoPlayCachedOnly() -> Bool {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        let state = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        return state?.streamAutoPlayMode == StreamAutoPlayMode.firstStream
+            && (state?.streamAutoPlayCachedOnly ?? false)
     }
 
     /// Whether the picker lists `stream` at all: it has a direct link, it is a torrent /

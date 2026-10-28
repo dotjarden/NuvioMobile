@@ -75,6 +75,10 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     let audioFacts: [String]
     /// D3: the cached part of fact line 2; already nil when the title carries the Instant suffix.
     let cachedState: StreamRowCachedState?
+    /// Direction C: the audio label alone (`StreamFacts.audio`, trimmed; "Atmos DD+ 5.1"), for the
+    /// best-pick headline and the compact row. Nil when the release names none. Defaulted so the
+    /// tests' memberwise calls keep compiling; `make` always sets it.
+    var audio: String? = nil
 
     /// This row's debrid / YouTube resolve is in flight (the spinner beside the title).
     var isResolving = false
@@ -155,6 +159,9 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         let cached: Bool? = facts.cached?.boolValue
         let sizeBytes: Int64? = display.showFileSize ? facts.sizeBytes?.int64Value : nil
         let languages: [String] = facts.languages
+        let rawAudio: String? = facts.audio
+        let trimmedAudio = rawAudio?.trimmingCharacters(in: .whitespaces) ?? ""
+        let audioLabel: String? = trimmedAudio.isEmpty ? nil : trimmedAudio
         return StreamRowModel(
             key: key,
             title: headline != nil ? plainTitle : fullTitle,
@@ -175,7 +182,8 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
             audioFacts: StreamRowFacts.audioFacts(audio: facts.audio, languages: languages,
                                                   locale: Locale.current),
             cachedState: titleCarriesInstant ? nil
-                : StreamRowFacts.cachedState(cached: cached, provider: provider)
+                : StreamRowFacts.cachedState(cached: cached, provider: provider),
+            audio: audioLabel
         )
     }
 

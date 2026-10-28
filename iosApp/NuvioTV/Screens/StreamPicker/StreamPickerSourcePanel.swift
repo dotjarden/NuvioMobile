@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// What the source panel's body holds. Direction A renders the stream list; Direction B (best
-/// source + quality tiers) adds a `.tiers` case and swaps the body, not the layout.
-enum StreamPickerSourceContent: Equatable {
+/// What the source panel's body holds. `.list` is the A batch's list (full rows under tier or
+/// add-on headers); `.tiers` (Direction C) is the best-pick card, the alternatives and the
+/// collapsed sections. The panel's layout does not depend on it.
+nonisolated enum StreamPickerSourceContent: Equatable {
     case list
+    case tiers
 }
 
 /// Stream picker A, P1: the right pane (60 % of the screen). One rounded panel on
