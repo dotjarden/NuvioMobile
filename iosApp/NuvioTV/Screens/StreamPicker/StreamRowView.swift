@@ -137,6 +137,88 @@ struct StreamRowView: View, Equatable {
     }
 }
 
+/// Direction C D6: the compact row of the `.tiers` list. One 64 pt line, `Equatable` over its
+/// `StreamRowModel` (closures not compared, BUG-207). No badges, no file line, no dwell and no
+/// `@State`: focus never changes its height. The full `StreamRowView` is untouched.
+struct StreamCompactRowView: View, Equatable {
+    enum Metrics {
+        static let height: CGFloat = 64
+    }
+
+    let model: StreamRowModel
+    let onSelect: () -> Void
+    let onBuiltIn: () -> Void
+    let onExternal: (String) -> Void
+
+    nonisolated static func == (lhs: StreamCompactRowView, rhs: StreamCompactRowView) -> Bool {
+        lhs.model == rhs.model
+    }
+
+    var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StreamCompactRow")
+        #endif
+        let parts = StreamPickerCopy.compactParts(model)
+        Button(action: onSelect) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
+                Text(verbatim: parts.lead)
+                    .font(Theme.Font.metaStrong)
+                    .rowTextColor()
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if let facts = parts.facts {
+                    Text(verbatim: "\u{00B7}")
+                        .font(Theme.Font.meta)
+                        .rowTextColor(secondary: true)
+                    Text(verbatim: facts)
+                        .font(Theme.Font.meta)
+                        .rowTextColor(secondary: true)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: Theme.Spacing.sm)
+                if model.isResolving {
+                    ProgressView().scaleEffect(0.7)
+                }
+                if let glyph = parts.glyph {
+                    Image(systemName: glyph)
+                        .font(Theme.Font.meta)
+                        .rowTextColor(secondary: true)
+                }
+                if let size = parts.size {
+                    Text(verbatim: size)
+                        .font(Theme.Font.metaStrong)
+                        .rowTextColor()
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                if let trailing = parts.trailing {
+                    Text(verbatim: trailing)
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.md)
+            .frame(maxWidth: .infinity, minHeight: Metrics.height, alignment: .leading)
+            .transaction { $0.animation = nil }
+        }
+        .buttonStyle(.settingsRow)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.Palette.surface)
+        )
+        .accessibilityLabel(Text(verbatim: StreamPickerCopy.compactSpokenLabel(model)))
+        .accessibilityIdentifier("stream_picker_compact_row")
+        .modifier(ExternalPlayMenu(
+            players: model.players,
+            defaultPlayerId: model.defaultPlayerId,
+            onExternal: onExternal,
+            onBuiltIn: onBuiltIn
+        ))
+    }
+}
+
 /// The two fact lines under the headline. Terms are joined into one `AttributedString` with a font
 /// per run, so the line truncates as a unit and takes the row's secondary colour (`RowTextColor` is
 /// a view modifier, so one colour per line; emphasis is by weight). `Text(AttributedString)` makes no
