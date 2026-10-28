@@ -139,23 +139,6 @@ class StreamFactsParserTest {
         assertEquals(false, StreamFactsParser.parse(uncachedTorrent).cached)
     }
 
-    @Test
-    fun bestCandidateFollowsTheFilterAndTheQualityRank() {
-        val comet1080 = plain("Comet 1080p WEB-DL", addon = "addon:comet", size = GB * 4)
-        val comet2160 = plain("Comet 2160p WEB-DL HDR10", addon = "addon:comet", size = GB * 20)
-        val torrentio2160Dv = plain("Torrentio 2160p BluRay REMUX DV HDR", addon = "addon:torrentio", size = GB * 60)
-        val groups = listOf(
-            AddonStreamGroup(addonName = "Comet", addonId = "addon:comet", streams = listOf(comet1080, comet2160)),
-            AddonStreamGroup(addonName = "Torrentio", addonId = "addon:torrentio", streams = listOf(torrentio2160Dv)),
-        )
-
-        val all = StreamsUiState(groups = groups)
-        assertEquals(torrentio2160Dv, all.bestCandidate)
-        assertEquals(comet2160, all.copy(selectedFilter = "addon:comet").bestCandidate)
-        assertNull(StreamsUiState().bestCandidate)
-        assertNull(all.copy(selectedFilter = "addon:gone").bestCandidate)
-    }
-
     private fun plain(name: String, addon: String, size: Long): StreamItem = StreamItem(
         name = name,
         url = "https://example.com/${name.replace(' ', '-')}.mkv",

@@ -23,6 +23,7 @@ data class StreamBadgeSettingsUiState(
     val badgePlacement: StreamBadgePlacement = StreamBadgePlacement.BOTTOM,
     val backgroundMode: StreamBackgroundMode = StreamBackgroundDefaults.platformDefault,
     val groupingMode: StreamGroupingMode = StreamGroupingMode.QUALITY,
+    val listOpensWith: StreamListOpensWith = StreamListOpensWith.BEST_PICK,
 )
 
 enum class StreamBackgroundMode {
@@ -34,6 +35,12 @@ enum class StreamBackgroundMode {
 enum class StreamGroupingMode {
     QUALITY,
     ADDON,
+}
+
+/** Stream picker "Source List Opens With" (Direction C D9). Profile-local: never synced. */
+enum class StreamListOpensWith {
+    BEST_PICK,
+    FULL_LIST,
 }
 
 enum class StreamBadgePlacement {
@@ -58,6 +65,7 @@ object StreamBadgeSettingsRepository {
     private var badgePlacement = StreamBadgePlacement.BOTTOM
     private var backgroundMode = StreamBackgroundDefaults.platformDefault
     private var groupingMode = StreamGroupingMode.QUALITY
+    private var listOpensWith = StreamListOpensWith.BEST_PICK
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -76,6 +84,7 @@ object StreamBadgeSettingsRepository {
         badgePlacement = StreamBadgePlacement.BOTTOM
         backgroundMode = StreamBackgroundDefaults.platformDefault
         groupingMode = StreamGroupingMode.QUALITY
+        listOpensWith = StreamListOpensWith.BEST_PICK
         _uiState.value = StreamBadgeSettingsUiState()
     }
 
@@ -189,6 +198,14 @@ object StreamBadgeSettingsRepository {
         StreamBadgeSettingsStorage.saveStreamGroupingMode(mode.name.lowercase())
     }
 
+    fun setListOpensWith(mode: StreamListOpensWith) {
+        ensureLoaded()
+        if (listOpensWith == mode) return
+        listOpensWith = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamListOpensWith(mode.name.lowercase())
+    }
+
     private fun loadFromDisk() {
         hasLoaded = true
         val storedRules = parseStreamBadgeRules(StreamBadgeSettingsStorage.loadStreamBadgeRules())
@@ -206,6 +223,9 @@ object StreamBadgeSettingsRepository {
         groupingMode = StreamBadgeSettingsStorage.loadStreamGroupingMode()
             ?.let { stored -> StreamGroupingMode.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
             ?: StreamGroupingMode.QUALITY
+        listOpensWith = StreamBadgeSettingsStorage.loadStreamListOpensWith()
+            ?.let { stored -> StreamListOpensWith.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamListOpensWith.BEST_PICK
         badgePlacement = StreamBadgeSettingsStorage.loadStreamBadgePlacement()
             ?.let { storedPlacement ->
                 StreamBadgePlacement.entries.firstOrNull { placement ->
@@ -228,6 +248,7 @@ object StreamBadgeSettingsRepository {
             badgePlacement = badgePlacement,
             backgroundMode = backgroundMode,
             groupingMode = groupingMode,
+            listOpensWith = listOpensWith,
         )
     }
 

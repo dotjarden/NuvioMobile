@@ -79,6 +79,19 @@ object StreamQualityRank {
         )
     }
 
+    /**
+     * Direction C (D2): the same [Key] from already-parsed [StreamFacts], so a caller that holds the
+     * facts ranks without re-running the parser. Equal to [key] (stream) for every stream:
+     * resolution null -> 0 (UNKNOWN.value is 0); dynamicRange = 1 when [StreamFacts.hdr] is set;
+     * cached = [StreamFacts.cached] == true (the same predicate); size = sizeBytes ?: 0.
+     */
+    fun key(facts: StreamFacts): Key = Key(
+        resolution = facts.resolution ?: 0,
+        dynamicRange = if (facts.hdr != null) 1 else 0,
+        cached = if (facts.cached == true) 1 else 0,
+        size = facts.sizeBytes ?: 0L,
+    )
+
     /** [streams] best first. Keys are computed once per stream; full ties keep their list order. */
     fun rankBest(streams: List<StreamItem>): List<StreamItem> {
         if (streams.size < 2) return streams

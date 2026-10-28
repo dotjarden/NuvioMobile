@@ -211,6 +211,25 @@ object StreamAutoPlaySelector {
         )
     }
 
+    /** Direction C (D2): the walk's own playability rule, for [StreamBestPick]. */
+    internal fun isAutoPlayableStream(
+        stream: StreamItem,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): Boolean = stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
+
+    /**
+     * Direction C (D2): "Cached Sources Only" - a link the active debrid service already has cached.
+     * The Kotlin twin of Swift `FirstPlayAutoPlayController.Policy.isCachedDebridLink` (positive cache
+     * evidence on the active resolver; plain HTTP never qualifies).
+     */
+    internal fun isCachedDebridLink(
+        stream: StreamItem,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): Boolean = debridEnabled && stream.isAddonDebridCandidate &&
+        stream.isReadyDebridAutoPlay(activeResolverProviderId)
+
     private fun StreamItem.isAutoPlayable(
         debridEnabled: Boolean,
         activeResolverProviderId: String?,

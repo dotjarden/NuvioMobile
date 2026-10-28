@@ -18,6 +18,7 @@ actual object StreamBadgeSettingsStorage {
     private const val streamBadgePlacementKey = "stream_badge_placement"
     // Profile-local (Q1, 2026-10-27): deliberately NOT in syncKeys, export or replace, like show_addon_logo.
     private const val streamGroupingModeKey = "stream_grouping_mode"
+    private const val streamListOpensWithKey = "stream_list_opens_with"
     private const val legacyDebridStreamBadgeRulesKey = "debrid_stream_badge_rules"
     private val syncKeys = listOf(streamBadgeRulesKey, showFileSizeBadgesKey, streamBadgePlacementKey, streamBackgroundModeKey)
 
@@ -47,6 +48,16 @@ actual object StreamBadgeSettingsStorage {
 
     actual fun clearStreamGroupingMode() {
         NSUserDefaults.standardUserDefaults.removeObjectForKey(ProfileScopedKey.of(streamGroupingModeKey))
+    }
+
+    actual fun loadStreamListOpensWith(): String? = loadString(streamListOpensWithKey)
+
+    actual fun saveStreamListOpensWith(mode: String) {
+        saveString(streamListOpensWithKey, mode)
+    }
+
+    actual fun clearStreamListOpensWith() {
+        NSUserDefaults.standardUserDefaults.removeObjectForKey(ProfileScopedKey.of(streamListOpensWithKey))
     }
 
     actual fun loadStreamBadgePlacement(): String? = loadString(streamBadgePlacementKey)
