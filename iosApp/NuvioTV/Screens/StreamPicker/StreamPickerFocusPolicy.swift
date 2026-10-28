@@ -90,6 +90,8 @@ nonisolated enum StreamPickerFocusPolicy {
     /// `rowKeys` answers "is this a row key of the current groups" (every row, collapsed or not);
     /// the body's own focus keys add the card, the pills and the "more" rows.
     static func isListKey(_ key: String, rowKeys: (String) -> Bool, body: StreamPickerBodyModel) -> Bool {
-        rowKeys(key) || body.focusKeys.contains(key)
+        // `.tiers`: only keys the body draws. A row pushed out of a preview by a republish is still in
+        // the groups but is no longer a focus target, and forwarding from it fights the repair.
+        body.mode == .tiers ? body.focusKeys.contains(key) : rowKeys(key)
     }
 }

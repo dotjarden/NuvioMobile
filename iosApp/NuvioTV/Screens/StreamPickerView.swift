@@ -393,6 +393,7 @@ struct StreamPickerView: View {
                 guard !was, now,
                       StreamPickerFocusPolicy.promotesToCard(focused: focusedRow, placed: placedFocusKey,
                                                              cardAppeared: true) else { return }
+                NSLog("[PickerFocus] promote pill->card focused=%@", Self.focusProbeName(focusedRow))
                 placedFocusKey = StreamBestPickModel.focusKey
                 DispatchQueue.main.async { focusedRow = StreamBestPickModel.focusKey }
             }
@@ -514,6 +515,8 @@ struct StreamPickerView: View {
             // chip. A move from a non-chip onto a chip other than the selected one is sent on to
             // the selected chip; chip-to-chip moves (Left/Right along the row) are left alone.
             .onChange(of: focusedRow) { old, new in
+                // Card promotion only while focus has stayed on the placed pill: leaving it ends the claim.
+                if let old, old == placedFocusKey, new != old { placedFocusKey = nil }
                 // Direction C (C-8): Down from the card lands on the nearest pill, usually the
                 // trailing "Show all"; send it to the first pill.
                 if let forward = StreamPickerFocusPolicy.downFromCardForward(old: old, new: new, body: model.panelBody) {
@@ -672,8 +675,10 @@ struct StreamPickerView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // Direction C: the card's kicker carries the resume label, so the standalone pill is
             // hidden while the card is shown (`.list`, and `.tiers` without a card, keep it).
+            // Also hidden while the fan-out loads in `.tiers`, so the pill never shows and then
+            // vanishes when the card lands (a body jump on every Continue Watching open).
             if let resume = currentResumeLabel,
-               !(model.panelBody.mode == .tiers && model.panelBody.card != nil) {
+               !(model.panelBody.mode == .tiers && (model.panelBody.card != nil || model.isLoading)) {
                 StreamPickerResumePill(label: resume)
             }
             // P2: the source chips (refresh, All, one per add-on).
@@ -1035,7 +1040,11 @@ struct StreamPickerView: View {
         )
         .equatable()
         .focused($focusedRow, equals: key)
-        .id(key)
+        // Own id namespace: after Show all the same row key is drawn by `streamRowView` in this same
+        // LazyVStack, and a shared id let the lazy container reuse the stale compact view across the
+        // mode flip (the list kept the compact rows). Focus keys stay the plain row key; nothing
+        // scrolls to a compact row by id.
+        .id("compact:" + key)
     }
 
     /// Select on a pill: "Show all" opens the A list; the other pills play their stream.
@@ -1056,7 +1065,7 @@ struct StreamPickerView: View {
         cancelInitialFocusVerify()
         didPlaceListFocus = true
         model.showAll()
-        requestListFocus(StreamPickerFocusPolicy.afterShowAll(firstRowKey: model.firstRowKey))
+        requestListFocus(StreamPickerFocusPolicy.afterShowAll(firstRowKey: model.firstRowKey), pinned: false)
     }
 
     /// Direction C D5 (spec 7.4): Select on a "more" row. The target is read from the CURRENT
@@ -1075,11 +1084,13 @@ struct StreamPickerView: View {
     /// A focus request from a press (Show all, tier expand): written on the next runloop and
     /// verified like the initial placement, so a write the lazy list dropped (the row was not
     /// realized yet) is re-issued. Pinned: the verify pass keeps THIS target.
-    private func requestListFocus(_ target: String?) {
+    private func requestListFocus(_ target: String?, pinned: Bool = true) {
         guard let target else { return }
         initialFocusTarget = target
         initialFocusAttempts = 0
-        initialFocusPinned = true
+        // Show all does not pin: its target is the body's own first focus key, and the unpinned
+        // verify keeps the P5 retarget protection.
+        initialFocusPinned = pinned
         DispatchQueue.main.async { focusedRow = target }
         scheduleInitialFocusVerify()
     }
@@ -1671,7 +1682,12 @@ struct StreamPickerView: View {
             // dropped while focus stayed on the refresh chip. Re-target to the CURRENT first row
             // (realized at the top) whenever the list has one; a chip target stays as asked.
             let target: String
-            if wanted.hasPrefix("chip:") || initialFocusPinned {
+            // A pin holds only while its key is still a live target (the viewer may have stepped the
+            // chips or collapsed the body since); otherwise fall back to the body's first focus key.
+            let pinHolds = initialFocusPinned
+                && (model.panelBody.focusKeys.contains(wanted)
+                    || (model.panelBody.mode == .list && model.groups.contains { $0.rowKeys.contains(wanted) }))
+            if wanted.hasPrefix("chip:") || pinHolds {
                 target = wanted
             } else if let first = model.panelBody.firstFocusKey {
                 target = first
@@ -1705,6 +1721,7 @@ struct StreamPickerView: View {
         initialFocusVerifyTask?.cancel()
         initialFocusVerifyTask = nil
         initialFocusTarget = nil
+        initialFocusPinned = false
     }
 
     /// P2 (review r1, P1): the list's initial-focus rules may move focus: once per load, and only

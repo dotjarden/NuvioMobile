@@ -164,7 +164,10 @@ final class StreamPickerFocusPolicyTests: XCTestCase {
     func testIsListKey() {
         let b = body()
         let rowKeys: (String) -> Bool = { ["r0", "r1", "r2", "r3"].contains($0) }
-        XCTAssertTrue(StreamPickerFocusPolicy.isListKey("r3", rowKeys: rowKeys, body: b), "a collapsed row is still a row key")
+        XCTAssertFalse(StreamPickerFocusPolicy.isListKey("r3", rowKeys: rowKeys, body: b),
+                       "row hidden in a preview is not a list key in .tiers")
+        XCTAssertTrue(StreamPickerFocusPolicy.isListKey("r3", rowKeys: rowKeys, body: listBody()),
+                      ".list: every group row key counts")
         XCTAssertTrue(StreamPickerFocusPolicy.isListKey("bestpick", rowKeys: rowKeys, body: b))
         XCTAssertTrue(StreamPickerFocusPolicy.isListKey("alt:all", rowKeys: rowKeys, body: b))
         XCTAssertTrue(StreamPickerFocusPolicy.isListKey("more:tier|FHD", rowKeys: rowKeys, body: b))
