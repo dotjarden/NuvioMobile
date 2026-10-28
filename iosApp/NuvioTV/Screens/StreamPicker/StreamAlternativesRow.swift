@@ -33,7 +33,7 @@ struct StreamAlternativesRow: View {
                     .lineLimit(1)
                 // C-27: the pill's own stream is resolving (it is often folded behind "N more").
                 if let rowKey = alt.rowKey, rowKey == resolvingKey {
-                    ProgressView()
+                    ProgressView().scaleEffect(0.5).frame(width: 18, height: 18)
                 }
             }
         }
