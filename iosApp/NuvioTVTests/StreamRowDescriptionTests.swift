@@ -30,7 +30,7 @@ final class StreamRowDescriptionTests: XCTestCase {
             infoHash: nil, fileIdx: nil, externalUrl: nil, ytId: nil, sources: [], sourceName: nil,
             addonName: "Add-on", addonId: "addon:x", addonLogo: nil, streamType: nil, behaviorHints: hints,
             clientResolve: nil, debridCacheStatus: nil, externalSubtitles: [], badges: [])
-        return StreamRowModel.make(stream: stream, key: "k", display: StreamRowDisplay(),
+        return StreamRowModel.make(stream: stream, facts: StreamFactsParser.shared.parse(stream: stream), key: "k", display: StreamRowDisplay(),
                                    providerLabel: { $0.providerName })
     }
 

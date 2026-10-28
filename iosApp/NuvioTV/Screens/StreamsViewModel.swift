@@ -130,6 +130,11 @@ final class StreamsViewModel: ObservableObject {
     /// The grouping mode and chip filter the current `sections` were built with (polish D4).
     private var appliedGrouping: StreamGroupingMode = .quality
     private var appliedSectionsFilter: String?
+    /// Parsed facts by row key for the current load; cleared when a load starts (`resetForNewLoad`).
+    let factsCache = StreamFactsCache()
+
+    /// Drops the parsed facts so none cross titles or a refresh.
+    func resetForNewLoad() { factsCache.clear() }
 
     /// Row keys keyed by the stream's identity, not its position: add-ons stream in and the
     /// shared sort reorders, and a positional key moved focus and the resolve spinner onto a
@@ -165,6 +170,7 @@ final class StreamsViewModel: ObservableObject {
     /// (`manualSelection: false`); the picker passes false only while first-play auto mode is armed.
     func start(forceManual: Bool = true) {
         guard watcher == nil else { return }
+        resetForNewLoad()
 
         StreamBadgeSettingsRepository.shared.ensureLoaded()
         DebridSettingsRepository.shared.ensureLoaded()
@@ -258,6 +264,7 @@ final class StreamsViewModel: ObservableObject {
     /// (`StreamFilterRetention`); a `clear()` emptied the token and reset the chip to "All".
     func reload(forceManual: Bool = true) {
         lastState = nil
+        resetForNewLoad()
         StreamsRepository.shared.reload(
             type: type,
             videoId: videoId,
@@ -335,12 +342,14 @@ final class StreamsViewModel: ObservableObject {
             let keys = Self.rowKeys(groupId: group.addonId, streams: playable)
             #if DEBUG
             let rowsStart = CFAbsoluteTimeGetCurrent()
+            let missesBefore = factsCache.missCount
             #endif
             let rows = zip(keys, playable).map { key, stream in
-                StreamRowModel.make(stream: stream, key: key, display: display)
+                StreamRowModel.make(stream: stream, facts: factsCache.facts(forKey: key, stream: stream),
+                                    key: key, display: display)
             }
             #if DEBUG
-            StreamProbe.log("rows built n=\(rows.count) ms=\(Int((CFAbsoluteTimeGetCurrent() - rowsStart) * 1000))")
+            StreamProbe.log("rows built n=\(rows.count) parsed=\(factsCache.missCount - missesBefore) ms=\(Int((CFAbsoluteTimeGetCurrent() - rowsStart) * 1000))")
             #endif
             return Group(id: group.addonId, addonName: group.addonName, streams: playable,
                          rowKeys: keys, rows: rows, display: display, isLoading: group.isLoading)

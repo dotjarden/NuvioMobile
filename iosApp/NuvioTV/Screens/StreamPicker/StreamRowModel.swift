@@ -125,10 +125,11 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
     }
 
     /// Builds the static part of a row. `providerLabel` names the debrid provider for the Instant
-    /// suffix (injected so a test needs no provider catalog).
+    /// suffix (injected so a test needs no provider catalog). `facts` is the parsed `stream`.
     @MainActor
     static func make(
         stream: StreamItem,
+        facts: StreamFacts,
         key: String,
         display: StreamRowDisplay,
         providerLabel: (StreamDebridCacheStatus) -> String = StreamRowModel.debridProviderLabel
@@ -137,9 +138,8 @@ nonisolated struct StreamRowModel: Equatable, Identifiable {
         let desc: String? = stream.description_
         let logo: String? = stream.addonLogo
         let badges: [StreamBadge] = stream.badges
-        // The parser runs once per stream, here, never in a body (W3-16 F4); every derived field
-        // below comes from this one value.
-        let facts = StreamFactsParser.shared.parse(stream: stream)
+        // `facts` is parsed once per stream by the caller (`StreamFactsCache`), never here or in a
+        // body (W3-16 F4); every derived field below comes from it.
         let resolution: Int? = facts.resolution.map { Int($0.intValue) }
         let headline = StreamRowFacts.headline(forResolution: resolution)
         // Exactly one of the title and the glyph says "Instant" (D3). With a headline the title is
