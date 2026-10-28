@@ -194,6 +194,7 @@ final class StreamPickerUITests: XCTestCase {
             "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-debug.sourceListOpensWith", "FULL",
         ]
 
         // Cleanup launch (registered BEFORE the seed launch, review r2: `launch` itself can fail
@@ -492,6 +493,7 @@ final class StreamPickerUITests: XCTestCase {
             "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-debug.sourceListOpensWith", "FULL",
         ]
         addTeardownBlock { [self] in
             XCUIApplication().terminate()
@@ -588,6 +590,252 @@ final class StreamPickerUITests: XCTestCase {
                        "tier headings remain with a chip selected; saw \(selectedSeen.sorted())")
     }
 
+    // MARK: - Best pick (Direction C)
+
+    private func bestPick(_ app: XCUIApplication) -> XCUIElement { element(app, "stream_picker_best_pick") }
+    private func compactRows(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.descendants(matching: .any).matching(identifier: "stream_picker_compact_row")
+    }
+
+    /// Direction C (`docs/stream-picker-direction-c-spec-2026-10-28.md` §9.3): launched with
+    /// `-debug.sourceListOpensWith BEST`, the picker opens on the best-pick card. Add-on A serves four
+    /// streams here (a leg-local fixture: three 1080p rows make a "1 more" row) and B two: tiers
+    /// 4K 1, 1080p 3, 720p 1, SD 1, six rows. The card holds focus and names the 2160p stream;
+    /// "Best 1080p" and "Show all 6" are the pills (the best is already a direct link, so no direct
+    /// pill); the 1080p tier folds its third row behind "1 more"; Left/Right on the card steps the
+    /// chips; Down from the card goes to the first pill; Select on "more" reveals the row; Show all
+    /// swaps to the A list; Menu closes the picker and a reopen lands on the card again; Select on
+    /// the card chooses the stream (the stub 404s, so "chosen" is the assertion, as in the play leg).
+    func testBestPickLeadsThePanel() throws {
+        addTeardownBlock { [self] in
+            let attachment = XCTAttachment(string: printed.joined(separator: "\n"))
+            attachment.name = "picker-leg-log"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let mediaStub = DiscoveryStubServer()
+        try mediaStub.start()
+        addTeardownBlock { mediaStub.stop() }
+        let media = mediaStub.origin
+        let addonStub = DiscoveryStubServer(routes: [
+            (prefix: "/picker-zz-a/manifest.json", body: manifest(id: "zz.picker.a", name: "ZZ Picker A")),
+            (prefix: "/picker-zz-a/stream/movie/", body: streams([
+                ("ZZ A\\n1080p", "Dune 2021 1080p WEB-DL", "a1.mp4"),
+                ("ZZ A\\n1080p HEVC", "Dune 2021 1080p WEB-DL HEVC", "a4.mp4"),
+                ("ZZ A\\n720p", "Dune 2021 720p WEB", "a2.mp4"),
+                ("ZZ A\\n480p", "Dune 2021 480p", "a3.mp4"),
+            ], prefix: "/picker-zz-a/", media: media)),
+            (prefix: "/picker-zz-b/manifest.json", body: manifest(id: "zz.picker.b", name: "ZZ Picker B")),
+            (prefix: "/picker-zz-b/stream/movie/", body: streams([
+                ("ZZ B\\n2160p", "Dune 2021 2160p", "b1.mp4"),
+                ("ZZ B\\n1080p", "Dune 2021 1080p", "b2.mp4"),
+            ], prefix: "/picker-zz-b/", media: media)),
+        ])
+        try addonStub.start()
+        addTeardownBlock { addonStub.stop() }
+
+        let common = [
+            "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
+            "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
+            "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-debug.sourceListOpensWith", "BEST",
+        ]
+        addTeardownBlock { [self] in
+            XCUIApplication().terminate()
+            let cleanup = launch(common + ["-debug.addonManifestRemoveMatching", Self.stubPrefix])
+            pause(10)
+            cleanup.terminate()
+        }
+        let seed = launch(common + [
+            "-debug.addonManifestRemoveMatching", Self.stubPrefix,
+            "-debug.addonManifestUrls",
+            "\(addonStub.origin)/picker-zz-a/manifest.json,\(addonStub.origin)/picker-zz-b/manifest.json",
+        ])
+        pause(14)
+        seed.terminate()
+        let app = launch(common + [
+            "-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+            "-detail_layout", "cinematic", "-home_upcoming_row_enabled", "NO",
+        ])
+
+        func detailUp() -> Bool {
+            for _ in 0..<90 {
+                if element(app, "detail_hero").exists || element(app, "detail_action_play").exists { return true }
+                pause(0.5)
+            }
+            return false
+        }
+        func pressPlay() -> Bool {
+            for _ in 0..<60 {
+                let label = focusedLabel(app)
+                if label.hasPrefix("Play") || label.hasPrefix("Resume") {
+                    remote.press(.select)
+                    return true
+                }
+                pause(0.25)
+            }
+            return false
+        }
+        if !detailUp() {
+            throw XCTSkip("the deep link never produced a Detail page — network or fixture, not the picker")
+        }
+        guard pressPlay() else {
+            XCTFail("focus never reached Play/Resume on Detail; focused: \(focusDump(app))")
+            return
+        }
+
+        // 1. The panel opens on the card, which holds focus and names the 2160p stream.
+        XCTAssertTrue(element(app, "stream_picker_source_panel").waitForExistence(timeout: 20),
+                      "stream_picker_source_panel never appeared; focused: \(focusDump(app))")
+        let card = bestPick(app)
+        XCTAssertTrue(card.waitForExistence(timeout: 20),
+                      "stream_picker_best_pick never appeared; chips: \(chipLabels(app)); focused: \(focusDump(app))")
+        let chipsSettled = waitUntil(timeout: 30) { chipLabels(app).compactMap { parseChip($0).count }.reduce(0, +) == 6 }
+        let chipDump = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "stream_picker_chip"))
+            .allElementsBoundByIndex.map { $0.identifier + "=" + $0.label }
+        XCTAssertTrue(chipsSettled,
+                      "the chips never settled on 6 sources: \(chipLabels(app)); all chips: \(chipDump); card: \(card.label); focused: \(focusDump(app))")
+        let labels = chipLabels(app)
+        let expectedTotal = labels.compactMap { parseChip($0).count }.reduce(0, +)
+        say("chips = \(labels)")
+        guard labels.count == 2, expectedTotal == 6,
+              labels.contains("ZZ Picker A, 4 sources"), labels.contains("ZZ Picker B, 2 sources") else {
+            throw XCTSkip("fixture has extra movie stream add-ons (\(labels)): the tier counts assume the two stubs alone")
+        }
+        XCTAssertTrue(waitUntil(timeout: 10) { card.label.contains("4K") && card.label.contains("Best of 6") },
+                      "the card never named the 2160p stream of 6; label: \(card.label)")
+        XCTAssertTrue(waitFocus(card, timeout: 10), "the card does not hold focus on open; focused: \(focusDump(app))")
+        say("card focused: \(card.label)")
+
+        // 2. The pills: Best 1080p and Show all 6; no direct pill (the best is a direct link).
+        let fhd = element(app, "stream_picker_alt_fhd")
+        let showAll = element(app, "stream_picker_show_all")
+        XCTAssertTrue(fhd.waitForExistence(timeout: 5), "stream_picker_alt_fhd missing")
+        XCTAssertTrue(fhd.label.hasPrefix("Best 1080p"), "alt_fhd label: \(fhd.label)")
+        XCTAssertFalse(element(app, "stream_picker_alt_direct").exists, "no direct pill when the best is direct")
+        XCTAssertEqual(showAll.label, "Show all 6")
+
+        // 3. Folded tiers: 4K · 1 and 1080p · 3 headings, the 1080p tier with a "1 more" row.
+        var headings = sectionLabels(app)
+        let more = element(app, "stream_picker_tier_more")
+        XCTAssertTrue(waitUntil(timeout: 10) {
+            headings.formUnion(sectionLabels(app))
+            return headings.contains("4K · 1") && headings.contains("1080p · 3") && more.exists
+        }, "tier headings \(headings.sorted()), more exists: \(more.exists)")
+        XCTAssertTrue(more.label.hasSuffix("1 more"), "more label: \(more.label)")
+
+        // 4. Right on the card steps the chips (focus stays on the card); Left steps back to All.
+        guard let aIndex = (0..<2).first(where: { parseChip(chip(app, "\($0)").label).name == "ZZ Picker A" }) else {
+            XCTFail("no ZZ Picker A chip; chips: \(chipLabels(app))")
+            return
+        }
+        var aSelected = false
+        for _ in 0..<3 {
+            remote.press(.right)
+            if waitUntil(timeout: 3, { chip(app, "\(aIndex)").isSelected }) { aSelected = true; break }
+        }
+        XCTAssertTrue(aSelected, "Right on the card never selected ZZ Picker A; chips: \(chipLabels(app)); focused: \(focusDump(app))")
+        XCTAssertTrue(waitUntil(timeout: 10) { card.exists && card.label.contains("1080p") && !card.label.contains("4K") },
+                      "with ZZ Picker A selected the card should name a 1080p stream; label: \(card.label)")
+        XCTAssertTrue(waitFocus(card, timeout: 5), "a chip step moved focus off the card; focused: \(focusDump(app))")
+        var allSelected = false
+        for _ in 0..<3 {
+            remote.press(.left)
+            if waitUntil(timeout: 3, { chip(app, "all").isSelected }) { allSelected = true; break }
+        }
+        XCTAssertTrue(allSelected, "Left on the card never returned to All; chips: \(chipLabels(app)); focused: \(focusDump(app))")
+        XCTAssertTrue(waitUntil(timeout: 10) { card.exists && card.label.contains("4K") },
+                      "back on All the card should name the 2160p stream; label: \(card.label)")
+        XCTAssertTrue(waitFocus(card, timeout: 5), "focus left the card after stepping back; focused: \(focusDump(app))")
+        say("chips stepped from the card: ok")
+
+        // 5. Down from the card lands on the first pill; Down on to the "more" row; Select reveals the row.
+        remote.press(.down)
+        XCTAssertTrue(waitFocus(element(app, "stream_picker_alt_fhd"), timeout: 5),
+                      "Down from the card did not land on the Best 1080p pill; focused: \(focusDump(app))")
+        var downs = 0
+        while downs < 6, !(more.exists && more.hasFocus) {
+            remote.press(.down)
+            pause(0.5)
+            downs += 1
+        }
+        XCTAssertTrue(waitFocus(more, timeout: 5), "Down never reached the 1080p \"more\" row (\(downs) presses); focused: \(focusDump(app))")
+        remote.press(.select)
+        XCTAssertTrue(waitUntil(timeout: 10) { !more.exists }, "the \"more\" row is still there after Select")
+        // The lazy list realizes the rows near focus only (the off-screen 4K row may be unrealized),
+        // so the count is >= 5 and the three 1080p rows are all there.
+        let fhdRows = compactRows(app).matching(NSPredicate(format: "label CONTAINS %@", "1080p"))
+        XCTAssertTrue(waitUntil(timeout: 10) { compactRows(app).count >= 5 && fhdRows.count == 3 },
+                      "expected >= 5 compact rows with three 1080p after the expand, saw \(compactRows(app).count) / \(fhdRows.count)")
+        let focusedAfter = focusedLabel(app)
+        XCTAssertTrue(focusedAfter.contains("1080p"), "focus should sit on the revealed 1080p row; focused: \(focusDump(app))")
+        say("more expanded, focus on: \(focusedAfter)")
+
+        // 6. Back up to the Best 1080p pill, Right to Show all, Select: the A list.
+        var ups = 0
+        while ups < 8, !(fhd.exists && fhd.hasFocus) {
+            if showAll.exists, showAll.hasFocus { remote.press(.left) } else { remote.press(.up) }
+            pause(0.5)
+            ups += 1
+        }
+        XCTAssertTrue(waitFocus(fhd, timeout: 5), "Up never reached the Best 1080p pill (\(ups) presses); focused: \(focusDump(app))")
+        remote.press(.right)
+        XCTAssertTrue(waitFocus(showAll, timeout: 5), "Right from Best 1080p did not land on Show all; focused: \(focusDump(app))")
+        say("before Show all select: focused \(focusDump(app)) showAll.exists=\(showAll.exists) label=\(showAll.label)")
+        remote.press(.select)
+        pause(2)
+        say("after Show all select: focused \(focusDump(app)) rows=\(rows(app).count) compact=\(compactRows(app).count) card=\(bestPick(app).exists) showAll=\(showAll.exists)")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "after-show-all"
+        shot.lifetime = .keepAlways
+        add(shot)
+        XCTAssertTrue(waitUntil(timeout: 10) { self.rows(app).count > 0 && self.compactRows(app).count == 0 },
+                      "Show all did not swap to the full list: rows=\(rows(app).count) compact=\(compactRows(app).count)")
+        XCTAssertTrue(waitRows(app, 4, atLeast: true, timeout: 10),
+                      "expected >= 4 stream_picker_row, saw \(rows(app).count); compact=\(compactRows(app).count) headings=\(sectionLabels(app).sorted()) card=\(bestPick(app).exists) pills=\(showAll.exists) more=\(more.exists); focused: \(focusDump(app))\n\(app.debugDescription.prefix(6000))")
+        XCTAssertTrue(waitFocus(rows(app).element(boundBy: 0), timeout: 10),
+                      "the first row of the full list never took focus; focused: \(focusDump(app))")
+        var listHeadings = sectionLabels(app)
+        XCTAssertTrue(waitUntil(timeout: 5) {
+            listHeadings.formUnion(sectionLabels(app))
+            return listHeadings.contains("4K · 1")
+        }, "the A list's tier headings: \(listHeadings.sorted())")
+        say("show all: \(rows(app).count) rows realized, headings \(listHeadings.sorted())")
+
+        // 7. Menu closes the picker; a reopen lands on the card again.
+        remote.press(.menu)
+        XCTAssertTrue(waitUntil(timeout: 10) { !element(app, "stream_picker_source_panel").exists },
+                      "Menu did not close the picker; focused: \(focusDump(app))")
+        XCTAssertTrue(element(app, "detail_hero").waitForExistence(timeout: 10) || element(app, "detail_action_play").exists,
+                      "Detail never came back; focused: \(focusDump(app))")
+        guard pressPlay() else {
+            XCTFail("focus never returned to Play/Resume on Detail; focused: \(focusDump(app))")
+            return
+        }
+        XCTAssertTrue(element(app, "stream_picker_source_panel").waitForExistence(timeout: 20), "the picker did not reopen")
+        let reopened = bestPick(app)
+        XCTAssertTrue(reopened.waitForExistence(timeout: 20), "the reopened picker has no card; focused: \(focusDump(app))")
+        XCTAssertTrue(waitFocus(reopened, timeout: 15), "the reopened picker did not focus the card; focused: \(focusDump(app))")
+        say("reopen lands on the card")
+
+        // 8. Select on the card chooses the stream.
+        remote.press(.select)
+        let playerIds = ["player.native", "player.mpv", "player.loadingOverlay"]
+        var reached: String?
+        for _ in 0..<120 {
+            if let id = playerIds.first(where: { element(app, $0).exists }) { reached = id; break }
+            pause(0.25)
+        }
+        XCTAssertNotNil(reached, "no player element (\(playerIds)) within 30 s of the card press; focused: \(focusDump(app))")
+        say("player reached via \(reached ?? "<none>")")
+
+        for _ in 0..<3 {
+            remote.press(.menu)
+            pause(1)
+            if element(app, "stream_picker_source_panel").exists || element(app, "detail_hero").exists { break }
+        }
+    }
+
     // MARK: - Chip row overflow
 
     /// P5 device pass: with seven stub add-ons the chip row overflows the panel. Left from the first
@@ -617,6 +865,7 @@ final class StreamPickerUITests: XCTestCase {
             "-home_layout", "classic", "-debug.rememberLastProfile", "NO",
             "-detail_trailer_autoplay", "NO", "-debug.trailerForceNoTrailer", "YES",
             "-hero_trailer_autoplay", "NO", "-debug.streamAutoPlayModeOverride", "MANUAL",
+            "-debug.sourceListOpensWith", "FULL",
         ]
         addTeardownBlock { [self] in
             XCUIApplication().terminate()

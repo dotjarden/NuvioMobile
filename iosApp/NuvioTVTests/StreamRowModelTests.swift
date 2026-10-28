@@ -88,6 +88,7 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertTrue(model.hasVideoLine)
         XCTAssertTrue(model.hasAudioLine)
         XCTAssertNil(model.cachedState, "a plain HTTP link is not a debrid candidate")
+        XCTAssertEqual(model.audio, "Atmos DD+", "Direction C: the audio label alone")
         // The four view-state inputs start empty.
         XCTAssertFalse(model.isResolving)
         XCTAssertFalse(model.failedRecently)
@@ -314,14 +315,16 @@ final class StreamRowModelTests: XCTestCase {
     /// `.some(nil)` sets an optional field to nil; the default leaves it as it was.
     private func copy(_ m: StreamRowModel, resolution: Int?? = .none, headline: String?? = .none,
                       hdrMark: String?? = .none, videoFacts: [String]? = nil, audioFacts: [String]? = nil,
-                      cachedState: StreamRowCachedState?? = .none, showsAddonName: Bool? = nil) -> StreamRowModel {
+                      cachedState: StreamRowCachedState?? = .none, showsAddonName: Bool? = nil,
+                      audio: String?? = .none) -> StreamRowModel {
         StreamRowModel(
             key: m.key, title: m.title, description: m.description, badges: m.badges, sizeBytes: m.sizeBytes,
             badgesOnTop: m.badgesOnTop, showsAddonColumn: m.showsAddonColumn, showsAddonName: showsAddonName ?? m.showsAddonName, addonName: m.addonName,
             addonLogo: m.addonLogo, isYouTube: m.isYouTube, playbackKey: m.playbackKey,
             resolution: resolution ?? m.resolution, headline: headline ?? m.headline,
             hdrMark: hdrMark ?? m.hdrMark, videoFacts: videoFacts ?? m.videoFacts,
-            audioFacts: audioFacts ?? m.audioFacts, cachedState: cachedState ?? m.cachedState
+            audioFacts: audioFacts ?? m.audioFacts, cachedState: cachedState ?? m.cachedState,
+            audio: audio ?? m.audio
         )
     }
 
@@ -370,6 +373,8 @@ final class StreamRowModelTests: XCTestCase {
         XCTAssertNotEqual(base, copy(base, showsAddonName: !base.showsAddonName), "showsAddonName")
         XCTAssertNotEqual(base, copy(base, videoFacts: base.videoFacts + ["AV1"]), "videoFacts")
         XCTAssertNotEqual(base, copy(base, audioFacts: base.audioFacts + ["French"]), "audioFacts")
+        XCTAssertNotEqual(base, copy(base, audio: .some("TrueHD")), "audio")
+        XCTAssertNotEqual(copy(base, audio: .some("TrueHD")), copy(base, audio: .some(nil)), "audio cleared")
         XCTAssertNotEqual(base, copy(base, cachedState: .some(.instant(provider: "Real-Debrid"))), "cachedState")
         XCTAssertNotEqual(copy(base, cachedState: .some(.instant(provider: "A"))),
                           copy(base, cachedState: .some(.instant(provider: "B"))), "cachedState provider")

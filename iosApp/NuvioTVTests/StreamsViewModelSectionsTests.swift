@@ -148,7 +148,8 @@ final class StreamsViewModelSectionsTests: XCTestCase {
         let base = try XCTUnwrap(StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)
         return StreamBadgeSettingsUiState(
             rules: base.rules, showFileSizeBadges: base.showFileSizeBadges, showAddonLogo: base.showAddonLogo,
-            badgePlacement: base.badgePlacement, backgroundMode: base.backgroundMode, groupingMode: mode
+            badgePlacement: base.badgePlacement, backgroundMode: base.backgroundMode, groupingMode: mode,
+            listOpensWith: .bestPick
         )
     }
 
