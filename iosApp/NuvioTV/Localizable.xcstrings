@@ -1481,6 +1481,9 @@
         }
       }
     },
+    "%lld more": {
+      "extractionState": "manual"
+    },
     "%lld movies": {
       "localizations": {
         "de": {
@@ -8699,6 +8702,24 @@
           }
         }
       }
+    },
+    "Best 1080p": {
+      "extractionState": "manual"
+    },
+    "Best Pick": {
+      "extractionState": "manual"
+    },
+    "Best Pick opens the source list on the best source for this title, by the same order as Auto-Play Best Source, with quick picks for the best 1080p and the best direct link and each quality group folded to its first two sources. Full List opens every source under its heading. Default: Best Pick.": {
+      "extractionState": "manual"
+    },
+    "Best So Far": {
+      "extractionState": "manual"
+    },
+    "Best direct link": {
+      "extractionState": "manual"
+    },
+    "Best of %lld · resolution, then HDR, then cached, then size": {
+      "extractionState": "manual"
     },
     "Biography": {
       "localizations": {
@@ -19616,6 +19637,9 @@
           }
         }
       }
+    },
+    "Full List": {
+      "extractionState": "manual"
     },
     "Full sync guide: api.simkl.org/guides/sync": {
       "localizations": {
@@ -40088,6 +40112,9 @@
         }
       }
     },
+    "Show all %lld": {
+      "extractionState": "manual"
+    },
     "Show posters without a title label": {
       "localizations": {
         "de": {
@@ -43161,6 +43188,9 @@
           }
         }
       }
+    },
+    "Source List Opens With": {
+      "extractionState": "manual"
     },
     "Sources": {
       "localizations": {
@@ -53297,6 +53327,12 @@
         }
       }
     },
+    "cached": {
+      "extractionState": "manual"
+    },
+    "cached on %@": {
+      "extractionState": "manual"
+    },
     "debug_bridge trace=%@": {
       "localizations": {
         "de": {
@@ -54764,6 +54800,9 @@
           }
         }
       }
+    },
+    "not cached": {
+      "extractionState": "manual"
     },
     "not supported for this file": {
       "localizations": {

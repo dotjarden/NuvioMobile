@@ -46,6 +46,8 @@ final class BadgeSettingsViewModel: ObservableObject {
     /// Polish batch D5: how the picker groups its source rows (Quality or Add-on). Quality is the
     /// default before the repository has emitted.
     var groupingMode: StreamGroupingMode { state?.groupingMode ?? .quality }
+    /// Direction C D9: the default before the repository has emitted.
+    var listOpensWith: StreamListOpensWith { state?.listOpensWith ?? .bestPick }
 
     // MARK: - Actions (thin passthroughs to the shared repository)
 
@@ -97,6 +99,10 @@ final class BadgeSettingsViewModel: ObservableObject {
 
     func setGroupingMode(_ mode: StreamGroupingMode) {
         StreamBadgeSettingsRepository.shared.setGroupingMode(mode: mode)
+    }
+
+    func setListOpensWith(_ mode: StreamListOpensWith) {
+        StreamBadgeSettingsRepository.shared.setListOpensWith(mode: mode)
     }
 
     /// Short display label for an imported pack (URL tail without query noise).

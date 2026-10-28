@@ -141,6 +141,15 @@ struct SourcesSettingsPane: View {
                     descriptionID: .sourcesGrouping,
                     label: SourceSettingOptions.groupingModeName(for:)
                 )
+                // Direction C D9: what the source list opens on. Default Best Pick, stored with the
+                // badge settings (per profile on this Apple TV, not synced).
+                SettingsPickerRow(
+                    title: String(localized: "Source List Opens With"),
+                    selection: Binding(get: { badges.listOpensWith }, set: { badges.setListOpensWith($0) }),
+                    options: SourceSettingOptions.listOpensWithModes,
+                    descriptionID: .sourcesOpensWith,
+                    label: SourceSettingOptions.listOpensWithName(for:)
+                )
             }
 
             SettingsSection(String(localized: "Metadata (TMDB)")) {
@@ -591,6 +600,16 @@ private enum SourceSettingOptions {
         switch mode {
         case .addon: return String(localized: "Add-on")
         default: return String(localized: "Quality")
+        }
+    }
+
+    /// Direction C D9: Best Pick first (the default).
+    static let listOpensWithModes: [StreamListOpensWith] = [.bestPick, .fullList]
+
+    static func listOpensWithName(for mode: StreamListOpensWith) -> String {
+        switch mode {
+        case .fullList: return String(localized: "Full List")
+        default: return String(localized: "Best Pick")
         }
     }
 
