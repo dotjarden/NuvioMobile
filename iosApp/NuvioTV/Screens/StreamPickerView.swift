@@ -159,6 +159,14 @@ struct StreamPickerView: View {
     /// frame and take focus before any row exists, so "focus is still on a chip" counts as
     /// unplaced until the viewer has acted on a chip. Re-armed by the stale-link reload.
     @State private var didPlaceListFocus = false
+    /// Direction C (card promotion, C-14): the key `placeInitialListFocus` last wrote. When it was a
+    /// pill (no stream was eligible yet) and the best-pick card appears while focus still sits on
+    /// that pill, focus is promoted to the card. Reset wherever `didPlaceListFocus` is re-armed.
+    @State private var placedFocusKey: String?
+    /// Direction C: the pending focus request (`requestListFocus`) came from a press (Show all, tier
+    /// expand), so the verify pass re-issues THAT key instead of re-targeting the body's first
+    /// focus key (the card), which would undo an expand.
+    @State private var initialFocusPinned = false
     /// P5 device pass: the viewer pressed a chip, Refresh, or moved along the chips this load. A
     /// load that empties the list (the repository publishes a fresh state before its first group
     /// lands, e.g. a re-open of a title whose cached groups the watcher emitted first) re-arms the
@@ -346,7 +354,7 @@ struct StreamPickerView: View {
                             progress: model.fanOut
                         )
                         .frame(width: geo.size.width * Self.infoPaneFraction)
-                        StreamPickerSourcePanel(content: .list) {
+                        StreamPickerSourcePanel(content: model.panelBody.mode) {
                             sourceHeader
                         } panelBody: {
                             sourceList
@@ -375,6 +383,18 @@ struct StreamPickerView: View {
                 // BUG-182/183: the player's own loading look, no fade of its own (a swap to the
                 // player's overlay must be invisible).
                 if loadingCoverVisible { loadingCover }
+            }
+            // Direction C D8: one place pushes the rejected links to the view model, covering every
+            // `rejectedKeys = …` site (appear, retry, gave up, failure, healthy, player dismissed).
+            .onChange(of: rejectedKeys, initial: true) { _, keys in model.setRejectedKeys(keys) }
+            // Direction C (C-14): card promotion, once per card appearance. A viewer who moved off
+            // the placed pill is never moved (`promotesToCard` checks focus is still on it).
+            .onChange(of: model.panelBody.card != nil) { was, now in
+                guard !was, now,
+                      StreamPickerFocusPolicy.promotesToCard(focused: focusedRow, placed: placedFocusKey,
+                                                             cardAppeared: true) else { return }
+                placedFocusKey = StreamBestPickModel.focusKey
+                DispatchQueue.main.async { focusedRow = StreamBestPickModel.focusKey }
             }
             .onReceive(model.$autoPlayFeed) { feed in autoPlay.ingest(feed) }
             .onReceive(autoPlay.events) { event in handleAutoPlayEvent(event) }
@@ -423,6 +443,7 @@ struct StreamPickerView: View {
                     if !viewerChoseChip {
                         cancelInitialFocusVerify()
                         didPlaceListFocus = false
+                        placedFocusKey = nil
                     }
                     return
                 }
@@ -441,6 +462,7 @@ struct StreamPickerView: View {
                 if focusedRow == nil, !loadingCoverVisible, selected == nil, manualFailureAlert == nil {
                     cancelInitialFocusVerify()
                     didPlaceListFocus = false
+                    placedFocusKey = nil
                 }
 
                 // P3.4: move initial focus once streams (first) arrive (`placeInitialListFocus`).
@@ -492,6 +514,12 @@ struct StreamPickerView: View {
             // chip. A move from a non-chip onto a chip other than the selected one is sent on to
             // the selected chip; chip-to-chip moves (Left/Right along the row) are left alone.
             .onChange(of: focusedRow) { old, new in
+                // Direction C (C-8): Down from the card lands on the nearest pill, usually the
+                // trailing "Show all"; send it to the first pill.
+                if let forward = StreamPickerFocusPolicy.downFromCardForward(old: old, new: new, body: model.panelBody) {
+                    DispatchQueue.main.async { focusedRow = forward }
+                    return
+                }
                 guard let new, new.hasPrefix("chip:"), let old else { return }
                 if old.hasPrefix("chip:") {
                     // Review r2 (P3): Left/Right along the chips is the viewer acting on them; the
@@ -505,7 +533,10 @@ struct StreamPickerView: View {
                 // A row that left the hierarchy (a chip step changed the filter) makes the engine
                 // fall back onto some chip; that is not a move to forward, and the chip step's own
                 // focus write must win.
-                guard model.groups.contains(where: { $0.rowKeys.contains(old) }) else { return }
+                // Direction C: the card, pills and "more" rows count as list keys too.
+                guard StreamPickerFocusPolicy.isListKey(old, rowKeys: { key in
+                    model.groups.contains(where: { $0.rowKeys.contains(key) })
+                }, body: model.panelBody) else { return }
                 let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
                 guard new != selectedKey else { return }
                 DispatchQueue.main.async { focusedRow = selectedKey }
@@ -639,8 +670,10 @@ struct StreamPickerView: View {
     @ViewBuilder
     private var sourceHeader: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            if let resume = StreamPickerResume.label(positionMs: resumePositionMs, fraction: resumeFraction,
-                                                     startFromBeginning: startsOver) {
+            // Direction C: the card's kicker carries the resume label, so the standalone pill is
+            // hidden while the card is shown (`.list`, and `.tiers` without a card, keep it).
+            if let resume = currentResumeLabel,
+               !(model.panelBody.mode == .tiers && model.panelBody.card != nil) {
                 StreamPickerResumePill(label: resume)
             }
             // P2: the source chips (refresh, All, one per add-on).
@@ -673,6 +706,12 @@ struct StreamPickerView: View {
         .disabled(loadingCoverVisible)
     }
 
+    /// P3.3: the resume pill's text (nil when there is nothing to resume); also the card's kicker suffix.
+    private var currentResumeLabel: String? {
+        StreamPickerResume.label(positionMs: resumePositionMs, fraction: resumeFraction,
+                                 startFromBeginning: startsOver)
+    }
+
     /// P2: the chips minus the error chips dropped after the fan-out finished.
     private var visibleChips: [SourceChip] {
         hiddenErrorChips.isEmpty ? model.sourceChips : model.sourceChips.filter { !hiddenErrorChips.contains($0.id) }
@@ -689,6 +728,10 @@ struct StreamPickerView: View {
         case .right: step = .next
         default: return
         }
+        // Direction C: the pills share an HStack, so the engine moves between them; a chip step here
+        // would make the 2nd and 3rd pill unreachable (spec C-7). Card, compact and "more" rows are
+        // full width and step the chips exactly as full rows do.
+        guard StreamPickerFocusPolicy.stepsChips(focused: focusedRow) else { return }
         guard chipMoveThrottle.allows(now: CFAbsoluteTimeGetCurrent()) else { return }
         let chips = visibleChips
         guard !chips.isEmpty else { return }
@@ -698,8 +741,9 @@ struct StreamPickerView: View {
         model.selectFilter(next)
     }
 
-    /// P2/P3: where focus lands in the list after a D-pad chip step: the first row.
-    private var firstListFocusTarget: String? { model.firstRowKey }
+    /// P2/P3: where focus lands in the list after a D-pad chip step: the body's first focus key
+    /// (the first row in `.list`; in `.tiers` the card, else the first pill, else the first row).
+    private var firstListFocusTarget: String? { model.panelBody.firstFocusKey }
 
     /// P2: once the fan-out has finished, drop the error chips with no streams after the linger;
     /// a new fan-out cancels the drop and shows every chip again.
@@ -772,6 +816,9 @@ struct StreamPickerView: View {
                     // Polish D4: the list iterates the view model's sections (quality tiers, or the
                     // add-on groups in Add-on mode). A label is a non-focusable header; in the All view
                     // add-on labels carry the spinner, tier labels (also under a chip) carry a count.
+                    if model.panelBody.mode == .tiers {
+                        tiersBody(players: players, defaultPlayerId: defaultPlayerId)
+                    } else {
                     ForEach(model.sections) { section in
                         if section.showsLabel {
                             StreamSectionLabel(name: section.title, isLoading: section.isLoading,
@@ -781,6 +828,7 @@ struct StreamPickerView: View {
                             streamRowView(row, players: players, defaultPlayerId: defaultPlayerId,
                                           scrollProxy: scrollProxy)
                         }
+                    }
                     }
 
                     if let reason = model.emptyReason {
@@ -855,6 +903,22 @@ struct StreamPickerView: View {
                 scrollProxy.scrollTo(target, anchor: .top)
                 DispatchQueue.main.async { focusedRow = target }
             }
+            // Direction C: the focused card / pill / row / "more" row left the rebuilt body (a row now
+            // hidden in a collapsed tier, a tier expanded, the card gone). `repairTarget` names the
+            // key that stands in for it. A backstop: Show all and expand place focus themselves.
+            // Written async, and only while focus is still on the vanished key, nowhere, or on a chip
+            // the engine fell back to; a viewer's own move in the meantime wins. `.list` has no focus
+            // keys, so this is inert there.
+            .onChange(of: model.panelBody) { old, new in
+                let vanished = focusedRow
+                guard let target = StreamPickerFocusPolicy.repairTarget(focused: vanished, old: old, new: new)
+                else { return }
+                DispatchQueue.main.async {
+                    guard focusedRow == vanished || focusedRow == nil || focusedRow?.hasPrefix("chip:") == true
+                    else { return }
+                    focusedRow = target
+                }
+            }
             .onChange(of: model.isLoading, initial: true) { _, loading in
                 scheduleErrorChipDrop(loading: loading)
                 // Review r3: a stepped-to add-on that ends with nothing listable retires the request.
@@ -906,6 +970,118 @@ struct StreamPickerView: View {
         .focused($focusedRow, equals: key)
         // The `scrollTo` target (the same value as the `ForEach` identity, so no identity change).
         .id(key)
+    }
+
+    /// Direction C: the `.tiers` body, one flat list in the order the model built it (card,
+    /// alternatives, then per tier a header, its visible rows and a "more" row). Same call-site
+    /// contract as `streamRowView` (BUG-207 / W3-16): every leaf is an `Equatable` value built in
+    /// `apply`, `.equatable()` + `.focused($focusedRow, equals:)` + `.id(key)` live HERE, and nothing
+    /// reads the picker's focus state. No animation, and no height change on a focus move.
+    ///
+    /// The card's content (not its key) may change while the fan-out answers; `bestPickUpgradePolicy`
+    /// (`.perAnswer`) stays the default. If the device pass shows focus dropping when the card's
+    /// content swaps, `StreamsViewModel.bestPickUpgradePolicy = .onCompletion` is the named
+    /// fallback (a one-line flip, spec 4.4); it is NOT flipped here.
+    @ViewBuilder
+    private func tiersBody(players: [StreamRowPlayer], defaultPlayerId: String?) -> some View {
+        ForEach(model.panelBody.items) { item in
+            switch item {
+            case .card(let card):
+                StreamBestPickCard(model: card, resumeLabel: currentResumeLabel,
+                                   isResolving: resolvingKey == card.rowKey,
+                                   onSelect: { selectRow(card.rowKey) })
+                    .equatable()
+                    .focused($focusedRow, equals: StreamBestPickModel.focusKey)
+                    .id(StreamBestPickModel.focusKey)
+            case .alternatives(let alternatives):
+                StreamAlternativesRow(alternatives: alternatives, focus: $focusedRow,
+                                      onSelect: { handleAlternative($0) })
+                    .id("alternatives")
+            case .header(let section):
+                if section.showsLabel {
+                    StreamSectionLabel(name: section.title, isLoading: section.isLoading, count: section.count)
+                }
+            case .row(let row, _):
+                compactRowView(row, players: players, defaultPlayerId: defaultPlayerId)
+            case .more(let section):
+                // The closure is not part of the row's identity, so it carries the section id and
+                // reads the live section when pressed (a republish may have moved `firstHiddenKey`).
+                let sectionId = section.id
+                StreamTierMoreRow(sectionTitle: section.title, hiddenCount: section.hiddenCount,
+                                  onSelect: { expandTier(sectionId) })
+                    .equatable()
+                    .focused($focusedRow, equals: section.moreFocusKey)
+                    .id(section.moreFocusKey)
+            }
+        }
+    }
+
+    /// A compact row in the `.tiers` body: `streamRowView`'s twin (no dwell, so no `onExpanded` and
+    /// no scroll proxy; compact rows never change height on focus).
+    private func compactRowView(_ row: StreamRowModel, players: [StreamRowPlayer],
+                                defaultPlayerId: String?) -> some View {
+        let key = row.key
+        let model = row.applying(
+            isResolving: resolvingKey == key,
+            failedRecently: !rejectedKeys.isEmpty && rejectedKeys.contains(row.playbackKey),
+            players: players,
+            defaultPlayerId: defaultPlayerId
+        )
+        return StreamCompactRowView(
+            model: model,
+            onSelect: { selectRow(key) },
+            onBuiltIn: { playRowInBuiltInPlayer(key) },
+            onExternal: { playerId in playRowExternally(key, playerId: playerId) }
+        )
+        .equatable()
+        .focused($focusedRow, equals: key)
+        .id(key)
+    }
+
+    /// Select on a pill: "Show all" opens the A list; the other pills play their stream.
+    private func handleAlternative(_ alternative: StreamAlternativeModel) {
+        if alternative.kind == .showAll {
+            showAllSources()
+        } else if let key = alternative.rowKey {
+            selectRow(key)
+        }
+    }
+
+    /// Direction C D4 (spec 7.4): Show all. The viewer chose where focus goes, so the chip-step and
+    /// initial-focus rules stand down; the body becomes the A list and focus goes to its first row.
+    /// No `scrollTo` (tvOS 27.2 ignores id-based programmatic scrolling; the pill is at the top and
+    /// the focus move scrolls), no animation.
+    private func showAllSources() {
+        filterFocusRequest = .none
+        cancelInitialFocusVerify()
+        didPlaceListFocus = true
+        model.showAll()
+        requestListFocus(StreamPickerFocusPolicy.afterShowAll(firstRowKey: model.firstRowKey))
+    }
+
+    /// Direction C D5 (spec 7.4): Select on a "more" row. The target is read from the CURRENT
+    /// section BEFORE `expandSection` (afterwards the section has no hidden row); focus lands on the
+    /// row that took the "more" row's place.
+    private func expandTier(_ sectionId: String) {
+        guard let section = model.panelBody.sections.first(where: { $0.id == sectionId }) else { return }
+        let target = StreamPickerFocusPolicy.afterExpand(section)
+        filterFocusRequest = .none
+        cancelInitialFocusVerify()
+        didPlaceListFocus = true
+        model.expandSection(sectionId)
+        requestListFocus(target)
+    }
+
+    /// A focus request from a press (Show all, tier expand): written on the next runloop and
+    /// verified like the initial placement, so a write the lazy list dropped (the row was not
+    /// realized yet) is re-issued. Pinned: the verify pass keeps THIS target.
+    private func requestListFocus(_ target: String?) {
+        guard let target else { return }
+        initialFocusTarget = target
+        initialFocusAttempts = 0
+        initialFocusPinned = true
+        DispatchQueue.main.async { focusedRow = target }
+        scheduleInitialFocusVerify()
     }
 
     /// The stream currently listed under `key` (nil if the list changed under the press).
@@ -1039,6 +1215,7 @@ struct StreamPickerView: View {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
                 cancelInitialFocusVerify()
                 didPlaceListFocus = false
+                placedFocusKey = nil
                 viewerChoseChip = false
                 model.reload(forceManual: !autoPlayArmed)
             }
@@ -1185,6 +1362,7 @@ struct StreamPickerView: View {
                 // P2: the list empties and focus falls to the chips; let the rule place it again.
                 cancelInitialFocusVerify()
                 didPlaceListFocus = false
+                placedFocusKey = nil
                 viewerChoseChip = false
                 model.reload(forceManual: !autoPlayArmed)
             }
@@ -1448,23 +1626,26 @@ struct StreamPickerView: View {
     /// (`listFocusIsPlaceable`). Nothing while the loading cover is up (the panel is disabled).
     private func placeInitialListFocus() {
         guard !loadingCoverVisible, listFocusIsPlaceable else { return }
-        let target: String?
-        if let firstKey = model.firstRowKey {
-            target = firstKey
-        } else if !model.isLoading, model.fanOut.hasOutcome {
+        // Direction C: the choice lives in `StreamPickerFocusPolicy.initialTarget` (the body's first
+        // focus key: the card, else a pill, else the first row; the first row in `.list`), with the
+        // chip as the empty-outcome fallback. Auto-play cancel and a walk that gave up land here too.
+        var outcomeChipKey: String?
+        if !model.isLoading, model.fanOut.hasOutcome {
             // Review r1: the selected chip when there is one (a stale-link reload keeps it), "All"
             // otherwise or when that chip was dropped as an error chip.
             let selectedKey = model.selectedFilter.map(SourceChipRow.key(for:)) ?? SourceChipRow.allKey
             let selectedDropped = model.selectedFilter.map { hiddenErrorChips.contains($0) } ?? false
-            target = selectedDropped ? SourceChipRow.allKey : selectedKey
-        } else {
-            target = nil
+            outcomeChipKey = selectedDropped ? SourceChipRow.allKey : selectedKey
         }
-        guard let target else { return }
+        guard let target = StreamPickerFocusPolicy.initialTarget(body: model.panelBody,
+                                                                 outcomeChipKey: outcomeChipKey)
+        else { return }
         NSLog("[PickerFocus] place target=%@ focused=%@", Self.focusProbeName(target), Self.focusProbeName(focusedRow))
         didPlaceListFocus = true
+        placedFocusKey = target
         initialFocusTarget = target
         initialFocusAttempts = 0
+        initialFocusPinned = false
         DispatchQueue.main.async { focusedRow = target }
         scheduleInitialFocusVerify()
     }
@@ -1490,9 +1671,9 @@ struct StreamPickerView: View {
             // dropped while focus stayed on the refresh chip. Re-target to the CURRENT first row
             // (realized at the top) whenever the list has one; a chip target stays as asked.
             let target: String
-            if wanted.hasPrefix("chip:") {
+            if wanted.hasPrefix("chip:") || initialFocusPinned {
                 target = wanted
-            } else if let first = model.firstRowKey {
+            } else if let first = model.panelBody.firstFocusKey {
                 target = first
             } else {
                 initialFocusTarget = nil
@@ -1512,6 +1693,10 @@ struct StreamPickerView: View {
         guard let key else { return "nil" }
         // Review: an add-on chip's key is "chip:<add-on id>", and that id carries the manifest URL.
         if key == SourceChipRow.allKey || key == SourceChipRow.refreshKey || key == testRowKey { return key }
+        // Direction C: the card and the pills are fixed words; a "more" key carries the section id,
+        // which in Add-on mode carries the manifest URL, so it logs as "more".
+        if key == StreamBestPickModel.focusKey || key.hasPrefix(StreamPickerFocusPolicy.pillPrefix) { return key }
+        if key.hasPrefix(StreamPickerFocusPolicy.morePrefix) { return "more" }
         return key.hasPrefix("chip:") ? "chip" : "row"
     }
 
