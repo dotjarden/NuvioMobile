@@ -77,19 +77,44 @@ final class StreamFactsCacheTests: XCTestCase {
         XCTAssertEqual(vm.factsCache.missCount, 2, "every row is parsed again after the reset")
     }
 
-    func testCachedRowsEqualRowsBuiltByParsingDirectly() {
+    /// Instant-playback preparation republishes a stream under the same row key with a new URL, a
+    /// resolved filename and a size (`withResolvedDebridUrl`); the row must pick those up, and equal
+    /// a row built by parsing that stream directly.
+    func testAPreparedCopyUnderTheSameKeyIsParsedAgain() {
         let vm = StreamsViewModel(type: "movie", videoId: "tt1")
-        let names = ["One 1080p", "Two 2160p", "Three"]
-        vm.apply(state([group(names)]))
-        vm.apply(state([group(names + ["Four 720p"])]))
+        let plain = stream("Torrentio")
+        vm.apply(state([AddonStreamGroup(addonName: "Add a", addonId: "a", streams: [plain],
+                                         isLoading: false, error: nil)]))
+        XCTAssertEqual(vm.factsCache.missCount, 1)
+        let before = rows(vm)[0]
+        XCTAssertNil(before.resolution)
+        XCTAssertNil(before.sizeBytes)
+
+        let preparedHints = StreamBehaviorHints(
+            bingeGroup: nil, notWebReady: false, videoHash: nil,
+            videoSize: KotlinLong(value: 5_000_000_000), filename: "Movie.2024.2160p.WEB-DL.mkv",
+            proxyHeaders: nil, audioDelayMs: nil)
+        let prepared = StreamItem(
+            name: plain.name, title: plain.title, description: plain.description_,
+            url: "https://resolved.example.com/movie.mkv", infoHash: plain.infoHash, fileIdx: plain.fileIdx,
+            externalUrl: nil, ytId: nil, sources: [], sourceName: nil, addonName: "Add a", addonId: "a",
+            addonLogo: nil, streamType: nil, behaviorHints: preparedHints, clientResolve: nil,
+            debridCacheStatus: nil, externalSubtitles: [], badges: [])
+        vm.apply(state([AddonStreamGroup(addonName: "Add a", addonId: "a", streams: [prepared],
+                                         isLoading: false, error: nil)]))
+        XCTAssertEqual(vm.factsCache.missCount, 2, "the prepared copy is not served the old facts")
+
+        let g = vm.groups[0]
+        XCTAssertEqual(g.rowKeys[0], before.key, "same row key across the swap")
+        let built = g.rows[0]
+        XCTAssertEqual(built.resolution, 2160)
+        XCTAssertNotNil(built.headline)
+        XCTAssertEqual(built.sizeBytes, 5_000_000_000)
         let display = StreamRowDisplay(showFileSize: vm.showFileSizeBadges, badgesOnTop: vm.badgesOnTop,
                                        showAddonLogo: vm.showAddonLogo, instantSuffix: false)
-        let g = vm.groups[0]
-        for (index, built) in g.rows.enumerated() {
-            let direct = StreamRowModel.make(stream: g.streams[index],
-                                             facts: StreamFactsParser.shared.parse(stream: g.streams[index]),
-                                             key: g.rowKeys[index], display: display)
-            XCTAssertEqual(built, direct)
-        }
+        let direct = StreamRowModel.make(stream: prepared,
+                                         facts: StreamFactsParser.shared.parse(stream: prepared),
+                                         key: g.rowKeys[0], display: display)
+        XCTAssertEqual(built, direct)
     }
 }

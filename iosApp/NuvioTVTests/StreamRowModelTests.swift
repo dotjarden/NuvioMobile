@@ -180,10 +180,14 @@ final class StreamRowModelTests: XCTestCase {
     func testTheInstantSuffixTitleIsPartOfEquality() {
         // No resolution: with a headline the title never carries the suffix (D3), so this case needs a title-led row.
         let hit = stream(name: "Torrentio", description: "release", cache: cached())
-        let off = StreamRowModel.make(stream: hit, facts: StreamFactsParser.shared.parse(stream: hit), key: "k", display: StreamRowDisplay(instantSuffix: false),
+        let off = StreamRowModel.make(stream: hit,
+                                      facts: StreamFactsParser.shared.parse(stream: hit),
+                                      key: "k", display: StreamRowDisplay(instantSuffix: false),
                                       providerLabel: { $0.providerName })
-        let on = StreamRowModel.make(stream: hit, facts: StreamFactsParser.shared.parse(stream: hit), key: "k", display: StreamRowDisplay(instantSuffix: true),
-                                     providerLabel: { $0.providerName })
+        let on = StreamRowModel.make(stream: hit,
+                                      facts: StreamFactsParser.shared.parse(stream: hit),
+                                      key: "k", display: StreamRowDisplay(instantSuffix: true),
+                                      providerLabel: { $0.providerName })
         XCTAssertNotEqual(off.title, on.title)
         XCTAssertNotEqual(off, on)
     }
