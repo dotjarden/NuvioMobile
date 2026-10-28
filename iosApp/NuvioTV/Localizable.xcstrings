@@ -55261,7 +55261,15 @@
       }
     },
     "stream.picker.notCached": {
-      "extractionState": "manual"
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not cached"
+          }
+        }
+      }
     },
     "the server refused": {
       "localizations": {
