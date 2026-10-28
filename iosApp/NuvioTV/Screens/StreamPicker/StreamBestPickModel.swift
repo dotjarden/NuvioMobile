@@ -173,8 +173,8 @@ enum StreamPickerCopy {
     }
 
     /// Lead, fact terms, cached words, size, add-on, "YouTube", "Failed recently".
-    static func compactSpokenLabel(_ row: StreamRowModel) -> String {
-        let parts = compactParts(row)
+    static func compactSpokenLabel(_ row: StreamRowModel, parts: StreamCompactParts? = nil) -> String {
+        let parts = parts ?? compactParts(row)
         var spoken: [String] = [parts.lead]
         spoken += row.videoFacts
         if let audio = clean(row.audio) { spoken.append(audio) }

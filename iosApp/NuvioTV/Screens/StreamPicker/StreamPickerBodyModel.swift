@@ -27,7 +27,7 @@ nonisolated enum StreamTiersItem: Equatable, Identifiable {
     case alternatives([StreamAlternativeModel])
     /// Drawn only when `section.showsLabel`.
     case header(StreamTierPreviewSection)
-    case row(StreamRowModel, sectionId: String)
+    case row(StreamRowModel)
     case more(StreamTierPreviewSection)
 
     var id: String {
@@ -35,7 +35,7 @@ nonisolated enum StreamTiersItem: Equatable, Identifiable {
         case .card: return StreamBestPickModel.focusKey
         case .alternatives: return "alternatives"
         case .header(let s): return "header|" + s.id
-        case .row(let r, _): return r.key
+        case .row(let r): return r.key
         case .more(let s): return s.moreFocusKey
         }
     }
@@ -84,7 +84,7 @@ nonisolated enum StreamBestPickGate {
         // 4 / 5: an upgrade moment.
         switch policy {
         case .perAnswer:
-            if answered > previous.answered || settled { return anchor(fresh) }
+            if answered != previous.answered || settled { return anchor(fresh) }
         case .onCompletion:
             if settled { return anchor(fresh) }
         }
@@ -175,7 +175,7 @@ nonisolated struct StreamPickerBodyModel: Equatable {
         for section in previews {
             if section.showsLabel { items.append(.header(section)) }
             for row in section.visibleRows {
-                items.append(.row(row, sectionId: section.id))
+                items.append(.row(row))
                 focusKeys.insert(row.key)
                 if firstRow == nil { firstRow = row.key }
             }

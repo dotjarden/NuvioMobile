@@ -999,14 +999,12 @@ struct StreamPickerView: View {
                     .focused($focusedRow, equals: StreamBestPickModel.focusKey)
                     .id(StreamBestPickModel.focusKey)
             case .alternatives(let alternatives):
-                StreamAlternativesRow(alternatives: alternatives, focus: $focusedRow,
+                StreamAlternativesRow(alternatives: alternatives, resolvingKey: resolvingKey, focus: $focusedRow,
                                       onSelect: { handleAlternative($0) })
                     .id("alternatives")
             case .header(let section):
-                if section.showsLabel {
-                    StreamSectionLabel(name: section.title, isLoading: section.isLoading, count: section.count)
-                }
-            case .row(let row, _):
+                StreamSectionLabel(name: section.title, isLoading: section.isLoading, count: section.count)
+            case .row(let row):
                 compactRowView(row, players: players, defaultPlayerId: defaultPlayerId)
             case .more(let section):
                 // The closure is not part of the row's identity, so it carries the section id and

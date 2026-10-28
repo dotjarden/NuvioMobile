@@ -208,7 +208,7 @@ struct StreamCompactRowView: View, Equatable {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .fill(Theme.Palette.surface)
         )
-        .accessibilityLabel(Text(verbatim: StreamPickerCopy.compactSpokenLabel(model)))
+        .accessibilityLabel(Text(verbatim: StreamPickerCopy.compactSpokenLabel(model, parts: parts)))
         .accessibilityIdentifier("stream_picker_compact_row")
         .modifier(ExternalPlayMenu(
             players: model.players,

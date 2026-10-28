@@ -6,6 +6,7 @@ import SwiftUI
 /// view model; the pills share the picker's `FocusState` the way `SourceChipRow` does.
 struct StreamAlternativesRow: View {
     let alternatives: [StreamAlternativeModel]
+    let resolvingKey: String?
     let focus: FocusState<String?>.Binding
     let onSelect: (StreamAlternativeModel) -> Void
 
@@ -26,9 +27,15 @@ struct StreamAlternativesRow: View {
         Button {
             onSelect(alt)
         } label: {
-            Text(verbatim: alt.title)
-                .font(Theme.Font.metaStrong)
-                .lineLimit(1)
+            HStack(spacing: Theme.Spacing.sm) {
+                Text(verbatim: alt.title)
+                    .font(Theme.Font.metaStrong)
+                    .lineLimit(1)
+                // C-27: the pill's own stream is resolving (it is often folded behind "N more").
+                if let rowKey = alt.rowKey, rowKey == resolvingKey {
+                    ProgressView()
+                }
+            }
         }
         .buttonStyle(.bordered)
         .focused(focus, equals: alt.focusKey)

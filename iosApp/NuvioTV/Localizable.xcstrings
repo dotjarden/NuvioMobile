@@ -8709,7 +8709,7 @@
     "Best Pick": {
       "extractionState": "manual"
     },
-    "Best Pick opens the source list on the best source for this title, by the same order as Auto-Play Best Source, with quick picks for the best 1080p and the best direct link and each quality group folded to its first two sources. Full List opens every source under its heading. Default: Best Pick.": {
+    "Best Pick opens the source list on the best source for this title, by the same order as Auto-Play Best Source, with quick picks for the best 1080p and the best direct link and each group folded to its first two sources. Full List opens every source under its heading. Default: Best Pick.": {
       "extractionState": "manual"
     },
     "Best So Far": {

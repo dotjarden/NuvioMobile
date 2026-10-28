@@ -207,6 +207,29 @@ final class StreamPickerBodyModelTests: XCTestCase {
         XCTAssertEqual(vm.panelBody.items.first?.id, "bestpick", "the key never changes: focus stays put")
     }
 
+    func testTheLastAddonAnsweringWithNothingListableFlipsTheKickerToBestPick() throws {
+        let vm = tiersModel()
+        vm.apply(state([group("a", "Add A", ["A 1080p"]), group("b", "Add B", [], loading: true)], loading: true))
+        XCTAssertEqual(vm.panelBody.card?.isSettled, false, "Best So Far while B is still out")
+        // B answers with nothing: the groups' rows are unchanged, only the answered / settled triggers differ.
+        vm.apply(state([group("a", "Add A", ["A 1080p"]), group("b", "Add B", [])]))
+        XCTAssertEqual(vm.panelBody.card?.isSettled, true, "settled: the kicker flips to Best Pick")
+    }
+
+    func testTheGateTreatsARestartedAnswerCountAsAnUpgradeMoment() {
+        let shown = StreamBestPickSelection(bestKey: "old", fhdKey: nil, directKey: nil)
+        let fresh = StreamBestPickSelection(bestKey: "new", fhdKey: nil, directKey: nil)
+        let previous = StreamBestPickAnchor(selection: shown, answered: 3, settled: false, filter: nil)
+        let result = StreamBestPickGate.resolve(
+            previous: previous, fresh: fresh, eligibleKeys: ["old", "new"], availableKeys: ["old", "new"],
+            answered: 1, settled: false, filter: nil, policy: .perAnswer)
+        XCTAssertEqual(result.selection.bestKey, "new", "a lower count is a new fan-out, not a hold")
+        let held = StreamBestPickGate.resolve(
+            previous: previous, fresh: fresh, eligibleKeys: ["old", "new"], availableKeys: ["old", "new"],
+            answered: 3, settled: false, filter: nil, policy: .perAnswer)
+        XCTAssertEqual(held.selection.bestKey, "old", "the same count still holds")
+    }
+
     func testOnCompletionPolicyHoldsUntilTheFanOutSettles() throws {
         StreamsViewModel.bestPickUpgradePolicy = .onCompletion
         let vm = tiersModel()

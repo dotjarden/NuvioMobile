@@ -65,7 +65,6 @@ struct StreamBestPickCard: View, Equatable {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .fill(Theme.Palette.surface)
         )
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: StreamPickerCopy.cardSpokenLabel(model, resumeLabel: resumeLabel)))
         .accessibilityIdentifier("stream_picker_best_pick")
     }
