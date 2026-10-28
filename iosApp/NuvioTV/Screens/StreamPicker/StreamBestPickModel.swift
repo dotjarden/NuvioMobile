@@ -108,7 +108,7 @@ enum StreamPickerCopy {
                     parts.append(String(localized: "cached"))
                 }
             case .notCached:
-                parts.append(String(localized: "not cached"))
+                parts.append(String(localized: "stream.picker.notCached"))
             }
         }
         return parts.isEmpty ? nil : parts.joined(separator: separator)
