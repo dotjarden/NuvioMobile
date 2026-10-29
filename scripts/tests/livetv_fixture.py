@@ -5,7 +5,13 @@ Run python3 scripts/tests/livetv_fixture.py, then launch the app with --live-tv-
 (port 8766) or --live-player-ui-test (port 8767). Both ports serve an M3U playlist whose
 header points at an XMLTV guide generated around the current time. Channel streams are
 Apple's public HLS sample, so playback needs internet access.
+
+--large N replaces the 8766 playlist with N channels in categories of about 25, each with a
+local logo, to reproduce the load and scrolling of a big IPTV provider.
 """
+import struct
+import sys
+import zlib
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -29,10 +35,26 @@ SHOWS = ["Morning Edition", "Wild Coasts", "Match Day Live", "The Late Movie", "
          "World Report", "Studio Sessions", "Deep Ocean", "Highlights", "Night Desk"]
 
 
+if "--large" in sys.argv:
+    count = int(sys.argv[sys.argv.index("--large") + 1])
+    CHANNELS[8766] = [(f"large.{n}", f"Channel {n} HD", f"Category {n // 25:03d}") for n in range(count)]
+
+
+def png(width=600, height=300, rgb=(40, 90, 160)):
+    row = b"\x00" + bytes(rgb) * width
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * height)) + chunk(b"IEND", b""))
+
+
+LOGO = png()
+
+
 def playlist(port):
     lines = [f'#EXTM3U x-tvg-url="http://127.0.0.1:{port}/guide.xml"']
     for guide_id, name, group in CHANNELS[port]:
-        lines.append(f'#EXTINF:-1 tvg-id="{guide_id}" group-title="{group}",{name}')
+        logo = f' tvg-logo="http://127.0.0.1:{port}/logo/{guide_id}.png"' if guide_id.startswith("large.") else ""
+        lines.append(f'#EXTINF:-1 tvg-id="{guide_id}"{logo} group-title="{group}",{name}')
         lines.append(f"{STREAM}?channel={guide_id}")
     return "\n".join(lines) + "\n"
 
@@ -59,6 +81,13 @@ def guide(port):
 def handler(port):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith("/logo/"):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(LOGO)))
+                self.end_headers()
+                self.wfile.write(LOGO)
+                return
             if self.path.startswith("/playlist.m3u"):
                 body, kind = playlist(port), "audio/x-mpegurl"
             elif self.path.startswith("/guide.xml"):

@@ -2,7 +2,8 @@ import Foundation
 
 nonisolated struct LiveTVLoadResult: Sendable {
     let channels: [LiveTVChannel]
-    let programmes: [LiveTVProgramme]
+    /// Programmes by guide ID, each list sorted by start. Grouped here, off the main actor.
+    let programmes: [String: [LiveTVProgramme]]
     let guideWarning: String?
 }
 
@@ -10,21 +11,20 @@ actor LiveTVService {
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 90
+        configuration.timeoutIntervalForResource = 300  // provider guides can be tens of MB
         return URLSession(configuration: configuration)
     }()
+    /// Downloads to a temporary file rather than appending the body byte by byte, which was the
+    /// slowest part of loading a large playlist or guide.
     private func fetch(_ url: URL, limit: Int = 32 * 1024 * 1024) async throws -> Data {
-        let (bytes, response) = try await session.bytes(from: url)
+        let (file, response) = try await session.download(from: url)
+        defer { try? FileManager.default.removeItem(at: file) }
         guard let response = response as? HTTPURLResponse else { throw LiveTVError.response(0) }
         guard (200..<300).contains(response.statusCode) else { throw LiveTVError.response(response.statusCode) }
-        guard response.expectedContentLength <= limit else { throw LiveTVError.tooLarge }
-        var data = Data()
-        for try await byte in bytes {
-            if data.count >= limit { throw LiveTVError.tooLarge }
-            data.append(byte)
-        }
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= limit else { throw LiveTVError.tooLarge }
         try Task.checkCancellation()
-        return data
+        return try Data(contentsOf: file)
     }
     func load(_ source: LiveTVSource, onChannels: @escaping @Sendable ([LiveTVChannel]) async -> Void = { _ in }) async throws -> LiveTVLoadResult {
         guard let base = LiveTVURL.parse(source.address) else { throw LiveTVError.invalidURL }
@@ -45,9 +45,10 @@ actor LiveTVService {
         }
         try Task.checkCancellation()
         await onChannels(channels)
-        var programmes: [LiveTVProgramme] = [], warning: String?
+        var programmes: [String: [LiveTVProgramme]] = [:], warning: String?
         if let guideURL {
-            do { programmes = try XMLTVParser().parse(try await fetch(guideURL, limit: 64 * 1024 * 1024)) }
+            let ids = Set(channels.map(\.guideID).filter { !$0.isEmpty })
+            do { programmes = Dictionary(grouping: try XMLTVParser(guideIDs: ids).parse(try await fetch(guideURL, limit: 256 * 1024 * 1024)), by: \.channelID) }
             catch is CancellationError { throw CancellationError() }
             catch { warning = "Channels loaded, but the programme guide is unavailable. Check the guide address and refresh." }
         }

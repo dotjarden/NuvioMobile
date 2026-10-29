@@ -29,7 +29,12 @@ enum LiveTVSecureStorage {
 
 @MainActor final class LiveTVStore: ObservableObject {
     @Published private(set) var sources: [LiveTVSource] = []
-    @Published private(set) var channels: [LiveTVChannel] = []
+    @Published private(set) var channels: [LiveTVChannel] = [] { didSet { reindex() } }
+    /// Lookups the screens need on every render, rebuilt once per channel change instead of
+    /// recomputed from the full list (providers can carry tens of thousands of channels).
+    private(set) var channelsByID: [String: LiveTVChannel] = [:]
+    private(set) var channelsByGroup: [String: [LiveTVChannel]] = [:]
+    private(set) var groups: [String] = []
     @Published private(set) var loading = false
     @Published var error: String?
     @Published private(set) var favorites = Set<String>()
@@ -47,7 +52,12 @@ enum LiveTVSecureStorage {
         favorites = Set(UserDefaults.standard.stringArray(forKey: "livetv.favorites.\(profile)") ?? [])
         recent = UserDefaults.standard.stringArray(forKey: "livetv.recent.\(profile)") ?? []
     }
-    var groups: [String] { Array(Set(channels.map(\.group))).filter { !["All channels", "Favorites", "Recent"].contains($0) }.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    private func reindex() {
+        channelsByID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        channelsByGroup = Dictionary(grouping: channels, by: \.group)
+        groups = channelsByGroup.keys.filter { !["All channels", "Favorites", "Recent"].contains($0) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
     private var refreshTask: Task<Void, Never>?
     func start() async {
         guard !loading else { return }
@@ -86,9 +96,7 @@ enum LiveTVSecureStorage {
             for await (source, result, failure) in group {
                 guard generation == token, !Task.isCancelled else { group.cancelAll(); return }
                 if let result {
-                    if result.guideWarning == nil {
-                        programmes[source.id] = Dictionary(grouping: result.programmes, by: \.channelID)
-                    }
+                    if result.guideWarning == nil { programmes[source.id] = result.programmes }
                     if let warning = result.guideWarning { failures.append("\(source.name): \(warning)") }
                 } else if let failure { failures.append("\(source.name): \(failure)") }
                 if let source = pending.next() { enqueue(source) }
@@ -138,9 +146,20 @@ enum LiveTVSecureStorage {
     func watched(_ channel: LiveTVChannel) {
         recent.removeAll { $0 == channel.id }; recent.insert(channel.id, at: 0); recent = Array(recent.prefix(30)); persistPreferences()
     }
-    func schedule(for channel: LiveTVChannel, after date: Date = Date()) -> [LiveTVProgramme] {
-        (programmes[channel.sourceID]?[channel.guideID] ?? []).filter { $0.end > date }
+    func schedule(for channel: LiveTVChannel, after date: Date = Date()) -> ArraySlice<LiveTVProgramme> {
+        let all = programmes[channel.sourceID]?[channel.guideID] ?? []
+        // Sorted by start, so the first programme still running is found by binary search.
+        var low = 0, high = all.count
+        while low < high { let mid = (low + high) / 2; if all[mid].end > date { high = mid } else { low = mid + 1 } }
+        return all[low...]
     }
+    func nowAndNext(for channel: LiveTVChannel, at date: Date) -> (now: LiveTVProgramme?, next: LiveTVProgramme?) {
+        let upcoming = schedule(for: channel, after: date).prefix(2)
+        guard let first = upcoming.first else { return (nil, nil) }
+        return first.isCurrent(at: date) ? (first, upcoming.dropFirst().first) : (nil, first)
+    }
+    var favoriteChannels: [LiveTVChannel] { channels.filter { favorites.contains($0.id) } }
+    var recentChannels: [LiveTVChannel] { recent.compactMap { channelsByID[$0] } }
     private func persistPreferences() {
         // IDs from M3U can contain URLs. Persist opaque SHA256 keys instead of those URLs.
         UserDefaults.standard.set(Array(favorites), forKey: "livetv.favorites.\(profile)")

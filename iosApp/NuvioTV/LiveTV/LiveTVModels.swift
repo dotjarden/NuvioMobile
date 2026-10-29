@@ -62,8 +62,10 @@ nonisolated enum LiveTVURL {
 }
 
 nonisolated enum M3UParser {
+    // Compiled once: large playlists have tens of thousands of #EXTINF lines.
+    private static let attributePattern = try! NSRegularExpression(pattern: #"([\w-]+)\s*=\s*"([^"]*)""#)
     static func attributes(_ line: String) -> [String: String] {
-        let regex = try! NSRegularExpression(pattern: #"([\w-]+)\s*=\s*"([^"]*)""#)
+        let regex = attributePattern
         let ns = line as NSString
         return regex.matches(in: line, range: NSRange(location: 0, length: ns.length)).reduce(into: [:]) {
             $0[ns.substring(with: $1.range(at: 1)).lowercased()] = ns.substring(with: $1.range(at: 2))
@@ -119,28 +121,65 @@ nonisolated final class XMLTVParser: NSObject, XMLParserDelegate {
     private var inside = false
     private var isTV = false
     private let window: DateInterval
-    private let formatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyyMMddHHmmss Z"; return f
-    }()
-    init(now: Date = Date()) { window = DateInterval(start: now.addingTimeInterval(-86400), duration: 86400 * 8) }
+    /// Guide IDs the loaded channels use. Provider guides often cover every channel they carry,
+    /// so programmes for other channels are dropped while parsing instead of kept in memory.
+    private let guideIDs: Set<String>?
+    /// The guide pages from 3 hours back to 3 days ahead (`LiveTVGuideView`), so that is all we keep.
+    static let window: (past: TimeInterval, future: TimeInterval) = (6 * 3600, 3 * 86400 + 3 * 3600)
+    init(now: Date = Date(), guideIDs: Set<String>? = nil) {
+        window = DateInterval(start: now.addingTimeInterval(-Self.window.past), duration: Self.window.past + Self.window.future)
+        self.guideIDs = guideIDs
+    }
     func parse(_ data: Data) throws -> [LiveTVProgramme] {
         programmes = []; isTV = false; inside = false
         let parser = XMLParser(data: data); parser.shouldResolveExternalEntities = false; parser.delegate = self
         guard parser.parse(), isTV else { throw LiveTVError.invalidGuide }
         return programmes.sorted { $0.start < $1.start }
     }
-    private func date(_ string: String?) -> Date? {
-        guard let string else { return nil }
-        return formatter.date(from: string.count == 14 ? string + " +0000" : string)
+    private func date(_ string: String?) -> Date? { string.flatMap(Self.date) }
+    /// XMLTV `yyyyMMddHHmmss [+-]HHMM` (offset optional, UTC when absent). Parsed by hand:
+    /// DateFormatter took nearly all of the guide's load time on a large provider.
+    static func date(_ string: String) -> Date? {
+        let bytes = Array(string.utf8)
+        guard bytes.count >= 14 else { return nil }
+        func number(_ from: Int, _ length: Int) -> Int? {
+            var value = 0
+            for byte in bytes[from..<from + length] {
+                guard byte >= 48, byte <= 57 else { return nil }
+                value = value * 10 + Int(byte - 48)
+            }
+            return value
+        }
+        guard let year = number(0, 4), let month = number(4, 2), let day = number(6, 2),
+              let hour = number(8, 2), let minute = number(10, 2), let second = number(12, 2),
+              (1...12).contains(month), (1...31).contains(day) else { return nil }
+        var offset = 0
+        if let sign = bytes.dropFirst(14).firstIndex(where: { $0 == 43 || $0 == 45 }), bytes.count >= sign + 5,
+           let hours = number(sign + 1, 2), let minutes = number(sign + 3, 2) {
+            offset = (hours * 3600 + minutes * 60) * (bytes[sign] == 45 ? -1 : 1)
+        }
+        // Days from the civil date (Howard Hinnant's algorithm), proleptic Gregorian, UTC.
+        let y = month <= 2 ? year - 1 : year
+        let era = (y >= 0 ? y : y - 399) / 400
+        let yoe = y - era * 400
+        let doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        let days = era * 146097 + doe - 719468
+        return Date(timeIntervalSince1970: TimeInterval(days * 86400 + hour * 3600 + minute * 60 + second - offset))
     }
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
         if name == "tv" { isTV = true }
         element = name; buffer = ""
-        if name == "programme" { inside = true; channel = attributes["channel"] ?? ""; start = date(attributes["start"]); end = date(attributes["stop"]); title = ""; summary = "" }
+        if name == "programme" {
+            channel = attributes["channel"] ?? ""
+            inside = guideIDs?.contains(channel) ?? true
+            guard inside else { return }
+            start = date(attributes["start"]); end = date(attributes["stop"]); title = ""; summary = ""
+        }
     }
     func parser(_ parser: XMLParser, foundCharacters string: String) { if inside { buffer += string } }
     func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        guard inside else { return }
         if name == "title", title.isEmpty { title = buffer.trimmingCharacters(in: .whitespacesAndNewlines) }
         if name == "desc", summary.isEmpty { summary = buffer.trimmingCharacters(in: .whitespacesAndNewlines) }
         if name == "programme" {

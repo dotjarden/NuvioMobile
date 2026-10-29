@@ -1,58 +1,58 @@
 import SwiftUI
 import AVKit
+import Combine
 
-/// A channel card's focus identity. The same channel can sit in Favorites, Recent and its own
-/// category row at once, so focus is keyed by row as well as channel.
-private struct LiveTVFocus: Hashable {
-    let row: String
-    let channel: String
+/// The channel the hero describes. Only the hero observes it, so moving focus between cards
+/// redraws the hero alone instead of the whole screen of rows.
+@MainActor private final class LiveTVFeatured: ObservableObject {
+    @Published var channel: LiveTVChannel?
 }
 
 struct LiveTVView: View {
     @StateObject private var store: LiveTVStore
+    @StateObject private var featured = LiveTVFeatured()
     @State private var query = ""
     @State private var guideMode = false
     @State private var group = LiveTVView.allChannels
     @State private var showingSources = false
     @State private var playing: LiveTVChannel?
     @State private var selectedProgramme: LiveTVProgramme?
-    /// The channel the hero describes: the last focused card, kept while focus is in the filters.
-    @State private var featured: LiveTVChannel?
-    /// The card focus returns to after the player closes.
-    @State private var lastPlayed: LiveTVFocus?
-    @FocusState private var focus: LiveTVFocus?
+    /// Progress bars and the guide's now line advance once a minute from this single clock.
+    @State private var now = Date()
+    /// Back from the rows or guide jumps to the filters first, instead of many Up presses.
+    @FocusState private var toolbarFocused: Bool
     init(profile: String) { _store = StateObject(wrappedValue: LiveTVStore(profile: profile)) }
 
-    fileprivate static let allChannels = "All channels"
+    private static let allChannels = "All channels"
     private static let favorites = "Favorites"
     private static let recent = "Recent"
+    private let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var visibleChannels: [LiveTVChannel] {
-        var channels = store.channels.filter { channel in
-            (group == Self.allChannels || group == Self.favorites && store.favorites.contains(channel.id)
-             || group == Self.recent && store.recent.contains(channel.id) || group == channel.group)
-            && (query.isEmpty || channel.name.localizedCaseInsensitiveContains(query))
+        let base: [LiveTVChannel]
+        switch group {
+        case Self.allChannels: base = store.channels
+        case Self.favorites: base = store.favoriteChannels
+        case Self.recent: base = store.recentChannels
+        default: base = store.channelsByGroup[group] ?? []
         }
-        if group == Self.recent { channels.sort { (store.recent.firstIndex(of: $0.id) ?? 999) < (store.recent.firstIndex(of: $1.id) ?? 999) } }
-        return channels
+        return query.isEmpty ? base : base.filter { $0.name.localizedCaseInsensitiveContains(query) }
     }
-    /// Unfiltered browsing shows shelves (Favorites, Recent, then one row per category); a
-    /// category or search shows a flat grid of matches.
+    /// Unfiltered browsing shows rows (Favorites, Recent, then one per category); a category or
+    /// search shows a grid of matches.
     private var showsShelves: Bool { group == Self.allChannels && query.isEmpty }
     private var shelves: [(title: String, channels: [LiveTVChannel])] {
-        let byID = Dictionary(store.channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var rows: [(String, [LiveTVChannel])] = []
-        let favorites = store.channels.filter { store.favorites.contains($0.id) }
+        var rows: [(title: String, channels: [LiveTVChannel])] = []
+        let favorites = store.favoriteChannels
         if !favorites.isEmpty { rows.append(("Favorites", favorites)) }
-        let recent = store.recent.compactMap { byID[$0] }
+        let recent = store.recentChannels
         if !recent.isEmpty { rows.append(("Recently watched", recent)) }
-        let grouped = Dictionary(grouping: store.channels, by: \.group)
-        for name in store.groups { if let channels = grouped[name], !channels.isEmpty { rows.append((name, channels)) } }
-        return rows.map { (title: $0.0, channels: $0.1) }
+        for name in store.groups { if let channels = store.channelsByGroup[name] { rows.append((name, channels)) } }
+        return rows
     }
-    private var heroChannel: LiveTVChannel? { featured ?? store.recent.lazy.compactMap { id in store.channels.first { $0.id == id } }.first ?? store.channels.first }
 
     var body: some View {
+        let visible = visibleChannels
         NavigationStack {
             ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
@@ -69,17 +69,17 @@ struct LiveTVView: View {
                         if guideMode {
                             Text("Live TV").font(.title2.bold())
                         } else {
-                            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                                if let channel = heroChannel { LiveTVHero(store: store, channel: channel, now: timeline.date) }
-                            }
+                            LiveTVHero(store: store, featured: featured, now: now)
                         }
-                        toolbar
+                        toolbar(count: visible.count)
                         status
                         // Clipped so rows never draw over the pinned header; the negative margin
                         // keeps room at the screen edges for the focused card's lift.
                         ScrollView {
-                            content.padding(.vertical, 24).padding(.horizontal, Theme.Spacing.screen)
+                            content(visible).padding(.vertical, 24).padding(.horizontal, Theme.Spacing.screen)
                         }
+                        // Exit commands bubble from the focused card, so this only runs inside the rows.
+                        .onExitCommand { toolbarFocused = true }
                         .padding(.horizontal, -Theme.Spacing.screen)
                         .reportsScrollToTabBar(tab: "Live TV")
                     }
@@ -89,37 +89,31 @@ struct LiveTVView: View {
             }
         }
         .task { await store.start() }
-        .onChange(of: focus) { _, value in
-            if let value, let channel = store.channels.first(where: { $0.id == value.channel }) { featured = channel }
-        }
+        .onReceive(clock) { now = $0 }
         .fullScreenCover(isPresented: $showingSources) { LiveTVSourcesView(store: store) }
-        .fullScreenCover(item: $playing, onDismiss: { if let lastPlayed { focus = lastPlayed } }) { channel in
-            LiveTVPlayerView(store: store, initialChannel: channel, channels: visibleChannels, onShowGuide: { guideMode = true })
+        .fullScreenCover(item: $playing) { channel in
+            LiveTVPlayerView(store: store, initialChannel: channel, channels: visible, onShowGuide: { guideMode = true })
         }
         .fullScreenCover(item: $selectedProgramme) { programme in
-            LiveTVProgrammeDetail(store: store, programme: programme,
-                                  channel: store.channels.first { $0.guideID == programme.channelID && store.schedule(for: $0, after: programme.start).contains(programme) },
+            LiveTVProgrammeDetail(programme: programme,
+                                  channel: store.channels.first { $0.guideID == programme.channelID },
                                   onWatch: { channel in selectedProgramme = nil; play(channel) },
                                   onClose: { selectedProgramme = nil })
         }
     }
 
-    @ViewBuilder private var content: some View {
+    @ViewBuilder private func content(_ visible: [LiveTVChannel]) -> some View {
         if guideMode {
-            LiveTVGuideView(store: store, channels: visibleChannels, onPlay: play, onProgramme: { selectedProgramme = $0 })
-        } else if visibleChannels.isEmpty && !store.loading {
+            LiveTVGuideView(store: store, channels: visible, now: now, onPlay: play, onProgramme: { selectedProgramme = $0 })
+        } else if visible.isEmpty && !store.loading {
             ContentUnavailableView("No matching channels", systemImage: "tv", description: Text("Try another category or search, or check your source connection."))
         } else if showsShelves {
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                    ForEach(shelves, id: \.title) { shelf in shelfRow(shelf.title, shelf.channels, now: timeline.date) }
-                }
+            LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+                ForEach(shelves, id: \.title) { shelf in shelfRow(shelf.title, shelf.channels) }
             }
         } else {
-            TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: LiveTVChannelCard.width), spacing: Theme.Spacing.rowGap)], spacing: 40) {
-                    ForEach(visibleChannels) { channel in card(channel, row: "grid", now: timeline.date) }
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: LiveTVChannelCard.width), spacing: Theme.Spacing.rowGap)], spacing: 40) {
+                ForEach(visible) { channel in card(channel) }
             }
         }
     }
@@ -132,17 +126,24 @@ struct LiveTVView: View {
             .frame(maxWidth: .infinity, minHeight: 700)
     }
 
-    private var toolbar: some View {
+    private func toolbar(count: Int) -> some View {
         HStack(spacing: 24) {
             HStack(spacing: 0) {
                 modeButton("On Now", systemImage: "square.grid.2x2", selected: !guideMode) { guideMode = false }
+                    .focused($toolbarFocused)
                 modeButton("Guide", systemImage: "calendar.day.timeline.left", selected: guideMode) { guideMode = true }
             }
             TVSelectionMenu(title: "Category", value: group, options: [Self.allChannels, Self.favorites, Self.recent] + store.groups) { group = $0 }
-            TextField("Search channels", text: $query).frame(maxWidth: 520)
+            TextField("Search channels", text: $query).frame(minWidth: 240, maxWidth: 520)
             Spacer(minLength: 0)
-            Text(visibleChannels.count == 1 ? "1 channel" : "\(visibleChannels.count) channels")
-                .font(.caption).foregroundStyle(.secondary).fixedSize()
+            // Loading sits here, in place of the count, so the rows below never jump.
+            if store.loading {
+                HStack(spacing: 12) { ProgressView(); Text("Updating…") }
+                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+            } else {
+                Text(count == 1 ? "1 channel" : "\(count) channels")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+            }
             Button { Task { await store.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .labelStyle(.iconOnly).disabled(store.loading).accessibilityLabel("Refresh")
             Button { showingSources = true } label: { Label("Sources", systemImage: "antenna.radiowaves.left.and.right") }
@@ -152,21 +153,21 @@ struct LiveTVView: View {
     }
 
     @ViewBuilder private func modeButton(_ title: String, systemImage: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        let button = Button(action: action) { Label(title, systemImage: systemImage) }
+        let button = Button(action: action) { Label(title, systemImage: systemImage).fixedSize() }
             .accessibilityValue(selected ? "selected" : "")
         if selected { button.buttonStyle(.glassProminent).tint(Theme.Palette.accent) } else { button.buttonStyle(.glass) }
     }
 
     @ViewBuilder private var status: some View {
-        if store.loading { ProgressView("Updating channels and guide…") }
         if let error = store.error {
             Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.secondary)
+                .lineLimit(2)
                 .padding(20).frame(maxWidth: .infinity, alignment: .leading)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         }
     }
 
-    private func shelfRow(_ title: String, _ channels: [LiveTVChannel], now: Date) -> some View {
+    private func shelfRow(_ title: String, _ channels: [LiveTVChannel]) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .firstTextBaseline, spacing: 16) {
                 Text(title).font(.title3.bold())
@@ -174,67 +175,93 @@ struct LiveTVView: View {
             }
             ScrollView(.horizontal) {
                 LazyHStack(spacing: Theme.Spacing.rowGap) {
-                    ForEach(channels) { channel in card(channel, row: title, now: now) }
+                    ForEach(channels) { channel in card(channel) }
                 }.padding(.vertical, 20)
             }.scrollClipDisabled()
         }.focusSection()
     }
 
-    private func card(_ channel: LiveTVChannel, row: String, now: Date) -> some View {
-        let key = LiveTVFocus(row: row, channel: channel.id)
-        return Button { lastPlayed = key; play(channel) } label: {
-            LiveTVChannelCard(store: store, channel: channel, now: now)
-        }
-        .buttonStyle(.card)
-        .focused($focus, equals: key)
-        .contextMenu {
-            Button { store.toggleFavorite(channel) } label: { Label(store.favorites.contains(channel.id) ? "Remove favorite" : "Add favorite", systemImage: "star") }
-        }
+    private func card(_ channel: LiveTVChannel) -> some View {
+        LiveTVCardButton(channel: channel, isFavorite: store.favorites.contains(channel.id),
+                         programme: store.nowAndNext(for: channel, at: now).now, now: now, featured: featured,
+                         onPlay: { play(channel) }, onToggleFavorite: { store.toggleFavorite(channel) })
+            .equatable()
     }
 
     private func play(_ channel: LiveTVChannel) {
-        featured = channel
+        featured.channel = channel
         playing = channel
+    }
+}
+
+/// One focusable channel card. Equatable on what it draws, so a store update (a favorite, a
+/// guide refresh) only redraws the cards it changes. Focus is reported to `featured` without
+/// observing it.
+private struct LiveTVCardButton: View, Equatable {
+    let channel: LiveTVChannel
+    let isFavorite: Bool
+    let programme: LiveTVProgramme?
+    let now: Date
+    let featured: LiveTVFeatured
+    let onPlay: () -> Void
+    let onToggleFavorite: () -> Void
+    @FocusState private var focused: Bool
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.channel.id == rhs.channel.id && lhs.isFavorite == rhs.isFavorite && lhs.programme == rhs.programme && lhs.now == rhs.now
+    }
+
+    var body: some View {
+        Button(action: onPlay) {
+            LiveTVChannelCard(channel: channel, isFavorite: isFavorite, programme: programme, now: now)
+        }
+        .buttonStyle(.card)
+        .focused($focused)
+        .onChange(of: focused) { _, isFocused in if isFocused { featured.channel = channel } }
+        .contextMenu {
+            Button(action: onToggleFavorite) { Label(isFavorite ? "Remove favorite" : "Add favorite", systemImage: "star") }
+        }
     }
 }
 
 /// The large summary of the focused (or last watched) channel: what is on now and what is next.
 private struct LiveTVHero: View {
     @ObservedObject var store: LiveTVStore
-    let channel: LiveTVChannel
+    @ObservedObject var featured: LiveTVFeatured
     let now: Date
+    private var channel: LiveTVChannel? { featured.channel ?? store.recentChannels.first ?? store.channels.first }
     var body: some View {
-        let schedule = store.schedule(for: channel, after: now)
-        let current = schedule.first { $0.isCurrent(at: now) }
-        let next = schedule.first { $0.start >= (current?.end ?? now) }
         HStack(alignment: .center, spacing: 48) {
-            LiveTVLogo(channel: channel)
-                .frame(width: 280, height: 180)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 24))
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 16) {
-                    LiveTVBadge()
-                    if store.favorites.contains(channel.id) { Image(systemName: "star.fill").foregroundStyle(.yellow) }
-                    Text(channel.group.isEmpty ? "Live television" : channel.group).font(.callout).foregroundStyle(.secondary)
-                }
-                Text(channel.name).font(.title2.bold()).lineLimit(1)
-                if let current {
-                    Text(current.title).font(.title3).lineLimit(1)
+            if let channel {
+                let (current, next) = store.nowAndNext(for: channel, at: now)
+                LiveTVLogo(channel: channel)
+                    .frame(width: 280, height: 180)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 24))
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 16) {
-                        ProgressView(value: now.timeIntervalSince(current.start), total: current.end.timeIntervalSince(current.start))
-                            .tint(Theme.Palette.accent).frame(width: 360)
-                        Text("\(current.start.formatted(date: .omitted, time: .shortened)) – \(current.end.formatted(date: .omitted, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
+                        LiveTVBadge()
+                        if store.favorites.contains(channel.id) { Image(systemName: "star.fill").foregroundStyle(.yellow) }
+                        Text(channel.group.isEmpty ? "Live television" : channel.group).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    if !current.summary.isEmpty {
-                        Text(current.summary).font(.callout).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 1000, alignment: .leading)
+                    Text(channel.name).font(.title2.bold()).lineLimit(1)
+                    if let current {
+                        Text(current.title).font(.title3).lineLimit(1)
+                        HStack(spacing: 16) {
+                            ProgressView(value: now.timeIntervalSince(current.start), total: current.end.timeIntervalSince(current.start))
+                                .tint(Theme.Palette.accent).frame(width: 360)
+                            Text("\(current.start.formatted(date: .omitted, time: .shortened)) – \(current.end.formatted(date: .omitted, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if !current.summary.isEmpty {
+                            Text(current.summary).font(.callout).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 1000, alignment: .leading)
+                        }
+                    } else {
+                        Text("No programme information").font(.title3).foregroundStyle(.secondary)
                     }
-                } else {
-                    Text("No programme information").font(.title3).foregroundStyle(.secondary)
-                }
-                if let next {
-                    Text("Up next at \(next.start.formatted(date: .omitted, time: .shortened)): \(next.title)")
-                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    if let next {
+                        Text("Up next at \(next.start.formatted(date: .omitted, time: .shortened)): \(next.title)")
+                            .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -247,11 +274,11 @@ private struct LiveTVHero: View {
 
 private struct LiveTVChannelCard: View {
     static let width: CGFloat = 400
-    @ObservedObject var store: LiveTVStore
     let channel: LiveTVChannel
+    let isFavorite: Bool
+    let programme: LiveTVProgramme?
     let now: Date
     var body: some View {
-        let current = store.schedule(for: channel, after: now).first { $0.isCurrent(at: now) }
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topLeading) {
                 Color.white.opacity(0.06)
@@ -259,16 +286,16 @@ private struct LiveTVChannelCard: View {
                 HStack {
                     LiveTVBadge()
                     Spacer()
-                    if store.favorites.contains(channel.id) { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow) }
+                    if isFavorite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow) }
                 }.padding(14)
             }
             .frame(height: 170)
             VStack(alignment: .leading, spacing: 6) {
                 Text(channel.name).font(.headline).lineLimit(1)
-                Text(current?.title ?? (channel.group.isEmpty ? "Watch live" : channel.group))
+                Text(programme?.title ?? (channel.group.isEmpty ? "Watch live" : channel.group))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if let current {
-                    ProgressView(value: now.timeIntervalSince(current.start), total: current.end.timeIntervalSince(current.start))
+                if let programme {
+                    ProgressView(value: now.timeIntervalSince(programme.start), total: programme.end.timeIntervalSince(programme.start))
                         .tint(Theme.Palette.accent).padding(.top, 4)
                 }
             }
@@ -278,7 +305,7 @@ private struct LiveTVChannelCard: View {
         }
         .frame(width: Self.width)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(current.map { "\(channel.name), \($0.title)" } ?? channel.name)
+        .accessibilityLabel(programme.map { "\(channel.name), \($0.title)" } ?? channel.name)
     }
 }
 
@@ -290,15 +317,21 @@ struct LiveTVLogo: View {
     }
     var body: some View {
         if let logo = channel.logo {
-            CachedAsyncImage(string: logo.absoluteString, contentMode: .fit)
-                .accessibilityHidden(true)
+            // Decoded at card size: provider logos are often large PNGs, and a row decodes many.
+            CachedAsyncImage(string: logo.absoluteString, contentMode: .fit, decodeSize: .points(width: 280, height: 180)) {
+                placeholder
+            }
+            .accessibilityHidden(true)
         } else {
-            Text(initials)
-                .font(.system(size: 54, weight: .bold, design: .rounded))
-                .minimumScaleFactor(0.3)
-                .foregroundStyle(.white.opacity(0.7))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            placeholder
         }
+    }
+    private var placeholder: some View {
+        Text(initials)
+            .font(.system(size: 54, weight: .bold, design: .rounded))
+            .minimumScaleFactor(0.3)
+            .foregroundStyle(.white.opacity(0.7))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -310,7 +343,6 @@ private struct LiveTVBadge: View {
 }
 
 private struct LiveTVProgrammeDetail: View {
-    @ObservedObject var store: LiveTVStore
     let programme: LiveTVProgramme
     let channel: LiveTVChannel?
     let onWatch: (LiveTVChannel) -> Void
