@@ -6,6 +6,7 @@ import com.nuvio.app.core.build.FeaturePolicy
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.network.ServerAuthRequirement
 import com.nuvio.app.core.network.ServerConfigurationRepository
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -33,6 +34,7 @@ import com.nuvio.app.features.home.HomeRepository
 import com.nuvio.app.features.library.LibraryDisplaySettingsRepository
 import com.nuvio.app.features.library.LibraryRepository
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
+import com.nuvio.app.features.mdblist.MdbListTracker
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
@@ -47,6 +49,7 @@ import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
 import com.nuvio.app.features.settings.ThemeSettingsStoreProvider
 import com.nuvio.app.features.settings.TvOsThemeSettingsStore
+import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamLaunchStore
@@ -54,10 +57,12 @@ import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.upcoming.UpcomingEpisodesRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
+import com.nuvio.app.features.watchprogress.ContinueWatchingNextUp
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
@@ -105,6 +110,13 @@ fun installTvOsSharedProviders() {
         override val customServerConnectionsEnabled: Boolean = true
     }
 
+    // Fork: reinstall guard for Keychain-backed credentials (MDBList account tokens). Keychain
+    // items outlive an app delete while NSUserDefaults do not, so a missing defaults sentinel means
+    // a fresh install: erase the previous install's Keychain stores before anything below (above
+    // all ensureTrackingProvidersRegistered(), which loads MdbListTracker's tokens) can read them.
+    // Touches only NSUserDefaults + the Keychain, so it cannot disturb the policy flip above.
+    com.nuvio.app.core.storage.AppleKeychainStores.deleteAllIfFreshInstall()
+
     // Active profile id → real ProfileRepository. `core.storage.ProfileScopedKey` reads this, so
     // persisted per-profile data (watch progress, library, collections, settings) is keyed to the
     // active profile instead of the hard-coded default id 1.
@@ -129,6 +141,20 @@ fun installTvOsSharedProviders() {
     // migration seed if "tvos" has no blob yet, and never written.
     SyncPlatformProvider.platform = TVOS_SYNC_PLATFORM
     SyncPlatformProvider.legacySettingsPlatforms = listOf(TV_SYNC_PLATFORM)
+
+    // Sources filters: the debrid sort / minimum-resolution / Dolby Vision / HDR / Cached Sources
+    // Only settings reach every add-on's and plugin's streams on tvOS (mobile stays debrid-only).
+    com.nuvio.app.features.streams.StreamPresentationPlatform.filtersApplyToAllStreams = true
+
+    // Stream picker A (P0.1): the source chip survives a refresh of the same title; a new title
+    // resets to "All". Mobile keeps upstream's reset-on-refresh.
+    com.nuvio.app.features.streams.StreamPresentationPlatform.selectedFilterSurvivesRefresh = true
+
+    // beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source" (the shared FIRST_STREAM mode)
+    // picks the best source among those that arrived (resolution > HDR/DV > cached > size), not
+    // the first one in list order. Mobile keeps list order.
+    com.nuvio.app.features.streams.StreamAutoPlayPlatform.firstStreamRanking =
+        com.nuvio.app.features.streams.StreamAutoPlayRanking.BEST_QUALITY
 
     // Theme persistence: the shared default ThemeSettingsStore is a no-op (theme would reset every
     // launch). The tvOS adapter persists to NSUserDefaults (profile-scoped keys) and defaults to
@@ -227,6 +253,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         HomeRepository.clear()
         HomeCatalogSettingsRepository.clearLocalState()
         MetaScreenSettingsRepository.clearLocalState()
+        EpisodeShuffleRepository.clearLocalState()
         LibraryRepository.clearLocalState()
         LibraryDisplaySettingsRepository.clearLocalState()
         WatchProgressRepository.clearLocalState()
@@ -236,6 +263,8 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // Home "Upcoming" row: in-memory per-show cache only (no persisted store, hence no
         // AccountDataStores entry) — cleared here so the next account never sees this one's shows.
         UpcomingEpisodesRepository.clearLocalState()
+        // FEAT-85 Up Next: in-memory resolved next episodes (no persisted store either).
+        ContinueWatchingNextUp.clearLocalState()
         CollectionMobileSettingsRepository.clearLocalState()
         CollectionRepository.clearLocalState()
         // UX-14 (beta.12, Codex gate 2): FolderDetailRepository now RETAINS state across screen
@@ -245,9 +274,18 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         FolderDetailRepository.clear()
         ThemeSettingsRepository.clearLocalState()
         PosterCardStyleRepository.clearLocalState()
+        CustomPosterUrlRepository.clearLocalState()
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
+        // BUG-220: marks in-flight pending-stop writes stale so none is written back after the
+        // on-disk wipe below, and forgets the open session.
+        TraktScrobbleRepository.clearLocalState()
+        // MDBList account (upstream 0a654ac4): memory-only — stops a pending device-flow poll and
+        // drops the in-memory tokens. The registry fan-out below reaches it too once registered;
+        // naming it here keeps the wipe independent of registration order. Its Keychain items are
+        // erased in step 3b (AppleKeychainStores), never by the tracker.
+        MdbListTracker.clearLocalState()
         // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …).
         // NOTE: this only resets IN-MEMORY state — TrackingProfileStore.clearLocalState does not
         // erase persisted payloads (removeStoredProfile does). The actual on-disk erasure happens
@@ -306,6 +344,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // 3) File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
         // cover values left behind by pre-migration builds.
         com.nuvio.app.core.storage.AppleFilePayloadStores.deleteAll()
+
+        // 3b) Keychain-backed credential stores (MDBList account tokens today) — every
+        // `AppleKeySpec.Keychain` service in the registry, all profile accounts at once. The
+        // tracker's clearLocalState() in step 1 only reset memory; this is the on-disk erase.
+        com.nuvio.app.core.storage.AppleKeychainStores.deleteAll()
 
         // 4) Re-arm settings-push observation for the NEXT account. clearAccountState() above
         // cancelled it, and no sign-in path on tvOS restarts it (pre-existing gap: after a
@@ -382,12 +425,21 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("watched") { WatchedRepository.onProfileChanged(profileIndex) }
         step("traktSettings") { TraktSettingsRepository.onProfileChanged() }
         step("traktAuth") { TraktAuthRepository.onProfileChanged(profileIndex) }
+        // BUG-220: replay the incoming profile's pending Trakt scrobble stops (needs traktAuth
+        // loaded first) and arm the watcher that replays again when Trakt auth turns on later.
+        step("traktPendingScrobbleStops") { TraktScrobbleRepository.onProfileChanged(profileIndex) }
+        // MDBList account: stop the outgoing profile's device-flow poll and load the incoming
+        // profile's Keychain tokens. Idempotent with the registry fan-out LibraryRepository runs.
+        step("mdbListAccount") { MdbListTracker.onProfileChanged() }
         step("library") { LibraryRepository.onProfileChanged(profileIndex) }
         step("libraryDisplaySettings") { LibraryDisplaySettingsRepository.onProfileChanged() }
         step("watchProgress") { WatchProgressRepository.onProfileChanged(profileIndex) }
         step("addons") { AddonRepository.onProfileChanged(profileIndex) }
         step("theme") { ThemeSettingsRepository.onProfileChanged() }
         step("posterCardStyle") { PosterCardStyleRepository.onProfileChanged() }
+        // Upstream 13adcdd4: reload the pattern before the Home/catalog clears below, so the
+        // incoming profile's rows are overlaid with ITS pattern, not the previous profile's.
+        step("customPosters") { CustomPosterUrlRepository.onProfileChanged() }
         step("cardDepthStyle") { CardDepthStyleRepository.onProfileChanged() }
         step("playerSettings") { PlayerSettingsRepository.onProfileChanged() }
         step("streamBadges") { StreamBadgeSettingsRepository.onProfileChanged() }
@@ -400,10 +452,13 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // items (Codex round 3).
         step("catalog") { CatalogRepository.clear() }
         step("metaScreenSettings") { MetaScreenSettingsRepository.onProfileChanged() }
+        step("episodeShuffle") { EpisodeShuffleRepository.onProfileChanged() }
         step("continueWatchingPreferences") { ContinueWatchingPreferencesRepository.onProfileChanged() }
         step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
         step("episodeReleaseAlerts") { EpisodeReleaseNotificationsRepository.onProfileChanged() }
         step("upcomingEpisodes") { UpcomingEpisodesRepository.onProfileChanged() }
+        // FEAT-85 Up Next: drop the outgoing profile's resolved cards and dismiss-key map.
+        step("continueWatchingNextUp") { ContinueWatchingNextUp.onProfileChanged() }
         step("tmdbSettings") { TmdbSettingsRepository.onProfileChanged() }
         step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
         step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
@@ -421,6 +476,12 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // out of its adapter) — without this a guest profile switch (no cloud pull) would keep
         // the previous profile's keys in memory.
         step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
+        // Upstream 1854dfc3 (upstream fans this out from ProfileRepository; tvOS owns its fan-out
+        // here). MUST be last: it re-baselines the settings/credential observers from the
+        // repositories every step above just reloaded, so an incoming profile's values are not
+        // read as a local edit and pushed over the account blob for a profile this device has not
+        // pulled yet.
+        step("profileSettingsSync") { ProfileSettingsSync.onProfileChanged() }
         log.i { "Profile-select fan-out complete for profile $profileIndex" }
     }
 

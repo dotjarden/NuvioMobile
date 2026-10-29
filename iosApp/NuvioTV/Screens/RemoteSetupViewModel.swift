@@ -28,21 +28,29 @@ final class RemoteSetupViewModel: ObservableObject {
     /// Bumped by `start()` and `stop()`; a bind completion from a superseded attempt is ignored
     /// so it can't republish the URL/QR after the user pressed Stop (HI-002/ME-002).
     private var startAttempt = 0
+    /// True only while THIS instance holds the idle-timer override. `stop()` on an instance that
+    /// never started (e.g. the Custom Posters screen's own copy) must not re-enable the idle timer
+    /// while another instance is still serving a phone.
+    private var disabledIdleTimer = false
 
     private let server = RemoteSetupServer()
     private var addonWatcher: FlowWatcher?
     private var rowWatcher: FlowWatcher?
-    private var tmdbWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
     private var applicationTask: Task<Void, Never>?
     private var stateReady = false
+    private var posterPatternWatcher: FlowWatcher?
 
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
     private var rows: [HomeCatalogSettingsItem] = []
-    private var tmdbKeySet = false
+    // Upstream 60ee0160: TMDB has no user-facing key any more (bundled at compile time), so
+    // there's nothing for the remote-setup page to report or accept here.
     private var mdbListKeySet = false
+    /// Whether a custom poster pattern is saved. Only the flag goes to the web page; the pattern
+    /// itself may embed an API key and is never echoed or logged.
+    private var posterPatternSet = false
     /// Source URLs of currently imported stream badge packs (shown read-only on the web page).
     private var badgePackUrls: [String] = []
 
@@ -78,6 +86,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 // into the screensaver the app suspends and the server dies mid-edit) and start
                 // feeding state. On failure the idle timer was never touched (ME-002).
                 UIApplication.shared.isIdleTimerDisabled = true
+                self.disabledIdleTimer = true
                 self.installWatchers()
                 // The token is part of the URL — scanning the QR (or typing the short URL) is
                 // what authorizes the browser session (HI-001).
@@ -92,7 +101,10 @@ final class RemoteSetupViewModel: ObservableObject {
         startAttempt += 1
         isStarting = false
         startFailed = false
-        UIApplication.shared.isIdleTimerDisabled = false
+        if disabledIdleTimer {
+            UIApplication.shared.isIdleTimerDisabled = false
+            disabledIdleTimer = false
+        }
         applicationTask?.cancel()
         applicationTask = nil
         stateReady = false
@@ -115,11 +127,6 @@ final class RemoteSetupViewModel: ObservableObject {
             self.rows = state.items
             self.pushState()
         }
-        tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? TmdbSettings else { return }
-            self.tmdbKeySet = state.hasApiKey
-            self.pushState()
-        }
         mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MdbListSettings else { return }
             self.mdbListKeySet = state.hasApiKey
@@ -130,8 +137,13 @@ final class RemoteSetupViewModel: ObservableObject {
             self.badgePackUrls = state.rules.imports.map(\.sourceUrl)
             self.pushState()
         }
+        posterPatternWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.pattern) { [weak self] emitted in
+            guard let self, let value = emitted as? String else { return }
+            self.posterPatternSet = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            self.pushState()
+        }
         AddonRepository.shared.initialize()
-        TmdbSettingsRepository.shared.ensureLoaded()
+        CustomPosterUrlRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
         StreamBadgeSettingsRepository.shared.ensureLoaded()
         stateReady = true
@@ -141,12 +153,12 @@ final class RemoteSetupViewModel: ObservableObject {
     private func cancelWatchers() {
         addonWatcher?.cancel()
         rowWatcher?.cancel()
-        tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
         badgeWatcher?.cancel()
+        posterPatternWatcher?.cancel()
+        posterPatternWatcher = nil
         addonWatcher = nil
         rowWatcher = nil
-        tmdbWatcher = nil
         mdbListWatcher = nil
         badgeWatcher = nil
     }
@@ -192,8 +204,8 @@ final class RemoteSetupViewModel: ObservableObject {
         let deviceName: String
         let addons: [StateAddon]
         let rows: [StateRow]
-        let tmdbKeySet: Bool
         let mdblistKeySet: Bool
+        let posterPatternSet: Bool
         let badgePacks: [String]
     }
 
@@ -203,7 +215,6 @@ final class RemoteSetupViewModel: ObservableObject {
         // immediate browser refresh sees repository writes even before the next callback.
         addons = (AddonRepository.shared.uiState.value_ as? AddonsUiState)?.addons ?? addons
         rows = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? rows
-        tmdbKeySet = (TmdbSettingsRepository.shared.uiState.value_ as? TmdbSettings)?.hasApiKey ?? tmdbKeySet
         mdbListKeySet = (MdbListSettingsRepository.shared.uiState.value_ as? MdbListSettings)?.hasApiKey ?? mdbListKeySet
         badgePackUrls = (StreamBadgeSettingsRepository.shared.uiState.value_ as? StreamBadgeSettingsUiState)?.rules.imports.map(\.sourceUrl) ?? badgePackUrls
         let snapshot = StateSnapshot(
@@ -224,8 +235,8 @@ final class RemoteSetupViewModel: ObservableObject {
                     isCollection: $0.isCollection
                 )
             },
-            tmdbKeySet: tmdbKeySet,
             mdblistKeySet: mdbListKeySet,
+            posterPatternSet: posterPatternSet,
             badgePacks: badgePackUrls
         )
         let encoder = JSONEncoder()
@@ -241,13 +252,18 @@ final class RemoteSetupViewModel: ObservableObject {
         var errors = await applyAddons(proposal)
         guard !Task.isCancelled else { return errors }
         applyRows(proposal)
-        if let key = proposal.tmdbKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
-            TmdbSettingsRepository.shared.setApiKey(value: key)
-            TmdbSettingsRepository.shared.setEnabled(value: true)
-        }
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
             MdbListSettingsRepository.shared.setEnabled(value: true)
+        }
+        // Custom poster pattern: blank clears. Never logged (may contain an API key).
+        if let raw = proposal.posterPattern {
+            let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pattern.isEmpty {
+                CustomPosterUrlRepository.shared.clearPattern()
+            } else if Self.isValidPosterPattern(pattern) {
+                CustomPosterUrlRepository.shared.setPattern(pattern: pattern)
+            }
         }
         // Wait for each repository operation before reporting completion to the browser.
         for url in proposal.badgeUrls ?? [] {
@@ -319,6 +335,23 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
+    /// Accepts a (trimmed, non-empty) poster pattern only when it is at most 2048 characters, has
+    /// no whitespace, and parses as an http(s) URL with a host. `{placeholder}` groups are swapped
+    /// for a plain token first so `URLComponents` judges the URL shape, not the braces/pipes.
+    static func isValidPosterPattern(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty, pattern.count <= 2048,
+              pattern.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+        else { return false }
+        let neutral = pattern.replacingOccurrences(
+            of: "\\{[^}]*\\}", with: "x", options: .regularExpression
+        )
+        guard let comps = URLComponents(string: neutral),
+              let scheme = comps.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = comps.host, !host.isEmpty
+        else { return false }
+        return true
+    }
+
     // MARK: - Alert summary
 
     private func summarize(_ proposal: RemoteSetupServer.Proposal) -> String {
@@ -350,8 +383,17 @@ final class RemoteSetupViewModel: ObservableObject {
             if orderChanged || togglesChanged { parts.append(String(localized: "Home rows updated")) }
         }
 
-        if proposal.tmdbKey?.isEmpty == false { parts.append(String(localized: "TMDB key set")) }
         if proposal.mdblistKey?.isEmpty == false { parts.append(String(localized: "MDBList key set")) }
+        if let posterPattern = proposal.posterPattern {
+            let trimmed = posterPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                parts.append(String(localized: "Custom poster pattern cleared"))
+            } else if Self.isValidPosterPattern(trimmed) {
+                parts.append(String(localized: "Custom poster pattern set"))
+            } else {
+                parts.append(String(localized: "Custom poster pattern rejected: must be an http(s) URL"))
+            }
+        }
         if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
             parts.append(String(localized: "\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported"))
         }
@@ -376,7 +418,6 @@ final class RemoteSetupViewModel: ObservableObject {
         server.stop()
         addonWatcher?.cancel()
         rowWatcher?.cancel()
-        tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
         badgeWatcher?.cancel()
     }

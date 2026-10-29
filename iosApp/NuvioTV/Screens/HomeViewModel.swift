@@ -165,8 +165,38 @@ enum AddonBootstrapRoute: Equatable {
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
     @Published private(set) var sections: [HomeCatalogSection] = []
-    @Published private(set) var rows: [HomeRow] = []
+    @Published private(set) var rows: [HomeRow] = [] {
+        didSet { rowsByKey = Self.indexRows(rows) }
+    }
+    /// Perf review 2026-10-17 (#10): `rows` keyed the way the Stage strip names them —
+    /// `section.key` for a catalog, the bare `collection.id` for a collection (NOT `HomeRow.id`,
+    /// which prefixes collections). The first row with a key wins, as the strip's linear
+    /// `first(where:)` lookup did. Rebuilt with every `rows` write, never published on its own.
+    private(set) var rowsByKey: [String: HomeRow] = [:]
+
+    static func stripKey(_ row: HomeRow) -> String {
+        switch row {
+        case .catalog(let section): return section.key
+        case .collection(let collection): return collection.id
+        }
+    }
+
+    static func indexRows(_ rows: [HomeRow]) -> [String: HomeRow] {
+        var index: [String: HomeRow] = [:]
+        index.reserveCapacity(rows.count)
+        for row in rows where index[stripKey(row)] == nil {
+            index[stripKey(row)] = row
+        }
+        return index
+    }
     @Published private(set) var continueWatching: [WatchProgressEntry] = []
+    /// Parent ids of Continue Watching series whose show has Episode Shuffle on (drives the card's
+    /// shuffle badge). Recomputed with the row and whenever the shuffle profile changes.
+    @Published private(set) var shuffleParentIds: Set<String> = []
+    /// Custom poster URL pattern for the Continue Watching screen; blank when the pattern is blank
+    /// or that screen's toggle is off. Kept out of `HomeUiState` (which drops equal republishes) so
+    /// toggling only this screen, or editing the pattern, always reaches the CW cards.
+    @Published private(set) var continueWatchingPosterPattern: String = ""
     /// Home "Upcoming" row: next airing episode per followed show (shared
     /// `UpcomingEpisodesRepository`). Empty while the row is disabled or nothing is airing.
     @Published private(set) var upcoming: [UpcomingEpisodeItem] = []
@@ -185,6 +215,27 @@ final class HomeViewModel: ObservableObject {
     /// returns nil until this reads true, so the panel's first paint is the rows' first paint.
     /// Mirrors `rowsGate.isOpen`; flips in `openRowsGateAndRebuild()` and on `reset()`.
     @Published private(set) var rowsGateOpen = false
+    /// BUG-223 (the UI legs' first full run, 2026-10-22; test31 leg D): `rowsGateOpen` flips the
+    /// moment the gate opens, but on a hero-off profile the gate releases with the sources still
+    /// loading and the catalog rows' first publish lands a rebuild LATER (388 ms on the fixture).
+    /// In that gap `HomeView.heroPanelSeed` fell through to Continue Watching, then repainted the
+    /// first catalog row's title when it arrived: BUG-86's double paint through a narrower door.
+    /// True once a rebuild after the open carried a catalog row, once the add-ons settled with no
+    /// catalog to wait for (a CW-only Home must still seed), or once the open's budget elapsed
+    /// (`catalogSettleBudgetSeconds`, a backstop so a stalled add-on can never blank the panel for
+    /// good). Reset with the gate.
+    @Published private(set) var catalogRowsSettledAfterGateOpen = false
+    /// Stales the backstop timer of an older open (`reset()`, then a re-open).
+    private var catalogSettleGeneration = 0
+    /// The backstop: `HERO_COMMIT_GATE_TIMEOUT_MS`'s 4 s, the launch window every other hold uses.
+    static let catalogSettleBudgetSeconds: TimeInterval = 4
+    /// The add-on watcher's last reading: whether bootstrap has settled and how many catalogs the
+    /// ready manifests declare. Read at rebuild time by `settleCatalogSeedIfDue`.
+    private var addonBootstrapSettled = false
+    private var addonCatalogCount = 0
+    /// Re-review P2-B: an enabled add-on still fetching its manifest can still bring a catalog row,
+    /// so neither no-catalog verdict may fire while this is true.
+    private var addonManifestsPending = false
 
     /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
     /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
@@ -214,7 +265,23 @@ final class HomeViewModel: ObservableObject {
     private var noSourcesWaitGeneration = 0
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
+    private var episodeShuffleWatcher: FlowWatcher?
+    private var posterPatternWatcher: FlowWatcher?
+    private var posterScreensWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
+    /// Up Next: finished episodes and next-up dismissals change which next episodes belong in the
+    /// row without touching an in-progress entry.
+    private var watchedWatcher: FlowWatcher?
+    private var cwPreferencesWatcher: FlowWatcher?
+    /// Up Next: the provider-aware in-progress row and the resolved next-up entries, merged into
+    /// `continueWatching` by `publishContinueWatching()`.
+    private var inProgressContinueWatching: [WatchProgressEntry] = []
+    private var nextUpEntries: [WatchProgressEntry] = []
+    /// Review P3-1: the pipeline's first Up Next refresh skips the debounce, later ones wait it
+    /// (`NextUpRefreshScheduler`, unit-tested in `NextUpRefreshPacingTests`).
+    private lazy var nextUpScheduler = NextUpRefreshScheduler { [weak self] in
+        await self?.runNextUpRefresh()
+    }
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
     private var lastTraktContinueWatchingDaysCap: Int32?
@@ -400,6 +467,10 @@ final class HomeViewModel: ObservableObject {
         // for a newly selected empty profile.
         lastRefreshSignature = ""
         lastManifestSignature = ""
+        // BUG-223 review P2-1: profile-scoped too; a switch must not reuse the last profile's count.
+        addonBootstrapSettled = false
+        addonCatalogCount = 0
+        addonManifestsPending = false
         didSeed = false
         seedFailed = false
         seedAttempt += 1
@@ -412,6 +483,12 @@ final class HomeViewModel: ObservableObject {
         sections = []
         rows = []
         continueWatching = []
+        inProgressContinueWatching = []
+        nextUpEntries = []
+        nextUpScheduler.reset()
+        continueWatchingPosterPattern = ""
+        // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
+        ArtworkStore.clearFailedURLs()
         upcoming = []
         isLoading = false
         errorMessage = nil
@@ -462,6 +539,8 @@ final class HomeViewModel: ObservableObject {
         heroCommitCoordinator.reset()
         rowsGate.reset()
         rowsGateOpen = rowsGate.isOpen
+        catalogRowsSettledAfterGateOpen = false
+        catalogSettleGeneration += 1
         // Internal review r1 (P3): per pipeline RUN, not per process. Left true, a restarted
         // pipeline never marks the `first_hero` milestone again and the launch trace silently
         // loses the measurement for the run that is actually on screen.
@@ -485,8 +564,10 @@ final class HomeViewModel: ObservableObject {
         // the hero and the rows under it always paint together, exactly once, per head.
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeUiState else { return }
-            self.isLoading = state.isLoading
-            self.errorMessage = state.errorMessage
+            // Assigned only on change: `@Published` fires on equal writes too, and every Home
+            // emission would otherwise invalidate HomeView's whole body and its visible rows.
+            if self.isLoading != state.isLoading { self.isLoading = state.isLoading }
+            if self.errorMessage != state.errorMessage { self.errorMessage = state.errorMessage }
 
             // Codex r1 (P2): the carousel TAIL moved while the painted head survived. Kotlin
             // added or removed a non-head hero entry (an addon's hero-source catalog finishing,
@@ -751,6 +832,27 @@ final class HomeViewModel: ObservableObject {
             self.refreshContinueWatching()
         }
 
+        // Episode Shuffle: the master switch or a show's toggle changes the badge without touching
+        // any progress entry.
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        episodeShuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshShuffleParentIds()
+        }
+
+        // Custom poster URL pattern: the CW cards resolve their art from this value, so it must
+        // follow the repository's pattern AND per-screen toggles even while Home itself is disabled.
+        CustomPosterUrlRepository.shared.ensureLoaded()
+        refreshContinueWatchingPosterPattern()
+        posterPatternWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.pattern) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshContinueWatchingPosterPattern()
+        }
+        posterScreensWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.enabledScreens) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshContinueWatchingPosterPattern()
+        }
+
         // BUG-75: the row's two gates (the active provider's dropped-show filter and its recency
         // window) live OUTSIDE `uiState` — switching progress source or changing the Trakt
         // continue-watching days cap changes what the row should contain without touching a single
@@ -769,6 +871,24 @@ final class HomeViewModel: ObservableObject {
             guard self.lastTraktContinueWatchingDaysCap != state.continueWatchingDaysCap else { return }
             self.lastTraktContinueWatchingDaysCap = state.continueWatchingDaysCap
             self.refreshContinueWatching()
+        }
+
+        // Up Next: an episode marked watched (history) or a next-up dismissed / a next-up
+        // preference changed (profile-synced, so also from the phone) re-resolves the next-up cards.
+        watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.scheduleNextUpRefresh()
+        }
+        cwPreferencesWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            // A dismissal (Remove on an Up Next card, here or synced from the phone) drops its card
+            // now; the re-resolution below only confirms it after the debounce.
+            let kept = ContinueWatchingNextUp.shared.withoutDismissed(entries: self.nextUpEntries)
+            if kept.count != self.nextUpEntries.count {
+                self.nextUpEntries = kept
+                self.publishContinueWatching()
+            }
+            self.scheduleNextUpRefresh()
         }
 
         // BUG-86 hero-off rows (beta.18): applied BEFORE `AddonRepository.initialize()`, not
@@ -790,6 +910,7 @@ final class HomeViewModel: ObservableObject {
         CollectionRepository.shared.initialize()
         #if DEBUG
         applyCollectionsSeedIfRequested()
+        ContinueWatchingDebugSeed.applyIfRequested()
         #endif
     }
 
@@ -801,9 +922,17 @@ final class HomeViewModel: ObservableObject {
     /// plists and drops raw JSON) — `-debug.collectionsSeedJson` with raw JSON is accepted too
     /// for hand use. The payload is imported ONCE per launch, right after
     /// `CollectionRepository.initialize()`, so a folder with a tmdb DISCOVER source exists without
-    /// a signed-in account. In a signed-in session the next foreground pull may overwrite it
-    /// (remote wins) — use in guest mode. Invalid JSON is rejected by the shared `validateJson`
-    /// (logged, nothing imported).
+    /// a signed-in account. Invalid JSON is rejected by the shared `validateJson` (logged, nothing
+    /// imported).
+    ///
+    /// beta.19-rc1 verdict (C, BUG-135): the import REPLACES and persists the active profile's
+    /// collections, and a signed-in cloud account would sync that upward. So the seed is refused
+    /// at the source unless the session is signed out or an anonymous guest
+    /// (`collectionsSeedRefusal`). That replaces test42's harness guard, which checked the profile
+    /// NAME ("Chris") and so skipped on the FA87 fixture, whose "Chris" is a LOCAL guest profile;
+    /// the UI tests' seed helper (`launchToHomeWithSeededCollections`) relies on this guard alone.
+    /// A refusal does not latch, so a later Home start in the same launch tries again (an auth state
+    /// that was still loading can settle).
     private static var didApplyCollectionsSeed = false
     private func applyCollectionsSeedIfRequested() {
         guard !Self.didApplyCollectionsSeed else { return }
@@ -814,6 +943,10 @@ final class HomeViewModel: ObservableObject {
             if seed.isEmpty { NSLog("[CollectionsSeed] imported=false error=base64 payload did not decode") }
         }
         guard !seed.isEmpty else { return }
+        if let refusal = Self.collectionsSeedRefusal(authState: AuthRepository.shared.state.value_) {
+            NSLog("[CollectionsSeed] imported=false refused=%@", refusal)
+            return
+        }
         let json = seed
         Self.didApplyCollectionsSeed = true
         let validation = CollectionRepository.shared.validateJson(jsonString: json)
@@ -830,15 +963,136 @@ final class HomeViewModel: ObservableObject {
             NSLog("[CollectionsSeed] imported=false result=%@", String(describing: result))
         }
     }
+
+    /// BUG-162/163 (Batch B, B4): DEBUG-only add-on seed for UI legs, so a leg installs a loopback
+    /// fixture add-on without the Add-ons keyboard (which the simulator often refuses focus to, and
+    /// a blind Select on the Add-ons list toggles a row off):
+    ///
+    ///     -debug.addonManifestRemoveMatching <substring>   remove every add-on whose manifest URL
+    ///                                                      contains it (a stale stub from an
+    ///                                                      earlier run on another port)
+    ///     -debug.addonManifestUrls <url,url>               then add each URL not installed yet
+    ///
+    /// Applied ONCE per launch, on the first emission where the store is initialized and holds an
+    /// add-on (so the Cinemeta seed and the account pull have run). Same refusal as the collections
+    /// seed (`collectionsSeedRefusal`): an add-on edit is pushed to a signed-in account, so only a
+    /// signed-out or anonymous-guest session (the FA87 fixture) may take it. A refusal does not latch.
+    private static var didApplyAddonSeed = false
+    private func applyAddonSeedIfRequested(_ state: AddonsUiState) {
+        guard !Self.didApplyAddonSeed, state.isInitialized, !state.addons.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let removeMatching = defaults.string(forKey: "debug.addonManifestRemoveMatching") ?? ""
+        let urls = (defaults.string(forKey: "debug.addonManifestUrls") ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !removeMatching.isEmpty || !urls.isEmpty else { return }
+        if let refusal = Self.collectionsSeedRefusal(authState: AuthRepository.shared.state.value_) {
+            NSLog("[AddonSeed] applied=false refused=%@", refusal)
+            return
+        }
+        Self.didApplyAddonSeed = true
+        if !removeMatching.isEmpty {
+            for addon in state.addons where addon.manifestUrl.contains(removeMatching) {
+                AddonRepository.shared.removeAddon(manifestUrl: addon.manifestUrl)
+                NSLog("[AddonSeed] removed url=%@", addon.manifestUrl)
+            }
+        }
+        for url in urls {
+            AddonRepository.shared.addAddon(rawUrl: url) { result, error in
+                let ok = result is AddAddonResultSuccess
+                NSLog("[AddonSeed] added=%@ url=%@ detail=%@", ok ? "true" : "false", url,
+                      error.map { String(describing: $0) } ?? String(describing: result))
+            }
+        }
+    }
+
+    /// beta.19-rc1 verdict (C, BUG-135): nil when the debug collections seed may import — signed
+    /// out, or an anonymous guest session (the `isCloudAccount` test `ProfilesViewModel` uses,
+    /// inverted). Otherwise the refusal token for the log: `signedIn` for a real cloud account,
+    /// `authLoading` while the session is still being restored (or any state this build does not
+    /// know).
+    static func collectionsSeedRefusal(authState: Any?) -> String? {
+        if authState is AuthStateUnauthenticated { return nil }
+        if let authed = authState as? AuthStateAuthenticated {
+            return authed.isAnonymous ? nil : "signedIn"
+        }
+        return "authLoading"
+    }
     #endif
 
     /// Rebuilds the Continue Watching row from the shared provider-aware builder. Called by every
     /// watcher that can change what the row contains: the progress entries themselves, the active
     /// progress source, and the Trakt continue-watching days cap.
     private func refreshContinueWatching() {
-        continueWatching = WatchProgressRepository.shared.continueWatchingRow(
+        // Kotlin data classes bridge `equals` as `isEqual`, so `!=` is a structural compare. The
+        // progress flow emits on every playback save while Home sits under the player; an
+        // unchanged row must not republish.
+        inProgressContinueWatching = WatchProgressRepository.shared.continueWatchingRow(
             limit: ContinueWatchingRowKt.ContinueWatchingRowScanLimit
         )
+        publishContinueWatching()
+        scheduleNextUpRefresh()
+    }
+
+    /// In-progress entries plus a next-up entry for each series whose last episode is finished
+    /// (shared `mergeContinueWatchingWithNextUp`: one card per series, the more recent one wins).
+    private func publishContinueWatching() {
+        let next = ContinueWatchingNextUpKt.mergeContinueWatchingWithNextUp(
+            inProgress: inProgressContinueWatching,
+            nextUp: nextUpEntries
+        )
+        if next != continueWatching { continueWatching = next }
+        refreshShuffleParentIds()
+    }
+
+    /// Up Next: resolves the next episode per finished series. Debounced, because progress emits on
+    /// every playback save while Home sits under the player. The Kotlin side runs on
+    /// `Dispatchers.Default`, reuses a series' result until its seed episode changes (so a refresh
+    /// with nothing new fetches nothing), and fetches at most `ContinueWatchingNextUpResolveLimit`
+    /// series, four at a time. Cancelling this task drops a late result; it does not stop the
+    /// Kotlin call, which finishes and leaves its results cached for the next run.
+    private func scheduleNextUpRefresh() {
+        nextUpScheduler.schedule()
+    }
+
+    /// One Up Next refresh (run by `nextUpScheduler`). A result that lands after a pipeline
+    /// teardown is dropped by the generation check.
+    private func runNextUpRefresh() async {
+        let gen = pipelineGeneration
+        do {
+            let entries = try await ContinueWatchingNextUp.shared.resolveEntries(
+                limit: Int32(ContinueWatchingNextUpKt.ContinueWatchingNextUpResolveLimit)
+            )
+            guard !Task.isCancelled, pipelineGeneration == gen else { return }
+            if entries != nextUpEntries {
+                nextUpEntries = entries
+                publishContinueWatching()
+            }
+        } catch {
+            NSLog("[UpNext] resolution failed: %@", String(describing: error))
+        }
+    }
+
+    /// Assigned only on change so an unrelated emission does not re-render (and disturb focus in)
+    /// the Continue Watching shelf.
+    private func refreshShuffleParentIds() {
+        let ids = Set(continueWatching.compactMap { entry -> String? in
+            ShuffleNextEpisode.shared.isEnabled(contentId: entry.parentMetaId, contentType: entry.parentMetaType)
+                && entry.parentMetaType != "movie" ? entry.parentMetaId : nil
+        })
+        if ids != shuffleParentIds { shuffleParentIds = ids }
+    }
+
+    private func refreshContinueWatchingPosterPattern() {
+        let repo = CustomPosterUrlRepository.shared
+        let next = repo.isScreenEnabled(screen: .continueWatching)
+            ? repo.patternForScreen(screen: .continueWatching) : ""
+        if next != continueWatchingPosterPattern {
+            continueWatchingPosterPattern = next
+            // A new pattern makes earlier "this custom URL failed" verdicts meaningless.
+            ArtworkStore.clearFailedURLs()
+        }
     }
 
     /// The real teardown. Idempotent (`started` gates it) so a hard `stop()` on an already-stopped
@@ -859,7 +1113,13 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher?.cancel()
         progressWatcher?.cancel()
         progressSourceWatcher?.cancel()
+        episodeShuffleWatcher?.cancel()
+        posterPatternWatcher?.cancel()
+        posterScreensWatcher?.cancel()
         traktSettingsWatcher?.cancel()
+        watchedWatcher?.cancel()
+        cwPreferencesWatcher?.cancel()
+        nextUpScheduler.reset()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
         addonWatcher = nil
@@ -868,7 +1128,12 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher = nil
         progressWatcher = nil
         progressSourceWatcher = nil
+        episodeShuffleWatcher = nil
+        posterPatternWatcher = nil
+        posterScreensWatcher = nil
         traktSettingsWatcher = nil
+        watchedWatcher = nil
+        cwPreferencesWatcher = nil
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
@@ -892,7 +1157,7 @@ final class HomeViewModel: ObservableObject {
             let gen = pipelineGeneration
             upcomingWatcher = FlowWatcherKt.watch(UpcomingEpisodesRepository.shared.uiState) { [weak self] emitted in
                 guard let self, self.pipelineGeneration == gen, let state = emitted as? UpcomingEpisodesUiState else { return }
-                self.upcoming = state.items
+                if self.upcoming != state.items { self.upcoming = state.items }
             }
             UpcomingEpisodesRepository.shared.ensureStarted()
         } else {
@@ -984,8 +1249,53 @@ final class HomeViewModel: ObservableObject {
         if let held = rowsGate.open() {
             pendingHeldRebuildsProbe = held
         }
+        let opening = !rowsGateOpen
         rowsGateOpen = true
+        // BUG-223: only the closed → open transition arms the hold; a re-open call on an open gate
+        // (`rowsGateReleased` publishes) must not blank a panel that has already painted.
+        if opening { armCatalogSeedSettle() }
         rebuildRows()
+    }
+
+    /// BUG-223: start the catalog hold for this open, with its backstop.
+    private func armCatalogSeedSettle() {
+        catalogRowsSettledAfterGateOpen = false
+        catalogSettleGeneration += 1
+        let generation = catalogSettleGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.catalogSettleBudgetSeconds) { [weak self] in
+            guard let self, self.catalogSettleGeneration == generation,
+                  !self.catalogRowsSettledAfterGateOpen else { return }
+            self.catalogRowsSettledAfterGateOpen = true
+            if HomeHeroProbe.enabled {
+                HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=backstop sinceLaunch=%dms", self.vmId, HomeHeroProbe.sinceLaunchMs))
+            }
+        }
+    }
+
+    /// BUG-223: after a rebuild, let the panel seed fall through to Continue Watching once the
+    /// catalogs have had their say (`HomeCatalogSeedSettle.settles`).
+    private func settleCatalogSeedIfDue(built: [HomeRow]) {
+        guard rowsGate.isOpen, !catalogRowsSettledAfterGateOpen else { return }
+        let hasCatalogRow = built.contains { if case .catalog = $0 { return true } else { return false } }
+        // Review P2-2: the manifest count includes catalogs Kotlin never turns into rows (required
+        // extras such as search, rows disabled in Home Rows, empty catalogs), so a Home with every
+        // catalog row hidden would wait the backstop every launch. A finished load with no catalog
+        // row (`isLoading` false after a refresh ran) is the no-catalog verdict too.
+        // Re-review P2-A: the repository's own flag, which `refresh` flips synchronously under its
+        // lock; the mirrored `isLoading` arrives a hop later through the watcher and read stale
+        // (false) on the settings-flow rebuild that precedes the first fan-out. P2-B: nothing may
+        // settle while an enabled add-on is still fetching its manifest.
+        let repositoryLoading = HomeRepository.shared.currentUiState.isLoading
+        let loadFinishedEmpty = !addonManifestsPending && !repositoryLoading && !lastManifestSignature.isEmpty
+        guard HomeCatalogSeedSettle.settles(hasCatalogRow: hasCatalogRow,
+                                            addonsSettled: addonBootstrapSettled && !addonManifestsPending,
+                                            addonCatalogCount: addonCatalogCount,
+                                            loadFinishedEmpty: loadFinishedEmpty) else { return }
+        catalogRowsSettledAfterGateOpen = true
+        if HomeHeroProbe.enabled {
+            let reason = hasCatalogRow ? "catalogRow" : (loadFinishedEmpty ? "loadFinishedEmpty" : "noCatalogs")
+            HomeHeroProbe.log(String(format: "seedSettle vm=%d reason=%@ sinceLaunch=%dms", vmId, reason, HomeHeroProbe.sinceLaunchMs))
+        }
     }
 
     /// Interleaves catalog sections and collection rows per the Home Rows settings order (enabled
@@ -1024,6 +1334,7 @@ final class HomeViewModel: ObservableObject {
         }
 
         rows = built
+        settleCatalogSeedIfDue(built: built)
 
         // Wave H (BUG-86 diagnostics, deliverable 3): the ordered row IDENTITY list, not merely a
         // count — a reorder with the same count (the launch sync burst's signature move) is exactly
@@ -1158,6 +1469,9 @@ final class HomeViewModel: ObservableObject {
     }
 
     private func onAddonsChanged(_ state: AddonsUiState) {
+        #if DEBUG
+        applyAddonSeedIfRequested(state)
+        #endif
         // First run with an empty store → seed Cinemeta, then wait for the next emission. This also
         // catches the repository's pre-bootstrap INITIAL state, which every cold launch delivers
         // here before `AddonRepository.initialize()` runs (the watcher is attached first): it never
@@ -1176,6 +1490,14 @@ final class HomeViewModel: ObservableObject {
                                                        manifestsPending: false,
                                                        seedPending: !seedFailed,
                                                        hasRefreshed: !lastManifestSignature.isEmpty)
+            // BUG-223 review P2-1: this branch opens the gate without ever reaching the readings
+            // below, so the panel's seed would wait the full backstop on a profile with no add-ons
+            // but with Continue Watching or a logo folder. No add-ons = no catalogs; settled once
+            // the seed has had its say (it either landed, in which case the list is no longer
+            // empty, or failed).
+            addonCatalogCount = 0
+            addonManifestsPending = false
+            addonBootstrapSettled = state.isInitialized && seedFailed
             if bootstrap == .openRowsNoSources {
                 openRowsForNoSourcesBootstrap()
             }
@@ -1195,8 +1517,15 @@ final class HomeViewModel: ObservableObject {
                                                    // and has nothing left to say here.
                                                    seedPending: false,
                                                    hasRefreshed: !lastManifestSignature.isEmpty)
+        // Re-review P2-B: stored for `settleCatalogSeedIfDue`, on every route (a stream-only add-on
+        // that is ready first reads count 0 while a second add-on still fetches).
+        addonManifestsPending = manifestsPending
         if ready.isEmpty {
             addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
+            // BUG-223 review P2-1: all add-ons disabled or every manifest failed; nothing will
+            // publish a catalog row, so the seed may fall through as soon as fetching is over.
+            addonCatalogCount = 0
+            addonBootstrapSettled = state.isInitialized && !manifestsPending
             // Codex r2 (P1) safety: no enabled add-on has a loaded manifest and none is still
             // fetching one, so nothing will ever call `HomeRepository.refresh` on this profile and
             // `heroGateReleased` can stay false forever. Holding the rows on that would swallow
@@ -1251,8 +1580,12 @@ final class HomeViewModel: ObservableObject {
         // collections on the Home path (tvOS previously synced catalogs solely from Settings'
         // onAppear), so rebuildRows() forced every collection row above every catalog row until
         // the user happened to open Settings — the "collections are scrambled" report.
+        // BUG-223: the readings `settleCatalogSeedIfDue` consults (stored whether or not the probe
+        // is on; the probe line below is diagnostics only).
+        addonBootstrapSettled = state.isInitialized
+        addonCatalogCount = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
         if HomeHeroProbe.enabled {
-            let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
+            let catalogs = addonCatalogCount
             let routeLabel = route == .metadataOnly ? "metadataOnly" : "refresh"
             // `bootstrap=` (append-only, Codex round 9): `pre` means this emission arrived before
             // add-on bootstrap settled, `settled` after. Every healthy launch reaches the refresh
@@ -1287,4 +1620,89 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher?.cancel()
         upcomingWatcher?.cancel()
     }
+}
+
+/// BUG-223: when the FEAT-15 focus panel's seed may stop waiting for the catalog rows after the
+/// rows gate opened and fall through to Continue Watching (or a folder). Pure, so the rule is
+/// testable without a view model: a rebuild carried a catalog row, or the add-ons have settled and
+/// declare no catalog at all (nothing is coming). The time backstop lives in the view model.
+nonisolated enum HomeCatalogSeedSettle {
+    /// `loadFinishedEmpty`: a refresh ran and finished (`isLoading` false, a manifest signature
+    /// recorded) and still produced no catalog row (review P2-2: hidden, extras-only or empty
+    /// catalogs count in the manifests but never become rows).
+    static func settles(hasCatalogRow: Bool, addonsSettled: Bool, addonCatalogCount: Int,
+                        loadFinishedEmpty: Bool = false) -> Bool {
+        hasCatalogRow || (addonsSettled && addonCatalogCount == 0) || loadFinishedEmpty
+    }
+}
+
+/// FEAT-85 review P3-1 / pass 3 P3-3: the Up Next refresh scheduling, out of `HomeViewModel` so
+/// the ordering rule is unit-tested. Every `schedule()` cancels the pending refresh and queues a
+/// new one; the wait comes from `NextUpRefreshPacing`.
+///
+/// The fast path: the Home watchers' attach-time replays are queued FIFO on Dispatchers.Main (the
+/// main queue). The first `schedule()` enqueues its task's first run behind the replays already
+/// queued, and each replay that lands calls `schedule()` again, cancelling the task before it, so
+/// after one yield only the last one runs. It rests on that ordering, not on the replays sharing
+/// one main-actor turn. A refresh that got past its wait turns the debounce on.
+///
+/// Cancelling never stops a `run` that has started (a Kotlin call is not cancellable from here);
+/// `run` drops its own late result.
+@MainActor
+final class NextUpRefreshScheduler {
+    private var pacing = NextUpRefreshPacing()
+    private var task: Task<Void, Never>?
+    private let debounceNanoseconds: UInt64
+    private let run: @MainActor () async -> Void
+
+    /// `debounceNanoseconds` is injectable for tests only.
+    init(debounceNanoseconds: UInt64 = NextUpRefreshPacing.debounceNanoseconds,
+         run: @escaping @MainActor () async -> Void) {
+        self.debounceNanoseconds = debounceNanoseconds
+        self.run = run
+    }
+
+    func schedule() {
+        task?.cancel()
+        let isFirst = pacing.delayNanoseconds() == nil
+        let debounce = debounceNanoseconds
+        let run = self.run
+        task = Task { @MainActor [weak self] in
+            if isFirst {
+                await Task.yield()
+            } else {
+                try? await Task.sleep(nanoseconds: debounce)
+            }
+            guard !Task.isCancelled, let scheduler = self else { return }
+            scheduler.pacing.markStarted()
+            await run()
+        }
+    }
+
+    /// Pipeline teardown or a hard stop: drop the pending refresh; the next pipeline starts fast.
+    func reset() {
+        task?.cancel()
+        task = nil
+        pacing.reset()
+    }
+}
+
+/// FEAT-85 review P3-1: how long an Up Next refresh waits. The first refresh of a Home pipeline runs
+/// after one main-actor yield instead of the debounce, so a caught-up profile's Continue Watching
+/// row (and the hero-off / Stage panels reading `continueWatching.first`) is not built twice, 1.5 s
+/// apart, on every Home start. Later refreshes keep the debounce: progress emits on every playback
+/// save while Home sits under the player.
+struct NextUpRefreshPacing: Equatable {
+    static let debounceNanoseconds: UInt64 = 1_500_000_000
+
+    private(set) var hasStarted = false
+
+    /// nil for the pipeline's first refresh (yield once, then run); the debounce after that.
+    func delayNanoseconds() -> UInt64? { hasStarted ? Self.debounceNanoseconds : nil }
+
+    /// A refresh got past its wait: later ones are debounced.
+    mutating func markStarted() { hasStarted = true }
+
+    /// Pipeline teardown or a hard stop: the next pipeline's first refresh is fast again.
+    mutating func reset() { hasStarted = false }
 }

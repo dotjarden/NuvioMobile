@@ -3,6 +3,7 @@ package com.nuvio.app.features.trakt
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.details.tenPointRatingText
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.tmdb.TmdbService
@@ -12,7 +13,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlin.math.roundToInt
 
 private const val BASE_URL = "https://api.trakt.tv"
 private const val RELATED_LIMIT = 20
@@ -323,5 +323,5 @@ private fun extractTmdbId(value: String?): Int? {
         ?.toIntOrNull()
 }
 
-private fun Double.formatTraktRating(): String =
-    ((this * 10).roundToInt() / 10.0).toString()
+// Fork deviation (review r5): an unrated 0 is no rating (`tenPointRatingText`).
+private fun Double.formatTraktRating(): String? = tenPointRatingText(this)

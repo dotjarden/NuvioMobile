@@ -43,13 +43,16 @@ final class InlineTrailerTileProbeTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the In Row tile on Classic's rows), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -70,6 +73,9 @@ final class InlineTrailerTileProbeTests: XCTestCase {
             // BUG-92 precondition: the poster morph is suppressed under `hero` — only `poster`
             // (the default) grows the focused card itself.
             "-trailer_playback_location", "poster",
+            // beta.19-rc1 verdict (M3/M4): pin the legacy ~1 s-from-focus start (the gate is rest
+            // based now; a fixed N counts from focus, never before the rows stop).
+            "-trailer_start_delay", "1",
         ] + ringMode
     }
 

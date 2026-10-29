@@ -1,28 +1,24 @@
 import AVFoundation
 import Combine
+import SharedCore
 import SwiftUI
 
-/// Feeds the shared top panel from the mpv player: `PlayerPlaybackState.audioTracks/subtitleTracks`
+/// Feeds the shared top panel from the mpv player: `MPVPlaybackState.audioTracks/subtitleTracks`
 /// (mpv track ids; -1 = subtitles Off) → checkmark rows, the libmpv diagnostics snapshot → Info
 /// rows/chips, AVAudioSession → output route name. Picks go back through the state's
 /// `selectAudio/selectSubtitle` closures, exactly like the old swipe-up picker did.
 @MainActor
 final class MPVPlayerPanelAdapter {
-    private let state: PlayerPlaybackState
+    private let state: MPVPlaybackState
     private let model: PlayerTopPanelModel
     private let context: PlaybackContext
     private var cancellables: Set<AnyCancellable> = []
     private var routeObserver: NSObjectProtocol?
 
-    init(state: PlayerPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
+    init(state: MPVPlaybackState, model: PlayerTopPanelModel, context: PlaybackContext) {
         self.state = state
         self.model = model
         self.context = context
-        model.onPresentation = { [weak self] in self?.rebuildSelections() }
-        model.onDetailsVisibilityChange = { [weak self, weak state] visible in
-            state?.detailsVisible = visible
-            if visible { state?.requestDetails?(); self?.rebuildInfo() }
-        }
 
         model.onSelectSubtitle = { [weak state] option in
             state?.selectSubtitle?(option.flatMap { Int($0.id) } ?? -1)
@@ -37,11 +33,18 @@ final class MPVPlayerPanelAdapter {
         model.onSubtitleDelayChange = { [weak state] ms in
             state?.setSubtitleDelay?(Double(ms) / 1000.0)
         }
+        // Sync Line (P5 B19): position captured at press time; cues from mpv's own external source.
+        model.syncLineCapturePositionMs = { [weak state] in state?.captureSyncPositionMs?() ?? 0 }
+        model.syncLineCues = { [weak state] in
+            let (source, strip) = await MainActor.run { (state?.selectedExternalSubtitleSource, state?.syncLineStripSdh?() ?? false) }
+            return await SyncLineCueLoader.load(source: source, stripSdh: strip)
+        }
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             state.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
             state.$subtitleTracks.map { _ in () }.eraseToAnyPublisher(),
-            state.$subtitleSearchInFlight.map { _ in () }.eraseToAnyPublisher()
+            state.$subtitleSearchInFlight.map { _ in () }.eraseToAnyPublisher(),
+            state.$selectedExternalSubtitleSource.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildSelections() }
@@ -59,14 +62,42 @@ final class MPVPlayerPanelAdapter {
             }
             .store(in: &cancellables)
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             state.$streamInfo.map { _ in () }.eraseToAnyPublisher(),
-            state.$durationSec.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            state.$routingNote.map { _ in () }.eraseToAnyPublisher()
+            state.$durationSec.map { _ in () }.eraseToAnyPublisher(),
+            state.$routingNote.map { _ in () }.eraseToAnyPublisher(),
+            state.$previewStoreSummary.map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildInfo() }
         .store(in: &cancellables)
+
+        // Chapters tab (P2-C): rebuilt when the list arrives and on every panel open (the current
+        // chapter follows the playhead). Select seeks and closes the panel.
+        model.onSelectChapter = { [weak state, weak model] chapter in
+            state?.seekToChapter?(chapter.sec)
+            model?.onClose?()
+        }
+        Publishers.Merge(
+            state.transport.$chapters.map { _ in () }.eraseToAnyPublisher(),
+            state.$panelOpen.removeDuplicates().filter { $0 }.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.rebuildChapters() }
+        .store(in: &cancellables)
+
+        // mpv audio effects (P5 B20): the native adapter never sets `audioEffects`, so its Audio
+        // tab hides the rows.
+        model.audioEffects = state.audioEffects
+        state.$audioEffects
+            .receive(on: RunLoop.main)
+            .sink { [weak self] fx in
+                guard let self, self.model.audioEffects != fx else { return }
+                self.model.audioEffects = fx
+            }
+            .store(in: &cancellables)
+        model.onAudioBoostChange = { [weak state] db in state?.setAudioBoost?(db) }
+        model.onAudioModeChange = { [weak state] mode in state?.setAudioMode?(mode) }
 
         rebuildSelections()
         rebuildInfo()
@@ -83,6 +114,8 @@ final class MPVPlayerPanelAdapter {
     }
 
     private func rebuildSelections() {
+        let hasExternal = state.selectedExternalSubtitleSource != nil
+        if model.syncLineAvailable != hasExternal { model.syncLineAvailable = hasExternal }
         // mpv's subtitle list already carries an "Off" entry (id -1) when there is anything to
         // pick; the panel puts Off first regardless of the engine's ordering.
         var subtitles: [PlayerPanelOption] = []
@@ -105,8 +138,16 @@ final class MPVPlayerPanelAdapter {
         if model.audio != audio { model.audio = audio }
     }
 
+    private func rebuildChapters() {
+        let list = state.transport.chapters
+        let current = PlayerChapters.index(at: state.positionSec, in: list)
+        let rows = list.enumerated().map { i, c in
+            PlayerPanelChapter(id: i, title: PlayerChapters.displayTitle(c, index: i), sec: c.sec, isCurrent: i == current)
+        }
+        if model.chapters != rows { model.chapters = rows }
+    }
+
     private func rebuildInfo() {
-        guard model.detailsVisible else { return }
         var rows: [NativeInfoRow] = []
         if let info = state.streamInfo {
             rows = info.rows.map { NativeInfoRow(label: $0.0, value: $0.1) }
@@ -114,6 +155,9 @@ final class MPVPlayerPanelAdapter {
         if !rows.contains(where: { $0.label == String(localized: "Engine") }) {
             rows.insert(NativeInfoRow(label: String(localized: "Engine"),
                                       value: state.routingNote.isEmpty ? "mpv" : state.routingNote), at: 0)
+        }
+        if !state.previewStoreSummary.isEmpty {
+            rows.append(NativeInfoRow(label: String(localized: "Seek Previews"), value: state.previewStoreSummary))
         }
         if model.info.rows != rows { model.info.rows = rows }
 

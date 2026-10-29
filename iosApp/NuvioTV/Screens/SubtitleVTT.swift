@@ -429,7 +429,7 @@ nonisolated enum SubtitleVTT {
 
     /// Subtitle files are notoriously non-UTF-8: BOM-sniff UTF-16, then UTF-8, then Windows-1252,
     /// then Latin-1 — in that order, best effort.
-    private static func decode(_ data: Data) -> String? {
+    static func decode(_ data: Data) -> String? {
         guard !data.isEmpty else { return nil }
         if data.count >= 2 {
             let b0 = data[data.startIndex], b1 = data[data.index(after: data.startIndex)]

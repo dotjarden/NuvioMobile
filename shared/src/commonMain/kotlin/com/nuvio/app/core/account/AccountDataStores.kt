@@ -25,6 +25,23 @@ package com.nuvio.app.core.account
  */
 
 /**
+ * Keychain service holding the MDBList account tokens (generic-password items, account
+ * `"profile.<id>"`). One constant shared by the Apple persistence actual
+ * (`features.mdblist.MdbListAuthPersistence.apple.kt`), the registry entry below and its tests,
+ * so the wipe cannot drift from the store it erases.
+ */
+const val MDBLIST_KEYCHAIN_SERVICE = "com.nuvio.media.mdblist"
+
+/**
+ * BUG-220 pending Trakt scrobble-stop queue (`features.trakt.TraktPendingScrobbleStopStorage`):
+ * Apple NSUserDefaults key `"<TRAKT_PENDING_SCROBBLE_STOPS_KEY>_<profileId>"`; Android/JVM the same
+ * key in the [TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES] file. Shared by the storage actuals, the
+ * registry entry below and its tests, so the wipe cannot drift from the store it erases.
+ */
+const val TRAKT_PENDING_SCROBBLE_STOPS_KEY = "trakt_pending_scrobble_stops"
+const val TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES = "nuvio_trakt_pending_scrobbles"
+
+/**
  * How an Apple (iOS/tvOS) `NSUserDefaults` key is actually spelled at the call site. Getting this
  * wrong means the wipe silently misses the data, so each variant mirrors one concrete call shape
  * observed in the storage `actual`s.
@@ -49,6 +66,13 @@ sealed interface AppleKeySpec {
 
     /** A `core.storage.PayloadFileStore` subdirectory of Application Support. */
     data class FileStore(val subdirectory: String) : AppleKeySpec
+
+    /**
+     * Keychain generic-password items (`kSecClassGenericPassword`) under [service], every
+     * account. Wiped by deleting the whole service (`core.storage.AppleKeychainStores`), which
+     * covers every profile's `profile.<id>` account in one call. Not an NSUserDefaults key.
+     */
+    data class Keychain(val service: String) : AppleKeySpec
 }
 
 /**
@@ -225,12 +249,18 @@ object AccountDataStores {
         AccountDataStore(
             name = "SearchHistoryStorage",
             androidPreferences = "nuvio_search_history",
-            appleKeys = listOf(AppleKeySpec.ProfileScoped("search_history_payload")),
+            appleKeys = listOf(
+                AppleKeySpec.ProfileScoped("search_history_payload"),
+                AppleKeySpec.ProfileScoped("recent_searches_enabled"),
+            ),
         ),
         AccountDataStore(
             name = "DiscoverSelectionStorage",
             androidPreferences = "nuvio_discover_selection",
-            appleKeys = listOf(AppleKeySpec.ProfileScoped("discover_catalog_key")),
+            appleKeys = listOf(
+                AppleKeySpec.ProfileScoped("discover_catalog_key"),
+                AppleKeySpec.ProfileScoped("discover_genre_by_catalog"),
+            ),
         ),
 
         // ── Catalog / details / appearance ──────────────────────────────────────────────────────
@@ -245,6 +275,11 @@ object AccountDataStores {
             appleKeys = listOf(AppleKeySpec.ProfileScoped("meta_screen_settings_payload")),
         ),
         AccountDataStore(
+            name = "EpisodeShuffleStorage",
+            androidPreferences = "episode_shuffle",
+            appleKeys = listOf(AppleKeySpec.ProfileScoped("episode_shuffle")),
+        ),
+        AccountDataStore(
             name = "SeasonViewModeStorage",
             androidPreferences = "nuvio_season_view_mode",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("season_view_mode")),
@@ -253,6 +288,14 @@ object AccountDataStores {
             name = "PosterCardStyleStorage",
             androidPreferences = "nuvio_poster_card_style",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("poster_card_style_payload")),
+        ),
+        AccountDataStore(
+            name = "CustomPosterUrlStorage",
+            androidPreferences = "nuvio_custom_poster_url",
+            appleKeys = listOf(
+                AppleKeySpec.ProfileScoped("custom_poster_url_pattern"),
+                AppleKeySpec.ProfileScoped("custom_poster_enabled_screens"),
+            ),
         ),
         AccountDataStore(
             name = "CardDepthStyleStorage",
@@ -329,9 +372,21 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("show_file_size_badges"),
                 AppleKeySpec.ProfileScoped("show_addon_logo"),
                 AppleKeySpec.ProfileScoped("stream_badge_placement"),
+                AppleKeySpec.ProfileScoped("stream_background_mode"),
+                AppleKeySpec.ProfileScoped("stream_grouping_mode"),
+                AppleKeySpec.ProfileScoped("stream_list_opens_with"),
                 // Legacy key this store still reads for migration.
                 AppleKeySpec.ProfileScoped("debrid_stream_badge_rules"),
             ),
+        ),
+        AccountDataStore(
+            // tvOS-only (Swift `RejectedStreamLinks`): one unscoped JSON blob in
+            // `UserDefaults.standard`, `[title: [streamKey: Date]]`. It records which stream links
+            // failed recently for a title, so it is per-account viewing history and must not
+            // survive sign-out. No Android backing.
+            name = "RejectedStreamLinks",
+            androidPreferences = null,
+            appleKeys = listOf(AppleKeySpec.Plain("tvos_rejected_stream_links_v1")),
         ),
 
         // ── Player ─────────────────────────────────────────────────────────────────────────────
@@ -340,6 +395,7 @@ object AccountDataStores {
             androidPreferences = "nuvio_player_settings",
             appleKeys = listOf(
                 AppleKeySpec.ProfileScoped("show_loading_overlay"),
+                AppleKeySpec.ProfileScoped("pause_overlay_enabled"),
                 AppleKeySpec.ProfileScoped("show_parental_guide"),
                 AppleKeySpec.ProfileScoped("resize_mode"),
                 AppleKeySpec.ProfileScoped("hold_to_speed_enabled"),
@@ -381,16 +437,20 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("stream_auto_play_regex"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_timeout_seconds"),
                 AppleKeySpec.ProfileScoped("skip_intro_enabled"),
+                AppleKeySpec.ProfileScoped("auto_skip_segment_types"),
                 AppleKeySpec.ProfileScoped("animeskip_enabled"),
                 AppleKeySpec.ProfileScoped("animeskip_client_id"),
                 AppleKeySpec.ProfileScoped("introdb_api_key"),
                 AppleKeySpec.ProfileScoped("intro_submit_enabled"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_next_episode_enabled"),
+                AppleKeySpec.ProfileScoped("stream_auto_play_next_episode_fallback_enabled"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_prefer_binge_group"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_reuse_binge_group"),
+                AppleKeySpec.ProfileScoped("stream_auto_play_cached_only"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_mode"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_percent_v2"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_minutes_before_end_v2"),
+                AppleKeySpec.ProfileScoped("preload_next_episode_sources"),
                 AppleKeySpec.ProfileScoped("use_libass"),
                 AppleKeySpec.ProfileScoped("libass_render_type"),
                 AppleKeySpec.ProfileScoped("ios_video_output_preset"),
@@ -429,7 +489,17 @@ object AccountDataStores {
                 AppleKeySpec.DynamicPrefix("audio_name|"),
                 AppleKeySpec.DynamicPrefix("audio_track_id|"),
                 AppleKeySpec.DynamicPrefix("subtitle_delay_ms|"),
+                AppleKeySpec.DynamicPrefix("audio_delay_ms|"),
+                AppleKeySpec.DynamicPrefix("playback_speed|"),
             ),
+        ),
+        AccountDataStore(
+            // The pending hand-off to an external player (Infuse): one JSON session that carries
+            // its own profileId, so the key is plain rather than profile-scoped. Without this
+            // entry a session left pending at sign-out would be replayed into the next account.
+            name = "ExternalPlaybackSessionStorage",
+            androidPreferences = "nuvio_external_playback",
+            appleKeys = listOf(AppleKeySpec.Plain("pending_external_playback")),
         ),
 
         // ── Credentials & third-party services ─────────────────────────────────────────────────
@@ -451,6 +521,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("debrid_stream_max_results"),
                 AppleKeySpec.ProfileScoped("debrid_stream_sort_mode"),
                 AppleKeySpec.ProfileScoped("debrid_stream_minimum_quality"),
+                AppleKeySpec.ProfileScoped("debrid_stream_cached_only"),
                 AppleKeySpec.ProfileScoped("debrid_stream_dolby_vision_filter"),
                 AppleKeySpec.ProfileScoped("debrid_stream_hdr_filter"),
                 AppleKeySpec.ProfileScoped("debrid_stream_codec_filter"),
@@ -522,6 +593,14 @@ object AccountDataStores {
             ),
         ),
         AccountDataStore(
+            // BUG-220 write-ahead queue of Trakt /scrobble/stop requests not yet acknowledged
+            // (features.trakt.TraktPendingScrobbleStopStorage). Without this entry a stop left
+            // pending at sign-out would be replayed into the next account's Trakt.
+            name = "TraktPendingScrobbleStopStorage",
+            androidPreferences = TRAKT_PENDING_SCROBBLE_STOPS_PREFERENCES,
+            appleKeys = listOf(AppleKeySpec.ProfileScoped(TRAKT_PENDING_SCROBBLE_STOPS_KEY)),
+        ),
+        AccountDataStore(
             name = "TraktCommentsStorage",
             androidPreferences = "nuvio_trakt_comments",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("comments_enabled")),
@@ -538,6 +617,26 @@ object AccountDataStores {
             name = "SimklAuthStorage",
             androidPreferences = "nuvio_simkl_auth",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("simkl_auth_payload")),
+        ),
+        AccountDataStore(
+            // Upstream 8fe994bd MDBList account (device-flow OAuth) tokens + pending device code.
+            // Apple: Keychain only (shared/appleMain MdbListAuthPersistence.apple.kt — service
+            // MDBLIST_KEYCHAIN_SERVICE, account "profile.<id>"); it writes no defaults keys.
+            // Android: AES-GCM ciphertext in the "nuvio_mdblist_auth" preferences file (the
+            // AndroidKeyStore key itself is not account data and stays).
+            name = "MdbListAuthPersistence",
+            androidPreferences = "nuvio_mdblist_auth",
+            appleKeys = listOf(AppleKeySpec.Keychain(MDBLIST_KEYCHAIN_SERVICE)),
+        ),
+        AccountDataStore(
+            // Upstream 53c441c0 MDBList sync snapshot (watched history + playback + dropped).
+            // Apple: fork deviation — a PayloadFileStore subdirectory (files
+            // "mdblist_sync_snapshot_<profileId>.json"), NOT upstream's separate
+            // "nuvio_mdblist_sync" NSUserDefaults suite; it never writes defaults keys.
+            // Android: upstream's "nuvio_mdblist_sync" preferences file, keys "profile.<id>".
+            name = "PlatformMdbListSyncStorage",
+            androidPreferences = "nuvio_mdblist_sync",
+            appleKeys = listOf(AppleKeySpec.FileStore("MdbListSync")),
         ),
         AccountDataStore(
             name = "SimklSyncStorage",
@@ -583,6 +682,10 @@ object AccountDataStores {
     /** `PayloadFileStore` subdirectories to delete wholesale. */
     fun appleFileStoreSubdirectories(): List<String> =
         appleKeys().filterIsInstance<AppleKeySpec.FileStore>().map { it.subdirectory }.distinct()
+
+    /** Keychain services whose generic-password items are deleted wholesale. */
+    fun appleKeychainServices(): List<String> =
+        appleKeys().filterIsInstance<AppleKeySpec.Keychain>().map { it.service }.distinct()
 
     private fun appleKeys(): List<AppleKeySpec> = all.flatMap { store -> store.appleKeys }
 }

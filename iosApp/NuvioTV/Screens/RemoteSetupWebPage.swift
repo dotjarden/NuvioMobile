@@ -41,9 +41,9 @@ dialog{border:1px solid var(--line);border-radius:22px;padding:26px;max-width:42
 <p id="addon-error" class="error" role="alert" hidden></p>
 </section>
 <details class="group"><summary>Metadata &amp; Ratings</summary>
-<p class="hint">Saved keys stay on your TV. Enter a key only to replace it.</p>
-<div class="keyrow"><label for="tmdb-key">TMDB</label><p class="sub">Artwork, cast and title details</p><div class="keyinput"><input type="password" id="tmdb-key" placeholder="Enter API key" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-show="tmdb-key" aria-label="Show TMDB key" aria-pressed="false">Show</button></div></div>
+<p class="hint">Saved keys stay on your TV. Enter a key only to replace it. TMDB needs no key.</p>
 <div class="keyrow"><label for="mdblist-key">MDBList</label><p class="sub">IMDb, Rotten Tomatoes and Metacritic ratings</p><div class="keyinput"><input type="password" id="mdblist-key" placeholder="Enter API key" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-show="mdblist-key" aria-label="Show MDBList key" aria-pressed="false">Show</button></div></div>
+<div class="keyrow"><label for="poster-pattern">Custom posters</label><p class="sub">A poster service such as RPDB. {id}, {type} and {shape} are filled in per title.</p><div class="keyinput"><input type="password" id="poster-pattern" placeholder="Enter URL pattern" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" data-show="poster-pattern" aria-label="Show poster pattern" aria-pressed="false">Show</button></div></div>
 </details>
 </div>
 <div id="panel-home" role="region" aria-labelledby="nav-home" hidden><h2>Catalog Rows</h2><p class="hint">Choose which rows appear on Home and put them in your preferred order.</p><div id="rows"></div></div>
@@ -69,7 +69,7 @@ function payload(){
   const p={baseRevision:baseline.revision};
   if(!same(addonValues(addons),addonValues(baseline.addons)))p.addons=addonValues(addons);
   if(!same(rowValues(rows),rowValues(baseline.rows))){p.rowOrder=rows.map(r=>r.key);p.disabledRowKeys=rows.filter(r=>!r.enabled).map(r=>r.key);}
-  for(const [id,key] of [['tmdb-key','tmdbKey'],['mdblist-key','mdblistKey']])if(el(id).value.trim())p[key]=el(id).value.trim();
+  for(const [id,key] of [['mdblist-key','mdblistKey'],['poster-pattern','posterPattern']])if(el(id).value.trim())p[key]=el(id).value.trim();
   if(stagedBadgeUrls.length)p.badgeUrls=stagedBadgeUrls.slice();
   return p;
 }
@@ -81,7 +81,7 @@ function updateControls(){
   el('refresh').textContent=dirty()?'Discard changes':'Reload';
   el('addon-add').disabled=!el('addon-url').value.trim();el('badge-add').disabled=!el('badge-url').value.trim();
   const p=payload(),changes=[];
-  if(p.addons)changes.push('Add-ons');if(p.rowOrder)changes.push('Home rows');if(p.tmdbKey)changes.push('TMDB');if(p.mdblistKey)changes.push('MDBList');if(p.badgeUrls)changes.push('Badge packs');
+  if(p.addons)changes.push('Add-ons');if(p.rowOrder)changes.push('Home rows');if(p.mdblistKey)changes.push('MDBList');if(p.posterPattern)changes.push('Custom posters');if(p.badgeUrls)changes.push('Badge packs');
   el('change-count').textContent=changes.length?(pendingId?'Sent: ':'Unsaved: ')+changes.join(' · '):(baseline?'Up to date':'Waiting for settings');
 }
 async function api(path,options={}){
@@ -98,7 +98,7 @@ async function api(path,options={}){
 function acceptState(state,preserve=false){
   if(!Array.isArray(state.addons)||!Array.isArray(state.rows)||!Array.isArray(state.badgePacks)||!state.revision)throw new Error('Settings are still loading on the TV. Try Reload in a moment.');
   const previous=baseline;baseline=state;badgePacks=state.badgePacks;
-  if(!preserve){addons=state.addons.map(a=>({...a}));rows=state.rows.map(r=>({...r}));stagedBadgeUrls=[];el('tmdb-key').value='';el('mdblist-key').value='';for(const kind of ['addon','badge']){el(kind+'-url').value='';el(kind+'-error').hidden=true;el(kind+'-url').removeAttribute('aria-invalid');}}
+  if(!preserve){addons=state.addons.map(a=>({...a}));rows=state.rows.map(r=>({...r}));stagedBadgeUrls=[];el('mdblist-key').value='';el('poster-pattern').value='';for(const kind of ['addon','badge']){el(kind+'-url').value='';el(kind+'-error').hidden=true;el(kind+'-url').removeAttribute('aria-invalid');}}
   else{
     addons=addons.map(a=>({...a,name:state.addons.find(s=>s.url===a.url)?.name||a.name}));
     for(const a of state.addons)if(!previous?.addons.some(b=>b.url===a.url)&&!addons.some(b=>b.url===a.url))addons.push({...a});
@@ -106,7 +106,7 @@ function acceptState(state,preserve=false){
     for(const row of state.rows)if(!rows.some(r=>r.key===row.key))rows.push({...row});
     stagedBadgeUrls=stagedBadgeUrls.filter(url=>!badgePacks.includes(url));
   }
-  for(const [id,saved] of [['tmdb-key',state.tmdbKeySet],['mdblist-key',state.mdblistKeySet]])el(id).placeholder=saved?'Saved on TV — enter to replace':'Enter API key';
+  for(const [id,saved,empty] of [['mdblist-key',state.mdblistKeySet,'Enter API key'],['poster-pattern',state.posterPatternSet,'Enter URL pattern']])el(id).placeholder=saved?'Saved on TV — enter to replace':empty;
   el('connection').textContent=state.deviceName||'Apple TV';el('connection').className='connection connected';connected=true;render();
 }
 async function load(){
@@ -164,7 +164,7 @@ async function poll(){
         const failed=result.status==='failed';
         const state=await api('/api/state');
         // Refresh only once application has finished. Keep failed edits available for retry.
-        if(!failed||result.started){el('tmdb-key').value='';el('mdblist-key').value='';}
+        if(!failed||result.started){el('mdblist-key').value='';el('poster-pattern').value='';}
         acceptState(state,failed);
         const errors=result.errors||[];el('issues').innerHTML=errors.map(e=>'<li>'+esc(e)+'</li>').join('');el('issues').hidden=!errors.length;
         setStatus(failed?'Some changes could not be applied. Review the details above.':'Changes saved on your TV.',failed?'err':'ok');
@@ -185,7 +185,7 @@ document.querySelector('nav').addEventListener('click',event=>{
   window.scrollTo({top:0,behavior:'instant'});
 });
 el('editor').addEventListener('click',event=>{
-  if(busy)return;const show=event.target.closest('[data-show]');if(show){const field=el(show.dataset.show),visible=field.type==='password';field.type=visible?'text':'password';show.textContent=visible?'Hide':'Show';show.setAttribute('aria-pressed',String(visible));show.setAttribute('aria-label',(visible?'Hide ':'Show ')+(show.dataset.show==='tmdb-key'?'TMDB':'MDBList')+' key');return;}
+  if(busy)return;const show=event.target.closest('[data-show]');if(show){const field=el(show.dataset.show),visible=field.type==='password';field.type=visible?'text':'password';show.textContent=visible?'Hide':'Show';show.setAttribute('aria-pressed',String(visible));show.setAttribute('aria-label',(visible?'Hide ':'Show ')+(show.dataset.show==='poster-pattern'?'poster pattern':'MDBList key'));return;}
   const button=event.target.closest('button[data-action]');if(!button)return;
   const list=button.dataset.list==='addons'?addons:button.dataset.list==='rows'?rows:stagedBadgeUrls,i=Number(button.dataset.index),kind=button.dataset.action;
   if(kind==='remove')list.splice(i,1);else{const j=i+(kind==='up'?-1:1);if(j<0||j>=list.length)return;[list[i],list[j]]=[list[j],list[i]];button.dataset.focus=button.dataset.list+':'+j+':'+kind;}

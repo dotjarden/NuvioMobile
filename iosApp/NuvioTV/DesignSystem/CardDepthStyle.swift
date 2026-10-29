@@ -21,9 +21,10 @@ struct CardDepthStyle: Equatable {
     /// BUG-57: top-stop opacity for the partial-coverage (Top/Half) rail — the configured edge
     /// strength (0…1) lifted ×1.5, capped so Bold doesn't blow out. Pure so it is unit-testable;
     /// Full never calls it (its closed 1 pt stroke is unchanged).
-    static func partialCoverageRailBoost(edge: Double) -> Double {
-        min(max(edge, 0) * 1.5, 0.9)
-    }
+    ///
+    /// BUG-110 (rc12): superseded by `railTopAlpha(edge:)`, which now supplies the top stop at
+    /// EVERY coverage (Full included) so the three strength presets are visibly distinct there too.
+    /// Kept only as a historical marker in this comment — see `railTopAlpha` below.
 
     /// Tester (u/mrStevenx3-class report, beta.15): "Card Depth appears thick even when I select
     /// Subtle." Root cause: the partial-coverage rail's `lineWidth` used to be keyed on COVERAGE
@@ -32,23 +33,9 @@ struct CardDepthStyle: Equatable {
     /// made the out-of-the-box look thicker and brighter than even Bold+Full's 1pt closed stroke —
     /// exactly backwards from what "Subtle" should mean.
     ///
-    /// Width now follows edge STRENGTH instead: at/below the Subtle preset band the rail stays a 1pt
-    /// hairline; above it, 2pt as before. Full coverage is untouched — it never calls this, and stays
-    /// a pixel-identical 1pt closed stroke at every strength.
-    ///
-    /// The `28` threshold mirrors `AppearanceSettingsPane`'s Subtle/Balanced/Bold preset mapping
-    /// (28/42/56 out of 0…100). That mapping is UI-layer and not shared with this design-system file,
-    /// so the value is duplicated here rather than importing the pane — keep the two in sync by hand
-    /// if the presets ever move.
-    ///
-    /// BUG-57 interplay: dropping to 1pt does NOT drop the opacity boost from
-    /// `partialCoverageRailBoost` above. BUG-57's finding was that a bare 1pt rail at partial coverage
-    /// reads as nothing from a couch — a 1pt rail needs the boost *more* than a 2pt one does, not
-    /// less, so the boost stays applied at both widths. Only the width follows strength; the boost
-    /// keeps doing its job of making a thin rail visible.
-    static func partialCoverageRailWidth(edgeStrength: Int) -> CGFloat {
-        edgeStrength <= 28 ? 1 : 2
-    }
+    /// BUG-110 (rc12) superseded this too: `railWidth(edgeStrength:)` below now gives every strength
+    /// its own width at EVERY coverage, Full included — see that function's doc for why Full also
+    /// needed to change.
     var enabled = false
     /// 0…100. Opacity of the inset edge highlight at the top of the card. Default mirrors the shared
     /// `DefaultCardDepthEdgeStrength` (28).
@@ -92,6 +79,275 @@ struct CardDepthStyle: Equatable {
         case .trailers: return trailersEnabled
         }
     }
+
+    // MARK: - BUG-110: strength-preset rail geometry (rc12)
+    //
+    // Tester report (rc11): "the three strength levels look identical on my TV." Root cause, found by
+    // reading this file rather than trusting the tester's word for it: at FULL coverage the three
+    // presets (Subtle/Balanced/Bold = edge strength 28/42/56) differed ONLY by the opacity of a
+    // single 1pt closed stroke — 0.14-0.21 alpha steps on a hairline, from a couch. At Top/Half
+    // coverage the old `partialCoverageRailWidth(edgeStrength:)` gave Balanced and Bold the identical
+    // 2pt width (BUG-83's `edgeStrength <= 28 ? 1 : 2`), so two of the three presets were the SAME
+    // width everywhere and the third differed only at partial coverage. The functions below replace
+    // `partialCoverageRailWidth`/`partialCoverageRailBoost` with a unified width + top-alpha + halo
+    // scheme applied at EVERY coverage (Full included, for the first time since BUG-31), plus a new
+    // Edge "Off" preset (0) so the effect can be switched off from the Edge picker alone. Full
+    // strength-preset table (edge strength → rail width, top α, halo width, halo α):
+    //
+    //     Off (0)       → 0pt,  —,    0pt,  —
+    //     Subtle (28)   → 1pt,  0.35, 0pt,  —
+    //     Balanced (42) → 2pt,  0.60, 0pt,  —      (rc14: halo removed, was 8pt / 0.108)
+    //     Bold (56)     → 3pt,  0.80, 0pt,  —      (rc14: top α 0.90 → 0.80, halo removed, was 13pt / 0.162)
+    //     Placeholder tiles (rc13, any level) → clamped to Subtle (28) → 1pt, 0.35, 0pt, —
+    //
+    // (halo width = `railWidth` + 2 × `railHaloSpread`; halo α = `railTopAlpha` × 0.18 — both inert
+    // since rc14, `railHaloSpread` is 0 at every strength.)
+    //
+    // BUG-110 (rc14, Steven rc13 verdict, 2026-09-30; Bold/Balanced depth: "a thick border appears on
+    // the poster, in addition to the border already around the poster"): two mechanisms, both
+    // confirmed by reading this file. (1) On a FOCUSED ring-mode card the rail was stroked directly
+    // inside the 4pt accent ring, so the focused card showed two borders — the rail now draws on
+    // UNFOCUSED cards only (`CardDepthModifier` skips the rail layer while `\.isFocused`; the sheen
+    // stays) and the focus treatment (ring / lift / still highlight) owns the focused card's edge.
+    // (2) The inward halo band (3/5pt spread → 8/13pt stroke) read as a thick white frame on every
+    // unfocused Balanced/Bold poster on a real TV — `railHaloSpread` now returns 0 everywhere, so the
+    // halo stroke in `edgeHighlight` never draws. Bold's top stop also drops 0.90 → 0.80 so the
+    // 3pt rail alone is not a hard white outline. An unfocused→focused transition drops the rail
+    // with no animation of its own (acceptable: the ring/lift/highlight animate in over it).
+    // W3-13: "drops" now means `.opacity(0)` with animations off; the rail stays built (see
+    // `CardDepthOverlay`), so a focus move no longer tears it down and re-rasterises it.
+    //
+    // BUG-110 (rc13, u/mrStevenx3: "depth rail reads as a glitch on solid Genres tiles"): the table
+    // above assumed every rail traces a picture. A tile with no artwork cover — the gradient +
+    // initial/emoji placeholder every TMDB Discover genre folder falls back to (`FolderTile`'s
+    // `else` branch) — draws the SAME rail over a flat solid fill, where Balanced/Bold's brighter
+    // top stop and halo read as a stray bright line rather than "an edge catching light on a
+    // picture". `effectiveEdgeStrength(_:artworkPresent:)` below clamps the strength actually fed
+    // to `railWidth`/`railTopAlpha`/`railHaloSpread` to the Subtle ceiling whenever the caller says
+    // there is no artwork, regardless of the user's chosen level. Tiles that DO have artwork are
+    // completely unaffected — `artworkPresent` defaults to `true`, so every existing call site
+    // (`PosterCard`, `LandscapeCard`, `SagaCard`, `CastCard`) renders exactly as before.
+
+    /// How wide the crisp rail draws, in points, at every coverage (Top/Half/Full alike) — replaces
+    /// `partialCoverageRailWidth`, which only ever fired in the partial-coverage branch and left Full
+    /// hardcoded at a flat 1pt regardless of strength (part of why Full's three presets read alike).
+    /// Bands mirror `AppearanceSettingsPane`'s Subtle/Balanced/Bold preset mapping (28/42/56 out of
+    /// 0…100 — UI-layer and not shared with this design-system file, so the thresholds are duplicated
+    /// here by hand, same as before): `≤0` → 0 (the new Edge "Off" preset), `≤28` → 1pt, `≤42` → 2pt,
+    /// else → 3pt. A finer strength synced from mobile's slider (FEAT-41, parked) falls into whichever
+    /// band it's closest to — e.g. 30 → 2pt.
+    static func railWidth(edgeStrength: Int) -> CGFloat {
+        if edgeStrength <= 0 { return 0 }
+        if edgeStrength <= 28 { return 1 }
+        if edgeStrength <= 42 { return 2 }
+        return 3
+    }
+
+    /// The rail's TOP stop opacity, now anchored directly to the Subtle/Balanced/Bold presets so each
+    /// one reads as a visibly different brightness, not just a (possibly identical) width. Piecewise
+    /// linear through `(0, 0)`, `(0.28, 0.35)`, `(0.42, 0.60)`, `(0.56, 0.80)`, `(1.0, 0.95)` — the
+    /// preset points name the alpha each preset renders at (Subtle 0.35, Balanced 0.60, Bold 0.80;
+    /// Bold was 0.90 until rc14, BUG-110 — a 3pt rail at 0.90 white read as a hard outline on a TV),
+    /// `1.0` (100 strength, the ceiling any stronger mobile-synced value can reach) capped at 0.95 so
+    /// the rail never quite reads as opaque white. `edge` is the same 0…1 unit value used throughout
+    /// this file (`edgeStrength / 100`), matching `partialCoverageRailBoost`'s old parameter space.
+    ///
+    /// Replaces `partialCoverageRailBoost`, which only fired in the partial-coverage branch — Full's
+    /// top stop used to be hardcoded equal to `edge` (identical to mid/bottom), which is a large part
+    /// of why Full read flat. BUG-57's invariant survives unchanged: the boosted top stays ≥ the raw
+    /// edge strength for every strength up to 0.9 (0.35 ≥ 0.28, 0.60 ≥ 0.42, 0.80 ≥ 0.56) — a thin
+    /// rail still needs the lift more than a thick one, not less.
+    static func railTopAlpha(edge: Double) -> Double {
+        let anchors: [(x: Double, y: Double)] = [(0, 0), (0.28, 0.35), (0.42, 0.60), (0.56, 0.80), (1.0, 0.95)]
+        let clamped = min(max(edge, 0), 1)
+        guard clamped > 0 else { return 0 }
+        for index in 1..<anchors.count {
+            let (x0, y0) = anchors[index - 1]
+            let (x1, y1) = anchors[index]
+            guard clamped <= x1 else { continue }
+            guard x1 > x0 else { return min(y1, 0.95) }
+            let t = (clamped - x0) / (x1 - x0)
+            return min(y0 + t * (y1 - y0), 0.95)
+        }
+        return 0.95
+    }
+
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the colour of the edge rail's gradient
+    /// stops. White unless a card passes the poster-sampled tint; alphas and widths are unchanged.
+    static func railColor(tint: Color?) -> Color { tint ?? .white }
+
+    /// The rail's three-stop gradient (top/mid/bottom), unified across Full and partial coverage for
+    /// the first time since BUG-31. Full now takes the SAME boosted top as partial coverage — the top
+    /// stop used to be hardcoded equal to `edge` at Full (no boost at all, matching mid/bottom); mid
+    /// and bottom stay `edge` at Full, the same flat look the closed stroke has always had below its
+    /// top edge. Partial coverage keeps today's mid/bottom formula unchanged (the geometric coverage
+    /// cut itself is applied by `coverageMask` at the call site, not here).
+    static func railStops(edge: Double, coverage: Double) -> (top: Double, mid: Double, bottom: Double) {
+        let top = railTopAlpha(edge: edge)
+        guard coverage < 1 else { return (top, edge, edge) }
+        let mid = edge * (0.33 + 0.67 * coverage)
+        let bottom = edge * coverage
+        return (top, mid, bottom)
+    }
+
+    /// How far a soft halo stroke spreads beyond the crisp rail, in points, ADDED to `railWidth` on
+    /// each side (`width + 2 × halo` is the halo stroke's own `lineWidth` — see `edgeHighlight`).
+    /// Same three-strength banding as `railWidth`, which rc12-rc13 used to give Balanced/Bold 3pt/5pt
+    /// of spread (a total halo stroke of 8pt/13pt).
+    ///
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): the halo is REMOVED — this returns 0 for every
+    /// strength, so the `haloSpread > 0` stroke in `edgeHighlight` never draws. On a real TV the
+    /// inward band read as a thick white frame around every unfocused Balanced/Bold poster ("a thick
+    /// border appears on the poster"). The function and its callers stay so the preset-table
+    /// arithmetic (and `railHaloAlpha`) keep compiling; restoring a halo later is a one-function
+    /// change here, not a re-plumb.
+    static func railHaloSpread(edgeStrength: Int) -> CGFloat {
+        return 0
+    }
+
+    /// The halo stroke's opacity — always a fixed 18% of the crisp rail's own top stop, so the halo
+    /// reads as a soft glow trailing the rail rather than an independent setting to tune by hand.
+    /// Inert since rc14 (BUG-110): `railHaloSpread` is 0 at every strength, so `edgeHighlight` never
+    /// draws the halo stroke this alpha would colour.
+    static func railHaloAlpha(edge: Double) -> Double {
+        railTopAlpha(edge: edge) * 0.18
+    }
+
+    /// BUG-110 (rc13): the edge strength actually rendered — clamped to the Subtle ceiling (28)
+    /// whenever `artworkPresent` is `false`, unchanged otherwise. Pure and static, like every other
+    /// function in this section, so the clamp is unit-testable without mounting a live
+    /// `CardDepthOverlay`. Every reader of `style.edgeStrength` inside `CardDepthOverlay` goes
+    /// through this first — `railWidth`, `railTopAlpha` (via `railStops`), and `railHaloSpread` all
+    /// end up clamped together, so a placeholder tile can never end up with (say) a Bold width but a
+    /// Subtle alpha.
+    static func effectiveEdgeStrength(_ edgeStrength: Int, artworkPresent: Bool) -> Int {
+        guard !artworkPresent else { return edgeStrength }
+        return min(edgeStrength, 28)
+    }
+
+    /// Whether the halo should be withheld this frame. rc14 (BUG-110): no longer consulted by the
+    /// renderer — the halo is gone entirely (`railHaloSpread` is 0) and a focused card draws no rail
+    /// at all (`CardDepthModifier`) — kept so the truth-table unit test and any future halo revival
+    /// still compile. Original rationale: on a FOCUSED card in either mode that reserves
+    /// the plain-label ring band (`PlainLabelRing.reservesBand`), a 4pt accent ring or still-mode
+    /// stroke already sits just outside the rail; the halo's soft spread would bleed straight into
+    /// that ring, pixel for pixel, and read as a fuzzy double outline rather than two distinct
+    /// treatments. The crisp rail itself is untouched at every focus state — it stays the
+    /// focus-independent, at-rest treatment `test50DepthRailHugsArtworkInStillMode` measures; only the
+    /// halo is ever suppressed, and only while both conditions hold.
+    static func haloSuppressed(focused: Bool, ringBandReserved: Bool) -> Bool {
+        focused && ringBandReserved
+    }
+
+    // MARK: - W3-13: geometry shared with CardDepthRasterCache, and the white-rail × tint identity
+
+    /// Where the top sheen's gradient reaches clear, as a fraction of the artwork's height. One
+    /// value for the live layer and `CardDepthRasterCache`'s sheen bitmap.
+    nonisolated static let sheenFadeLocation: Double = 0.22
+
+    /// The coverage mask's band, as fractions of the artwork's height: opaque down to `fadeStart`,
+    /// clear from `fadeEnd` (formulas and rationale on `CardDepthOverlay.coverageMask`). One source
+    /// for the live mask and `CardDepthRasterCache`'s rail bitmap.
+    nonisolated static func coverageBand(coverage: Double) -> (fadeStart: Double, fadeEnd: Double) {
+        let fadeEnd = min(0.28 + 0.44 * coverage + 0.28 * coverage * coverage, 1)
+        let fadeStart = min(fadeEnd * (0.35 + 0.65 * coverage), fadeEnd)
+        return (fadeStart, fadeEnd)
+    }
+
+    /// W3-13: what the rail strokes at one gradient stop now, white at the stop's alpha.
+    nonisolated static func whiteRailStop(alpha: Double) -> CardDepthRGBA {
+        CardDepthRGBA(red: 1, green: 1, blue: 1, alpha: alpha)
+    }
+
+    /// `.colorMultiply` per pixel: every component of `color` times the same component of
+    /// `multiplier`, alpha included (SwiftUI: "multiplies each color component of this view by the
+    /// corresponding component of color").
+    nonisolated static func colorMultiplied(_ color: CardDepthRGBA, by multiplier: CardDepthRGBA) -> CardDepthRGBA {
+        CardDepthRGBA(red: color.red * multiplier.red,
+                      green: color.green * multiplier.green,
+                      blue: color.blue * multiplier.blue,
+                      alpha: color.alpha * multiplier.alpha)
+    }
+
+    /// What the rail painted at one stop before W3-13: `railColor(tint: tint).opacity(stop)`, i.e.
+    /// the tint (white when nil) with its alpha scaled by the stop. `CardDepthRasterCacheTests`
+    /// checks this against SwiftUI's own `.opacity` resolution.
+    nonisolated static func tintedRailStop(tint: CardDepthRGBA?, stop: Double) -> CardDepthRGBA {
+        let color = tint ?? .white
+        return CardDepthRGBA(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha * stop)
+    }
+
+    /// What the rail paints at the same stop since W3-13: the white stop, `.colorMultiply`'d by the
+    /// tint (white when nil). Equal to `tintedRailStop` at every stop and for every tint: white's
+    /// channels are 1, so `1 × c = c` for each colour channel in any encoding, and the alpha is
+    /// `stop × a` either way. That identity is why a tint landing can be a colour change on an
+    /// already-rasterised white rail rather than a re-filled tinted gradient.
+    nonisolated static func multipliedRailStop(tint: CardDepthRGBA?, stop: Double) -> CardDepthRGBA {
+        colorMultiplied(whiteRailStop(alpha: stop), by: tint ?? .white)
+    }
+
+    #if DEBUG
+    /// Debug-only launch/default overrides so a UI test can force an exact strength triptych
+    /// (Subtle/Balanced/Bold, or the new Off) without depending on whatever per-surface state the
+    /// synced fixture profile happens to carry. All four keys are read with `object(forKey:)`, not
+    /// `bool(forKey:)`/`integer(forKey:)`: `0` is now a legal value for Edge (the new "Off" preset),
+    /// Coverage ("Top") and Sheen ("Off"), and the typed accessors cannot tell "explicitly set to 0"
+    /// from "key absent" — both answer 0 either way. `object(forKey:)` answers nil only when the key
+    /// is genuinely unset; the argument-domain value always lands as a string
+    /// (`-debug.cardDepthEdge 42`), so it is decoded by hand (`Int("\(raw)")`) rather than force-cast
+    /// to `NSNumber`, and the "On" flag is decoded via `NSString.boolValue` (`"YES"`/`"1"`/`"true"` →
+    /// true), the same coercion `bool(forKey:)` would give a present key, applied uniformly with the
+    /// other three so all four knobs share one code path.
+    ///
+    /// `-debug.cardDepthOn YES` forces the master toggle AND every one of the five per-surface flags
+    /// on — the BUG-110 triptych test (`test60DepthEdgeLevelsAreDistinguishable`) wants ONE card
+    /// family lit deterministically, not whatever surfaces the fixture profile happens to have
+    /// enabled.
+    func applyingDebugOverrides() -> CardDepthStyle {
+        let defaults = UserDefaults.standard
+        func overrideInt(_ key: String) -> Int? {
+            guard let raw = defaults.object(forKey: key) else { return nil }
+            return Int("\(raw)")
+        }
+        var style = self
+        if let onRaw = defaults.object(forKey: "debug.cardDepthOn"), (onRaw as? NSString)?.boolValue == true {
+            style.enabled = true
+            style.postersEnabled = true
+            style.continueWatchingEnabled = true
+            style.episodeCardsEnabled = true
+            style.castEnabled = true
+            style.trailersEnabled = true
+        }
+        if let edge = overrideInt("debug.cardDepthEdge") { style.edgeStrength = edge }
+        if let coverage = overrideInt("debug.cardDepthCoverage") { style.edgeCoverage = coverage }
+        if let sheen = overrideInt("debug.cardDepthSheen") { style.sheenStrength = sheen }
+        return style
+    }
+    #endif
+}
+
+/// W3-13: one colour as straight (un-premultiplied) RGBA, each 0…1, for the pure white-rail × tint
+/// identity on `CardDepthStyle` (`multipliedRailStop` / `tintedRailStop`).
+nonisolated struct CardDepthRGBA: Equatable, Sendable {
+    var red: Double
+    var green: Double
+    var blue: Double
+    var alpha: Double
+
+    static let white = CardDepthRGBA(red: 1, green: 1, blue: 1, alpha: 1)
+
+    init(red: Double, green: Double, blue: Double, alpha: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
+
+    /// A resolved SwiftUI colour's sRGB components and opacity.
+    init(_ resolved: Color.Resolved) {
+        self.init(red: Double(resolved.red), green: Double(resolved.green),
+                  blue: Double(resolved.blue), alpha: Double(resolved.opacity))
+    }
 }
 
 private struct CardDepthStyleKey: EnvironmentKey {
@@ -116,10 +372,20 @@ final class CardDepthStyleModel: ObservableObject {
 
     func start() {
         guard watcher == nil else { return }
+        #if DEBUG
+        // BUG-110: apply the debug overrides immediately, before the repository's first emission
+        // lands, so a UI test's `-debug.cardDepthOn YES` triptych is visible from Home's first frame
+        // rather than flashing the synced fixture's default for one beat.
+        style = CardDepthStyle.default.applyingDebugOverrides()
+        #endif
         CardDepthStyleRepository.shared.ensureLoaded()
         watcher = FlowWatcherKt.watch(CardDepthStyleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? CardDepthStyleUiState else { return }
-            self.style = CardDepthStyle(from: state)
+            var resolved = CardDepthStyle(from: state)
+            #if DEBUG
+            resolved = resolved.applyingDebugOverrides()
+            #endif
+            self.style = resolved
         }
     }
 
@@ -156,43 +422,201 @@ extension View {
     /// box this lands on, so a 4pt-shorter box moves the bands by the same 4pt the picture moved.
     /// With no band reserved (ring off, zoom on) the two attachment points are the same rect and
     /// the render is unchanged.
-    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface) -> some View {
-        modifier(CardDepthModifier(shape: shape, surface: surface))
+    ///
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): the modifier reads `\.isFocused` and draws NO
+    /// rail on a focused card (the top sheen still draws) — the focus treatment (accent ring / lift /
+    /// still highlight) owns a focused card's edge, so the rail no longer sits inside the 4pt ring as
+    /// a second border. The halo layer that rc12-rc13 added was removed the same release
+    /// (`CardDepthStyle.railHaloSpread` is 0). An unfocused→focused transition drops the rail with
+    /// no animation of its own. W3-13: the rail stays built and is hidden by `.opacity(0)`, so a
+    /// focus move is a layer property change, not a teardown and a re-raster.
+    ///
+    /// BUG-110 (rc13): `artworkPresent` defaults to `true` — pass `false` from a tile that is about
+    /// to draw its no-cover gradient+initial/emoji placeholder instead of a picture, so the rendered
+    /// rail clamps to the Subtle preset (`CardDepthStyle.effectiveEdgeStrength`) regardless of the
+    /// user's chosen level. Every existing call site is byte-identical (the default keeps it on).
+    ///
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): `railTint` recolours the edge rail
+    /// (never the sheen). nil = the white rail every call site drew before. Only the poster, landscape,
+    /// saga and folder cards pass one (the "Depth Takes Poster Color" Appearance toggle); the other
+    /// depth sites (BrowseComponents, EpisodesSection, TrailerThumbnail, the DetailView cast circle)
+    /// keep the white rail. The modifier still reads no `@AppStorage`: the card passes the tint in.
+    /// W3-13: the rail is stroked white and tinted by `.colorMultiply` (rail only), so the colour
+    /// landing after the image does not re-fill a gradient.
+    ///
+    /// Review r1 P2-2: `animatesSize` (default `false`) marks a surface whose depth-carrying frame
+    /// animates (the inline trailer tile's morph). The raster cache keys its bitmaps on the FINAL
+    /// layout size and SwiftUI stretches them into the interpolated frame, so such a surface takes
+    /// the live layers instead, which re-stroke at every interpolated size. Every
+    /// other call site keeps the default.
+    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil, animatesSize: Bool = false) -> some View {
+        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize))
     }
 }
 
 private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     let shape: S
     let surface: CardDepthSurface
+    /// BUG-110 (rc13): see `nuvioCardDepth`'s doc — forwarded to `CardDepthOverlay` unchanged.
+    var artworkPresent: Bool = true
+    /// beta.18 verdict: see `nuvioCardDepth` — forwarded to `CardDepthOverlay` unchanged.
+    var railTint: Color?
+    /// Review r1 P2-2: see `nuvioCardDepth` — forwarded to `CardDepthOverlay` unchanged.
+    var animatesSize: Bool = false
     @Environment(\.cardDepthStyle) private var style
+    /// BUG-110: reflects the nearest focusable ancestor's focus state (the same pattern `PosterCard`,
+    /// `SagaCard` and others already use to read a Button's focus from a nested modifier). rc14
+    /// (Steven rc13 verdict, 2026-09-30): a focused card draws NO rail — the focus treatment owns its
+    /// edge — so this is forwarded to `CardDepthOverlay` as `railSuppressed`. It replaces rc12-rc13's
+    /// halo-only suppression (and the two ring `@AppStorage` reads that fed it: nothing here depends
+    /// on the ring/zoom mode any more, so a ring-mode flip no longer re-evaluates every card).
+    @Environment(\.isFocused) private var isFocused
 
     func body(content: Content) -> some View {
-        if style.isEnabled(for: surface) {
-            content.overlay { CardDepthOverlay(shape: shape, style: style) }
+        // W2-5 knob: `-debug.homeNoCardDepth YES` (`HomePerfKnobs`, launch-latched, Release too)
+        // returns the plain content on every surface; the profile-synced setting is left untouched.
+        if !HomePerfKnobs.noCardDepth, style.isEnabled(for: surface) {
+            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent, railTint: railTint, animatesSize: animatesSize) }
         } else {
             content
         }
     }
 }
 
-/// Port of Compose `Modifier.cardDepthVisual`: a 1pt inset edge whose white highlight fades top→bottom
-/// (governed by edge strength + coverage), plus a sheen gradient over the top 22% of the card. Both
-/// are clipped to the card's own `shape` so rounded corners and circles stay clean.
+/// Port of Compose `Modifier.cardDepthVisual`: an inset edge (1-3pt by strength, since BUG-110) whose
+/// white highlight fades top→bottom (governed by edge strength + coverage), plus a sheen gradient
+/// over the top 22% of the card. Both are clipped to the card's own `shape` so rounded corners and
+/// circles stay clean.
+///
+/// W3-13 (UX-16 / BUG-153 remainder). Wave 0's Time Profiler put this overlay's cost in
+/// `argb32_shade_axial_RGB`, CoreGraphics filling the gradients on the CPU (a gradient-filled stroke
+/// cannot be a solid shape layer); in Wave 2, Card Depth off removed 18 % of hitches and 10 of 11
+/// stalls ≥ 100 ms. That raster was paid three ways, and all three are gone:
+/// - **Per focus move.** The rail was a structural `if !railSuppressed` branch on `\.isFocused`, so
+///   the card gaining focus tore its rail down and the card losing it rasterised a fresh one. The
+///   rail is now always built and hidden with `.opacity(0)`, animations off (`railVisibility`): a
+///   layer property, not a redraw. BUG-110's "no rail on a focused card" still holds.
+/// - **Per tint arrival.** The rail used to stroke `railColor(tint).opacity(stop)` stops, so the
+///   poster colour landing (`PosterCard.depthSampled`) re-filled a new gradient. It now strokes
+///   WHITE at the stop alphas and takes the tint by `.colorMultiply`, on the rail only, never the
+///   sheen. White × tint equals the tinted stop at every stop (`CardDepthStyle.multipliedRailStop`,
+///   checked against SwiftUI's own `.opacity` in `CardDepthRasterCacheTests`), so the colour
+///   landing is a colour change, not a redraw.
+/// - **Per mount.** The white rail and sheen are bitmaps from `CardDepthRasterCache`, rendered once
+///   per key and shared by every card of the same size and setting, so only the first card of a key
+///   pays the CPU gradient rasterisation, not every mount and focus move (`CardDepthBitmapLayers`).
+///   The owner's rig A/B on the Apple TV (Release, Classic Home, 20 down / 20 up) measured 95 / 89
+///   hitches for the live layers, 84 / 85 inside one `.drawingGroup()` and 85 for the raster cache
+///   (Card Depth off: 46-72). A shape the cache cannot key (none today: cards pass
+///   `RoundedRectangle`, the cast avatar `Circle`), a revived halo, and a surface whose frame
+///   animates (`animatesSize`, review r1 P2-2: the inline trailer tile, whose bitmaps would
+///   otherwise stretch through the morph) take the live layers (`liveLayers`).
+///
+/// BUG-221 (2026-10-22/23): the first cache rendering read its size from a `GeometryReader` and
+/// crashed Home (see `rendered`); the size now arrives through `onGeometryChange`, after layout.
+///
+/// The root carries `DebugAXIdentifier("card_depth_rail")`, so test50 still reads the rail's rect
+/// as the artwork's.
 private struct CardDepthOverlay<S: InsettableShape>: View {
     let shape: S
     let style: CardDepthStyle
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): true while the card is focused. The edge rail
+    /// (and the removed-in-rc14 halo) is hidden so the focus ring / lift / still highlight is the
+    /// only border on a focused card; the top sheen is unaffected. Replaces rc12-rc13's halo-only
+    /// `haloSuppressed`. W3-13: hidden by `.opacity(0)` with animations off, never removed.
+    let railSuppressed: Bool
+    /// BUG-110 (rc13): `false` on a tile currently drawing its no-cover gradient+initial/emoji
+    /// placeholder. Only the RAIL clamps on this — the sheen above (a flat top-of-card gradient)
+    /// reads fine over a placeholder and is left alone.
+    var artworkPresent: Bool = true
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): rail colour override, nil = white.
+    /// W3-13: applied by `.colorMultiply` over the white rail.
+    var railTint: Color?
+    /// Review r1 P2-2: the surface's frame animates (the inline trailer tile's morph). The cached
+    /// bitmaps are keyed on the final layout size and would stretch into the interpolated frame (the
+    /// side rails thickening by the width ratio, the corners elongating), so it takes the
+    /// live-layer fallback.
+    var animatesSize: Bool = false
+
+    /// Every number the layers draw from, resolved once per body.
+    private struct Params {
+        let edge: Double
+        let sheen: Double
+        let coverage: Double
+        let width: CGFloat
+        let stops: (top: Double, mid: Double, bottom: Double)
+        let haloSpread: CGFloat
+    }
+
+    private var params: Params {
+        // BUG-110 (rc13): every rail number goes through the placeholder clamp first.
+        let effectiveEdgeStrength = CardDepthStyle.effectiveEdgeStrength(style.edgeStrength, artworkPresent: artworkPresent)
+        let edge = unit(effectiveEdgeStrength)
+        let coverage = unit(style.edgeCoverage)
+        return Params(
+            edge: edge,
+            sheen: unit(style.sheenStrength),
+            coverage: coverage,
+            width: CardDepthStyle.railWidth(edgeStrength: effectiveEdgeStrength),
+            stops: CardDepthStyle.railStops(edge: edge, coverage: coverage),
+            haloSpread: CardDepthStyle.railHaloSpread(edgeStrength: effectiveEdgeStrength)
+        )
+    }
 
     var body: some View {
-        let edge = unit(style.edgeStrength)
-        let sheen = unit(style.sheenStrength)
-        let coverage = unit(style.edgeCoverage)
+        rendered(params)
+            .allowsHitTesting(false)
+            // BUG-91 gate (test50): this root fills whatever box `nuvioCardDepth` was attached to, so
+            // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
+            // picture" against real geometry instead of hunting a 1-3pt hairline in a screenshot.
+            // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift). W3-13: kept
+            // here, on the root of either rendering.
+            .modifier(DebugAXIdentifier("card_depth_rail"))
+    }
 
+    /// W3-13 (3): the cached bitmaps (`CardDepthBitmapLayers`). The bitmaps carry no halo (inert
+    /// since rc14: `railHaloSpread` is 0); a revived halo, or a shape the cache has no kind for,
+    /// takes the live layers instead of drawing a wrong rail. So does a surface whose frame animates
+    /// (`animatesSize`, review r1 P2-2): a bitmap keyed on the final size would stretch through the
+    /// animation; the live layers re-stroke. Every input of the branch is fixed per call site (the
+    /// shape's type, `animatesSize`, the always-0 halo), so a card never switches between the two.
+    @ViewBuilder
+    private func rendered(_ p: Params) -> some View {
+        // BUG-221 (2026-10-22, the merged Wave 3 tip on the Apple TV; bisected 2026-10-23 on FA87,
+        // docs/research/card-depth-cache-2026-10-23): the first cache rendering was a
+        // `GeometryReader` in this OVERLAY on the card's artwork, whose content read `proxy.size`.
+        // With it, Home trapped ~1.5 s after the profile pick, during the first publishes: a row's
+        // `LazyHStack` measuring a card (`_AspectRatioLayout` asking its child for a size) updated a
+        // dynamic container under the card, whose item removal asserted
+        // (`DynamicContainerInfo.tryRemovingItem`, `DynamicContainer.swift:651`). The bitmaps were
+        // innocent: an overlay `GeometryReader` that reads `proxy.size` and draws only `Color.clear`
+        // frames traps the same way (4 / 4), one that ignores the proxy around the live layers does
+        // not. Reading a size in a `GeometryReader` is not enough on its own: `ShimmerView`
+        // (`CachedAsyncImage.swift`), `PosterCard`'s progress bar and its watch-badge bar all frame
+        // content by `geo.size` inside the same `LazyHStack` cards without crashing. What differs is
+        // the place: a size-reading reader overlaid on the artwork under `_AspectRatioLayout`,
+        // probably while `CachedAsyncImage` swaps its shimmer for the image. The fix is proven by
+        // that bisect, not by a full account of SwiftUI's mechanism: `CardDepthBitmapLayers` takes
+        // the size from `onGeometryChange` (a state write after layout), so nothing in this overlay
+        // depends on a layout value.
+        if !animatesSize, p.haloSpread == 0, let kind = CardDepthRasterCache.ShapeKind(shape) {
+            CardDepthBitmapLayers(kind: kind, sheen: p.sheen, edge: p.edge, lineWidth: p.width,
+                                  stops: p.stops, coverage: p.coverage,
+                                  railSuppressed: railSuppressed, railTint: railTint)
+        } else {
+            liveLayers(p)
+        }
+    }
+
+    /// The fallback: the SwiftUI layers (the sheen gradient and the stroked rail), drawn without a
+    /// `.drawingGroup()` (that adds an offscreen pass per card on the GPU-bound Detail page, BUG-206).
+    private func liveLayers(_ p: Params) -> some View {
         ZStack {
-            if sheen > 0 {
+            if p.sheen > 0 {
                 LinearGradient(
                     stops: [
-                        .init(color: .white.opacity(sheen), location: 0),
-                        .init(color: .clear, location: 0.22),
+                        .init(color: .white.opacity(p.sheen), location: 0),
+                        .init(color: .clear, location: CardDepthStyle.sheenFadeLocation),
                         .init(color: .clear, location: 1),
                     ],
                     startPoint: .top,
@@ -200,16 +624,19 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 )
                 .clipShape(shape)
             }
-            if edge > 0 {
-                edgeHighlight(edge: edge, coverage: coverage)
+            if p.edge > 0 {
+                railVisibility(edgeHighlight(p).colorMultiply(CardDepthStyle.railColor(tint: railTint)))
             }
         }
-        .allowsHitTesting(false)
-        // BUG-91 gate (test50): this ZStack fills whatever box `nuvioCardDepth` was attached to, so
-        // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
-        // picture" against real geometry instead of hunting a 1-2pt hairline in a screenshot.
-        // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift).
-        .modifier(DebugAXIdentifier("card_depth_rail"))
+    }
+
+    /// W3-13 (1), value not structure: the rail is always in the tree and focus only flips its
+    /// opacity, with animations disabled for that flip (BUG-110: the rail "drops with no animation
+    /// of its own"; the ring / lift / highlight animate in over it).
+    private func railVisibility<V: View>(_ rail: V) -> some View {
+        rail
+            .opacity(railSuppressed ? 0 : 1)
+            .animation(nil, value: railSuppressed)
     }
 
     /// The inset edge highlight, cut down to `coverage`.
@@ -225,33 +652,49 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// hairline at ≤56 % white over the top edge and corner shoulders — from a couch that reads as
     /// NOTHING, while Full's closed hairline still reads as an outline because a closed shape
     /// registers where a short arc does not. The partial modes therefore draw a heavier rail at low
-    /// strength: up to 2 pt, with the top stop lifted (×1.5, capped) so a "lit from above" edge is
-    /// actually visible at the same setting; the geometric mask is unchanged (still no side rails,
-    /// no bottom). Full is untouched — same 1 pt closed stroke, pixel-identical to before.
+    /// strength, with the top stop lifted so a "lit from above" edge is actually visible at the same
+    /// setting; the geometric mask is unchanged (still no side rails, no bottom).
     ///
     /// Tester follow-up ("Card Depth appears thick even when I select Subtle"): the line width used
     /// to be fixed at 2 pt for every partial-coverage rail, keyed only on coverage — so the default
-    /// Subtle+Top combination drew thicker than Bold+Full. See
-    /// `CardDepthStyle.partialCoverageRailWidth(edgeStrength:)` — width now follows the user's
-    /// strength choice (1 pt at/below the Subtle preset, 2 pt above), while the opacity boost below
-    /// still applies at both widths per BUG-57.
+    /// Subtle+Top combination drew thicker than Bold+Full.
+    ///
+    /// BUG-110 (rc12, "the three strength levels look identical on my TV"): Full's rail is no longer
+    /// a special case. `CardDepthStyle.railWidth`/`railStops` now supply the width and the three-stop
+    /// gradient at EVERY coverage, so Full finally differs across Subtle/Balanced/Bold by width AND
+    /// top-stop brightness, the same as Top/Half always did — see the BUG-110 preset table on
+    /// `CardDepthStyle`. A soft halo (`railHaloSpread`/`railHaloAlpha`) trailed the crisp rail at
+    /// Balanced/Bold in rc12-rc13; BUG-110 (rc14, Steven rc13 verdict, 2026-09-30) removed it
+    /// (`railHaloSpread` is 0, so the `haloSpread > 0` stroke below never draws) and the whole rail is
+    /// now hidden on a focused card (`railSuppressed`, see `CardDepthModifier`) so it never doubles
+    /// the focus ring. `strokeBorder` insets inward on both layers, so nothing paints
+    /// outside `shape` — no `shadow`/`blur` is used here (the FEAT-14 graveyard: outside paint clips
+    /// against the artwork frame and lands as a stray sliver in the ring band).
+    ///
+    /// W3-13: both strokes are WHITE; the caller tints the whole rail with `.colorMultiply`.
     @ViewBuilder
-    private func edgeHighlight(edge: Double, coverage: Double) -> some View {
-        if coverage >= 1 {
-            // Full: no mask at all, so the full-perimeter look is pixel-identical to pre-BUG-31.
-            edgeStroke(top: edge, mid: edge, bottom: edge, lineWidth: 1)
+    private func edgeHighlight(_ p: Params) -> some View {
+        let rail = ZStack {
+            if p.haloSpread > 0 {
+                shape.strokeBorder(
+                    Color.white.opacity(CardDepthStyle.railHaloAlpha(edge: p.edge)),
+                    lineWidth: p.width + 2 * p.haloSpread
+                )
+            }
+            edgeStroke(top: p.stops.top, mid: p.stops.mid, bottom: p.stops.bottom, lineWidth: p.width)
+        }
+
+        if p.coverage >= 1 {
+            // Full: no mask at all, so the full-perimeter look stays a closed stroke exactly as it
+            // has since pre-BUG-31 - only its width and stop values now vary by strength (BUG-110).
+            rail
         } else {
-            let lift = CardDepthStyle.partialCoverageRailBoost(edge: edge)
-            edgeStroke(
-                top: lift,
-                mid: edge * (0.33 + 0.67 * coverage),
-                bottom: edge * coverage,
-                lineWidth: CardDepthStyle.partialCoverageRailWidth(edgeStrength: style.edgeStrength)
-            )
-            .mask { coverageMask(coverage) }
+            rail.mask { coverageMask(p.coverage) }
         }
     }
 
+    /// W3-13: white at the stop alphas (`CardDepthStyle.whiteRailStop`); the tint is multiplied in
+    /// by the caller, so this gradient never changes when the poster colour lands.
     private func edgeStroke(top: Double, mid: Double, bottom: Double, lineWidth: CGFloat) -> some View {
         shape.strokeBorder(
             LinearGradient(
@@ -277,20 +720,20 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// Both are continuous and monotonic in `c` — the setting is 0…100 and the chips are only presets,
     /// so every intermediate value gets a sensible band. Both converge on 1.0 as c → 1, i.e. the mask
     /// degenerates to "opaque everywhere"; `edgeHighlight` takes that limit exactly by dropping the
-    /// mask at Full rather than emitting coincident stops at location 1.
+    /// mask at Full rather than emitting coincident stops at location 1. W3-13: the formulas live in
+    /// `CardDepthStyle.coverageBand`, shared with `CardDepthRasterCache`'s rail bitmap.
     ///
     /// The fractions are relative to the masked view's own height, and this overlay is sized to the
     /// card's artwork frame (see `nuvioCardDepth`), so the band is measured against the artwork —
     /// which is also why a uniform focus scale on the card can't disturb it: a scale multiplies both
     /// the stroke and its mask by the same factor, leaving every fraction where it was.
     private func coverageMask(_ coverage: Double) -> some View {
-        let fadeEnd = min(0.28 + 0.44 * coverage + 0.28 * coverage * coverage, 1)
-        let fadeStart = min(fadeEnd * (0.35 + 0.65 * coverage), fadeEnd)
+        let band = CardDepthStyle.coverageBand(coverage: coverage)
         return LinearGradient(
             stops: [
                 .init(color: .white, location: 0),
-                .init(color: .white, location: fadeStart),
-                .init(color: .clear, location: fadeEnd),
+                .init(color: .white, location: band.fadeStart),
+                .init(color: .clear, location: band.fadeEnd),
                 .init(color: .clear, location: 1),
             ],
             startPoint: .top,
@@ -301,5 +744,55 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// Shared strengths are stored 0…100; the Compose port works in 0…1.
     private func unit(_ value: Int) -> Double {
         min(max(Double(value), 0), 100) / 100
+    }
+}
+
+/// W3-13 (3) + BUG-221: Card Depth's two layers as shared white bitmaps from `CardDepthRasterCache`,
+/// the rendering for every keyable, non-animating card.
+///
+/// The structure is fixed: always the same ZStack of two `Image`s, whatever the settings, the size
+/// or the cache's answer. A layer that has nothing to draw (strength 0, no size yet, a failed
+/// render) shows `CardDepthRasterCache.placeholder`, a transparent pixel, in the same slot.
+///
+/// The size comes from `onGeometryChange`, never a `GeometryReader` (BUG-221, see
+/// `CardDepthOverlay.rendered`): SwiftUI calls the action after layout, the `@State` write lands
+/// in an ordinary update, and the body never depends on a layout value while a layout pass is
+/// running. Until the first report, one update after the card mounts, both layers are the
+/// placeholder. Each `Image` is `.resizable()` and fills the
+/// overlay, which is the box the live layers fill; the bitmap is the same box rounded to whole
+/// pixels, so the stretch is below a pixel.
+///
+/// The rail takes the tint by multiply and the focus by opacity, exactly as the live rail does.
+/// The layers are decorative and stay out of the accessibility tree.
+private struct CardDepthBitmapLayers: View {
+    let kind: CardDepthRasterCache.ShapeKind
+    let sheen: Double
+    let edge: Double
+    let lineWidth: CGFloat
+    let stops: (top: Double, mid: Double, bottom: Double)
+    let coverage: Double
+    let railSuppressed: Bool
+    let railTint: Color?
+    @State private var size: CGSize = .zero
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let keys = CardDepthRasterCache.LayerKeys(size: size, scale: displayScale, shape: kind, sheen: sheen,
+                                                  edge: edge, lineWidth: lineWidth, stops: stops, coverage: coverage)
+        ZStack {
+            Image(uiImage: CardDepthRasterCache.shared.layerImage(for: keys.sheen))
+                .resizable()
+            Image(uiImage: CardDepthRasterCache.shared.layerImage(for: keys.rail))
+                .resizable()
+                .colorMultiply(CardDepthStyle.railColor(tint: railTint))
+                .opacity(railSuppressed ? 0 : 1)
+                .animation(nil, value: railSuppressed)
+        }
+        .accessibilityHidden(true)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { newSize in
+            size = newSize
+        }
     }
 }

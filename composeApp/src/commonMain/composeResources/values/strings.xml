@@ -1191,6 +1191,7 @@
     <string name="trakt_more_like_this_source_dialog_subtitle">Select the source for recommendations shown on detail pages.</string>
     <string name="trakt_more_like_this_source_trakt">Trakt</string>
     <string name="trakt_more_like_this_source_tmdb">TMDB</string>
+    <string name="trakt_more_like_this_source_simkl">Simkl</string>
     <string name="trakt_continue_watching_window">Continue Watching Window</string>
     <string name="trakt_continue_watching_subtitle">Trakt history considered for continue watching</string>
     <string name="trakt_cw_window_title">Continue Watching Window</string>
@@ -1319,6 +1320,7 @@
     <string name="details_more_like_this">More Like This</string>
     <string name="detail_more_like_this_powered_by_tmdb">Powered by TMDB</string>
     <string name="detail_more_like_this_powered_by_trakt">Powered by Trakt</string>
+    <string name="detail_more_like_this_powered_by_simkl">Powered by Simkl</string>
     <string name="details_seasons">Seasons</string>
     <string name="details_series_missing_numbers">This addon returned videos for the series, but none included season or episode numbers.</string>
     <string name="details_series_no_metadata">This addon did not provide episode metadata for this series.</string>
@@ -1562,6 +1564,11 @@
     <string name="trakt_sign_in_complete_failed">Failed to complete Trakt sign in</string>
     <string name="trakt_user_fallback">Trakt user</string>
     <string name="trakt_watchlist">Watchlist</string>
+    <string name="library_status_watching">Watching</string>
+    <string name="library_status_plan_to_watch">Plan to Watch</string>
+    <string name="library_status_on_hold">On Hold</string>
+    <string name="library_status_completed">Completed</string>
+    <string name="library_status_dropped">Dropped</string>
     <!-- Trakt library sync errors -->
     <string name="trakt_error_authorization_expired">Trakt authorization expired</string>
     <string name="trakt_error_list_not_found">Trakt list not found</string>
@@ -1679,6 +1686,8 @@
     <string name="library_other">Other</string>
     <string name="library_sort_added_asc">Oldest added</string>
     <string name="library_sort_added_desc">Recently added</string>
+    <string name="library_sort_released_asc">Oldest released</string>
+    <string name="library_sort_released_desc">Recently released</string>
     <string name="library_sort_title_asc">Title A–Z</string>
     <string name="library_sort_title_desc">Title Z–A</string>
     <string name="library_sort_trakt_order">Trakt order</string>

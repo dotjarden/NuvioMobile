@@ -1,12 +1,15 @@
 import Combine
+import SharedCore
 import SwiftUI
 
-// Shared drawer state populated by the native, MPV and Live TV adapters.
-// Closures route selections to the active engine.
+// Engine-agnostic backing model for the swipe-down top panel (Info · Subtitles · Audio). The native
+// AVPlayer screen fills it through `NativePlayerPanelAdapter`; the mpv screen can plug in the same
+// way later (its `MPVPlaybackState` already exposes track lists + select closures). Closures rather
+// than a protocol keep it a plain ObservableObject the SwiftUI panel can observe directly.
 
 /// One selectable row in the Subtitles or Audio tab.
 struct PlayerPanelOption: Identifiable, Equatable {
-    enum Group: Equatable { case off, embedded, addon, audio }
+    enum Group: Equatable { case off, embedded, addon, audio, chapter }
     /// Stable id: the rendition NAME on the native path (AVPlayer keys options by name), the mpv
     /// track id on the mpv path. `"off"` for the Off row.
     let id: String
@@ -24,6 +27,14 @@ struct PlayerPanelChip: Identifiable, Hashable {
     /// Marks the runtime chip so the catalog runtime can stand in until playback reports one.
     var isRuntime = false
     var id: String { text }
+}
+
+/// One row of the Chapters tab (both engines). `id` is the chapter's index in the list.
+struct PlayerPanelChapter: Identifiable, Equatable {
+    let id: Int
+    let title: String
+    let sec: Double
+    var isCurrent: Bool
 }
 
 /// Info tab content: what's-playing header, metadata chips, live stream rows.
@@ -47,6 +58,10 @@ final class PlayerTopPanelModel: ObservableObject {
     /// Whether the Audio tab offers the system route picker (AirPlay/Bluetooth). False on engines
     /// that don't drive AVAudioSession routing.
     @Published var canPickRoute = true
+    /// mpv audio effects (P5 B20). nil hides the rows (the native engine).
+    @Published var audioEffects: PlayerAudioEffectsState?
+    var onAudioBoostChange: ((Int) -> Void)?
+    var onAudioModeChange: ((PlayerAudioMode) -> Void)?
 
     /// Current subtitle delay in milliseconds (0 = none, positive = subtitles later). Meaningless
     /// while `supportsSubtitleDelay` is false.
@@ -55,21 +70,30 @@ final class PlayerTopPanelModel: ObservableObject {
     /// "Timing" row entirely. mpv sets this true (`MPVPlayerPanelAdapter`); the native AVPlayer
     /// adapter leaves it false until the delay mechanism lands (beta.15 §B3).
     @Published var supportsSubtitleDelay: Bool = false
+    /// Sync Line (P5 B19): an external subtitle is selected and its cues can be loaded.
+    @Published var syncLineAvailable = false
+    /// Chapters tab rows; empty hides the tab. mpv fills it from `chapter-list`, the native engine
+    /// from the remux's libavformat chapters (`NativePlayerPanelAdapter`, P4).
+    @Published var chapters: [PlayerPanelChapter] = []
 
     /// nil = Off.
     var onSelectSubtitle: ((PlayerPanelOption?) -> Void)?
     var onSelectAudio: ((PlayerPanelOption) -> Void)?
     /// New delay in milliseconds, already clamped to ±`SUBTITLE_DELAY_MAX_MS`.
     var onSubtitleDelayChange: ((Int) -> Void)?
+    /// Sync Line: the playback position in ms, read when the viewer presses the row.
+    var syncLineCapturePositionMs: (() -> Int64)?
+    /// Sync Line: loads the selected external subtitle's cues; nil = unavailable (fetch or parse failed).
+    var syncLineCues: (() async -> [SubtitleSyncCue]?)?
+    var onSelectChapter: ((PlayerPanelChapter) -> Void)?
     var onClose: (() -> Void)?
+    /// Fork (Live TV): the panel appeared / went away, so an adapter can refresh its selections
+    /// and stop its Info refresh timer while the panel is closed.
     var onPresentation: (() -> Void)?
-    private(set) var detailsVisible = false
-    var onDetailsVisibilityChange: ((Bool) -> Void)?
-    func setDetailsVisible(_ visible: Bool) {
-        guard detailsVisible != visible else { return }
-        detailsVisible = visible
-        onDetailsVisibilityChange?(visible)
-    }
+    var onDismissal: (() -> Void)?
+    /// BUG-180 (Steven rc7): the panel's selected tab, on open and on every switch. The mpv screen
+    /// refreshes its Stream Info rows only while Info is on screen; unset on the native engine.
+    var onTabChange: ((PlayerPanelTab) -> Void)?
 
     init(info: PlayerPanelInfo) {
         self.info = info

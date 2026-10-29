@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import UIKit
 
 /// BUG-87 (beta.18): structural fit for the PINNED rows layout.
 ///
@@ -36,10 +37,12 @@ import CoreGraphics
 ///  1. **The downward reach** (`heroPinnedRowBottomReach` 44 → `bottomReachFloor` 24, 20pt of
 ///     give). It covers the mirror-direction rest error and has no content to protect below it, so
 ///     it is the cheapest dial in the file.
-///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor` 64, 24pt of give). It is
-///     never RAISED here, only lowered, and never below `topReachFloor`:
-///     `heroPinnedRowTitleInset` (48) + a measured title (~38) − `Spacing.lg` (24) ≈ 62 is the
-///     arithmetic floor at which the title still renders inside the band at all.
+///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor(lift:titleHeight:)`, 22pt of
+///     give with No Zoom on and 2pt with either zoom mode in the system font). It is never RAISED
+///     here (except by the 2026-09-30 zoom-on reach hold, up to 92 — see `plan`), only lowered, and never below the floor: `heroPinnedRowTitleInset` (48) + the ACTIVE
+///     font's measured title line (38 system, ≈38.84 Open Sans since beta.18's 0.92 scale; 42.2 unscaled) − `Spacing.lg` (24) holds the TITLE,
+///     and the floor adds the focus lift and the belt's `fadeIntrusionArm` on top of it — see
+///     `topReachFloor(lift:titleHeight:)` and the rc10 note below.
 ///  3. **Hero compression**, for whatever demand the two reaches could not cover, bounded by what
 ///     the pinned hero's internals can actually yield
 ///     (`Theme.Size.heroPinnedCompressionCap(showsCTA:)`).
@@ -58,24 +61,43 @@ import CoreGraphics
 /// Large number, the one beta.17 shipped and he never complained about — and the panel is back to
 /// three lines.
 ///
-/// ### The trade this order makes, stated plainly — UNPROVEN ON HARDWARE
+/// ### The trade this order makes — rc4's open question, ANSWERED (rc10, BUG-87/89)
 ///
-/// Reach is the most device-sensitive number in the app and the floors are now spent at EVERY
-/// Poster Size that compresses at all, not held in reserve for the shapes that could not otherwise
-/// fit. From `Theme.swift`'s own history (~L456-500): 72 was the long-proven value, the sim
-/// bisected reach **100** as the point where focus resolution dies outright, and BUG-53's device
-/// pass raised 72 → 88 to give a parked row title a 16pt cushion above the artwork against the
-/// system `hoverEffect(.highlight)` lift. `topReachFloor` is 64 — BELOW the long-proven 72 — and at
-/// 64 the title's static resting clearance (`PinnedRowTitle.staticClearance`, `Spacing.lg + reach −
-/// (titleInset + titleHeight)`) is **2pt**, not BUG-53's 26. With No Zoom ON (the tester's setting)
-/// there is no lift to clip it. With No Zoom OFF there is, and nothing here proves the outcome.
+/// rc4 shipped a flat `topReachFloor` of 64 and this header said so plainly: it sat BELOW the
+/// long-proven 72, it left the settled title a **2pt** static clearance rather than BUG-53's 26, and
+/// with No Zoom OFF "there is [a lift], and nothing here proves the outcome". The tester's rc8 Row
+/// Settle pane proved it, and the outcome was bad: at Large with zoom on, `staticClearance` 2 minus
+/// the 20pt lift is **−18** — the focused card's artwork permanently 18pt over the settled title's
+/// bottom — and `PinnedRowTitle.Clearances`' `max(…, 0)` reported it as a clean **0**. That single
+/// clamp is why the defect read as a scroll problem for a whole release: `PinnedRowSettle`'s
+/// `bandLow` became 0, which excluded the hardware's own bottom-anchored rest (≈ −31) by ~30pt, so
+/// nearly every visit fired a correction (`UNEXPECTED-WITH-FIT`, nudges −12/−94/+27) that could only
+/// swap one out-of-band rest for another; the belt, measuring intrusion against the same 0, faded
+/// the titles it could not help (`clearanceLift=0` on every belt line of that pane).
 ///
-/// Only the device pass can answer three questions this file cannot: whether focus ever hesitates
-/// or skips a row at reach 64, whether a settled row title still reads clear of the artwork, and
-/// whether the focus lift clips it with No Zoom off. If any of those fails, the revert is to raise
-/// `topReachFloor` back to 72 (costing 8pt, which the compression then takes — the tester's shape
-/// becomes compression 76.33 and the panel drops to 2 lines) or to restore the compression-first
-/// order wholesale.
+/// Christian's decision: **take the clearance.** The floor is now derived, MODE-AWARE and
+/// FONT-AWARE — `topReachFloor(lift:titleHeight:)` = title inset 48 + the active font's measured
+/// title line − `Spacing.lg` 24 + the active lift + the belt's `fadeIntrusionArm` (4) — which in the
+/// system font is 66 with No Zoom on and **86** with either zoom mode. 86 is back INSIDE the proven
+/// 72-88 corridor, so rc4's "is 64 safe?" question is retired rather than doubled, and the settled
+/// focused title clears the artwork by 4pt (one arm width) in BOTH modes by construction instead of
+/// by luck.
+///
+/// The font term is the rc10 Codex P2 half of the same defect: the floor reserved a hard-coded 38pt
+/// title while the clearance it protects is measured live, so FEAT-31's Open Sans (≈42.2pt at the
+/// same text style when unscaled; ≈38.84 since the beta.18 verdict's 0.92 scale) reproduced the negative `focusedRaw` the derived floor exists to remove — and the
+/// `LIFT-DEFICIT` stand-down with it. Open Sans + zoom on wanted 90.2 and took the 88 cap (beta.18 verdict: with the scaled 38.84 title it wants 86.84 and is UNDER the cap), which
+/// leaves 1.8pt of clearance: positive, so the corrector keeps working, but inside the belt's arm
+/// band. See `topReachFloor(lift:titleHeight:)` for that trade and for where the stand-down is still
+/// the right answer (titles past ≈44pt, i.e. accessibility text sizes).
+///
+/// The price is paid in hero compression: at Large + Hide Labels + panel it goes 68.33 → **90.33**
+/// with zoom on (70.33 with No Zoom), which takes the panel's synopsis from 3 lines to 2 in both
+/// modes. That cost is real and is documented at `topReachFloor(lift:)`; the dial to move if the
+/// third line has to come back is `heroPinnedFrameSlack` or `HeroSlotGive`'s tier-3 gate, never this
+/// floor. Two things the device pass still owns, both narrower than rc4's: that focus never
+/// hesitates at reach 86/66 (both inside the corridor, so this is a sanity check), and that the hero
+/// at the deeper compression still reads acceptably.
 ///
 /// ## Unsatisfiable by design
 ///
@@ -90,6 +112,22 @@ import CoreGraphics
 /// used to be exempt from fitting even with captions; that exemption clipped artwork on upward
 /// scrolling. Every size now budgets the complete focus frame before deciding to compress.
 enum PinnedRowGeometry {
+
+    /// beta.18 verdict (BUG-118, R3): the left safe-area inset of the key window, read ONCE so the
+    /// Soft edge mask geometry is stable for the session. Not hard-coded because the physical
+    /// margin between a full-width row and the bezel is the HIG safe area (80 pt on tvOS), which
+    /// the mask ramps must span to be visible on an overscanning TV. Falls back to 80 (HIG value)
+    /// when no window exists yet.
+    nonisolated static let sideSafeArea: CGFloat = {
+        let read: @MainActor () -> CGFloat? = {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.flatMap(\.windows).first
+            guard let inset = window?.safeAreaInsets.left, inset > 0 else { return nil }
+            return inset
+        }
+        let value: CGFloat? = Thread.isMainThread ? MainActor.assumeIsolated { read() } : nil
+        return value ?? 80
+    }()
 
     /// Everything the pinned rows layout needs to agree on for ONE (Poster Size × caption × hero
     /// form × row shape) regime. Every field is derived; nothing here is a literal.
@@ -110,10 +148,65 @@ enum PinnedRowGeometry {
         /// width of the set of legal rests: 0 means a single rest, and it is bounded above by
         /// `Spacing.lg + heroPinnedRowsSettledCushion` (32) whenever the full demand was spent.
         var restRange: CGFloat
-        /// Short stable identity for this regime, e.g. `L403c0p1r0` — Large, no captions, panel
-        /// hero, portrait rows. Used as the `onChange` key that re-reveals the rows after a Poster
-        /// Size switch (BUG-89) and as the log-once key below.
+        /// Short stable identity for this regime, e.g. `L403c0p1r0z1t38` — Large, no captions, panel
+        /// hero, portrait rows, No Zoom on. Used as the `onChange` key that re-reveals the rows
+        /// after a Poster Size switch (BUG-89) and as the log-once key below.
         var regimeKey: String
+    }
+
+    /// BUG-87/89 (rc11, hardened rc12): the minimum focusable-label height Home's LAST pinned row
+    /// must carry so the focus engine cannot park it outside the legibility band — see
+    /// `EnvironmentValues.rowCardLinkFrameFloor` for the reveal argument.
+    ///
+    /// The floor is the LARGER of the plan's own link frame and `viewport − Theme.Spacing.lg`, not
+    /// `plan.linkFrame` alone (rc11's version). `plan.linkFrame` matches every OTHER row's revealed
+    /// extent, so it looks like the right floor — but the engine tolerates any rest whose margin
+    /// falls in `[24, 24 + restRange]`, and `restRange = viewport − linkFrame` can run past the
+    /// band's own upper edge (48) whenever a regime's reach-spend left slack above 24pt: the
+    /// hero-OFF panel at Large/Medium+ carries `restRange` 32 (max margin 56), and Small without
+    /// captions carries 72 (max margin 96). Flooring at `linkFrame` alone permits the label to rest
+    /// as high as that slack allows — legal for the engine, but the last row can then park with its
+    /// title well above the band, and the rc11 exemption below (`lastRowShaped`) then suppresses the
+    /// correction that would otherwise have pulled it back down.
+    ///
+    /// `viewport − Spacing.lg` closes that gap: it is the height that makes the label's OWN
+    /// `restRange` exactly `Spacing.lg` (24), i.e. `margin ∈ [24, 24 + 24] = [24, 48]` — the band's
+    /// full width and no more, so "fully revealed" forces `rowTop ∈ [−24, 0]` regardless of what the
+    /// regime's own restRange was. Taking the max with `plan.linkFrame` keeps the rc11 guarantee for
+    /// every regime where the plan's own frame already confines the rest that tightly (every
+    /// carousel plan; every regime with `restRange <= Spacing.lg`) — the floor never goes SHORTER
+    /// than the frame itself. The frame still fits the viewport by construction: `floor +
+    /// Spacing.lg <= viewport` always holds, because `plan.linkFrame + Spacing.lg <= viewport +
+    /// Spacing.lg` (trivial) and `(viewport − Spacing.lg) + Spacing.lg == viewport`.
+    ///
+    /// 0 when the regime does not fit — an over-tall frame already has two anchorings and raising a
+    /// short row to match it would only add a third.
+    nonisolated static func lastRowLinkFrameFloor(plan: Plan) -> CGFloat {
+        guard plan.fits else { return 0 }
+        return max(plan.linkFrame, plan.viewport - Theme.Spacing.lg)
+    }
+
+    /// rc14 (BUG-122): how much negative bottom padding a SHORT pinned row (Continue Watching,
+    /// Upcoming, a collection row) applies to cancel the layout growth `rowCardLinkFrameFloor`
+    /// causes, so only the focusable frame grows and the visible spacing to the next row does not.
+    /// `naturalLabel` is the row's own tallest label — topReach + artwork + caption + bottomReach.
+    /// 0 for the LAST row: its growth is accounted for by Home's bottom inset
+    /// (`HomeView.pinnedLastRowHeight`), exactly as rc11 shipped it. 0 when the floor is inactive
+    /// or the label already fills it (a uniform poster row).
+    nonisolated static func shortRowLayoutCompensation(floor: CGFloat,
+                                                       naturalLabel: CGFloat,
+                                                       isLastRow: Bool) -> CGFloat {
+        guard !isLastRow, floor > 0 else { return 0 }
+        return max(floor - naturalLabel, 0)
+    }
+
+    /// How much transparent bottom padding `lastRowLinkFrameFloor` adds to a label whose natural
+    /// height is `labelFrame` (= topReach + artwork + captionChrome + bottomReach for that CARD).
+    /// Reporting/verification only — the layout applies the floor as a `minHeight`, which needs no
+    /// per-card arithmetic. Uniform poster/landscape rows return 0 by construction: their label IS
+    /// the plan's link frame.
+    nonisolated static func lastRowBottomReachExtra(plan: Plan, labelFrame: CGFloat) -> CGFloat {
+        max(lastRowLinkFrameFloor(plan: plan) - labelFrame, 0)
     }
 
     // MARK: - Floors
@@ -126,22 +219,121 @@ enum PinnedRowGeometry {
     /// than only the shapes that could not otherwise fit — see the header's trade note.
     nonisolated static let bottomReachFloor: CGFloat = Theme.Spacing.lg
 
-    /// Floor for the upward reach. DERIVED, and the hardest bound in this file: the overlaid title
-    /// sits `heroPinnedRowTitleInset` below the shelf top and the card frame starts `Spacing.lg`
-    /// below that same top, so the band above the artwork must still hold
-    /// `heroPinnedRowTitleInset + titleHeight − Spacing.lg` for the title to render inside the reach
-    /// at all. With the ~38pt measured title `PinnedRowTitle` records that is ≈62; 64 keeps 2pt of
-    /// margin. NEVER raise this above `heroPinnedRowTopPad` — reach 100 kills focus resolution
-    /// outright (Theme.swift ~L470-478), and this dial only ever moves DOWN.
+    /// The band above the artwork must hold the TITLE *and* whatever the focus treatment raises the
+    /// focused card's artwork by. If it does not, the settled title lands on the picture by
+    /// `lift − staticClearance` at EVERY rest, and no scroll correction can undo it: a scroll moves
+    /// title and artwork together, so only `slide` changes their relationship and at a clean rest
+    /// `slide` is already 0.
     ///
-    /// UNPROVEN ON HARDWARE, and as of the rc2 reordering it is reached at every compressing Poster
-    /// Size rather than only in the shapes that could not otherwise fit. 64 sits below the
-    /// long-proven 72, and it leaves the settled title 2pt of clearance above the artwork where
-    /// BUG-53's 88 leaves 26. The device pass owns the verdict; the revert is 72 (see the header).
-    nonisolated static let topReachFloor: CGFloat = 64
+    /// BUG-87/89 (rc4 → rc10): the flat 64 was derived against the title ALONE
+    /// (`titleInset 48 + measuredTitleHeight 38 − Spacing.lg 24 = 62`, plus 2pt of margin) and
+    /// treated the lift as somebody else's problem. With zoom on it is 20pt, so at Large — the one
+    /// Poster Size that spends this dial — the focused card's artwork ended up 18pt ABOVE the
+    /// settled title's bottom, and `PinnedRowTitle.Clearances`' `max(…, 0)` reported that as ZERO.
+    /// Everything downstream then misread it: `PinnedRowSettle`'s `bandLow` became 0, excluding the
+    /// hardware's own bottom-anchored rest by ~30pt (the tester's repeated `UNEXPECTED-WITH-FIT`
+    /// nudges), and the belt measured intrusion against 0 and faded the titles it could not help
+    /// (`clearanceLift=0` on every belt line of the rc4 pane).
+    ///
+    /// So the floor is DERIVED and MODE-AWARE. `lift` is `PinnedRowTitle.focusLiftAllowance`'s own
+    /// number for the active Appearance settings — 20 in both zoom-on modes, 0 with No Zoom on — and
+    /// `fadeIntrusionArm` (4) is the belt's own arm edge, so a settled focused title sits OUTSIDE
+    /// the arm band by construction rather than one rounding error inside it:
+    ///
+    ///     No Zoom on             62 + 0  + 4 = 66   (22 of the reach's 24pt of give still spent)
+    ///     zoom on                62 + 20 + 4 = 86   (2pt of give; the remaining 22 goes to compression)
+    ///     No Zoom + hold (rc12)  62 + 20 + 4 = 86   (default-OFF A/B — see below)
+    ///
+    /// ### rc12: the No Zoom reach-hold A/B (BUG-87 follow-up)
+    ///
+    /// Steven's rc10/rc11 sim walks in No Zoom park every row's rest 2pt outside the belt's arm band
+    /// (`margin=-22` against `bandLo=-4`), the corrector nudges, two pullbacks disarm it, and the
+    /// title fades — the exact symptom the zoom-on floor above was built to remove, just 2pt short of
+    /// the band rather than 18. There is no hardware evidence either way: the tester runs zoom on, so
+    /// no device walk has ever exercised No Zoom's reach. Rather than change the No Zoom default on
+    /// simulator-only evidence, `PinnedRowTitle.FocusModeFlags.reachHoldsLift` (default OFF,
+    /// `AboutSettingsPane`'s "No Zoom Row Reach (A/B)" row) lets `PinnedRowGeometry.plan` spend the
+    /// SAME 86 floor in No Zoom as zoom-on — widening the band rather than charging a lift nothing
+    /// produces (see `floorLift` in `plan` and `FocusModeFlags.reachHoldsLiftEffective`'s doc for why
+    /// this is not routed through `focusLiftAllowance`). OFF is byte-identical to today; ON costs the
+    /// Large hero-off panel one synopsis line, same as zoom-on already does (see the next section).
+    /// Christian A/Bs it on hardware with the Row Settle pane; rc13 either promotes it to the No Zoom
+    /// default or deletes it.
+    ///
+    /// ### What this costs the panel's synopsis — read before re-tuning
+    ///
+    /// The design note for this change claimed the No-Zoom floor kept the rc2 reorder's 3-line
+    /// synopsis intact. It does NOT, and the margin is absurd: at Large + Hide Labels + panel the
+    /// compression goes 68.33 → 70.33, `HeroSlotGive` tiers 1+2 cover 68, `heroPinnedFrameSlack` is
+    /// 2, and the 0.33 left over opens tier 3 — synopsis slot 144 − 36.33 = 107.67, and
+    /// `floor(107.67 / 36)` is **2**. That is exactly the boundary
+    /// `testPanelAtStevensCompressionKeepsThreeSynopsisLines` was written to guard, crossed by a
+    /// third of a point. Zoom on spends 22 more and lands at 2 lines outright (slot 87.67), and the
+    /// rc12 reach-hold costs No Zoom the identical 2 lines when it is switched on. So both zoom
+    /// modes, and No Zoom with the hold ON, now show a 2-line description where rc4 showed 3; plain
+    /// No Zoom (hold OFF, the shipping default) is unaffected — Medium and below never reach this
+    /// floor at all. Christian's decision was to take the clearance knowing the hero pays for it; if
+    /// the third line has to come back, the dial to move is `heroPinnedFrameSlack` or the tier-3 gate
+    /// in `HeroSlotGive`, NOT this floor — lowering the floor again reinstates the permanent
+    /// title-on-artwork overlap this whole change removes.
+    ///
+    /// Capped at `heroPinnedRowTopPad`: this dial only ever moves DOWN (reach 100 kills focus
+    /// resolution outright). 86 also lands INSIDE the proven 72-88 corridor, so the rc4 header's
+    /// unanswered hardware questions about reach 64 are retired rather than doubled.
+    ///
+    /// ### `titleHeight` is the ACTIVE FONT's metric, not a constant (rc10 Codex P2)
+    ///
+    /// The first cut of this floor hard-coded 38 — the system font's `sectionTitle` line as measured
+    /// on the FA87 fixture — while the clearance it is supposed to reserve room for
+    /// (`PinnedRowTitle.staticClearance`) is computed from the title's LIVE measured height. Under
+    /// FEAT-31's Open Sans the two disagree by ≈4pt (42.2 against 38), which is the entire margin
+    /// this floor keeps, so at Large with zoom on the derived reach of 86 left
+    /// `atRest = (24 + 86) − (48 + 42.2) = 19.8`, `focusedRaw = −0.2` — negative, i.e. the corrector's
+    /// `LIFT-DEFICIT` stand-down, permanently, for the session, on a font the app ships. The default
+    /// is therefore `Theme.Font.sectionTitleLineHeight`, measured from the face the token actually
+    /// resolves to. A DEFAULT ARGUMENT rather than a read inside the body, so the unit suite can pin
+    /// a fixed height and assert numbers instead of following whatever family the host has applied —
+    /// which is also why that metric is the one `Theme.Font` member declared `nonisolated(unsafe)`:
+    /// a nonisolated function's default value expression may not touch main-actor state.
+    ///
+    /// ### At the 88 cap the belt's arm is no longer guaranteed — by design
+    ///
+    /// Open Sans + zoom on wanted `48 + 42.2 − 24 + 20 + 4 = 90.2` and got the cap, 88. (beta.18
+    /// verdict: the shipping scaled title is 38.84, so the floor is `48 + 38.84 − 24 + 20 + 4 =
+    /// 86.84`, under the cap; the 42.2 case below is the explicit tall-title regime.) The settled
+    /// focused title then clears the artwork by `24 + 88 − 48 − 42.2 − 20 = 1.8`: still POSITIVE, so
+    /// the geometry is legible and the corrector keeps working (`focusedRaw >= 0`, no stand-down, and
+    /// the band the corrector aims into is simply 2.2pt narrower at its low edge), but under
+    /// `fadeIntrusionArm`, so the belt may arm on a rest that is technically clear. That is the right
+    /// trade at the cap: the alternative is a reach past 88, which kills focus resolution outright.
+    /// A title taller than ≈44pt (accessibility text sizes, in either font) pushes `focusedRaw`
+    /// negative even at the cap, and that IS the stand-down's job — see the `LIFT-DEFICIT` branch in
+    /// `PinnedRowSettle.settlePlan`.
+    ///
+    /// ### 2026-09-30: the zoom-on reach hold (`hold`, `cap`)
+    ///
+    /// With `FocusModeFlags.zoomReachHoldEffective`, `plan` calls this a second time with
+    /// `hold: Theme.Size.heroPinnedRowZoomReachHold` (6) and `cap: heroPinnedRowTopReachHoldCap`
+    /// (92) — the one path allowed past the 88 cap above. System font: 86 + 6 = 92. Open Sans: 96.2 (unscaled 42.2 title; beta.18 verdict: 86.84 + 6 = 92.84 with the scaled 38.84 title),
+    /// capped to 92. Both default to "no hold", so every other caller is byte-identical. `cap` is an
+    /// optional resolved in the body rather than a `Theme.Size` default expression, for the same
+    /// nonisolated-default reason as `titleHeight`.
+    nonisolated static func topReachFloor(lift: CGFloat,
+                                          titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight,
+                                          hold: CGFloat = 0,
+                                          cap: CGFloat? = nil) -> CGFloat {
+        let titleFloor = Theme.Size.heroPinnedRowTitleInset + titleHeight - Theme.Spacing.lg
+        return min(cap ?? Theme.Size.heroPinnedRowTopPad,
+                   titleFloor + lift + PinnedRowTitle.fadeIntrusionArm + hold)
+    }
 
-    /// The measured height `topReachFloor` is derived against — `PinnedRowTitle`'s own record for a
-    /// `Theme.Font.sectionTitle` line as rendered on the FA87 fixture.
+    /// The SYSTEM font's `Theme.Font.sectionTitle` line as rendered on the FA87 fixture — the number
+    /// this floor was originally derived against, and every arithmetic expectation in
+    /// `PinnedRowGeometryTests` with it.
+    ///
+    /// No longer read by any shipping path (`topReachFloor` takes the live metric — see above). It
+    /// survives as the tests' fixed reference, so the unit suite asserts numbers rather than
+    /// whatever font family the host simulator happens to be running.
     nonisolated static let measuredTitleHeight: CGFloat = 38
 
     // MARK: - Give
@@ -230,21 +422,203 @@ enum PinnedRowGeometry {
                 return Split(synopsis: synopsis, logo: max(compression - synopsis, 0))
             }
 
-            // Tier 1 — the synopsis give both hero forms have.
-            let firstSynopsis = min(compression, Theme.Size.heroSynopsisSlotPinnedGive)
-            // Tier 2 — the logo, down to its floor.
-            let logo = min(max(compression - firstSynopsis, 0), Theme.Size.heroLogoSlotPinnedGive)
-            // Tier 3 — the CTA slot the panel absorbed, past the frame's own slack. 0 for the
-            // carousel, whose synopsis give IS its whole give above the floor.
-            let panelExtra = max(slot
-                                 - Theme.Size.heroSynopsisSlotHeightPinnedFloor
-                                 - Theme.Size.heroSynopsisSlotPinnedGive, 0)
-            let beyond = max(compression - firstSynopsis - logo - Theme.Size.heroPinnedFrameSlack, 0)
-            return Split(synopsis: firstSynopsis + min(beyond, panelExtra), logo: logo)
+            // rc14 (Steven rc13 verdict, 2026-09-30): three tiers in a NEW order, for both forms.
+            //
+            //  0. The frame's own slack (`heroPinnedFrameSlack`, 22 since the chrome shave) — free,
+            //     no content gives anything.
+            //  1. The logo, down to its floor (`heroLogoSlotPinnedGive`, 34).
+            //  2. The synopsis, down to its one-line floor (36): 36 of give in the carousel, 104 in
+            //     the panel.
+            //
+            // The old order spent the synopsis first, so at Medium+ (compression ≈16) the hero lost
+            // half a description line while its logo stayed at full height, and at Large (68.33)
+            // the synopsis was at its one-line floor before the logo had given anything — the
+            // tester's "I still only get one line of description for movies on Home". Spending the
+            // free slack and the logo first keeps two `Theme.Font.synopsis` lines at Medium+ with a
+            // full-height logo, two at Large (logo 76), and four in both panels.
+            let free = min(compression, Theme.Size.heroPinnedFrameSlack)
+            let rest = max(compression - free, 0)
+            let logo = min(rest, Theme.Size.heroLogoSlotPinnedGive)
+            let synopsis = min(max(rest - logo, 0),
+                               slot - Theme.Size.heroSynopsisSlotHeightPinnedFloor)
+            return Split(synopsis: synopsis, logo: logo)
+        }
+    }
+
+    // MARK: - FEAT-61 (Steven rc3): Long synopsis
+
+    /// FEAT-61 (Steven rc3): how many synopsis lines the Classic hero shows, and where the extra
+    /// height comes from. Batch M D8 (Christian, 2026-10-19: "4 where it fits"): the Settings ›
+    /// Home Screen › Synopsis Length picker is gone and this is how Classic always draws; it asks
+    /// for `maxLines` (4) and falls back to fewer when the poster size and font leave no room
+    /// (Large may show fewer than 4).
+    ///
+    /// ## The rule: the rows never pay
+    ///
+    /// The hero's FRAME is untouched. Its height is `heroCarouselHeightPinned − plan.compression`
+    /// in the pinned forms and `heroCarouselHeight` in the in-scroll Classic hero, and `plan` (the
+    /// rows' reaches, their floors, the viewport, the rest range) is computed exactly as before,
+    /// with no knowledge of this setting. BUG-87/89's title-under-poster overlap lives entirely in
+    /// that plan, so it cannot come back through here. Long only redistributes height INSIDE the
+    /// frame, in this order:
+    ///
+    ///  1. the frame's unused slack — what `HeroSlotGive.split` did not already spend
+    ///     (`heroPinnedFrameSlack` 22 in the pinned forms, 46 in the in-scroll hero). Free: no
+    ///     content gives anything, the centred content block just grows into it;
+    ///  2. the logo slot, down to `pinnedLogoFloor` (64) in the pinned forms or `classicLogoFloor`
+    ///     (110, the pinned hero's full slot) in the in-scroll hero.
+    ///
+    /// It takes only what the next whole lines need, never more, so the logo shrinks the least it
+    /// can. Capped at `maxLines` (4). If not even one more line fits in what is left, nothing is
+    /// spent and the hero keeps Standard's count. The meta line, the CTA, the gaps and the paddings
+    /// are never touched.
+    ///
+    /// Collection folder heroes are excluded by the caller: they have no synopsis to lengthen.
+    nonisolated enum LongSynopsis {
+
+        /// The Stage shows up to 5; Classic stops at 4 (the panel's Standard count at most sizes).
+        static let maxLines = 4
+
+        /// Same 1 pt tolerance `HomeHeroForeground.synopsisLineLimit` gives a slot that is a hair
+        /// short of a whole line: the fixed-height frame hides an overhang that small.
+        static let lineTolerance: CGFloat = 1
+
+        /// Added on top of the exact need so `lines(slot:)` lands ON the target line count rather
+        /// than a floating-point hair below it.
+        static let roundingMargin: CGFloat = 0.25
+
+        /// Long's logo floor in the pinned hero. Below Standard's 76
+        /// (`heroLogoSlotHeightPinnedFloor`) on purpose: at Large with zoom on, the compression has
+        /// already spent the slack and the logo down to 76, and the reporter's Open Sans second line
+        /// is 2 pt away. 64 still draws a 2:1 wordmark 128 pt wide. Only Long reaches it.
+        static let pinnedLogoFloor: CGFloat = 64
+
+        /// FEAT-61 (Steven rc10, Medium+): the logo floor that only the FOURTH line may reach in the
+        /// pinned hero. Measured at Medium+ with Hide Titles ON and zoom on (his config), the
+        /// carousel's compression is 15.95: system font already gets 4 lines, Open Sans (31.32 pt
+        /// lines) is 0.48 pt short with the logo at 64. 56 clears that with margin and still draws
+        /// a 2:1 wordmark 112 pt wide; never below 48 (a 2:1 wordmark 96 pt wide). Lines two and
+        /// three keep `pinnedLogoFloor`. The frame never changes, so rows never pay (BUG-87/89).
+        /// Medium+ WITH captions (compression 53 to 59) would need a floor near 31, below 48, so
+        /// those cells keep 2 lines; that is reported, not guessed.
+        static let fourLineLogoFloor: CGFloat = 56
+
+        /// The logo floor `grant` uses for a `lines` target in the pinned hero.
+        static func pinnedFloor(forLines lines: Int) -> CGFloat {
+            lines >= maxLines ? fourLineLogoFloor : pinnedLogoFloor
+        }
+
+        /// Long's logo floor in the in-scroll Classic hero (150 pt slot): the pinned hero's full slot.
+        static let classicLogoFloor: CGFloat = Theme.Size.heroLogoSlotHeightPinned
+
+        /// What Long changes. All zero (and `lines` == the Standard count) when nothing fits.
+        struct Grant: Equatable, Sendable {
+            /// Points added to the synopsis slot.
+            var synopsisGrowth: CGFloat
+            /// Points taken from the logo slot (the rest of `synopsisGrowth` is frame slack).
+            var logoGive: CGFloat
+            /// The synopsis line limit to draw.
+            var lines: Int
+
+            var slackSpent: CGFloat { synopsisGrowth - logoGive }
+            var isGrowing: Bool { synopsisGrowth > 0 }
+        }
+
+        /// Whole lines a `slot` holds — the exact formula `HomeHeroForeground.synopsisLineLimit`
+        /// uses for the pinned hero (at least 1).
+        static func lines(slot: CGFloat, lineHeight: CGFloat) -> Int {
+            guard lineHeight > 0 else { return 1 }
+            return max(1, Int(((slot + lineTolerance) / lineHeight).rounded(.down)))
+        }
+
+        /// The core rule, on plain numbers.
+        ///
+        /// - Parameters:
+        ///   - slot: the synopsis slot Standard draws.
+        ///   - standardLines: the line limit Standard draws (2 fixed in the in-scroll hero).
+        ///   - logoSlot: the logo slot Standard draws.
+        ///   - logoFloor: how far Long may shrink the logo slot.
+        ///   - fourLineLogoFloor: a lower floor used only for the `maxLines` target (nil = `logoFloor`).
+        ///   - unusedSlack: frame height the content does not fill today.
+        ///   - lineHeight: `Theme.Font.synopsisLineHeight` for the active font.
+        static func grant(slot: CGFloat,
+                          standardLines: Int,
+                          logoSlot: CGFloat,
+                          logoFloor: CGFloat,
+                          fourLineLogoFloor: CGFloat? = nil,
+                          unusedSlack: CGFloat,
+                          lineHeight: CGFloat) -> Grant {
+            let unchanged = Grant(synopsisGrowth: 0, logoGive: 0, lines: standardLines)
+            guard lineHeight > 0, standardLines < maxLines else { return unchanged }
+            let slack = max(unusedSlack, 0)
+            for target in stride(from: maxLines, through: standardLines + 1, by: -1) {
+                let floor = target == maxLines ? min(logoFloor, fourLineLogoFloor ?? logoFloor) : logoFloor
+                let available = slack + max(logoSlot - floor, 0)
+                let need = max(CGFloat(target) * lineHeight - lineTolerance - slot + roundingMargin, 0)
+                guard need <= available else { continue }
+                let fromSlack = min(need, slack)
+                return Grant(synopsisGrowth: need, logoGive: need - fromSlack, lines: target)
+            }
+            return unchanged
+        }
+
+        /// The pinned title hero (Nuvio-style carousel, `showsCTA`, or the Show Hero OFF panel) at
+        /// `compression` (`PinnedRowGeometry.Plan.compression`). Standard's slots come from
+        /// `HeroSlotGive.split`, so this starts from exactly what Standard draws.
+        static func pinned(compression: CGFloat, showsCTA: Bool, lineHeight: CGFloat) -> Grant {
+            let split = HeroSlotGive.split(compression: compression, showsCTA: showsCTA, folderHero: false)
+            let baseSlot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                                    : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+            let slot = baseSlot - split.synopsis
+            // Frame minus content: the content gave up `split.total`, the frame `compression`.
+            let unusedSlack = Theme.Size.heroPinnedFrameSlack - max(compression, 0) + split.total
+            return grant(slot: slot,
+                         standardLines: lines(slot: slot, lineHeight: lineHeight),
+                         logoSlot: Theme.Size.heroLogoSlotHeightPinned - split.logo,
+                         logoFloor: pinnedLogoFloor,
+                         fourLineLogoFloor: fourLineLogoFloor,
+                         unusedSlack: unusedSlack,
+                         lineHeight: lineHeight)
+        }
+
+        /// The in-scroll Classic hero (Nuvio-Style Hero OFF, `HomeHeroForeground.classicLayout`):
+        /// 150 logo + 72 synopsis at a fixed 2 lines inside the 452 pt frame.
+        static func classic(showsCTA: Bool, lineHeight: CGFloat) -> Grant {
+            grant(slot: Theme.Size.heroSynopsisSlotHeight,
+                  standardLines: 2,
+                  logoSlot: Theme.Size.heroLogoSlotHeight,
+                  logoFloor: classicLogoFloor,
+                  unusedSlack: classicFrameSlack(showsCTA: showsCTA),
+                  lineHeight: lineHeight)
+        }
+
+        /// The in-scroll hero's frame (`heroCarouselHeight`, 452) minus what `classicLayout` draws
+        /// in it: 2·24 padding + 150 logo + 2·16 + 32 meta + 72 synopsis, plus 16 + 56 CTA when the
+        /// CTA shows. 46 with the CTA.
+        static func classicFrameSlack(showsCTA: Bool) -> CGFloat {
+            let content = 2 * Theme.Spacing.lg
+                + Theme.Size.heroLogoSlotHeight
+                + 2 * Theme.Spacing.md
+                + Theme.Size.heroMetaSlotHeight
+                + Theme.Size.heroSynopsisSlotHeight
+                + (showsCTA ? Theme.Spacing.md + Theme.Size.heroButtonSlotHeight : 0)
+            return max(Theme.Size.heroCarouselHeight - content, 0)
         }
     }
 
     // MARK: - The plan
+
+    /// dotjarden fork: cap artwork only when the hero's full elastic space still cannot fit its
+    /// focus frame beneath a pinned control row of `reservedHeight`.
+    nonisolated static func fittedPosterHeight(_ requested: CGFloat, captionVisible: Bool,
+                                               showsCTA: Bool, reservedHeight: CGFloat) -> CGFloat {
+        let caption = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let available = Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA) - reservedHeight
+            + elasticGive(showsCTA: showsCTA)
+        let maximum = available - topReachFloor(lift: 0) - bottomReachFloor - caption
+            - Theme.Spacing.lg - Theme.Size.heroPinnedRowsSettledCushion
+        return min(requested, max(1, maximum))
+    }
 
     /// Resolves one regime. Pure: the same inputs always produce an equal `Plan` (the probe log
     /// below is fire-once-per-regime and has no effect on the value).
@@ -260,35 +634,78 @@ enum PinnedRowGeometry {
     ///     (`FolderTile.artworkHeight`), and such a row is over-tall here exactly as it is at Medium
     ///     today — the belt owns it. Compressing a hero by ~112pt for a page whose catalog rows are
     ///     203pt tall would be the worse trade.
-    /// Cap artwork only when the hero's full elastic space still cannot fit its focus frame.
-    nonisolated static func fittedPosterHeight(_ requested: CGFloat, captionVisible: Bool,
-                                               showsCTA: Bool, reservedHeight: CGFloat) -> CGFloat {
-        let caption = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
-        let available = Theme.Size.heroPinnedRowsViewportBudget - reservedHeight + elasticGive(showsCTA: showsCTA)
-        let maximum = available - topReachFloor - bottomReachFloor - caption
-            - Theme.Spacing.lg - Theme.Size.heroPinnedRowsSettledCushion
-        return min(requested, max(1, maximum))
-    }
-
+    ///   - mode: the two Appearance flags `PinnedRowTitle.focusLiftAllowance` branches on. The plan
+    ///     is MODE-DEPENDENT as of BUG-87/89 rc10 — the top reach's floor has to hold the focus lift
+    ///     — so a caller inside SwiftUI must pass `@AppStorage`-backed flags rather than let the
+    ///     `.current` default latch whatever the defaults said last (the Codex r10 P2 staleness
+    ///     class, closed for `PinnedRowTitleTracking` and closed here the same way).
+    ///   - titleHeight: the rendered height of ONE `Theme.Font.sectionTitle` line, which the top
+    ///     reach's floor has to reserve room for. Defaults to the ACTIVE font family's measured
+    ///     metric (`Theme.Font.sectionTitleLineHeight`) — the plan is font-dependent for the same
+    ///     reason it is mode-dependent, and a hard-coded 38 stood the corrector down under Open Sans
+    ///     (see `topReachFloor(lift:titleHeight:)`). Tests pass a fixed number so their arithmetic
+    ///     does not depend on the host's font.
+    ///
+    ///     `regimeKey` also takes this parameter and encodes it (rc10 Codex P2 fix 4): the plan has
+    ///     been title-metric-dependent since fix 3 above, so two title metrics must not share a
+    ///     regime — see `regimeKey`'s doc comment for why the previous "the remount already resets
+    ///     everything" argument did not hold.
     nonisolated static func plan(posterHeight: CGFloat,
                                  captionVisible: Bool,
                                  showsCTA: Bool,
                                  landscapeRows: Bool,
+                                 mode: PinnedRowTitle.FocusModeFlags = .current,
+                                 titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight,
                                  reservedHeight: CGFloat = 0) -> Plan {
         let artwork = landscapeRows ? Theme.Size.landscapeHeight : posterHeight
         let captionChrome = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let baseTopReach = Theme.Size.heroPinnedRowTopPad
         let baseBottomReach = Theme.Size.heroPinnedRowBottomReach
-        let budget = max(0, Theme.Size.heroPinnedRowsViewportBudget - reservedHeight)
+        // 2026-09-30: the rows viewport budget of the hero form on screen — the panel's header has
+        // no page-dots row, so its budget is 38pt taller (455 carousel, 493 panel).
+        // dotjarden fork: `reservedHeight` is space a pinned control row (Browse/Search filters)
+        // takes from the rows viewport beneath the hero.
+        let budget = max(0, Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA) - reservedHeight)
         let key = regimeKey(posterHeight: posterHeight,
                             captionVisible: captionVisible,
                             showsCTA: showsCTA,
-                            landscapeRows: landscapeRows) + (reservedHeight > 0 ? "f\(Int(reservedHeight))" : "")
+                            landscapeRows: landscapeRows,
+                            mode: mode,
+                            titleHeight: titleHeight) + (reservedHeight > 0 ? "f\(Int(reservedHeight))" : "")
+
+        // BUG-87/89: the top reach's floor depends on the lift the band has to hold, read from the
+        // same flags `PinnedRowTitle.focusLiftAllowance` reads. `.cardTreatment` because every
+        // pinned row's cards go through `CardFocusTreatment`/`CardArtworkFocusLift` (BUG-108 brought
+        // the collection folder row in too).
+        let lift = PinnedRowTitle.focusLiftAllowance(artworkHeight: artwork,
+                                                    captionVisible: captionVisible,
+                                                    treatment: .cardTreatment,
+                                                    mode: mode)
+        // rc12 BUG-87 follow-up: the reach-hold A/B spends the SAME floor No Zoom would have if
+        // zoom were on (`Theme.Size.heroPinnedRowFocusLiftAllowance`, the one clamp shared with
+        // `focusLiftAllowance`'s zoom-on branches), never routed through `lift` itself — `lift` stays
+        // 0 in No Zoom (nothing scales) and only the FLOOR widens to reserve the band that would
+        // otherwise be missing. See `FocusModeFlags.reachHoldsLiftEffective` and the rc12 note on
+        // `topReachFloor` above for why charging both would fabricate zero band instead of a wider
+        // one.
+        let floorLift = mode.reachHoldsLiftEffective
+            ? max(lift, Theme.Size.heroPinnedRowFocusLiftAllowance)
+            : lift
+        let topFloor = topReachFloor(lift: floorLift, titleHeight: titleHeight)
 
         // Wave 10's number for this artwork, and the scope gate in one read: it is 0 at exactly the
         // Poster Sizes whose rows already fit the pre-BUG-87 extent rule, and 0 everywhere when
         // `debug.pinnedHeroCompressionOff` is set.
-        let legacyCompression = PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork)
+        //
+        // 2026-09-30: two reads now that the budget depends on the hero form. The SCOPE GATE stays
+        // keyed to the carousel budget, so the population that enters the structural fit (Large,
+        // Medium+) is the same in both forms — with the panel's 493 budget Medium+ would fall
+        // outside the gate and lose the reach hold, resting at its old reach. The unsatisfiable /
+        // closed-gate fallback uses the form's own number, so its viewport is the real one.
+        let scopeGate = PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork, showsCTA: true)
+        let legacyCompression = showsCTA
+            ? scopeGate
+            : PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork, showsCTA: false)
 
         func settled(compression: CGFloat, topReach: CGFloat, bottomReach: CGFloat) -> Plan {
             let viewport = budget + compression
@@ -308,7 +725,7 @@ enum PinnedRowGeometry {
                                 topReach: baseTopReach,
                                 bottomReach: baseBottomReach)
 
-        guard !unchanged.fits || legacyCompression > 0 || reservedHeight > 0 else {
+        guard scopeGate > 0 || (reservedHeight > 0 && !unchanged.fits) else {
             noteIfShort(unchanged)
             return unchanged
         }
@@ -318,31 +735,79 @@ enum PinnedRowGeometry {
         // make a canonical rest sit fully inside the viewport rather than flush to its edges. The
         // formula is unchanged by the rc2 reordering; only the order the three dials pay it in is.
         // Each step below is a pure `min` against a real give; none can raise a dial.
-        let demand = Theme.Spacing.lg
-            + baseTopReach
-            + artwork
-            + captionChrome
-            + baseBottomReach
-            + Theme.Size.heroPinnedRowsSettledCushion
-            - budget
-        var short = max(demand, 0)
+        //
+        // 2026-09-30 rest target: in a HELD regime (`restTargetApplies`) the slack left for legal
+        // rests is `heroPinnedRowsRestTarget` (4) instead of `Spacing.lg + settledCushion` (32).
+        // The engine rests the title at ≈ −restRange/2 − 5.5 (see the constant's doc), so 32pt of
+        // slack parked Medium+ at −21/−22, outside the zoom-on band. Un-held regimes keep the
+        // original formula byte for byte. A regime whose compression is capped (Large carousel at
+        // 70) keeps whatever slack the cap leaves.
+        // Two literal expressions rather than one with a swapped term, so the un-held one keeps
+        // its original floating-point evaluation order.
+        let demand: CGFloat
+        if restTargetApplies(mode: mode) {
+            demand = baseTopReach
+                + artwork
+                + captionChrome
+                + baseBottomReach
+                + Theme.Size.heroPinnedRowsRestTarget
+                - budget
+        } else {
+            demand = Theme.Spacing.lg
+                + baseTopReach
+                + artwork
+                + captionChrome
+                + baseBottomReach
+                + Theme.Size.heroPinnedRowsSettledCushion
+                - budget
+        }
 
-        // (a) The downward reach first — the cheapest dial, 20pt of give.
-        let bottomSpend = min(short, baseBottomReach - bottomReachFloor)
-        let bottomReach = baseBottomReach - bottomSpend
-        short -= bottomSpend
+        func spent(topFloor: CGFloat) -> Plan {
+            var short = max(demand, 0)
 
-        // (b) The upward reach next, 24pt of give down to its derived floor.
-        let topSpend = min(short, baseTopReach - topReachFloor)
-        let topReach = baseTopReach - topSpend
-        short -= topSpend
+            // (a) The downward reach first — the cheapest dial, 20pt of give.
+            let bottomSpend = min(short, baseBottomReach - bottomReachFloor)
+            let bottomReach = baseBottomReach - bottomSpend
+            short -= bottomSpend
 
-        // (c) Hero compression LAST, for the remainder — every point of it is description the
-        //     viewer loses (the panel's synopsis slot is where it comes from), which is exactly the
-        //     rc2 complaint this order answers.
-        let compression = min(short, elasticGive(showsCTA: showsCTA))
+            // (b) The upward reach next, down to its derived, LIFT-AWARE floor — 22pt of give with
+            //     No Zoom on, 2pt with either zoom mode, because the band it leaves behind has to
+            //     hold the title AND the focus lift (BUG-87/89). Only the zoom-on hold's floor can
+            //     sit ABOVE the base 88; then the reach is RAISED to it and the extra joins the
+            //     demand the hero absorbs below. Every other floor is capped at 88, so this is
+            //     exactly the old `min` for them.
+            let topSpend = min(short, baseTopReach - topFloor)
+            let topReach = max(baseTopReach - topSpend, topFloor)
+            short += topReach - baseTopReach
 
-        let plan = settled(compression: compression, topReach: topReach, bottomReach: bottomReach)
+            // (c) Hero compression LAST, for the remainder — every point of it is description the
+            //     viewer loses (the panel's synopsis slot is where it comes from), which is exactly
+            //     the rc2 complaint this order answers.
+            let compression = min(max(short, 0), elasticGive(showsCTA: showsCTA))
+
+            return settled(compression: compression, topReach: topReach, bottomReach: bottomReach)
+        }
+
+        // 2026-09-30 zoom-on reach hold (`zoom-on-title-fix-plan.md`, option A). Device walks on
+        // the ATV put the engine's own rest at margin −22 with top reach 66 and −12 with reach 86
+        // (identical y offsets in both zoom modes). No Zoom's band at 86 is [−24, 48], so −12 is
+        // clean; zoom on's is [−4, 48] because the 20pt lift eats the rest, so the lifted poster
+        // sits 8pt inside the title, the belt fades it and the corrector bounces the row. Raising
+        // the floor by `heroPinnedRowZoomReachHold` (to 92, capped there) moves the band to
+        // [−10, 48] and the predicted rest to −9..−12: in band, no correction, no fade. The hero
+        // pays: at Large carousel the compression is already the full 70 give, so nothing changes
+        // there and the extra 6 comes out of rest range (11.67 → 5.67). If the held plan cannot
+        // fit, the unheld plan below applies unchanged. No Zoom never enters this branch.
+        if mode.zoomReachHoldEffective {
+            let heldFloor = topReachFloor(lift: floorLift,
+                                          titleHeight: titleHeight,
+                                          hold: Theme.Size.heroPinnedRowZoomReachHold,
+                                          cap: Theme.Size.heroPinnedRowTopReachHoldCap)
+            let held = spent(topFloor: heldFloor)
+            if held.fits { return held }
+        }
+
+        let plan = spent(topFloor: topFloor)
         guard plan.fits else {
             // Unsatisfiable: hand back today's numbers so the belt regime is exactly what shipped,
             // and say so once.
@@ -352,38 +817,108 @@ enum PinnedRowGeometry {
         return plan
     }
 
-    /// `L403c0p1r0` — size tag + rounded artwork height, captions, panel (i.e. `!showsCTA`),
-    /// landscape rows. Stable across renders for one regime and different for every other, which is
-    /// all `onChange` and the log-once key need it to be.
+    /// `L403c0p1r0z1t38` — size tag + rounded artwork height, captions, panel (i.e. `!showsCTA`),
+    /// landscape rows, (BUG-87/89 rc10) the zoom mode, and (rc10 Codex P2 fix 4) the rounded title
+    /// metric. Stable across renders for one regime and different for every other, which is all
+    /// `onChange` and the log-once key need it to be.
+    ///
+    /// `z` is not cosmetic: the plan is MODE-DEPENDENT (`topReachFloor(lift:)` holds the focus lift,
+    /// so the two zoom modes produce different reaches and a different compression at the same
+    /// Poster Size), so two modes must not share a regime key. `PinnedRowSettle.regimeFits` and its
+    /// log-once sets are keyed on this string — letting a No-Zoom key describe a zoom-on plan would
+    /// hand the corrector the wrong `fits` and suppress the first line of the mode it actually
+    /// switched into.
+    ///
+    /// `t` is the same reasoning applied to the title metric. `plan(...)` has been title-metric-
+    /// dependent since Codex r1 fix 3 (`topReachFloor(lift:titleHeight:)` reserves room for the
+    /// ACTIVE font's measured title line, not a hard-coded constant), but this key did not encode it
+    /// until now — so System and Open Sans, which measure `sectionTitle` at 38 and ≈42.2 (≈38.84 since the beta.18 scale)
+    /// respectively, produced DIFFERENT reaches/compressions under the SAME key. A prior version of
+    /// this doc comment argued that was safe because the family can only change via Settings
+    /// (FEAT-31), which remounts the whole tree by `.id()` — but the remount does not reset the
+    /// corrector's regime-scoped state (`PinnedRowSettle.resetHostScopedState()` deliberately
+    /// preserves `disarmed`/`verifyFailures`/`pullBackDisarmed` across an UNCHANGED key, and
+    /// `noteRegimeChange()` returns early for one), so a font switch inherited whatever
+    /// disarm/verify-failure state the previous geometry had left behind. Two title metrics must not
+    /// share a regime, exactly like the two zoom modes above.
+    ///
+    /// Only `noZoom` is encoded, not `accentRing`: since BUG-93 both zoom-on treatments raise the
+    /// artwork by the same `heroPinnedRowFocusLiftAllowance`, so a ring flip produces an IDENTICAL
+    /// plan and keying on it would churn the `onChange` re-reveal for nothing. If a future treatment
+    /// makes the ring's rise differ again, this key gains an `a` component in the same breath.
+    ///
+    /// `h1` (rc12, BUG-87 follow-up) is appended ONLY when `mode.reachHoldsLiftEffective` is true —
+    /// i.e. only in No Zoom, and only with the About pane's reach-hold A/B switched on — for the
+    /// same reason `z` and `t` are encoded: the flag changes `plan`'s floor (see `floorLift` above),
+    /// so a key that did not distinguish the two would hand the corrector a `fits`/regime-scoped
+    /// disarm state computed for the OTHER floor. Conditional rather than an always-present `h0`/`h1`
+    /// pair so that with the flag OFF (the shipping default) every key, test literal, fixture parser
+    /// and photo contract already written against this string stays byte-for-byte unchanged — `h`
+    /// only ever appears when it means something, and `a` stays reserved for `accentRing` above.
+    ///
+    /// `hz` (2026-09-30) is the zoom-on twin of `h1`: appended only when
+    /// `mode.zoomReachHoldEffective` (zoom on, hold on), because that hold raises the top reach to
+    /// 92 and must not share a regime with the 86 plan. The two suffixes are mutually exclusive
+    /// (`h1` needs No Zoom, `hz` needs zoom), and with the hold off every key is unchanged.
     nonisolated static func regimeKey(posterHeight: CGFloat,
                                       captionVisible: Bool,
                                       showsCTA: Bool,
-                                      landscapeRows: Bool) -> String {
+                                      landscapeRows: Bool,
+                                      mode: PinnedRowTitle.FocusModeFlags = .current,
+                                      titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight) -> String {
         let rounded = Int(posterHeight.rounded())
         let small = Int((Theme.Size.posterHeight * PosterSizePreset.smallScale).rounded())
         let medium = Int(Theme.Size.posterHeight.rounded())
+        // FEAT-39: Medium+ (134dp) sits between Medium and Large but shares Large's dial (both are
+        // above the 335pt hero-compression gate), so it gets its own tag rather than falling into
+        // `X` — `PinnedRowSettle`'s log-once sets must not conflate it with an arbitrary synced width.
+        let mediumPlus = Int((Theme.Size.posterHeight * PosterSizePreset.mediumPlusScale).rounded())
         let large = Int((Theme.Size.posterHeight * PosterSizePreset.largeScale).rounded())
         let tag: String
         if rounded == small {
             tag = "S"
         } else if rounded == medium {
             tag = "M"
+        } else if rounded == mediumPlus {
+            tag = "P"
         } else if rounded == large {
             tag = "L"
         } else {
             tag = "X"
         }
         return "\(tag)\(rounded)c\(captionVisible ? 1 : 0)p\(showsCTA ? 0 : 1)r\(landscapeRows ? 1 : 0)"
+            + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
+            + (mode.reachHoldsLiftEffective ? "h1" : "")
+            + (mode.zoomReachHoldEffective ? "hz" : "")
+            + (restTargetApplies(mode: mode) ? "rt\(Int(Theme.Size.heroPinnedRowsRestTarget.rounded()))" : "")
     }
 
-    /// The three synced Poster Size presets, as RATIOS of the Medium default rather than as pixel
+    /// Whether `plan` sizes this regime's demand to `Theme.Size.heroPinnedRowsRestTarget` rather
+    /// than `Spacing.lg + heroPinnedRowsSettledCushion`: exactly when either reach hold is effective
+    /// (`hz` zoom on, `h1` No Zoom). Encoded in `regimeKey` as `rt4` for the same reason `h1`/`hz`
+    /// are — it changes the plan, so it must not share fits/disarm state with the un-held regime.
+    nonisolated static func restTargetApplies(mode: PinnedRowTitle.FocusModeFlags) -> Bool {
+        mode.zoomReachHoldEffective || mode.reachHoldsLiftEffective
+    }
+
+    /// The 2026-09-30 empirical rest law: the focus engine parks a pinned row's title at margin
+    /// ≈ −restRange/2 − 5.5 (fit to four device walks, see `Theme.Size.heroPinnedRowsRestTarget`).
+    /// Probe/prediction only — the settle line reports it as `restPred=`; nothing branches on it.
+    nonisolated static func predictedRestMargin(restRange: CGFloat) -> CGFloat {
+        -restRange / 2 - 5.5
+    }
+
+    /// The four synced Poster Size presets, as RATIOS of the Medium default rather than as pixel
     /// literals — `PosterStyle.init(from:)` scales `widthDp` by `Theme.Size.posterWidth / 126`, so
-    /// Small (105dp) and Large (154dp) are exactly these fractions of `Theme.Size.posterHeight`
-    /// whatever that constant becomes. Only the regime key's cosmetic size tag reads them; no
-    /// geometry is derived from them (a synced width outside the presets is an ordinary payload
-    /// here and simply tags as `X`).
+    /// Small (105dp), Medium+ (134dp), and Large (154dp) are exactly these fractions of
+    /// `Theme.Size.posterHeight` whatever that constant becomes. Only the regime key's cosmetic size
+    /// tag reads them; no geometry is derived from them (a synced width outside the presets is an
+    /// ordinary payload here and simply tags as `X`).
     nonisolated enum PosterSizePreset {
         static let smallScale: CGFloat = 105.0 / 126.0
+        /// FEAT-39: 134dp, the mobile app's own "comfort" preset. Above the 335pt hero-compression
+        /// gate, so it shares Large's dial rather than getting a geometry of its own.
+        static let mediumPlusScale: CGFloat = 134.0 / 126.0
         static let largeScale: CGFloat = 154.0 / 126.0
     }
 

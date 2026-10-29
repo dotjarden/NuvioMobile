@@ -135,6 +135,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _cancelled = false
     private var _signaling: VideoSignaling?
     private var _segmentMap: SegmentMap?
+    /// Container chapters on the served timeline (P4, A6-native), set with the segment map.
+    private var _chapters: [RemuxChapter] = []
+    /// P4 (BUG-143): the AVERROR behind the last `fail(_:)` (nil = none / not an FFmpeg code), and
+    /// whether it came from opening the input (EIO there is a resolve failure).
+    private var _lastErrorCode: Int32?
+    private var _lastErrorAtOpen = false
     private var _hasAudio = false
     private var _audioCodecToken: String?
     private var _audioTracks: [RemuxAudioTrack] = []
@@ -232,6 +238,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// coordinator must fall back to mpv. `LocalHLSServer` synthesizes the VOD playlists from this and
     /// the remux cuts its fragments at the map's boundaries, so published == produced.
     var segmentMap: SegmentMap? { lock.lock(); defer { lock.unlock() }; return _segmentMap }
+    /// The container's chapters (libavformat, first/default edition as it flattens them), in
+    /// seconds on the playlist timeline (zero = the first video keyframe, [C-4]). Unsorted and
+    /// untrimmed; the coordinator normalises them. Empty until the segment map exists.
+    var chapters: [RemuxChapter] { lock.lock(); defer { lock.unlock() }; return _chapters }
+    var lastErrorCode: Int32? { lock.lock(); defer { lock.unlock() }; return _lastErrorCode }
+    var lastErrorAtOpen: Bool { lock.lock(); defer { lock.unlock() }; return _lastErrorAtOpen }
 
     /// Whether an audio track is muxed alongside video (single A/V representation).
     var hasAudio: Bool { lock.lock(); defer { lock.unlock() }; return _hasAudio }
@@ -323,11 +335,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             opaque: Unmanaged.passUnretained(interrupts).toOpaque())
         var inCtx: UnsafeMutablePointer<AVFormatContext>? = allocated
         // On failure avformat_open_input frees and nils the context it was given — no manual free.
-        guard avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts) == 0, let input = inCtx else {
-            return fail("avformat_open_input")
+        let openResult = avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts)
+        guard openResult == 0, let input = inCtx else {
+            return fail("avformat_open_input", code: openResult == 0 ? nil : openResult, atOpen: true)
         }
         defer { var p: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&p) }
-        guard avformat_find_stream_info(input, nil) >= 0 else { return fail("find_stream_info") }
+        let infoResult = avformat_find_stream_info(input, nil)
+        guard infoResult >= 0 else { return fail("find_stream_info", code: infoResult, atOpen: true) }
 
         var videoIn = -1, audioCopyIn = -1, audioTranscodeIn = -1
         var foundAudio: [RemuxAudioTrack] = []
@@ -408,8 +422,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // segment then has no valid hvcC/avcC decoder configuration and AVPlayer rejects the stream
         // with CoreMediaErrorDomain -12927. Recover the parameter sets from the bitstream, then
         // rewind so the copy loop starts from the beginning.
-        if videoPar.pointee.extradata_size == 0 {
-            print("[Remux] video extradata missing — extracting parameter sets from bitstream")
+        // P5 spike (2026-10-20, BUG-166): the same rejection (now CoreMediaErrorDomain -4, after
+        // VIDEO-RANGE fixed the -12927 admission) when the source DOES carry extradata but it is an
+        // hvcC header with ZERO parameter-set arrays — the in-band `dvhe`/`hev1` layout that DV P5
+        // WEB-DL MP4s ship. The copied record went out as a `dvh1` sample entry with no VPS/SPS/PPS
+        // (init.mp4 848 b, hvcC 31 b, numArrays=0), which AVPlayer cannot configure a decoder from.
+        // Treat that like missing extradata: extract the parameter sets from the bitstream, and
+        // let movenc rebuild a complete hvcC from the Annex B NALs.
+        let extradataLacksParameterSets = videoPar.pointee.extradata_size == 0 || Self.hvccHasNoParameterSets(videoPar)
+        if extradataLacksParameterSets {
+            print("[Remux] video extradata \(videoPar.pointee.extradata_size == 0 ? "missing" : "has no parameter sets (in-band layout)") — extracting parameter sets from bitstream")
             guard extractVideoExtradata(input: input, videoIndex: videoIn) else {
                 return fail("extract extradata")
             }
@@ -480,6 +502,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
               + (signaling.supplementalCodecs.map { " SUPPLEMENTAL=\($0)" } ?? "")
+              + " VIDEO-RANGE=\(signaling.videoRange ?? "-")"
               + (audioToken.map { " AUDIO=\($0)" } ?? "")
               + (audioTranscodes ? " (transcode)" : ""))
         if foundAudio.count > 1 {
@@ -496,7 +519,26 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let map = buildSegmentMap(input: input, videoIndex: videoIn) else {
             return fail("no usable keyframe index")
         }
-        lock.lock(); _segmentMap = map; lock.unlock()
+        // Chapters (P4, A6-native): read once the map exists, because the origin is the map's.
+        let foundChapters: [RemuxChapter] = {
+            let vtb = input.pointee.streams[videoIn]!.pointee.time_base
+            let originSec = Double(map.boundaryTicks[0]) * Double(vtb.num) / Double(vtb.den)
+            var out: [RemuxChapter] = []
+            for i in 0..<Int(input.pointee.nb_chapters) {
+                guard let ch = input.pointee.chapters[i]?.pointee else { continue }
+                let sec = NativeChapterMarkers.seconds(start: ch.start, tbNum: ch.time_base.num,
+                                                       tbDen: ch.time_base.den, originSec: originSec)
+                out.append(RemuxChapter(title: Self.metadataValue(ch.metadata, "title") ?? "", sec: sec))
+            }
+            if !out.isEmpty {
+                let first = out[0], last = out[out.count - 1]
+                print("[Chapters] native n=\(out.count) origin=\(String(format: "%.3f", originSec)) "
+                      + "first=\"\(first.title)\"@\(String(format: "%.3f", first.sec)) "
+                      + "last=\"\(last.title)\"@\(String(format: "%.3f", last.sec))")
+            }
+            return out
+        }()
+        lock.lock(); _segmentMap = map; _chapters = foundChapters; lock.unlock()
         print("[Remux] segment map: \(map.count) segments, \(String(format: "%.1f", map.totalDurationSec))s, target=\(map.targetDurationSec)s")
 
         // --- Multi-run production with seek-anywhere ------------------------------------------------
@@ -550,11 +592,22 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         let reorderSlack: Int64 = 6                              // frames of pts>=dts headroom
         let boundaries = map.boundaryTicks
         let originTicks = boundaries[0]                          // playlist time zero, video time_base
+        // BUG-199b: boundaries are INDEX timestamps — the keyframe's DTS for mov/mp4, its PTS for
+        // matroska (see RemuxSeekLanding). The scan and the cut compare packets in that same domain.
+        let indexIsDTS = RemuxSeekLanding.indexIsDTS(
+            formatName: input.pointee.iformat.flatMap { $0.pointee.name.map { String(cString: $0) } })
         let videoTag = videoOutputTag(videoPar)
         guard let videoStream = input.pointee.streams[videoIn] else { return fail("video stream") }
         let videoTB = videoStream.pointee.time_base
 
-        var vDur: Int64 = 0             // learned frame duration — a stream constant, kept across runs
+        // Video DTS grid (BUG-199): one per session; each run repositions it at its start boundary.
+        // Its learned frame duration is a stream constant, kept across runs.
+        var videoGrid = RemuxVideoGrid(anchor: 0, reorderSlack: reorderSlack)
+        var gridNetLogged = false
+        var gridCapSegment: Int?       // the pts-net cap ended the session at this segment (mpv takes over)
+        var videoOutTB: AVRational?    // the video OUTPUT time_base, known after the first makeMux
+        var gridProbeDurations: [Int64: Int] = [:]   // first 1000 video durations, logged once
+        var gridProbeCount = 0
         var isFirstRun = true
         var everRepositioned = false
         var consecutiveErrorParks = 0
@@ -713,7 +766,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // read failure, a newer reposition (the interrupt kicks the read out), or landing on the wrong
         // keyframe — one mis-timed segment would poison the published VOD timeline, so verify + abort.
         func scanToBoundary(_ targetTicks: Int64) -> Bool {
-            let tolerance = max(vDur, 2)
+            // The grid's unit is in the OUTPUT time_base; the scan compares SOURCE pts (review r1 P3-4).
+            let learnedSrc = videoOutTB.map { av_rescale_q(videoGrid.learnedDuration, $0, videoTB) }
+                ?? videoGrid.learnedDuration
+            let tolerance = max(learnedSrc, 2)
             while true {
                 if isCancelled() { return false }
                 let r = av_read_frame(input, pkt)
@@ -728,15 +784,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 // Subtitle pre-roll: cues read between the seek point and the boundary keyframe may
                 // still be active inside the target segment — feed them, don't drop them.
                 if let sink = subSinks[Int(pkt.pointee.stream_index)] { sink.ingest(pkt) }
-                if Int(pkt.pointee.stream_index) == videoIn,
-                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
-                   pkt.pointee.pts != noTS, pkt.pointee.pts + tolerance > targetTicks {
-                    if abs(pkt.pointee.pts - targetTicks) >= tolerance {
-                        print("[Remux] reposition landed at pts=\(pkt.pointee.pts) wanted \(targetTicks) — aborting")
+                if Int(pkt.pointee.stream_index) == videoIn, (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
+                    // Compared in the index's domain (dts for mov — BUG-199b: on B-frame MP4s the
+                    // boundary keyframe's pts is the reorder offset past its dts/index timestamp).
+                    switch RemuxSeekLanding.classify(pts: pkt.pointee.pts, dts: pkt.pointee.dts,
+                                                     target: targetTicks, tolerance: tolerance,
+                                                     indexIsDTS: indexIsDTS) {
+                    case .keepScanning: break
+                    case .accept: return true
+                    case .reject:
+                        print("[Remux] reposition landed at pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) "
+                              + "wanted \(targetTicks) (\(indexIsDTS ? "dts" : "pts") index) — aborting")
                         av_packet_unref(pkt)
                         return false
                     }
-                    return true
                 }
                 av_packet_unref(pkt)
             }
@@ -769,7 +830,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 avformat_flush(input)                        // clear sticky EOF/queued packets
                 for sink in subSinks.values { sink.resetForReposition() }   // before the scan feeds them
                 let target = map.segments[startSeg - 1].startTicks
-                print("[Remux] seeking to segment \(startSeg) (pts \(target))")
+                print("[Remux] seeking to segment \(startSeg) (\(indexIsDTS ? "dts" : "pts") \(target))")
                 if av_seek_frame(input, Int32(videoIn), target, AVSEEK_FLAG_BACKWARD) < 0 || !scanToBoundary(target) {
                     if isCancelled() { break runLoop }
                     if let newer = takeReposition(), newer != startSeg {
@@ -820,8 +881,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             // into that stream's POST-header time_base (see the timescale-trap note in makeMux).
             let anchorSrcTicks = map.segments[startSeg - 1].startTicks - originTicks
             let vAnchorOut = av_rescale_q(anchorSrcTicks, videoTB, run.video.outStream.pointee.time_base)
-            var vIndex: Int64 = 0
-            var vPrevDTS: Int64? = nil
+            videoGrid.reposition(anchor: vAnchorOut)
+            videoOutTB = run.video.outStream.pointee.time_base
             var aNextDTS: Int64 = noTS
             let aFloor: Int64 = run.audio.map { av_rescale_q(anchorSrcTicks, videoTB, $0.outStream.pointee.time_base) } ?? 0
             var currentSeg = startSeg
@@ -920,7 +981,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                             interrupts.repositionPending = false
                             continue
                         }
-                        else { print("[Remux] read error \(r) at segment \(currentSeg)"); runEnd = .error }
+                        else {
+                            print("[Remux] read error \(r) at segment \(currentSeg)")
+                            lock.lock(); _lastErrorCode = r; _lastErrorAtOpen = false; lock.unlock()
+                            runEnd = .error
+                        }
                         break
                     }
                 }
@@ -960,11 +1025,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 }
 
                 // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
-                // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
-                // domain — the same domain the keyframe index gave us.
+                // keyframe becomes the first sample of the new fragment. Compared in the keyframe
+                // INDEX's domain (BUG-199b): dts for mov/mp4, whose index holds the sample dts — so
+                // the boundary keyframe matches exactly and a keyframe < reorder-offset earlier can
+                // never cut early on pts — and pts for matroska, whose Cues are pts and whose dts is
+                // synthesized. Equal to the old pts compare whenever pts == dts at keyframes.
+                var opensFragment = false
                 if isVideo, nextBoundary < boundaries.count,
-                   pkt.pointee.pts != noTS, pkt.pointee.pts >= boundaries[nextBoundary],
-                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
+                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
+                   RemuxSeekLanding.opensSegment(pts: pkt.pointee.pts, dts: pkt.pointee.dts,
+                                                 boundary: boundaries[nextBoundary], indexIsDTS: indexIsDTS) {
                     guard finalizeSegmentFiles() else {
                         print("[Remux] fragment flush/finalize failed at segment \(currentSeg) boundary")
                         av_packet_unref(pkt); runEnd = .error; break
@@ -973,11 +1043,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     nextBoundary += 1
                     publishProducing(currentSeg)
                     if (currentSeg - 1) % 15 == 0 || currentSeg == startSeg + 1 {
-                        print("[Remux] seg \(currentSeg - 1) done footprint=\(processFootprintMB())MB")
+                        print("[Remux] seg \(currentSeg - 1) done footprint=\(processFootprintMB())MB "
+                              + "ptsNets=\(videoGrid.ptsNetFirings)")
                     }
                     consecutiveErrorParks = 0   // a finalized segment = real progress; the error cap
                                                 // counts genuinely consecutive non-productive failures
                     beginSegmentFiles(currentSeg)
+                    opensFragment = true
                 }
 
                 av_packet_rescale_ts(pkt, inS.pointee.time_base, outS.pointee.time_base)
@@ -999,22 +1071,44 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 }
 
                 if isVideo {
-                    // Video DTS regenerated on a uniform grid (sloppy sources carry missing or
-                    // non-monotonic DTS; AVPlayer rejects such timelines with -12927). Anchored at
-                    // the run's start boundary, offset back for B-frame reorder, clamped at zero.
-                    if pkt.pointee.duration > 0 {
-                        vDur = pkt.pointee.duration
-                    } else if vDur == 0, pkt.pointee.pts != noTS, pkt.pointee.pts > vAnchorOut {
-                        vDur = pkt.pointee.pts - vAnchorOut
+                    // Video DTS regenerated on a grid that accumulates the declared durations
+                    // (RemuxVideoGrid: anchored at the run's start boundary, offset back for B-frame
+                    // reorder, clamped to pts, strictly rising, plus the pts >= dts and fragment-start
+                    // nets — BUG-199).
+                    let before = videoGrid.netFirings
+                    let declared = pkt.pointee.duration
+                    let stamp = videoGrid.stamp(pts: pkt.pointee.pts, duration: declared,
+                                                fragmentStart: opensFragment)
+                    if !gridNetLogged, videoGrid.netFirings > before {
+                        gridNetLogged = true
+                        print("[Remux] grid net fired at segment \(currentSeg) index=\(videoGrid.index - 1) "
+                              + "pts \(pkt.pointee.pts)→\(stamp.pts) dts=\(stamp.dts) dur=\(declared) "
+                              + "(ptsNet=\(videoGrid.ptsNetFirings) fragNet=\(videoGrid.fragmentNetFirings); logged once)")
                     }
-                    var dts = vAnchorOut + (vIndex - reorderSlack) * max(vDur, 1)
-                    if dts < 0 { dts = 0 }
-                    if pkt.pointee.pts != noTS, dts > pkt.pointee.pts { dts = pkt.pointee.pts }
-                    if let prev = vPrevDTS, dts <= prev { dts = prev + 1 }
-                    vPrevDTS = dts
-                    pkt.pointee.dts = dts
-                    if pkt.pointee.pts == noTS { pkt.pointee.pts = vAnchorOut + vIndex * max(vDur, 1) }
-                    vIndex += 1
+                    if videoGrid.netCapExceeded {
+                        // The grid runs ahead of pts: rewriting B-frame pts for the rest of the film
+                        // would be silent corruption. Fail loudly instead; the coordinator's MID-PLAY
+                        // fallback hands over to mpv (review r1 P2-3). Logged once: the session ends.
+                        print("[Remux] grid net cap at segment \(currentSeg): ptsNet "
+                              + "segment=\(videoGrid.segmentPtsNetFirings)/\(RemuxVideoGrid.segmentNetCap) "
+                              + "session=\(videoGrid.ptsNetFirings)/\(RemuxVideoGrid.sessionNetCap) "
+                              + "clamps=\(videoGrid.clampCount) unit=\(videoGrid.unit)")
+                        gridCapSegment = currentSeg
+                        av_packet_unref(pkt); runEnd = .error; break
+                    }
+                    pkt.pointee.dts = stamp.dts
+                    pkt.pointee.pts = stamp.pts
+                    pkt.pointee.duration = stamp.duration
+                    if gridProbeCount < 1000 {
+                        gridProbeDurations[declared, default: 0] += 1
+                        gridProbeCount += 1
+                        if gridProbeCount == 1000 {
+                            let hist = gridProbeDurations.sorted { $0.value > $1.value }.prefix(6)
+                                .map { "\($0.key):\($0.value)" }.joined(separator: " ")
+                            print("[Remux] grid probe: first 1000 video durations {\(hist)} unit=\(videoGrid.unit) "
+                                  + "clamps=\(videoGrid.clampCount) nets=\(videoGrid.netFirings)")
+                        }
+                    }
                 } else {
                     // Audio keeps source timestamps; gap-fill only when absent, floored at the run
                     // start so a timestamp-less packet can't land at t=0 in a fragment at t=T_K.
@@ -1058,6 +1152,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
             case .error:
                 destroyRun(run)
+                if let seg = gridCapSegment { return fail("grid net cap at segment \(seg)") }
                 if !everRepositioned { return fail("read/write error at segment \(currentSeg)") }
                 // Repositioned sessions self-heal: park; the JIT re-request repositions us again.
                 consecutiveErrorParks += 1
@@ -1135,7 +1230,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                                 totalDurationSec: durationSec, segDurSec: config.segmentDurationSec)
     }
 
-    /// Snapshot the video stream's current keyframe index entries as PTS in the stream time_base.
+    /// Snapshot the video stream's current keyframe index entries in the stream time_base — DTS for
+    /// mov/mp4, PTS for matroska (BUG-199b, see RemuxSeekLanding).
     private func keyframeTicks(_ vs: UnsafeMutablePointer<AVStream>) -> [Int64] {
         let count = avformat_index_get_entries_count(vs)
         var ticks: [Int64] = []
@@ -1170,9 +1266,45 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// Run the video stream's first packets through FFmpeg's `extract_extradata` bitstream filter
     /// and install the recovered parameter sets on the stream's codecpar. Returns false if none were
     /// found within a bounded scan.
+    /// True when the HEVC extradata is an hvcC record whose NAL arrays carry no parameter sets at
+    /// all (ISO 14496-15 8.3.3.1: `numOfArrays` at byte 22, then per array one type byte, a
+    /// 16-bit NAL count and the NALs). An in-band stream remuxed into an out-of-band sample entry
+    /// (`hvc1` / `dvh1`) must have them extracted first.
+    static func hvccHasNoParameterSets(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
+        guard par.pointee.codec_id == AV_CODEC_ID_HEVC,
+              par.pointee.extradata_size >= 23, let ed = par.pointee.extradata else { return false }
+        return hvccHasNoParameterSets(UnsafeBufferPointer(start: ed, count: Int(par.pointee.extradata_size)))
+    }
+
+    /// Byte-level half of the check above (unit-tested): false for anything that is not an hvcC
+    /// record (Annex B, avcC, too short), true for an hvcC whose arrays hold no NAL at all.
+    static func hvccHasNoParameterSets(_ ed: UnsafeBufferPointer<UInt8>) -> Bool {
+        let size = ed.count
+        guard size >= 23, ed[0] == 1 else { return false }
+        let numArrays = Int(ed[22])
+        if numArrays == 0 { return true }
+        var off = 23
+        for _ in 0..<numArrays {
+            guard off + 3 <= size else { return true }
+            let numNalus = (Int(ed[off + 1]) << 8) | Int(ed[off + 2])
+            if numNalus > 0 { return false }
+            off += 3
+        }
+        return true
+    }
+
     private func extractVideoExtradata(input: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int) -> Bool {
-        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar,
-              let filter = av_bsf_get_by_name("extract_extradata") else { return false }
+        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar else { return false }
+        // P5 spike (2026-10-20): `extract_extradata` splits packets on Annex B start codes, so on a
+        // length-prefixed (hvcC / avcC) source it finds no NALs, reads its 200 packets and fails —
+        // the first device round of the fix died at "extract extradata". Walk the length-prefixed
+        // NALs directly instead and hand movenc Annex B parameter sets.
+        if par.pointee.codec_id == AV_CODEC_ID_HEVC, par.pointee.extradata_size >= 23,
+           let ed = par.pointee.extradata, ed[0] == 1 {
+            return extractLengthPrefixedHEVCParameterSets(input: input, videoIndex: videoIndex,
+                                                          nalLengthSize: Int(ed[21] & 0x03) + 1)
+        }
+        guard let filter = av_bsf_get_by_name("extract_extradata") else { return false }
         var bsfOpt: UnsafeMutablePointer<AVBSFContext>?
         guard av_bsf_alloc(filter, &bsfOpt) >= 0, let bsf = bsfOpt else { return false }
         defer { var b: UnsafeMutablePointer<AVBSFContext>? = bsf; av_bsf_free(&b) }
@@ -1199,6 +1331,65 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     return true
                 }
                 av_packet_unref(pkt)
+            }
+        }
+        return false
+    }
+
+    /// Collect VPS (32), SPS (33) and PPS (34) from the leading length-prefixed HEVC packets and
+    /// install them as Annex B extradata (`00 00 00 01` + NAL), which `ff_isom_write_hvcc` turns
+    /// into a complete hvcC for the `hvc1` / `dvh1` sample entry. Reads at most 200 packets; the
+    /// caller rewinds the demuxer afterwards. The DOVI record on the codecpar is untouched.
+    private func extractLengthPrefixedHEVCParameterSets(input: UnsafeMutablePointer<AVFormatContext>,
+                                                        videoIndex: Int, nalLengthSize: Int) -> Bool {
+        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar,
+              let pkt = av_packet_alloc() else { return false }
+        defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+        var vps: [UInt8]?, sps: [UInt8]?, pps: [UInt8]?
+        for _ in 0..<200 {
+            guard av_read_frame(input, pkt) >= 0 else { return false }
+            defer { av_packet_unref(pkt) }
+            guard Int(pkt.pointee.stream_index) == videoIndex, let data = pkt.pointee.data else { continue }
+            let size = Int(pkt.pointee.size)
+            var off = 0
+            while off + nalLengthSize <= size {
+                var len = 0
+                for i in 0..<nalLengthSize { len = (len << 8) | Int(data[off + i]) }
+                off += nalLengthSize
+                guard len > 0, off + len <= size else { break }
+                let type = Int((data[off] >> 1) & 0x3F)
+                let nal = Array(UnsafeBufferPointer(start: data + off, count: len))
+                switch type {
+                case 32: vps = vps ?? nal
+                case 33: sps = sps ?? nal
+                case 34: pps = pps ?? nal
+                default: break
+                }
+                off += len
+            }
+            if let sps, let pps {
+                // Rebuild a COMPLETE hvcC (ISO 14496-15 8.3.3.1): the source's own 23-byte header
+                // (general profile/tier/level, chroma, bit depths, lengthSizeMinusOne) followed by one
+                // array per parameter-set type. It must stay hvcC-shaped: Annex B extradata makes
+                // movenc assume the PACKETS are Annex B too and "reformat" the length-prefixed
+                // samples (device round 5: 192 samples shrank from 158 KB to 28 KB, item error -16041).
+                guard let header = par.pointee.extradata, par.pointee.extradata_size >= 23 else { return false }
+                var hvcc = Array(UnsafeBufferPointer(start: header, count: 23))
+                let arrays: [(UInt8, [UInt8])] = [vps.map { (32, $0) }, (33, sps), (34, pps)].compactMap { $0 }
+                hvcc[22] = UInt8(arrays.count)
+                for (type, nal) in arrays {
+                    hvcc.append(0x80 | type)                          // array_completeness=1, NAL type
+                    hvcc += [0, 1]                                    // numNalus = 1
+                    hvcc += [UInt8(nal.count >> 8), UInt8(nal.count & 0xFF)]
+                    hvcc += nal
+                }
+                guard let buf = av_mallocz(hvcc.count + Int(AV_INPUT_BUFFER_PADDING_SIZE)) else { return false }
+                hvcc.withUnsafeBytes { memcpy(buf, $0.baseAddress!, hvcc.count) }
+                av_freep(&par.pointee.extradata)
+                par.pointee.extradata = buf.assumingMemoryBound(to: UInt8.self)
+                par.pointee.extradata_size = Int32(hvcc.count)
+                print("[Remux] rebuilt hvcC \(hvcc.count)b from in-band parameter sets (vps=\(vps != nil ? 1 : 0) sps=1 pps=1, nal length \(nalLengthSize))")
+                return true
             }
         }
         return false
@@ -1257,13 +1448,32 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// pipeline shows PQ media is REJECTED at media admission (-12927) when the master does NOT
     /// declare it, and ACCEPTED when declared alongside full CODECS + SUPPLEMENTAL-CODECS.)
     private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>) -> VideoSignaling {
-        let range: String?
+        let dovi = doviRecord(par)
+        var range: String?
         switch par.pointee.color_trc {
         case AVCOL_TRC_SMPTE2084: range = "PQ"
         case AVCOL_TRC_ARIB_STD_B67: range = "HLG"
         default: range = nil
         }
-        let dovi = doviRecord(par)
+        // P5 spike (2026-10-20, BUG-166 / finding P3-F7): a Dolby Vision stream usually carries an
+        // UNSPECIFIED transfer in its VUI and container colour metadata — profile 5 is IPT-PQ-C2 and
+        // has no VUI code at all, and single-layer profile 8 WEB-DLs often omit the `colr` box. The
+        // master then went out with no VIDEO-RANGE (rig-b log: `RANGE=-`) and tvOS rejected the PQ
+        // media at admission with -12927 (the same failure SegmentMap documents for undeclared PQ).
+        // The DOVI record fixes the range when the VUI does not: P5 and P7 are PQ by definition, and
+        // P8 follows its base-layer compatibility id (1 = HDR10/PQ, 4 = HLG, 2 = SDR → none).
+        if range == nil, let dovi {
+            switch Int(dovi.dv_profile) {
+            case 5, 7: range = "PQ"
+            case 8:
+                switch Int(dovi.dv_bl_signal_compatibility_id) {
+                case 1: range = "PQ"
+                case 4: range = "HLG"
+                default: break
+                }
+            default: break
+            }
+        }
 
         switch par.pointee.codec_id {
         case AV_CODEC_ID_HEVC:
@@ -1366,8 +1576,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         cb?(s)
     }
 
-    private func fail(_ stage: String) {
-        print("[Remux] failed at \(stage) — \(config.url.lastPathComponent)")
+    private func fail(_ stage: String, code: Int32? = nil, atOpen: Bool = false) {
+        if let code {
+            lock.lock(); _lastErrorCode = code; _lastErrorAtOpen = atOpen; lock.unlock()
+        }
+        print("[Remux] failed at \(stage)\(code.map { " (AVERROR \($0))" } ?? "") — \(config.url.lastPathComponent)")
         setState(.failed(stage))
     }
 
@@ -1577,4 +1790,176 @@ nonisolated final class RemuxInterrupts: @unchecked Sendable {
 nonisolated func remuxShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int32 {
     guard let opaque else { return 0 }
     return Unmanaged<RemuxInterrupts>.fromOpaque(opaque).takeUnretainedValue().shouldInterrupt ? 1 : 0
+}
+
+// MARK: - Video DTS grid (BUG-199)
+
+/// The video timestamp rule of the remux loop, pure so it is testable without FFmpeg. All values are
+/// in the video OUTPUT stream's post-header time_base, already on the playlist timeline.
+///
+/// Video DTS is regenerated (sloppy sources carry missing or non-monotonic DTS; AVPlayer rejects such
+/// timelines with -12927): one slot per packet in decode order, anchored at the run's start boundary
+/// and offset back by `reorderSlack` frames of B-frame headroom, then clamped to the packet's pts and
+/// kept strictly rising.
+///
+/// THE GRID ACCUMULATES the declared packet durations (`slot += duration`) instead of the old
+/// `anchor + (index − slack) · vDur`, where `vDur` was re-learned from every packet. The BUG-199 file
+/// (a Matroska-origin MP4 on a 1/16000 timescale, 23.976 fps) declares millisecond-rounded durations,
+/// 41/42 ms ×16 = 656/672 (the log's fragment starts sit exactly 96768 = 144 × 672 ticks apart, each
+/// `Packet duration: -671`). Every 672→656 flip dropped the whole old grid by 16·index ticks: at a
+/// fragment's boundary keyframe (declaring 656) the grid collapsed below the previous dts and was
+/// bumped to prev + 1, under movenc's prev + 672, so movenc's `check_pkt` rewrote that keyframe's pts
+/// to its dts ("Packet duration: -671 … out of range" + "pts has no value"); on 672 packets the grid
+/// ran ahead of pts until the reorder slack was gone (`pts (590005) < dts (590017)`, write error -22
+/// at segment 7). A 667/667/668 cadence (exact 23.976 on 1/16000) jitters the same way, by ~index.
+/// Accumulating the durations movenc itself accounts with keeps `dts[k] − dts[k−1] == duration[k−1]`
+/// (for a mov source the grid is the source dts plus a constant), so neither happens; a boundary
+/// keyframe keeps its pts as long as its dts was not clamped (the grid running ahead of pts, which
+/// the net cap below turns into the mpv handover). A rational slot from `avg_frame_rate` was
+/// rejected: Matroska declares a rounded default duration (41 or 42 ms) that differs from the rate,
+/// so a rate grid would break movenc's fragment-start invariant on every MKV.
+///
+/// MKV EQUIVALENCE: with a constant duration `d` (`unit == d`), slot k is `anchor + k·d` and dts is
+/// `anchor + (k − slack)·d`, exactly the old formula; the clamp, the bump and the pts synthesis are
+/// unchanged, and the two nets below fire only where the old code produced a write error (pts < dts)
+/// or a movenc pts rewrite. With the truncated 41 ms default (656 against a 667.33-tick mean) dts
+/// lags pts unboundedly, as before: the clamp bounds only a grid that runs AHEAD. `RemuxVideoGridTests`
+/// replays constant-duration streams through both.
+///
+/// THE UNIT (reorder offset, outlier test, packets without a duration) is the MODE of the first 16
+/// positive declared durations (ties → the larger), settled once and kept across runs. Until 16 are
+/// seen it is the LARGEST positive duration so far: overestimating only adds slack, while one
+/// atypically small first duration (a 1-tick leader sample, an edit-list remnant) must not shrink the
+/// slack or turn every normal frame into an "outlier". Settling re-bases nothing already written; the
+/// outlier rule applies only once the unit is settled.
+///
+/// NET CAP: the pts net rewrites a B-frame's presentation time, which is silent corruption if the
+/// grid runs systematically ahead (a rounded-up 42 ms MKV default, a keyframe composition offset
+/// beyond the slack, VFR faster than declared). Past `segmentNetCap` firings in one segment or
+/// `sessionNetCap` in a session, `netCapExceeded` turns true and the remux loop fails the session so
+/// the coordinator's MID-PLAY mpv fallback takes over, as the old write error did.
+///
+/// Packets without pts: the remux loop's boundary cut needs a source pts, so such a stream would
+/// never cut (one giant segment). Both demuxers routed native (mov, matroska) always supply pts, so
+/// that stays latent; the grid still synthesises pts = the packet's slot as before.
+nonisolated struct RemuxVideoGrid: Sendable {
+    static let noTS = Int64.min                         // AV_NOPTS_VALUE
+    /// Positive durations sampled before the unit settles.
+    static let learnSampleCount = 16
+    /// pts-net firings tolerated in one segment / one session before the run is handed to mpv.
+    static let segmentNetCap = 8
+    static let sessionNetCap = 64
+
+    let reorderSlack: Int64
+    /// The run's start boundary on the playlist timeline.
+    private(set) var anchor: Int64
+    /// Slot of the next packet before the reorder offset: anchor + Σ steps of the packets so far.
+    var slot: Int64
+    /// Packets stamped since the last reposition.
+    var index: Int64 = 0
+    /// Learned frame duration (see THE UNIT above; kept across runs). Before any duration arrives it
+    /// may hold a provisional pts − anchor guess, as the old code did.
+    var learnedDuration: Int64 = 0
+    /// The unit is settled (mode of the first `learnSampleCount` positive durations).
+    var learnedFromDuration = false
+    private var learnSamples: [Int64] = []
+    var prevDTS: Int64?
+    /// Duration written with the previous packet (what movenc adds to its dts for the next fragment).
+    var prevDuration: Int64 = 0
+
+    /// Times dts had to be clamped down to pts (the grid ran ahead of the source); diagnostic only.
+    private(set) var clampCount = 0
+    /// Safety net 1: pts lifted to dts because the clamp + bump left pts < dts (was a write error).
+    /// Per session; `segmentPtsNetFirings` resets at every fragment start and reposition.
+    private(set) var ptsNetFirings = 0
+    private(set) var segmentPtsNetFirings = 0
+    /// Safety net 2: a fragment's first packet lifted to prev dts + prev duration (was a movenc rewrite).
+    private(set) var fragmentNetFirings = 0
+    var netFirings: Int { ptsNetFirings + fragmentNetFirings }
+    /// The pts net fired too often to keep presenting B-frames at their source times: hand over.
+    var netCapExceeded: Bool {
+        segmentPtsNetFirings > Self.segmentNetCap || ptsNetFirings > Self.sessionNetCap
+    }
+
+    struct Stamp: Equatable, Sendable {
+        var pts: Int64
+        var dts: Int64
+        /// The duration to write with the packet (the declared one, unless it was an outlier or ≤ 0).
+        var duration: Int64
+    }
+
+    init(anchor: Int64, reorderSlack: Int64 = 6) {
+        self.reorderSlack = reorderSlack
+        self.anchor = anchor
+        self.slot = anchor
+    }
+
+    /// Unit step for the reorder offset and for packets without a usable duration.
+    var unit: Int64 { max(learnedDuration, 1) }
+
+    /// A new run (fresh muxer context) starts at `anchor`: the grid restarts there. The learned
+    /// duration survives (a stream constant); session counters survive, the segment's resets.
+    mutating func reposition(anchor: Int64) {
+        self.anchor = anchor
+        slot = anchor
+        index = 0
+        prevDTS = nil
+        prevDuration = 0
+        segmentPtsNetFirings = 0
+    }
+
+    private mutating func learn(_ duration: Int64) {
+        guard !learnedFromDuration else { return }
+        learnSamples.append(duration)
+        // Review r2 (P3-2): the provisional unit is the RUNNING MODE (ties to the larger value),
+        // not the largest so far: a long still frame or a corrupt early duration must not inflate
+        // the reorder slack for the first fragment. At most 16 samples, so this stays cheap.
+        var counts: [Int64: Int] = [:]
+        for d in learnSamples { counts[d, default: 0] += 1 }
+        learnedDuration = counts.max { a, b in a.value != b.value ? a.value < b.value : a.key < b.key }!.key
+        if learnSamples.count < Self.learnSampleCount { return }
+        learnedFromDuration = true
+        learnSamples = []
+    }
+
+    /// Stamp the next video packet in decode order. `pts` may be `noTS`; `duration` is the declared
+    /// (rescaled) packet duration, ≤ 0 when absent. `fragmentStart` = this packet opens a new fragment
+    /// in the SAME muxer context (the boundary keyframe right after a cut).
+    mutating func stamp(pts: Int64, duration: Int64, fragmentStart: Bool = false) -> Stamp {
+        if duration > 0 {
+            // A provisional pts − anchor guess is replaced by the first real duration.
+            if !learnedFromDuration, learnSamples.isEmpty { learnedDuration = 0 }
+            learn(duration)
+        } else if learnedDuration == 0, pts != Self.noTS, pts > anchor {
+            learnedDuration = pts - anchor
+        }
+        if fragmentStart { segmentPtsNetFirings = 0 }
+        let unit = self.unit
+        // No usable duration: step and write the unit (a 0-duration sample would reach movenc).
+        var written = duration > 0 ? duration : unit
+        var step = written
+        // A corrupt or end-of-stream duration far beyond the frame step would shift the whole rest of
+        // the run's grid (the old per-packet formula forgot it on the next packet). Write the unit.
+        // A legitimate long frame (a held still in a VFR mov) is shortened the same way: the grid then
+        // lags pts by (d − unit) for the rest of the run, which only adds reorder headroom, never
+        // eats it (the grid lags, never leads), and pts is untouched.
+        if learnedFromDuration, duration > unit * 8 { step = unit; written = unit }
+
+        var dts = slot - reorderSlack * unit
+        if dts < 0 { dts = 0 }
+        if pts != Self.noTS, dts > pts { dts = pts; clampCount += 1 }
+        if let prev = prevDTS, dts <= prev { dts = prev + 1 }
+        if fragmentStart, let prev = prevDTS, dts < prev + prevDuration {
+            dts = prev + prevDuration
+            fragmentNetFirings += 1
+        }
+        var outPTS = pts != Self.noTS ? pts : slot
+        if outPTS < dts { outPTS = dts; ptsNetFirings += 1; segmentPtsNetFirings += 1 }
+
+        prevDTS = dts
+        prevDuration = written
+        slot += step
+        index += 1
+        return Stamp(pts: outPTS, dts: dts, duration: written)
+    }
 }

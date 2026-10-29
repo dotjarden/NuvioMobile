@@ -35,7 +35,7 @@ nonisolated struct AudioRendition: Sendable {
 nonisolated struct SegmentMap: Sendable {
     struct Segment: Sendable, Equatable {
         let number: Int          // 1-based; the media file is `seg-{number:05d}.m4s`
-        let startTicks: Int64    // segment start PTS in the source video stream time_base
+        let startTicks: Int64    // segment start INDEX timestamp (dts for mov, pts for mkv), video time_base
         let durationSec: Double  // EXTINF
     }
 
@@ -151,6 +151,41 @@ nonisolated struct SegmentMap: Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// The `EXT-X-I-FRAMES-ONLY` rendition (player P3): one entry per segment, named
+    /// `iframe-NNNNN.m4s`, which `LocalHLSServer` serves as the segment's first sample (the boundary
+    /// keyframe) trimmed into a one-sample fragment. Each EXTINF spans the time to the next I-frame,
+    /// which on this grid is the segment duration. No BYTERANGE: every entry is a whole resource.
+    /// `EXT-X-INDEPENDENT-SEGMENTS` is true here (each fragment is one intra sample) and only here:
+    /// the media playlist's segments are cut on any key packet, HEVC CRA included, so an open-GOP
+    /// segment's leading pictures reference the previous one (P3 critique C19).
+    static let iFramePlaylistName = "iframe.m3u8"
+    static let iFramePrefix = "iframe-"
+
+    func iFramePlaylist(initName: String = "init.mp4") -> String {
+        var lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-INDEPENDENT-SEGMENTS",
+            "#EXT-X-TARGETDURATION:\(targetDurationSec)",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            "#EXT-X-MEDIA-SEQUENCE:1",
+            "#EXT-X-I-FRAMES-ONLY",
+            "#EXT-X-MAP:URI=\"\(initName)\"",
+        ]
+        for seg in segments {
+            lines.append(String(format: "#EXTINF:%.6f,", seg.durationSec))
+            lines.append("\(Self.iFramePrefix)\(String(format: "%05d", seg.number)).m4s")
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// `iframe-NNNNN.m4s` → segment number, or nil.
+    static func iFrameSegmentIndex(_ name: String) -> Int? {
+        guard name.hasPrefix(iFramePrefix), name.hasSuffix(".m4s") else { return nil }
+        return Int(name.dropFirst(iFramePrefix.count).dropLast(4))
+    }
+
     /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
     /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
     /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
@@ -159,7 +194,12 @@ nonisolated struct SegmentMap: Sendable {
                         bandwidth: Int,
                         mediaName: String = "media.m3u8",
                         subtitles: [SubtitleRendition] = [],
-                        subtitleFlags: [SubtitleRenditionFlags] = []) -> String {
+                        subtitleFlags: [SubtitleRenditionFlags] = [],
+                        iFrames: Bool = false,
+                        independentSegments: Bool = false) -> String {
+        // `iFrames` (P3, `SeekPreviewMode.allowsIFrames`) adds the I-frame rendition line;
+        // `independentSegments` (DEBUG `-debug.iframeIndependentMaster`, device item 7 only, C19)
+        // adds the master-level tag. Both false = byte for byte the pre-P3 master.
         // CODECS lists every codec the variant can carry — video plus the union of the audio
         // renditions' tokens (mixed groups, e.g. "hvc1…,ec-3,mp4a.40.2", are the standard form).
         var codecTokens: [String] = []
@@ -186,6 +226,7 @@ nonisolated struct SegmentMap: Sendable {
         }
 
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
+        if independentSegments { lines.append("#EXT-X-INDEPENDENT-SEGMENTS") }
         // Demuxed audio (info-panel W3): the variant is video-only; every playable source track is
         // its own AUDIO rendition with a URI, so the system Audio tab lists them all and switching is
         // AVPlayer's own seamless rendition change. Only the active track's segments exist at any
@@ -223,6 +264,74 @@ nonisolated struct SegmentMap: Sendable {
         }
         lines.append(streamInf)
         lines.append(mediaName)
+        // The I-frame rendition (P3): video codec only, same resolution and range; AVKit uses it for
+        // FF/RW scan (the spike found tvOS 27's paused scrub never requests it). A bandwidth of its own
+        // is required by the spec; one keyframe per ~4 s segment is a small fraction of the variant.
+        if iFrames {
+            var iframeInf = "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=\(max(bandwidth / 8, 1))"
+            if signaling.width > 0, signaling.height > 0 {
+                iframeInf += ",RESOLUTION=\(signaling.width)x\(signaling.height)"
+            }
+            if !signaling.codecs.isEmpty { iframeInf += ",CODECS=\"\(signaling.codecs)\"" }
+            if let supp = signaling.supplementalCodecs { iframeInf += ",SUPPLEMENTAL-CODECS=\"\(supp)\"" }
+            if let range = signaling.videoRange { iframeInf += ",VIDEO-RANGE=\(range)" }
+            iframeInf += ",URI=\"\(Self.iFramePlaylistName)\""
+            lines.append(iframeInf)
+        }
         return lines.joined(separator: "\n") + "\n"
+    }
+}
+
+/// BUG-199b: which packet timestamp a segment boundary is compared against.
+///
+/// `SegmentMap` boundaries are the demuxer's keyframe INDEX timestamps (`AVIndexEntry.timestamp`), and
+/// their domain depends on the demuxer — avformat.h only says "preferably" PTS:
+/// - mov/mp4 (`mov.c`): `mov_build_index` stores `e->timestamp = current_dts` and `mov_read_packet`
+///   sets `pkt->dts = sample->timestamp`, `pkt->pts = dts + dts_shift + ctts`. So the index is the
+///   keyframe's DTS, exactly; on B-frame content its pts sits the reorder offset later (device: a
+///   Netflix WEB-DL, 1/16000, pts 3072000 vs dts/boundary 3070672 = two frames).
+/// - matroska (`matroskadec.c`): Cues/`av_add_index_entry` and `pkt->pts` are both the block
+///   timecode; the demuxer never sets `pkt->dts` and libavformat SYNTHESIZES one for B-frame streams
+///   (pts − reorder delay), so the dts must NOT be used there.
+/// One convention, used by both the reposition scan and the copy loop's boundary cut: compare the
+/// packet timestamp in the INDEX's domain — dts for mov-family demuxers, pts otherwise.
+nonisolated enum RemuxSeekLanding {
+    static let noTS = Int64.min                      // AV_NOPTS_VALUE
+
+    enum Verdict: Equatable { case keepScanning, accept, reject }
+
+    /// mov-family demuxers (`mov,mp4,m4a,3gp,3g2,mj2`) index DTS; everything else is treated as PTS.
+    static func indexIsDTS(formatName: String?) -> Bool {
+        guard let name = formatName else { return false }
+        return name.split(separator: ",").contains { $0 == "mov" || $0 == "mp4" }
+    }
+
+    /// The packet's timestamp in the index's domain; dts falls back to pts when absent. nil = neither.
+    static func indexTimestamp(pts: Int64, dts: Int64, indexIsDTS: Bool) -> Int64? {
+        if indexIsDTS, dts != noTS { return dts }
+        return pts != noTS ? pts : nil
+    }
+
+    /// The reposition scan's decision for one video KEYFRAME read after seeking to `target`.
+    /// Keyframes more than a tolerance before the target are skipped; the first one at/after it is
+    /// accepted only when it lands within `tolerance` (one frame) of the target — anything later is a
+    /// different keyframe and would poison the published timeline.
+    static func classify(pts: Int64, dts: Int64, target: Int64, tolerance: Int64, indexIsDTS: Bool) -> Verdict {
+        guard let ts = indexTimestamp(pts: pts, dts: dts, indexIsDTS: indexIsDTS) else { return .keepScanning }
+        if ts + tolerance <= target { return .keepScanning }
+        return abs(ts - target) < tolerance ? .accept : .reject
+    }
+
+    /// Accept rule for the keyframe the scan stops on (mov-family index, the default the device hit).
+    static func accepts(landedPTS: Int64, landedDTS: Int64, target: Int64, tolerance: Int64,
+                        indexIsDTS: Bool = true) -> Bool {
+        classify(pts: landedPTS, dts: landedDTS, target: target, tolerance: tolerance,
+                 indexIsDTS: indexIsDTS) == .accept
+    }
+
+    /// The copy loop's cut: does this video KEYFRAME open the segment starting at `boundary`?
+    static func opensSegment(pts: Int64, dts: Int64, boundary: Int64, indexIsDTS: Bool) -> Bool {
+        guard let ts = indexTimestamp(pts: pts, dts: dts, indexIsDTS: indexIsDTS) else { return false }
+        return ts >= boundary
     }
 }

@@ -7,6 +7,7 @@ data class MetaDetails(
     val id: String,
     val type: String,
     val name: String,
+    val imdbId: String? = null,
     val poster: String? = null,
     val background: String? = null,
     val logo: String? = null,
@@ -47,11 +48,14 @@ data class MetaDetails(
 enum class MoreLikeThisSource {
     TMDB,
     TRAKT,
+    SIMKL,
 }
 
 data class MetaExternalRating(
     val source: String,
     val value: Double,
+    // Upstream 177f4b5c: Rotten Tomatoes certified-fresh / verified-hot (from MDBList keywords).
+    val isCertified: Boolean = false,
 )
 
 data class MetaTrailer(

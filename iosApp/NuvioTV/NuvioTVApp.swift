@@ -67,6 +67,10 @@ struct NuvioTVApp: App {
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
+        _ = NetworkPathMonitor.shared  // P4 BUG-143: start the path monitor so the first failure reads a real value
+        // I1 (beta.19-rc1 verdict, BUG-134): seed the display scale non-view artwork code decodes with
+        // (hero resolver, prefetch) while we are certainly on the main thread.
+        ArtworkDecodeMath.seedScreenScale()
 
         // FEAT-31: register the bundled Open Sans faces + apply the persisted font choice before
         // any view (and therefore any `Theme.Font.*` read) is built.
@@ -77,11 +81,35 @@ struct NuvioTVApp: App {
         // never runs). Runs once, before any repository is accessed.
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
+        // ui-legs (2026-10-22): `-debug.tmdbEnabledOverride YES|NO` (DEBUG only) sets TMDB
+        // enrichment for this launch, in memory, never written or synced. Before any repository load.
+        TmdbDebugOverride.apply()
+        // harness-w4 (2026-10-23): the same seam for two more synced keys the UI legs need, DEBUG
+        // only, in memory, never written or synced: `-debug.streamAutoPlayModeOverride <MODE>`
+        // (stream_auto_play_mode) and `-debug.amoledEnabledOverride YES|NO` (amoled_enabled).
+        StreamAutoPlayModeDebugOverride.apply()
+        AmoledDebugOverride.apply()
+
         // Native (AVPlayer) engine is ON by default since beta.13 (info-panel work; see
         // docs/tvos-native-player-info-panel-plan.md). Registered — not written — so a user's explicit
         // OFF survives, and every `bool(forKey:)` reader (PlayerScreen routing, SettingsViewModel)
         // sees the same default without its own fallback logic.
         UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true, "hero_nuvio_style": true])
+
+        // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 Developer A/B `debug.rowEdgeFade` became the
+        // Appearance setting `row_edge_fade` (Off by default). An explicit old Soft, Automatic or Off
+        // carries across (`legacySetting`), Hard does not; the legacy key is removed, and an existing
+        // `row_edge_fade` is never overwritten. Before any row reads the setting.
+        RowEdgeFadeSetting.migrateLegacy(UserDefaults.standard)
+
+        // Home Stage & Strip (H9, P4 R6): FEAT-30's stored `sidebar_style = "sidebar"` becomes
+        // `"rail"`, once and device-local. Reads the persistent domain only, so a `-sidebar_style
+        // sidebar` launch argument is never written to disk. Before the shell reads the mode.
+        NavigationChrome.migrateLegacy(UserDefaults.standard, domain: Bundle.main.bundleIdentifier ?? "")
+
+        // beta.19-rc1 verdict (F): `-debug.frameSamplerSteadyS N` opens a frame-timing window every
+        // N s for the Soft-vs-Off frame-time gate. Inert unless that knob is set.
+        CollectionFocusFrameSampler.shared.startSteadyWindowsIfConfigured()
 
         // FEAT-11: seed the shared hero-trailer audio state from the user's configured default
         // (PlaybackSettingsPane's "Trailer Sound by Default" toggle, same `trailer_audio_default_on`
@@ -133,6 +161,9 @@ struct NuvioTVApp: App {
             NSLog("[TrailerZoom] store reset (debug.resetTrailerZoomStore)")
         }
 
+        // BUG-128: trailer max-fps A/B leg (0 = as shipped); must precede the first extraction.
+        TrailerExtractionPreferences.shared.maxVideoFps = Int32(TrailerTuning.maxFps)
+
         // Auth is started by AuthViewModel (ContentView.onAppear): existing guest installs
         // authenticate instantly from their stored anonymous id; otherwise the Supabase session is
         // restored, or the Welcome gate (Sign In / Create Account / Continue as Guest) is shown.
@@ -183,6 +214,7 @@ struct NuvioTVApp: App {
     var body: some Scene {
         WindowGroup {
             appContent
+                .providesFocusAppearance()
                 // The app is a dark-canvas streaming UI (HIG: TV apps default dark). Pinning the
                 // scheme makes every semantic color (.primary, .secondary, materials) resolve to
                 // its dark variant regardless of the system appearance, so the semantic token
@@ -250,11 +282,13 @@ private struct PlayerPanelUITestRoot: View {
 
 private struct SettingsUITestRoot: View {
     @StateObject private var auth = AuthViewModel()
-    @State private var category: SettingsCategory = .playback
+    @State private var path: [SettingsCategory] = []
+    @State private var lastCategory: SettingsCategory?
     @State private var themeFocus: String?
     @State private var appearanceFocus: String?
     var body: some View {
-        SettingsView(selectedCategory: $category, pendingThemeSwatchFocus: $themeFocus, pendingAppearanceRowFocus: $appearanceFocus).environmentObject(auth)
+        SettingsView(path: $path, lastCategory: $lastCategory, pendingThemeSwatchFocus: $themeFocus,
+                     pendingAppearanceRowFocus: $appearanceFocus).environmentObject(auth)
     }
 }
 private struct HomeUITestRoot: View {

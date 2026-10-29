@@ -10,17 +10,52 @@ import ImageIO
 ///   scaled ~2x for the living-room viewing distance.
 /// - Badges without an image fall back to a text chip in the badge's own colors (today's
 ///   behavior, kept so text-only packs still render).
-/// - `StreamFileSizeChip` is the "2.3 GB" companion chip (mobile `StreamFileSizeBadge`).
+/// - `StreamFileSizeChip` is the "2.3 GB" companion chip (mobile `StreamFileSizeBadge`); polish
+///   D1 moved the size to the row's headline line, so the view has no call site now (its
+///   `label(for:)` formatter is what the row uses).
 enum StreamBadgeMetrics {
-    static let containerHeight: CGFloat = 40
-    static let imageHeight: CGFloat = 30
+    // Polish D2: 34 / 26 / 150 (were 40 / 30 / 180) so a badge row sits under the fact lines
+    // instead of out-shouting them.
+    static let containerHeight: CGFloat = 34
+    static let imageHeight: CGFloat = 26
     static let minImageWidth: CGFloat = 60
-    static let maxImageWidth: CGFloat = 180
+    static let maxImageWidth: CGFloat = 150
     static let cornerRadius: CGFloat = 8
+    /// D2 outline chip: letter-spacing in points (not a font size; the token is untouched).
+    static let outlineTracking: CGFloat = 0.4
+    /// D2 outline chip: stroke opacity (white) at rest.
+    static let outlineStrokeOpacity: Double = 0.18
+}
+
+/// W3-16 (F1): a plain-Swift copy of the shared `StreamBadge` (a Kotlin data class), so a stream
+/// row's value model compares with synthesized `==` — no Kotlin `isEqual` crossing per chip — and
+/// the model stays free of Kotlin objects. Same six fields, same names.
+nonisolated struct StreamBadgeInfo: Equatable {
+    let name: String
+    let imageURL: String
+    let tagColor: String
+    let tagStyle: String
+    let textColor: String
+    let borderColor: String
+
+    init(name: String, imageURL: String = "", tagColor: String = "", tagStyle: String = "",
+         textColor: String = "", borderColor: String = "") {
+        self.name = name
+        self.imageURL = imageURL
+        self.tagColor = tagColor
+        self.tagStyle = tagStyle
+        self.textColor = textColor
+        self.borderColor = borderColor
+    }
+
+    init(_ badge: StreamBadge) {
+        self.init(name: badge.name, imageURL: badge.imageURL, tagColor: badge.tagColor,
+                  tagStyle: badge.tagStyle, textColor: badge.textColor, borderColor: badge.borderColor)
+    }
 }
 
 struct StreamBadgeChipView: View {
-    let badge: StreamBadge
+    let badge: StreamBadgeInfo
 
     // BUG-28: `.settingsRow`-styled rows force `.environment(\.colorScheme, .light)` while
     // focused (see FlatControlStyles.swift), which flips SEMANTIC colors (`Theme.Palette
@@ -30,6 +65,23 @@ struct StreamBadgeChipView: View {
     // FlatControlStyles.swift), so reading it here lets the chip pick focus-safe fixed colors
     // instead of trusting the pack.
     @Environment(\.isFocused) private var isFocused
+    /// BUG-65: like `RowTextColor`, the outline chip also reads the row style's focus key.
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+
+    /// How a text chip is drawn (polish D2).
+    enum TextChipStyle: Equatable {
+        /// No fill, a hairline capsule stroke, the row's own text colour.
+        case outline
+        /// The pack's own colours (BUG-28 / BUG-43 logic in `effectiveTextChipColors`).
+        case packColors
+    }
+
+    /// D2: a pack that sets a parseable `tagColor` keeps its colours; with none, the monochrome
+    /// outline chip. The pack's `textColor` / `borderColor` are ignored on the outline chip: a
+    /// `textColor` with no `tagColor` was authored for a fill this chip does not draw.
+    static func textChipStyle(tagColorHex: String) -> TextChipStyle {
+        Theme.Palette.luminance(fromHexString: tagColorHex) == nil ? .outline : .packColors
+    }
 
     var body: some View {
         if badge.imageURL.isEmpty {
@@ -81,7 +133,35 @@ struct StreamBadgeChipView: View {
         .clipShape(shape)
     }
 
+    @ViewBuilder
     private var textChip: some View {
+        switch Self.textChipStyle(tagColorHex: badge.tagColor) {
+        case .outline: outlineChip
+        case .packColors: packTextChip
+        }
+    }
+
+    /// D2 outline chip. Reads BOTH focus sources (BUG-65): the stroke flips on the white platter,
+    /// where a white 0.18 stroke would vanish; the text follows `rowTextColor`.
+    private var outlineChip: some View {
+        let focused = isFocused || rowFocused
+        return Text(badge.name)
+            .font(Theme.Font.caption.weight(.semibold))
+            .tracking(StreamBadgeMetrics.outlineTracking)
+            .rowTextColor()
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .frame(height: StreamBadgeMetrics.containerHeight)
+            .overlay(
+                Capsule().strokeBorder(
+                    focused ? Theme.Palette.onFocusPlatter.opacity(0.3)
+                            : Color.white.opacity(StreamBadgeMetrics.outlineStrokeOpacity),
+                    lineWidth: 1)
+            )
+    }
+
+    /// The pre-D2 text chip, kept intact for packs with a `tagColor` (BUG-28 / BUG-43).
+    private var packTextChip: some View {
         let decision = Self.effectiveTextChipColors(
             textColorHex: badge.textColor,
             tagColorHex: badge.tagColor,
@@ -97,6 +177,7 @@ struct StreamBadgeChipView: View {
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .padding(.vertical, Theme.Spacing.xxs)
+            .frame(height: StreamBadgeMetrics.containerHeight)
             .background(background, in: Capsule())
             .overlay(
                 Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
@@ -245,6 +326,17 @@ private struct BadgeImageView<Fallback: View>: View {
     @State private var image: UIImage?
     @State private var failed = false
 
+    /// W3-16 (F3): seeded from a synchronous peek at the decoded-thumbnail cache. A badge pack
+    /// repeats a small set of images on every row, so a row that scrolls in finds them already
+    /// decoded and draws them on its FIRST frame. Before, every new row's chips were empty
+    /// (`Color.clear`) for a frame and then swapped to the image: a second layout pass through the
+    /// `ViewThatFits` ladder per new row, in the middle of a scroll.
+    init(url: String, @ViewBuilder fallback: () -> Fallback) {
+        self.url = url
+        self.fallback = fallback()
+        _image = State(initialValue: BadgeImageMemory.peek(url))
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -256,6 +348,10 @@ private struct BadgeImageView<Fallback: View>: View {
             }
         }
         .task(id: url) {
+            if let hit = BadgeImageMemory.peek(url) {
+                if image !== hit { image = hit }
+                return
+            }
             if let loaded = await BadgeImageCache.shared.image(for: url) {
                 image = loaded
             } else {
@@ -265,21 +361,34 @@ private struct BadgeImageView<Fallback: View>: View {
     }
 }
 
+/// W3-16 (F3): the decoded badge thumbnails, readable WITHOUT hopping onto `BadgeImageCache`'s actor
+/// so a view's `init` can peek. `NSCache` is thread-safe; nothing else touches it.
+private enum BadgeImageMemory {
+    nonisolated(unsafe) private static let cache = NSCache<NSString, UIImage>()
+
+    nonisolated static func peek(_ url: String) -> UIImage? {
+        cache.object(forKey: url as NSString)
+    }
+
+    nonisolated static func store(_ image: UIImage, for url: String) {
+        cache.setObject(image, forKey: url as NSString)
+    }
+}
+
 /// Process-wide badge-art cache: one fetch + one downsampled decode per unique URL, concurrent
-/// requests for the same URL coalesced onto one task. NSCache so the (already small) decoded
-/// thumbnails still evict under memory pressure.
+/// requests for the same URL coalesced onto one task. NSCache (`BadgeImageMemory`) so the (already
+/// small) decoded thumbnails still evict under memory pressure.
 private actor BadgeImageCache {
     static let shared = BadgeImageCache()
 
-    /// Longest decoded side in pixels: chip max width (180 pt) at the 4K UI scale (2x), rounded up.
+    /// Longest decoded side in pixels: chip max width (150 pt) at the 4K UI scale (2x), rounded up.
     /// Keeps every thumbnail ≤ ~0.6 MB regardless of the source PNG's size.
     private static let maxPixelSize: CGFloat = 400
 
-    private let cache = NSCache<NSString, UIImage>()
     private var inflight: [String: Task<UIImage?, Never>] = [:]
 
     func image(for url: String) async -> UIImage? {
-        if let hit = cache.object(forKey: url as NSString) { return hit }
+        if let hit = BadgeImageMemory.peek(url) { return hit }
         if let running = inflight[url] { return await running.value }
         let task = Task<UIImage?, Never> {
             guard let parsed = URL(string: url),
@@ -291,7 +400,7 @@ private actor BadgeImageCache {
         inflight[url] = task
         let result = await task.value
         inflight[url] = nil
-        if let result { cache.setObject(result, forKey: url as NSString) }
+        if let result { BadgeImageMemory.store(result, for: url) }
         return result
     }
 
@@ -310,7 +419,9 @@ private actor BadgeImageCache {
     }
 }
 
-/// "2.3 GB" / "740 MB" chip from `behaviorHints.videoSize` (mobile `StreamFileSizeBadge`).
+/// "2.3 GB" / "740 MB" chip from `behaviorHints.videoSize` (mobile `StreamFileSizeBadge`). No call
+/// site since polish D1 (rows draw the size as plain text via `label(for:)`); the view is kept for
+/// Direction C's best-pick card.
 struct StreamFileSizeChip: View {
     let bytes: Int64
 

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.features.player.STREAM_AUDIO_DELAY_MAX_MS
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -27,10 +28,13 @@ object StreamParser {
             val url = obj.string("url")
             val infoHash = obj.string("infoHash")
             val externalUrl = obj.string("externalUrl")
+            val ytId = obj.string("ytId")?.trim()?.takeIf { it.isNotEmpty() }
             val clientResolve = obj.objectValue("clientResolve")?.toClientResolve()
 
             // Must have at least one source or external target.
-            if (url == null && infoHash == null && externalUrl == null && clientResolve == null) return@mapNotNull null
+            if (url == null && infoHash == null && externalUrl == null && ytId == null && clientResolve == null) {
+                return@mapNotNull null
+            }
 
             val hintsObj = obj["behaviorHints"] as? JsonObject
             val proxyHeaders = hintsObj
@@ -44,6 +48,7 @@ object StreamParser {
                 infoHash = infoHash,
                 fileIdx = obj.int("fileIdx"),
                 externalUrl = externalUrl,
+                ytId = ytId,
                 sources = obj.stringList("sources"),
                 addonName = addonName,
                 addonId = addonId,
@@ -57,6 +62,8 @@ object StreamParser {
                     videoSize = hintsObj?.long("videoSize"),
                     filename = hintsObj?.string("filename"),
                     proxyHeaders = proxyHeaders,
+                    audioDelayMs = hintsObj?.int("audioDelayMs")
+                        ?.coerceIn(-STREAM_AUDIO_DELAY_MAX_MS, STREAM_AUDIO_DELAY_MAX_MS),
                 ),
             )
         }

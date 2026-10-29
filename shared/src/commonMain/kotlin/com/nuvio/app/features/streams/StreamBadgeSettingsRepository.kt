@@ -21,7 +21,27 @@ data class StreamBadgeSettingsUiState(
     val showFileSizeBadges: Boolean = true,
     val showAddonLogo: Boolean = false,
     val badgePlacement: StreamBadgePlacement = StreamBadgePlacement.BOTTOM,
+    val backgroundMode: StreamBackgroundMode = StreamBackgroundDefaults.platformDefault,
+    val groupingMode: StreamGroupingMode = StreamGroupingMode.QUALITY,
+    val listOpensWith: StreamListOpensWith = StreamListOpensWith.BEST_PICK,
 )
+
+enum class StreamBackgroundMode {
+    Normal,
+    Cinematic,
+}
+
+/** Stream picker "Group Sources By" (polish D5). Profile-local: never synced. */
+enum class StreamGroupingMode {
+    QUALITY,
+    ADDON,
+}
+
+/** Stream picker "Source List Opens With" (Direction C D9). Profile-local: never synced. */
+enum class StreamListOpensWith {
+    BEST_PICK,
+    FULL_LIST,
+}
 
 enum class StreamBadgePlacement {
     TOP,
@@ -43,6 +63,9 @@ object StreamBadgeSettingsRepository {
     private var showFileSizeBadges = true
     private var showAddonLogo = false
     private var badgePlacement = StreamBadgePlacement.BOTTOM
+    private var backgroundMode = StreamBackgroundDefaults.platformDefault
+    private var groupingMode = StreamGroupingMode.QUALITY
+    private var listOpensWith = StreamListOpensWith.BEST_PICK
 
     fun ensureLoaded() {
         if (hasLoaded) return
@@ -59,6 +82,9 @@ object StreamBadgeSettingsRepository {
         showFileSizeBadges = true
         showAddonLogo = false
         badgePlacement = StreamBadgePlacement.BOTTOM
+        backgroundMode = StreamBackgroundDefaults.platformDefault
+        groupingMode = StreamGroupingMode.QUALITY
+        listOpensWith = StreamListOpensWith.BEST_PICK
         _uiState.value = StreamBadgeSettingsUiState()
     }
 
@@ -156,6 +182,30 @@ object StreamBadgeSettingsRepository {
         StreamBadgeSettingsStorage.saveStreamBadgePlacement(placement.name)
     }
 
+    fun setBackgroundMode(mode: StreamBackgroundMode) {
+        ensureLoaded()
+        if (backgroundMode == mode) return
+        backgroundMode = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamBackgroundMode(mode.name.lowercase())
+    }
+
+    fun setGroupingMode(mode: StreamGroupingMode) {
+        ensureLoaded()
+        if (groupingMode == mode) return
+        groupingMode = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamGroupingMode(mode.name.lowercase())
+    }
+
+    fun setListOpensWith(mode: StreamListOpensWith) {
+        ensureLoaded()
+        if (listOpensWith == mode) return
+        listOpensWith = mode
+        publish()
+        StreamBadgeSettingsStorage.saveStreamListOpensWith(mode.name.lowercase())
+    }
+
     private fun loadFromDisk() {
         hasLoaded = true
         val storedRules = parseStreamBadgeRules(StreamBadgeSettingsStorage.loadStreamBadgeRules())
@@ -167,6 +217,15 @@ object StreamBadgeSettingsRepository {
         streamBadgeRules = storedRules ?: legacyRules ?: StreamBadgeRules()
         showFileSizeBadges = StreamBadgeSettingsStorage.loadShowFileSizeBadges() ?: true
         showAddonLogo = StreamBadgeSettingsStorage.loadShowAddonLogo() ?: false
+        backgroundMode = StreamBadgeSettingsStorage.loadStreamBackgroundMode()
+            ?.let { storedMode -> StreamBackgroundMode.entries.firstOrNull { it.name.equals(storedMode, ignoreCase = true) } }
+            ?: StreamBackgroundDefaults.platformDefault
+        groupingMode = StreamBadgeSettingsStorage.loadStreamGroupingMode()
+            ?.let { stored -> StreamGroupingMode.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamGroupingMode.QUALITY
+        listOpensWith = StreamBadgeSettingsStorage.loadStreamListOpensWith()
+            ?.let { stored -> StreamListOpensWith.entries.firstOrNull { it.name.equals(stored, ignoreCase = true) } }
+            ?: StreamListOpensWith.BEST_PICK
         badgePlacement = StreamBadgeSettingsStorage.loadStreamBadgePlacement()
             ?.let { storedPlacement ->
                 StreamBadgePlacement.entries.firstOrNull { placement ->
@@ -187,6 +246,9 @@ object StreamBadgeSettingsRepository {
             showFileSizeBadges = showFileSizeBadges,
             showAddonLogo = showAddonLogo,
             badgePlacement = badgePlacement,
+            backgroundMode = backgroundMode,
+            groupingMode = groupingMode,
+            listOpensWith = listOpensWith,
         )
     }
 

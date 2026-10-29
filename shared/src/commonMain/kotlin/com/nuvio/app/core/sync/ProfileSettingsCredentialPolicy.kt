@@ -47,6 +47,11 @@ internal fun preservingLocalProfileCredentials(
     remotePayload: JsonObject,
     localPayload: JsonObject,
 ): JsonObject {
+    // Fork: TMDB is handled like every other provider again. rc13 (upstream 60ee0160) had an
+    // early return here that dropped `tmdb_api_key` from the applied payload unconditionally —
+    // with the personal override back (upstream df589078) that return would let
+    // `TmdbSettingsStorage.replaceFromSyncPayload`'s delete pass wipe the local key on every
+    // settings pull, so it is gone: a local key survives, a remote-only one is stripped and staged.
     val keys = profileCredentialKeys[feature].orEmpty()
     if (keys.isEmpty()) return remotePayload
     val merged = remotePayload.toMutableMap()

@@ -5,7 +5,16 @@ import XCTest
 /// "Guide parental" cut in half above a focused Saga row) — and the focused row's title must rest
 /// near `DetailRowAnchor.topInset`.
 ///
-/// Oracle: XCUI frames of the section-title `staticTexts` at rest after each Down press. The tvOS
+/// BUG-99 (rc6): the direction split changed what "at rest" means for a Down press. Down no
+/// longer anchors by default — the engine's own minimal reveal is left alone unless it would
+/// leave the header straddling the top scrim — so the Down walk below no longer expects every
+/// step to land within ±16 of `DetailRowAnchor.screenRest`; it instead asserts the row never rests
+/// ABOVE the rest, and that the probe's `anchor=… free` reading actually fires on at least two of
+/// the six presses (proof the new decision is being exercised, not just never triggering). Up is
+/// unchanged — it must still anchor every time — so an Up leg is appended after the Down walk to
+/// cover that.
+///
+/// Oracle: XCUI frames of the section-title `staticTexts` at rest after each press. The tvOS
 /// 27 runtime never reports `hasFocus`, so the leg does not identify the focused row; it asserts
 /// the invariant every title must satisfy, plus that SOME title sits at the anchor band once focus
 /// has left the top block. The detail page is recognised by its DEBUG-only `debug_ux6` probe.
@@ -34,15 +43,17 @@ final class DetailRowAnchorTests: XCTestCase {
         // No trailer anywhere: the detail page otherwise auto-enters the full-screen cover
         // (FEAT-32) a few seconds in, and the Down walk would be pressing inside it.
         // `forceNoTrailer` is honoured only alongside `debug.trailerProbe`.
+        // Home Stage & Strip (W3): the Down walk to a movies row is Classic Home's; pin Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += ["-home_upcoming_row_enabled", "NO",
                                 "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES",
                                 "-debug.detailScrollProbe", "YES"]
         app.launch()
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10)
         return app
@@ -62,6 +73,10 @@ final class DetailRowAnchorTests: XCTestCase {
         guard let root = try? app.snapshot() else { return [] }
         var out: [(String, CGRect)] = []
         func walk(_ node: XCUIElementSnapshot) {
+            // FEAT-35: the Cinematic hero (`detail_hero`) is not an anchored row; its title fallback,
+            // meta line and credits must never enter the oracle (a title such as "… Collection"
+            // would otherwise match the suffix filter below).
+            if node.identifier == "detail_hero" { return }
             if node.elementType == .staticText {
                 let f = node.frame
                 if f.height >= 30, f.height <= 64, f.width >= 80, f.width <= 900, !node.label.isEmpty {
@@ -76,75 +91,202 @@ final class DetailRowAnchorTests: XCTestCase {
 
     func testDownWalkNeverLeavesAHeaderStraddlingTheTopEdge() throws {
         let app = launchToHome()
-        // test02's route to a real DetailView: a movies catalog row (portrait cards → NavigationLink).
-        press(.down, times: 4)
-        pause(0.5)
-        remote.press(.select)
-        pause(8)
+        // harness-w4 (2026-10-23): into Detail by the shared, focus-verified Search route
+        // (`DetailEntryRoute`: the Severance series, then Dune), never a blind Select. The old
+        // "Down ×4, Select" could land on FA87's Continue Watching row, whose cards resume the
+        // player; the route presses Select only on a result card that reads focused.
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
+        pause(2)
         guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 6) else {
-            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — the down×4 walk did not land on a movies row on this fixture; nothing to measure")
+            throw XCTSkip("no detail page opened (debug_ux6 probe absent) — nothing to measure")
         }
-        // FEAT-32: the page auto-enters the full-screen trailer cover a few seconds in (its caption
-        // carries the Back hint). `forceNoTrailer` does not gate that path, so back out of the
-        // cover once and settle before walking; the auto-entry fires once per page.
-        // The Back hint element persists on the page (it is the cover's caption, kept mounted), so
-        // its presence is not proof the cover is up; press Menu once regardless — on the page it is
-        // a no-op for focus, inside the cover it returns to the page.
+        // FEAT-32: the page used to auto-enter the full-screen trailer cover a few seconds in, and
+        // this walk pressed Menu once "regardless" to back out of it. That Menu now POPS the page:
+        // the Back-hint caption stays mounted on the page with no cover up, and in the Cinematic
+        // layout Menu on Detail returns to Home (the 10-02 g3 run walked Home's rows, probe "-").
+        // `-debug.trailerForceNoTrailer` is honoured by `DetailViewModel` since rc13 (see test68),
+        // so no cover engages; only press Menu if the page's probe has actually gone (a cover is up).
         pause(6)
-        if app.staticTexts["Press Back to exit the trailer"].exists {
+        if !app.staticTexts["debug_ux6"].exists, app.staticTexts["Press Back to exit the trailer"].exists {
             remote.press(.menu)
             pause(3)
         }
+        guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 4) else {
+            throw XCTSkip("the Detail page's debug_ux6 probe disappeared before the walk — the page was left (nothing to measure)")
+        }
 
-        var anchoredHits = 0
+        // Guest fixture (10-02 g4 run): no stream source, so Play reads "Playback unavailable" and is
+        // disabled; initial focus then sits on the icon-only Watched button (x ≈ 730) and Down from
+        // there can jump past the narrow rows under the hero. Start from the leftmost focusable hero
+        // control; if the walk still cannot reach three rows, skip below (the focus PATH changed, not
+        // the anchor behaviour this test measures).
+        let playDisabled = app.buttons["Playback unavailable"].exists
+        if playDisabled {
+            press(.left, times: 4, gap: 0.6)
+            pause(0.8)
+        }
+
         var anchorSamples = 0
         var anchoredRows = Set<String>()
         var straddles: [String] = []
+        // BUG-96 rc5 regression fix: `moves=` is `DetailScrollMotion.segments` over this focus
+        // visit's raw offset samples — `1` means the engine's reveal and the anchor pass blended
+        // into one motion, `2`+ means the old land-then-nudge two-step move is back. Kept alongside
+        // the `(top − off) − 108` residual per step so both survive in the failure message and in
+        // an attachment even when the run passes. BUG-99: both are now tagged by `direction` since
+        // the Down walk and the Up leg below are measured with the same arrays.
+        var movesByStep: [(step: Int, direction: String, moves: Int)] = []
+        var residualByStep: [(step: Int, direction: String, residual: Double)] = []
+        // BUG-99 rc6: how many of the Down presses read `anchor=… free` on the probe — i.e. the
+        // engine's own minimal reveal was left alone rather than pulled up to the anchor. At least
+        // some of the six presses on a typical detail page (short rows, no straddle) must land
+        // here, or the new decision is never actually being exercised by this walk.
+        var downFreeSteps = 0
+        // Only the anchored rows' section titles are the oracle; the top block's details grid
+        // (Network, Country, …) is not an anchored row.
+        let sectionLabels: Set<String> = ["Parental Guide", "Guide parental", "Cast", "Casting", "Episodes", "Épisodes",
+                                          "Trailers & Extras", "Bandes-annonces et extras", "More Like This", "Comments"]
+
         for step in 1...6 {
             press(.down, times: 1, gap: 1.4)
-            // Only the anchored rows' section titles are the oracle; the top block's details grid
-            // (Network, Country, …) is not an anchored row.
-            let sectionLabels: Set<String> = ["Parental Guide", "Guide parental", "Cast", "Casting", "Episodes", "Épisodes",
-                                              "Trailers & Extras", "Bandes-annonces et extras", "More Like This", "Comments"]
             let titles = sectionTitleFrames(app).filter { sectionLabels.contains($0.label) || $0.label.hasSuffix("Saga") || $0.label.hasSuffix("Collection") }
             for (label, f) in titles {
                 // Straddling: the top edge cuts through the title's own glyph box AND the title sits
                 // below the top scrim's opaque zone (a header under the scrim is faded away, not cut).
                 if f.minY > 40, f.minY < f.height * 0.8 {
-                    straddles.append("step \(step): '\(label)' minY=\(Int(f.minY)) h=\(Int(f.height))")
+                    straddles.append("step \(step) (down): '\(label)' minY=\(Int(f.minY)) h=\(Int(f.height))")
                 }
             }
             // The anchor oracle reads the app's own probe: `anchor=<row> top=<content y> …` and
-            // `geo=off=<content offset>`; the focused row's screen top is `top − off`, and it must
-            // rest at `DetailRowAnchor.screenRest` (108). Title heuristics are not used for this —
-            // rows whose top is not a title (season chips, logos) and titles the accessibility
-            // walk does not list (Cast) would make it vacuous.
+            // `geo=off=<content offset>`; the focused row's screen top is `top − off`. On Down,
+            // BUG-99 no longer expects this to land at `DetailRowAnchor.screenRest` (108) on every
+            // press — only that it never rests ABOVE the rest (a residual below -16 would mean the
+            // header was pushed past the anchor band, the pre-blend-fix symptom), and that the
+            // probe's `free` note actually shows up more than once across the six presses. Title
+            // heuristics are not used for this — rows whose top is not a title (season chips,
+            // logos) and titles the accessibility walk does not list (Cast) would make it vacuous.
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
                 anchorSamples += 1
-                // ±16: the content height can shift a few points after the sample (late images).
-                if abs((top - off) - 108) <= 16 { anchoredHits += 1 }
+                let residual = (top - off) - 108
+                residualByStep.append((step, "down", residual))
                 // Codex BUG-96 r3 (P3): a stuck focus would repeat one good sample on every press —
-                // the walk must reach DISTINCT anchored rows, not the same one six times.
+                // the walk must reach DISTINCT rows, not the same one six times.
                 if let range = probeLabel.range(of: "anchor=") {
                     let row = probeLabel[range.upperBound...].prefix { $0 != " " }
                     anchoredRows.insert(String(row))
                 }
+                // The `debug_ux6` label reads `anchor=<row> top=<t> free geo=…` for a `.free`
+                // decision (see `DetailView`'s `String(format: "%@ top=%.0f free", …)`), so " free
+                // geo=" is present exactly when this step's decision was `.free`.
+                if probeLabel.contains(" free geo=") { downFreeSteps += 1 }
+                // BUG-96 rc5: the motion-segment count sampled alongside this same at-rest probe
+                // read — `debug_ux6`'s `geo=` mirrors `dimModel.geometrySample`, which carries
+                // `moves=` (see `DetailView`'s scroll-geometry handler).
+                if let moves = probeNumber(probeLabel, key: "moves=") {
+                    movesByStep.append((step, "down", Int(moves)))
+                }
             }
             let visible = titles.filter { $0.frame.minY >= 0 && $0.frame.maxY <= 1080 }.map { "\($0.label)@\(Int($0.frame.minY))" }
             let shotAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            shotAttachment.name = "bug96_step\(step)"
+            shotAttachment.name = "bug99_down_step\(step)"
             shotAttachment.lifetime = .keepAlways
             add(shotAttachment)
             let probe = app.staticTexts["debug_ux6"]
-            print("[BUG96] step \(step) titles=\(visible) probe=\(probe.exists ? probe.label : "-")")
+            print("[BUG99] down step \(step) titles=\(visible) probe=\(probe.exists ? probe.label : "-")")
         }
-        XCTAssertTrue(straddles.isEmpty, "BUG-96: a section header straddled the top edge at rest — \(straddles)")
-        XCTAssertGreaterThanOrEqual(anchorSamples, 4, "BUG-96: the probe never reported an anchored row — is -debug.detailScrollProbe on?")
+        if playDisabled && anchoredRows.count < 3 {
+            throw XCTSkip("Play disabled on guest fixture changes the focus path: with \"Playback unavailable\" the walk starts on an icon-only secondary and Down reached only \(anchoredRows.sorted()) — not enough distinct rows to measure the anchor; rerun on a fixture with a playable title")
+        }
+        XCTAssertGreaterThanOrEqual(anchorSamples, 4, "BUG-96: the probe never reported a row — is -debug.detailScrollProbe on?")
         XCTAssertGreaterThanOrEqual(anchoredRows.count, 3,
-                                    "BUG-96: the Down walk must anchor at least three DISTINCT rows (saw \(anchoredRows.sorted())) — a repeated sample means focus was stuck")
-        XCTAssertGreaterThanOrEqual(anchoredHits, anchorSamples - 1,
-                                    "BUG-96: the focused row's top must rest at DetailRowAnchor.screenRest (108) after each move; \(anchoredHits)/\(anchorSamples) did")
+                                    "BUG-96: the Down walk must reach at least three DISTINCT rows (saw \(anchoredRows.sorted())) — a repeated sample means focus was stuck")
+
+        // BUG-99 (rc6): replaces the old "residual within ±16 on nearly every step" rule, which
+        // assumed Down always anchors — it doesn't any more. What must still hold on Down: the row
+        // never rests ABOVE `DetailRowAnchor.screenRest` (that would be the ORIGINAL BUG-96
+        // straddle, not the two-step-motion regression the blend fix already closed), and the
+        // straddle-only-when-needed decision must actually be exercised at least twice in six
+        // presses.
+        let downResiduals = residualByStep.filter { $0.direction == "down" }
+        let aboveRestSteps = downResiduals.filter { $0.residual < -16 }
+        XCTAssertTrue(aboveRestSteps.isEmpty,
+                      "BUG-99: a Down step rested the row ABOVE DetailRowAnchor.screenRest (108) — " +
+                      "\(aboveRestSteps.map { "step\($0.step)=\(String(format: "%.0f", $0.residual))" })")
+        XCTAssertGreaterThanOrEqual(downFreeSteps, 2,
+                                    "BUG-99: at least two of the six Down presses must leave the engine's own minimal reveal alone (anchor=… free) — saw \(downFreeSteps)")
+
+        // BUG-99: Up is unchanged — it must still anchor every time, exactly like every row did
+        // before rc6. Same oracle, appended as its own leg after the Down walk.
+        var upClampedSteps = Set<Int>()
+        for step in 1...3 {
+            press(.up, times: 1, gap: 1.4)
+            let titles = sectionTitleFrames(app).filter { sectionLabels.contains($0.label) || $0.label.hasSuffix("Saga") || $0.label.hasSuffix("Collection") }
+            for (label, f) in titles {
+                if f.minY > 40, f.minY < f.height * 0.8 {
+                    straddles.append("step \(step) (up): '\(label)' minY=\(Int(f.minY)) h=\(Int(f.height))")
+                }
+            }
+            let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
+            if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
+                let residual = (top - off) - 108
+                residualByStep.append((step, "up", residual))
+                // End-of-content clamp: when the page is already scrolled to its end (the geometry
+                // sample's offset + visible height reaches the content height), a row near the bottom
+                // (About is the short last row in Cinematic) physically cannot be raised to the 108 pt
+                // rest — it rests LOWER (positive residual). Only that case is exempt below.
+                // harness-w4 (2026-10-23): the page's last reachable offset is `content − vis − inset`
+                // (`geo=… inset=`), not `content − vis`. Measured on FA87's Severance page (the leg's
+                // first run in weeks, via DetailEntryRoute): `content=2627 vis=863 inset=157`, and the
+                // About row (Down 4–6) rested at `off=1607` = 2627 − 863 − 157 while asking for more;
+                // Up 1 to Trailers & Extras then re-issued y=1873 and stayed at 1607 (residual 109),
+                // which the old `off + vis ≥ content − 4` test did not recognise as the clamp.
+                let inset = probeNumber(probeLabel, key: "inset=") ?? 0
+                if let vis = probeNumber(probeLabel, key: "vis="), let content = probeNumber(probeLabel, key: "content="),
+                   off + vis + inset >= content - 4, residual > 0 {
+                    upClampedSteps.insert(step)
+                }
+                if let moves = probeNumber(probeLabel, key: "moves=") {
+                    movesByStep.append((step, "up", Int(moves)))
+                }
+            }
+            let visible = titles.filter { $0.frame.minY >= 0 && $0.frame.maxY <= 1080 }.map { "\($0.label)@\(Int($0.frame.minY))" }
+            let shotAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shotAttachment.name = "bug99_up_step\(step)"
+            shotAttachment.lifetime = .keepAlways
+            add(shotAttachment)
+            let probe = app.staticTexts["debug_ux6"]
+            print("[BUG99] up step \(step) titles=\(visible) probe=\(probe.exists ? probe.label : "-")")
+        }
+        let upResiduals = residualByStep.filter { $0.direction == "up" }
+        XCTAssertGreaterThanOrEqual(upResiduals.count, 2, "BUG-99: the Up leg never reported a probe sample — is -debug.detailScrollProbe on?")
+        for entry in upResiduals where !upClampedSteps.contains(entry.step) {
+            XCTAssertLessThanOrEqual(abs(entry.residual), 16,
+                                     "BUG-99: Up step \(entry.step) must anchor to DetailRowAnchor.screenRest (108) — residual \(String(format: "%.0f", entry.residual))")
+        }
+
+        XCTAssertTrue(straddles.isEmpty, "BUG-96: a section header straddled the top edge at rest — \(straddles)")
+
+        // Numbers first, so they survive a PASSING run too — the experiment report needs the
+        // moves= distribution and residuals per direction regardless of outcome, not just on
+        // failure.
+        let movesDescription = movesByStep.map { "\($0.direction)\($0.step)=\($0.moves)" }.joined(separator: " ")
+        let residualDescription = residualByStep.map { "\($0.direction)\($0.step)=\(String(format: "%.0f", $0.residual))" }.joined(separator: " ")
+        XCTContext.runActivity(named: "BUG-99 moves= distribution and (top-off-108) residuals, Down then Up") { activity in
+            let attachment = XCTAttachment(string: "moves: \(movesDescription)\nresiduals(top-off-108): \(residualDescription)\ndownFreeSteps: \(downFreeSteps)/\(downResiduals.count)\nupClampedSteps: \(upClampedSteps.sorted())")
+            attachment.name = "bug99_moves_and_residuals"
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+        print("[BUG99] moves=\(movesDescription) residuals=\(residualDescription) downFreeSteps=\(downFreeSteps) upClampedSteps=\(upClampedSteps.sorted())")
+
+        // The blend fix's whole point (unchanged by BUG-99): every at-rest sample, on either
+        // direction, reads as ONE motion. `moves=2`+ is the land-then-nudge regression rc5 reported.
+        let multiMoveSteps = movesByStep.filter { $0.moves > 1 }
+        XCTAssertTrue(multiMoveSteps.isEmpty,
+                      "BUG-96: a focus move landed in more than one visible motion (land-then-nudge) — " +
+                      "steps \(multiMoveSteps.map { "\($0.direction)\($0.step)=\($0.moves)" }) — full distribution moves: \(movesDescription) residuals(top-off-108): \(residualDescription)")
+
         remote.press(.menu)
         pause(1)
     }

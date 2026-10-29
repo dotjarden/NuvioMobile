@@ -14,9 +14,10 @@ struct AuthView: View {
     @State private var email = ""
     @State private var password = ""
 
+    /// Validation only. Busy is guarded in `submit()`/Cancel rather than by `.disabled`, which
+    /// disabled the focused button on press and threw focus back into the text fields.
     private var canSubmit: Bool {
-        !model.isBusy &&
-            email.contains("@") &&
+        email.contains("@") &&
             (isSignUp ? password.count >= 6 : !password.isEmpty)
     }
 
@@ -93,6 +94,7 @@ struct AuthView: View {
                     .disabled(!canSubmit)
 
                     Button {
+                        guard !model.isBusy else { return }
                         model.clearError()
                         dismiss()
                     } label: {
@@ -102,7 +104,6 @@ struct AuthView: View {
                             .padding(.vertical, Theme.Spacing.xs)
                     }
                     .buttonStyle(.glass)
-                    .disabled(model.isBusy)
                 }
             }
             .padding(Theme.Spacing.screen)
@@ -110,6 +111,7 @@ struct AuthView: View {
     }
 
     private func submit() {
+        guard !model.isBusy, canSubmit else { return }
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         if isSignUp {
             model.signUp(email: trimmedEmail, password: password)

@@ -2,26 +2,9 @@ import AVKit
 import SwiftUI
 import SharedCore
 
-/// Shared caption preferences for both native movies and Live TV. Bitmap captions and
-/// system accessibility overrides remain under the renderer's control.
-enum NativeSubtitleStyle {
-    static func attributes(_ style: SubtitleStyleState) -> [String: Any] {
-        func components(_ argb: Int64) -> [Double] {
-            [24, 16, 8, 0].map { Double((argb >> $0) & 0xFF) / 255 }
-        }
-        return [
-            kCMTextMarkupAttribute_ForegroundColorARGB as String: components(style.textColor),
-            kCMTextMarkupAttribute_BackgroundColorARGB as String: components(style.backgroundColor),
-            kCMTextMarkupAttribute_BoldStyle as String: style.bold,
-            kCMTextMarkupAttribute_RelativeFontSize as String: max(50, min(200, Double(style.fontSizeSp) / 18 * 100)),
-            kCMTextMarkupAttribute_CharacterEdgeStyle as String: style.outlineEnabled
-                ? kCMTextMarkupCharacterEdgeStyle_Uniform as String : kCMTextMarkupCharacterEdgeStyle_None as String
-        ]
-    }
-
-    static func apply(_ style: SubtitleStyleState, to item: AVPlayerItem?) {
-        item?.textStyleRules = AVTextStyleRule(textMarkupAttributes: attributes(style)).map { [$0] } ?? []
-    }
+/// Live TV's caption styling, on upstream's pure `NativeSubtitleStyle` mapping.
+private func applySubtitleStyle(_ style: SubtitleStyleState, to item: AVPlayerItem?) {
+    item?.textStyleRules = NativeSubtitleStyle.rules(NativeSubtitleStyle.input(from: style))
 }
 
 /// A video-only layer: no AVKit responder, transport overlay, or competing remote handler.
@@ -103,12 +86,12 @@ final class PlayerVideoView: UIView {
         settingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
             self.subtitleStyle = settings.subtitleStyle
-            NativeSubtitleStyle.apply(settings.subtitleStyle, to: self.player.currentItem)
+            applySubtitleStyle(settings.subtitleStyle, to: self.player.currentItem)
         }
         itemObserver = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor in
                 guard let self, let style = self.subtitleStyle else { return }
-                NativeSubtitleStyle.apply(style, to: self.player.currentItem)
+                applySubtitleStyle(style, to: self.player.currentItem)
             }
         }
         state.togglePlayback = { [weak self] in

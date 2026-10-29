@@ -13,7 +13,7 @@ struct ProfileAvatar: View {
     var body: some View {
         ZStack {
             if let url = imageUrl {
-                CachedAsyncImage(string: url)
+                CachedAsyncImage(string: url, decodeSize: .points(width: size * 1.2, height: size * 1.2))
                     .clipShape(Circle())
             } else {
                 Circle().fill(Color(hexString: profile.avatarColorHex) ?? Theme.Palette.accent)
@@ -317,10 +317,11 @@ struct ProfileEditView: View {
                     // Preview
                     ZStack {
                         if let item = selectedCatalogItem {
-                            CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath))
+                            CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath),
+                                             decodeSize: .points(width: 180, height: 180))
                                 .clipShape(Circle())
                         } else if let url = originalCustomAvatarUrl, avatarId == nil {
-                            CachedAsyncImage(string: url)
+                            CachedAsyncImage(string: url, decodeSize: .points(width: 180, height: 180))
                                 .clipShape(Circle())
                         } else {
                             Circle().fill(Color(hexString: colorHex) ?? Theme.Palette.accent)
@@ -335,6 +336,8 @@ struct ProfileEditView: View {
                         .textFieldStyle(.plain)
                         .font(Theme.Font.body)
                         .frame(maxWidth: 700)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                        .focusRow()
 
                     // Cloud avatar catalog (hidden when empty — guest mode / offline).
                     if !model.avatars.isEmpty {
@@ -355,14 +358,15 @@ struct ProfileEditView: View {
                                             lineWidth: avatarId == nil ? 5 : 0
                                         )
                                     )
-                                    .modifier(FocusRingCircle())
+                                    .modifier(SwatchFocusLift())
                                 }
                                 .buttonStyle(.borderless)
                                 .accessibilityLabel(String(localized: "Use color avatar"))
 
                                 ForEach(model.avatars, id: \.id) { item in
                                     Button { avatarId = item.id } label: {
-                                        CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath))
+                                        CachedAsyncImage(string: ProfileModelsKt.avatarStorageUrl(storagePath: item.storagePath),
+                                                         decodeSize: .points(width: 120, height: 120))
                                             .frame(width: 100, height: 100)
                                             .clipShape(Circle())
                                             .overlay(
@@ -384,6 +388,7 @@ struct ProfileEditView: View {
                             .padding(.horizontal, Theme.Spacing.lg)
                             .padding(.vertical, Theme.Spacing.md)
                         }
+                        .focusRow()
                     }
 
                     // Color palette (used when no catalog avatar is selected).
@@ -402,11 +407,13 @@ struct ProfileEditView: View {
                                             lineWidth: (hex == colorHex && avatarId == nil) ? 5 : 0
                                         )
                                     )
-                                    .modifier(FocusRingCircle())
+                                    .modifier(SwatchFocusLift())
                             }
                             .buttonStyle(.borderless)
+                            .accessibilityIdentifier("profileEdit.swatch.\(hex)")
                         }
                     }
+                    .focusRow()
 
                     // PIN lock — existing profiles on cloud accounts only (RPCs need a session).
                     if let profile = liveProfile, model.isCloudAccount {
@@ -438,6 +445,7 @@ struct ProfileEditView: View {
                                 .buttonStyle(.chip)
                             }
                         }
+                        .focusRow()
                     }
 
                     Button { save() } label: {
@@ -449,7 +457,10 @@ struct ProfileEditView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.Palette.accent)
-                    .disabled(model.isBusy)
+                    // Not `.disabled(isBusy)`: Save is the only control in its row, so disabling it on
+                    // press left the row nothing to focus and focus jumped. `save()` guards instead.
+                    .accessibilityIdentifier("profileEdit.save")
+                    .focusRow()
 
                     if let profile = target.profile, model.profiles.count > 1 {
                         Button(role: .destructive) {
@@ -460,6 +471,7 @@ struct ProfileEditView: View {
                                 .foregroundStyle(.red)
                         }
                         .buttonStyle(.chip)
+                        .focusRow()
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -537,6 +549,7 @@ struct ProfileEditView: View {
     // MARK: - Save
 
     private func save() {
+        guard !model.isBusy else { return }
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         let finalName = trimmed.isEmpty ? String(localized: "Profile") : trimmed
 
@@ -568,7 +581,23 @@ struct ProfileEditView: View {
     }
 }
 
-/// Focus visuals for the circular avatar/color tiles in the profile editor: the system
+/// Focus lift for the colour swatches and the "Color" tile. `.borderless` lifts only the IMAGES in a
+/// label, so a plain coloured circle got no focus indication at all on the Apple TV (device pass
+/// 2026-10-17: focus sat on a swatch with nothing visibly focused). Scales and shadows the label
+/// itself; the white selection ring stays separate.
+private struct SwatchFocusLift: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isFocused ? 1.2 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.55 : 0), radius: isFocused ? 14 : 0, y: isFocused ? 8 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// Focus visuals for the circular avatar tiles in the profile editor: the system
 /// `.borderless` lift carries the focus read (HIG revamp — no accent ring, no custom scale).
 /// Selection keeps its separate white ring.
 private struct FocusRingCircle: ViewModifier {

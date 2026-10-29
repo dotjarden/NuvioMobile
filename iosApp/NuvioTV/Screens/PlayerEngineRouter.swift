@@ -16,10 +16,17 @@ nonisolated enum PlaybackEngine: String, Sendable {
 nonisolated struct EngineDecision: Equatable, Sendable {
     let engine: PlaybackEngine
     let reason: String
+    /// B10 (BUG-166; Steven's rc4 verdict, "DV colours wrong"): mpv must render this stream with
+    /// `gpu-next` (libplacebo), whatever Enhanced Video Renderer says. Set by `route` for a Dolby
+    /// Vision profile 5 stream sent to mpv: the default `gpu` VO has no RPU processing and paints
+    /// P5's IPTPQc2 picture green and magenta.
+    var prefersGpuNext: Bool = false
 
-    /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd".
+    /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd";
+    /// "· gpu-next" is appended when `prefersGpuNext` (B10).
     var displayNote: String {
-        "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
+        let base = "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
+        return prefersGpuNext ? "\(base) \u{00B7} gpu-next" : base
     }
 }
 
@@ -28,6 +35,19 @@ nonisolated enum PlayerEngineRouter {
     /// `dvP7FelToMpv` is its FEL-fidelity sub-setting (send Profile 7 FEL files to mpv instead of
     /// discarding their enhancement layer in the 8.1 conversion).
     static func route(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool = false) -> EngineDecision {
+        var decision = decide(probe: probe, nativeDVEnabled: nativeDVEnabled, dvP7FelToMpv: dvP7FelToMpv)
+        if decision.engine == .mpv, mpvNeedsGpuNext(probe: probe) { decision.prefersGpuNext = true }
+        return decision
+    }
+
+    /// B10 (BUG-166): a Dolby Vision profile 5 stream that plays on mpv needs `gpu-next`: whatever
+    /// sent it there (P5 in MP4 today, or a native failure falling over). `PlayerScreen` asks this
+    /// for the native → mpv fallback too.
+    static func mpvNeedsGpuNext(probe: ProbeResult?) -> Bool {
+        probe?.dolbyVision?.profile == 5
+    }
+
+    private static func decide(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool) -> EngineDecision {
         guard nativeDVEnabled else { return EngineDecision(engine: .mpv, reason: "native engine off") }
         guard let p = probe else { return EngineDecision(engine: .mpv, reason: "probe unavailable") }
         guard p.seekable else { return EngineDecision(engine: .mpv, reason: "source not seekable") }
@@ -44,7 +64,16 @@ nonisolated enum PlayerEngineRouter {
         // (two-track BL+EL, no RPU found, unparseable RPU) stays on mpv.
         if let dv = p.dolbyVision {
             switch dv.profile {
-            case 5, 8: break
+            case 5:
+                // P3-F7 (2026-10-15): a DV profile 5 MP4 (Rutracker "Dolby Vision TV" WEB-DL, dvh1.05.06)
+                // remuxed to fMP4 failed AVPlayer twice with CoreMediaErrorDomain -12927, and P5 in an
+                // MP4/MOV container was routed to mpv from Batch B until the cause was found. The P5
+                // spike (2026-10-20) traced it to the master playlist carrying no VIDEO-RANGE (the P5
+                // VUI is unspecified); `RemuxSession.videoSignaling` now takes the range from the DOVI
+                // record, so P5 routes native in every container. A native failure still falls over
+                // to mpv on gpu-next (`mpvNeedsGpuNext`).
+                break
+            case 8: break
             case 7:
                 guard p.videoStreamCount == 1 else {
                     return EngineDecision(engine: .mpv, reason: "DV P7 two-track")
@@ -76,10 +105,16 @@ nonisolated enum PlayerEngineRouter {
 
     // MARK: - Criteria
 
+    /// The MP4/MOV family of avformat's comma-joined demuxer names ("mov,mp4,m4a,3gp,3g2,mj2").
+    private static func isMP4Container(_ container: String) -> Bool {
+        let c = container.lowercased()
+        return c.contains("mp4") || c.contains("mov")
+    }
+
     /// avformat reports comma-joined demuxer names (e.g. "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2").
     private static func isNativeContainer(_ container: String) -> Bool {
         let c = container.lowercased()
-        return c.contains("matroska") || c.contains("webm") || c.contains("mp4") || c.contains("mov")
+        return c.contains("matroska") || c.contains("webm") || isMP4Container(c)
     }
 
     /// Audio codecs AVPlayer can play directly (the remux stream-copies these).
@@ -140,6 +175,8 @@ extension PlayerEngineRouter {
         }
 
         expect(route(probe: sample(dv: p5), nativeDVEnabled: true).engine, .native, "DV P5 MKV → native")
+        expect(route(probe: sample(dv: p5, container: "mov,mp4,m4a,3gp,3g2,mj2"), nativeDVEnabled: true).engine, .native, "DV P5 MP4 → native (P5 spike, VIDEO-RANGE from the DOVI record)")
+        expect(route(probe: sample(dv: p81, container: "mov,mp4,m4a,3gp,3g2,mj2"), nativeDVEnabled: true).engine, .native, "DV P8.1 MP4 unaffected by the P5 rule")
         expect(route(probe: sample(dv: p81), nativeDVEnabled: true).engine, .native, "DV P8.1 MKV → native")
         expect(route(probe: sample(dv: p7(.mel)), nativeDVEnabled: true).engine, .native, "DV P7 MEL → native (8.1 conversion)")
         expect(route(probe: sample(dv: p7(.fel)), nativeDVEnabled: true).engine, .native, "DV P7 FEL → native by default")

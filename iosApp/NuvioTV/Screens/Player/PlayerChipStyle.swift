@@ -11,12 +11,18 @@ enum PlayerChipStyle {
     static let animation: Animation = .easeInOut(duration: 0.25)
     /// Bottom-trailing inset from the screen edge (overscan-safe), both engines.
     static let edgePadding: CGFloat = Theme.Spacing.screen
+    /// Chip insets while the mpv transport bar is up: clear of the pill row (top at 213 from the
+    /// bottom) and aligned with the track end.
+    static let barUpBottomInset: CGFloat = 240
+    static let barUpTrailingInset: CGFloat = 86
+    /// While a swipe scrub's preview card is up: above the card's chapter label (top at 681 on a
+    /// 1080 canvas, 1080 − 681 + 21).
+    static let scrubCardBottomInset: CGFloat = 420
     /// SF Symbols mirrored on the native contextual actions.
     static let skipSymbol = "forward.frame.fill"
     static let nextSymbol = "forward.end.fill"
-    /// Neutral Liquid Glass (docs/design/hig-hybrid-contract.md): a prompt is an action, not a
-    /// selection, so it never wears the brand accent.
-    static let glassTint = Color.black.opacity(0.45)
+    // A prompt is an action, not a selection, so it never wears the brand accent
+    // (docs/design/hig-hybrid-contract.md). BUG-180: the chips draw `PlayerSurfaceStyle`, not glass.
     /// Skip window ends this many seconds before the segment end so the affordance disappears
     /// cleanly (both engines' `updateSkipPrompt`).
     static let lastSecondExclusion: Double = 1
@@ -42,8 +48,8 @@ struct PlayerActionChip: View {
         .foregroundStyle(Theme.Palette.textPrimary)
         .padding(.horizontal, Theme.Spacing.lg + Theme.Spacing.xs)
         .padding(.vertical, Theme.Spacing.md)
-        .glassEffect(.regular.tint(PlayerChipStyle.glassTint), in: .capsule)
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+        // BUG-180 (Steven rc7): solid player surface, not glass + shadow (see PlayerSurfaceStyle).
+        .playerSurface(in: Capsule(), fill: PlayerSurfaceStyle.chipFill)
         .accessibilityElement(children: .combine)
     }
 }
@@ -64,7 +70,7 @@ struct PlayerChipCaption: View {
         .foregroundStyle(Theme.Palette.textSecondary)
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
-        .glassEffect(.regular.tint(PlayerChipStyle.glassTint), in: .capsule)
+        .playerSurface(in: Capsule(), fill: PlayerSurfaceStyle.chipFill)
         .frame(maxWidth: 620, alignment: .trailing)
     }
 }

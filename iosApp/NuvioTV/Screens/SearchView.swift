@@ -14,10 +14,14 @@ struct SearchView: View {
     @State private var resultSort = "Recommended"
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.tabBarVisibility) private var visibility
+    /// Upstream's Discover placement setting, read once per tab tree. Off hides the browse surface
+    /// (the synced Hide Discover preference maps to it).
+    @Environment(\.discoverPlacementResolved) private var discoverPlacement
     @FocusState private var resultsFieldFocused: Bool
     @State private var restoreBrowseFocus = 0
 
     private var isSearching: Bool { !query.isEmpty }
+    private var hidesBrowse: Bool { discoverPlacement == .off }
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap), spacing: Theme.Spacing.rowGap)]
     }
@@ -27,12 +31,12 @@ struct SearchView: View {
             MediaBrowseView(model: home, mediaType: "movie",
                             searchControls: AnyView(searchEntry(width: 330, identifier: "search.query")),
                             restoreSearchFocus: restoreBrowseFocus)
-                .opacity(isSearching || model.hideDiscover ? 0 : 1)
-                .disabled(isSearching || model.hideDiscover)
-                .allowsHitTesting(!isSearching && !model.hideDiscover)
-                .accessibilityHidden(isSearching || model.hideDiscover)
+                .opacity(isSearching || hidesBrowse ? 0 : 1)
+                .disabled(isSearching || hidesBrowse)
+                .allowsHitTesting(!isSearching && !hidesBrowse)
+                .accessibilityHidden(isSearching || hidesBrowse)
 
-            if !isSearching && model.hideDiscover {
+            if !isSearching && hidesBrowse {
                 // Respect Nuvio's synced Hide Discover preference after merging the tabs.
                 ZStack {
                     Theme.Palette.background.ignoresSafeArea()
@@ -40,7 +44,7 @@ struct SearchView: View {
                         searchEntry(width: 630, identifier: "search.query")
                         Spacer()
                     }.padding(Theme.Spacing.screen)
-                }.sidebarMenuReveal()
+                }.railMenuReveal()
             }
             if isSearching {
                 resultsPage
@@ -48,17 +52,17 @@ struct SearchView: View {
         }
         .onAppear {
             model.start()
-            visibility.setSearchResultsActive(isSearching || model.hideDiscover)
+            visibility.setSearchResultsActive(isSearching || hidesBrowse)
         }
         .onDisappear {
             model.stop()
             visibility.setSearchResultsActive(false)
         }
-        .onChange(of: model.hideDiscover) { _, hidden in
+        .onChange(of: hidesBrowse) { _, hidden in
             visibility.setSearchResultsActive(isSearching || hidden)
         }
         .onChange(of: isSearching) { _, active in
-            visibility.setSearchResultsActive(active || model.hideDiscover)
+            visibility.setSearchResultsActive(active || hidesBrowse)
             if active {
                 DispatchQueue.main.async { resultsFieldFocused = true }
             } else {
@@ -124,8 +128,8 @@ struct SearchView: View {
                         TVSelectionMenu(title: "Genre", value: resultGenre,
                                         options: ["All genres"] + resultGenres) { resultGenre = $0 }
                         TVSelectionMenu(title: "Catalog", value: selectedCatalogLabel,
-                                        options: ["All catalogs"] + model.sections.map(catalogLabel)) { label in
-                            resultCatalog = model.sections.first { catalogLabel($0) == label }?.key
+                                        options: ["All catalogs"] + model.rows.map(catalogLabel)) { label in
+                            resultCatalog = model.rows.first { catalogLabel($0) == label }?.key
                         }
                         TVSelectionMenu(title: "Sort", value: resultSort,
                                         options: ["Recommended", "A–Z", "Highest rated"]) { resultSort = $0 }
@@ -156,7 +160,7 @@ struct SearchView: View {
                     }
                     .scrollClipDisabled()
                     .reportsScrollToTabBar(tab: "Search")
-                    .sidebarMenuReveal()
+                    .railMenuReveal()
                 }
                 .padding(.horizontal, Theme.Spacing.screen)
                 .padding(.top, 34)
@@ -171,13 +175,13 @@ struct SearchView: View {
                 ProgressView()
                 Text("Searching…").foregroundStyle(.secondary)
             }
-        } else if let error = model.searchError {
+        } else if case .manifestFailure(let error) = model.emptyState {
             VStack(alignment: .leading, spacing: 24) {
                 Text(error).foregroundStyle(.secondary)
                 Button("Retry") { model.retrySearch() }.buttonStyle(.glass)
             }
         } else if results.isEmpty {
-            Text(model.emptyMessage ?? "No titles match these filters.")
+            Text(model.emptyState?.copy ?? String(localized: "No titles match these filters."))
                 .foregroundStyle(.secondary)
         }
     }
@@ -186,10 +190,10 @@ struct SearchView: View {
         section.title + " · " + section.addonName
     }
     private var selectedCatalogLabel: String {
-        model.sections.first { $0.key == resultCatalog }.map(catalogLabel) ?? "All catalogs"
+        model.rows.first { $0.key == resultCatalog }.map(catalogLabel) ?? "All catalogs"
     }
     private var resultGenres: [String] {
-        Array(Set(model.sections.flatMap(\.items).flatMap(\.genres))).sorted()
+        Array(Set(model.rows.flatMap(\.items).flatMap(\.genres))).sorted()
     }
 
     private struct SearchHit {
@@ -199,7 +203,7 @@ struct SearchView: View {
 
     private var results: [SearchHit] {
         var seen = Set<String>()
-        let items = model.sections.filter { resultCatalog == nil || $0.key == resultCatalog }
+        let items = model.rows.filter { resultCatalog == nil || $0.key == resultCatalog }
             .flatMap(\.items).filter { item in
                 (resultType == "All titles" || item.type == (resultType == "Movies" ? "movie" : "series"))
                     && (resultGenre == "All genres" || item.genres.contains { $0.localizedCaseInsensitiveCompare(resultGenre) == .orderedSame })
@@ -228,5 +232,54 @@ struct SearchView: View {
         resetResultFilters()
         model.queryChanged(trimmed)
         if !trimmed.isEmpty { model.recordSearch(trimmed) }
+    }
+}
+
+/// Batch P (P9, BUG-195, probe only): `-debug.searchOpenProbe YES` (launch-latched, readable in
+/// Release) logs `[SearchOpen] appear|firstBody|keyboard t=<systemUptime>` once per tab visit. The
+/// rail's `[NavRail] select tab=1` line is t0; the main session measures the gap on the rig (first
+/// and second visit) and then picks the fix. No behaviour change.
+@MainActor
+enum SearchOpenProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.searchOpenProbe")
+    private static var firstBodyLogged = false
+    private static var keyboardLogged = false
+
+    /// The tab appeared. Log only: `onAppear` runs AFTER the first `SearchContent.body`, so re-arming
+    /// here would log `firstBody` twice on a first visit and miss it on later ones (review r1 P3-6).
+    static func appear() {
+        guard enabled else { return }
+        log("appear")
+    }
+
+    /// The tab left: re-arm both once-per-visit marks for the next visit's first body and keyboard.
+    static func disappear() {
+        guard enabled else { return }
+        firstBodyLogged = false
+        keyboardLogged = false
+    }
+
+    /// First `SearchContent.body` of the visit.
+    static func firstBody() {
+        guard enabled, !firstBodyLogged else { return }
+        firstBodyLogged = true
+        log("firstBody")
+    }
+
+    /// First time the search keyboard reports focus in the visit.
+    static func keyboard() {
+        guard enabled, !keyboardLogged else { return }
+        keyboardLogged = true
+        log("keyboard")
+    }
+
+    /// Any other mark (the rail's hand-off ladder rungs, the focus request): same probe, same clock.
+    nonisolated static func mark(_ mark: String) {
+        guard enabled else { return }
+        NSLog("[SearchOpen] %@ t=%.3f", mark, ProcessInfo.processInfo.systemUptime)
+    }
+
+    private static func log(_ mark: String) {
+        NSLog("[SearchOpen] %@ t=%.3f", mark, ProcessInfo.processInfo.systemUptime)
     }
 }

@@ -9,6 +9,16 @@ expect object StreamBadgeSettingsStorage {
     fun saveShowFileSizeBadges(enabled: Boolean)
     fun loadShowAddonLogo(): Boolean?
     fun saveShowAddonLogo(enabled: Boolean)
+    fun loadStreamBackgroundMode(): String?
+    fun saveStreamBackgroundMode(mode: String)
+    fun loadStreamGroupingMode(): String?
+    fun saveStreamGroupingMode(mode: String)
+    /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
+    fun clearStreamGroupingMode()
+    fun loadStreamListOpensWith(): String?
+    fun saveStreamListOpensWith(mode: String)
+    /** Test reset: the key is profile-local, so `replaceFromSyncPayload` does not clear it. */
+    fun clearStreamListOpensWith()
     fun loadStreamBadgePlacement(): String?
     fun saveStreamBadgePlacement(placement: String)
     fun loadLegacyDebridStreamBadgeRules(): String?

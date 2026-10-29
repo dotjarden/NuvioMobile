@@ -35,6 +35,8 @@ class ContentProvider: TVTopShelfContentProvider {
         let poster: String?
         let background: String?
         let progressPercent: Double?
+        /// A7: the custom-pattern poster (the app writes it when the pattern applies).
+        let displayPoster: String?
     }
 
     private struct Snapshot: Codable {
@@ -71,7 +73,12 @@ class ContentProvider: TVTopShelfContentProvider {
         let item = TVTopShelfSectionedItem(identifier: entry.videoId)
         item.title = itemTitle(for: entry)
         item.imageShape = .poster
-        if let poster = entry.poster, let url = URL(string: poster) {
+        // The progress bar under the poster (0-1). The snapshot carries 0-100; it was decoded but
+        // never set, so no Top Shelf item ever showed one.
+        if let percent = entry.progressPercent, percent > 0 {
+            item.playbackProgress = min(max(percent / 100, 0), 1)
+        }
+        if let poster = entry.displayPoster ?? entry.poster, let url = URL(string: poster) {
             item.setImageURL(url, for: [.screenScale1x, .screenScale2x])
         }
 

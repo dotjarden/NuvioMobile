@@ -147,6 +147,41 @@ fun List<PluginScraper>.toPluginProviderGroups(
         .sortedBy { it.addonName.lowercase() }
 }
 
+/**
+ * Stream picker A, P0.2: the group one installed add-on's fetch turns into. On failure the group
+ * is empty and [AddonStreamGroup.error] is never null or blank, so a source chip can show the
+ * error state and [toEmptyStateReason] reads a fully failed fan-out as a fetch failure. Exceptions
+ * without a message (common from Kotlin/Native and ktor) fall back to the same localized line the
+ * plugin path uses.
+ */
+fun addonStreamGroupFromFetch(
+    addonName: String,
+    addonId: String,
+    result: Result<List<StreamItem>>,
+): AddonStreamGroup = result.fold(
+    onSuccess = { streams ->
+        AddonStreamGroup(
+            addonName = addonName,
+            addonId = addonId,
+            streams = streams,
+            isLoading = false,
+        )
+    },
+    onFailure = { err ->
+        AddonStreamGroup(
+            addonName = addonName,
+            addonId = addonId,
+            streams = emptyList(),
+            isLoading = false,
+            error = err.message?.takeIf { it.isNotBlank() } ?: resourceString(
+                "Failed to load $addonName",
+                StringKey.streams_failed_to_load_scraper,
+                addonName,
+            ),
+        )
+    },
+)
+
 fun List<AddonStreamGroup>.toEmptyStateReason(anyLoading: Boolean): StreamsEmptyStateReason? {
     if (anyLoading || any { it.streams.isNotEmpty() }) {
         return null

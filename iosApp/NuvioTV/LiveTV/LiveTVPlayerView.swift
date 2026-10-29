@@ -183,16 +183,8 @@ private struct NativeLiveTVPlayer: View {
             self.updateSelections()
         }
         model.onPresentation = { [weak self] in self?.updateSelections() }
-        model.onDetailsVisibilityChange = { [weak self] visible in
-            guard let self else { return }
-            self.detailsTimer?.invalidate(); self.detailsTimer = nil
-            if visible {
-                self.updateDetails()
-                self.detailsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                    Task { @MainActor in self?.updateDetails() }
-                }
-            }
-        }
+        model.onTabChange = { [weak self] tab in self?.setDetailsVisible(tab == .info) }
+        model.onDismissal = { [weak self] in self?.setDetailsVisible(false) }
         status = player.currentItem?.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             guard item.status == .readyToPlay else { return }
             Task { @MainActor in self?.loadSelections() }
@@ -228,8 +220,16 @@ private struct NativeLiveTVPlayer: View {
         }
         model.outputRouteName = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName).joined(separator: ", ")
     }
+    private func setDetailsVisible(_ visible: Bool) {
+        detailsTimer?.invalidate(); detailsTimer = nil
+        guard visible else { return }
+        updateDetails()
+        detailsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateDetails() }
+        }
+    }
     private func updateDetails() {
-        guard model.detailsVisible, let item = player.currentItem else { return }
+        guard let item = player.currentItem else { return }
         let size = item.presentationSize
         var rows = [NativeInfoRow(label: "Engine", value: "Native"),
                     NativeInfoRow(label: "Status", value: player.timeControlStatus == .waitingToPlayAtSpecifiedRate ? "Buffering" : "Live")]

@@ -57,15 +57,18 @@ final class TrailerSoakTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the Down-count walks to Classic's movie rows), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch (same
         // wait NuvioTVUITests.launchToHome uses).
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -95,6 +98,10 @@ final class TrailerSoakTests: XCTestCase {
             // domain (same trick as `-inline_trailers_enabled`; plain `@AppStorage` key, always
             // wins reads) pins the pre-Upcoming layout the down×4 walks were written against.
             "-home_upcoming_row_enabled", "NO",
+            // beta.19-rc1 verdict (M3/M4): the dwell is a rest gate now (Automatic = rows stopped +
+            // 1 s). Pin the legacy "about 1 s from focus" cadence these walks' `gap: 1.4` waits were
+            // written against (a fixed N counts from focus, never before the rows stop).
+            "-trailer_start_delay", "1",
         ]
     }
 

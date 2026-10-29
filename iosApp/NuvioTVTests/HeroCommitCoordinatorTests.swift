@@ -21,7 +21,11 @@ final class HeroCommitCoordinatorTests: XCTestCase {
             posterShape: .poster,
             description: nil, releaseInfo: nil, rawReleaseDate: nil,
             popularity: nil, voteCount: nil, imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 
@@ -844,7 +848,11 @@ final class HeroCommitCoordinatorTests: XCTestCase {
             posterShape: .poster,
             description: description, releaseInfo: releaseInfo, rawReleaseDate: nil,
             popularity: nil, voteCount: nil, imdbRating: nil,
-            genres: genres
+            genres: genres,
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 

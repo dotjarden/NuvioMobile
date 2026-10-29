@@ -13,11 +13,14 @@ import java.util.Properties
 // app (composeApp) and the tvOS app (SharedCore framework) consume — single source of truth.
 // Targets mirror composeApp (android + iOS) plus tvOS. No Compose / coil / navigation here.
 
-// Generates the runtime-config classes that the migrated data layer needs, in :shared only,
-// so the FQNs (com.nuvio.app.core.network.SupabaseConfig and
-// com.nuvio.app.core.build.AppVersionConfig / AppBuildConfig) are produced in exactly one
-// module. composeApp consumes them transitively via implementation(projects.shared). The
-// remaining feature configs (trakt/debrid/tmdb/community/intro-db/imdb) stay in composeApp.
+// Generates the runtime-config classes that the migrated data layer needs, in :shared only, so
+// each FQN is produced in exactly one module; composeApp consumes them transitively via
+// implementation(projects.shared) and DELETES any stale copy of its own (see
+// composeApp/build.gradle.kts). Generated here: core.network.SupabaseConfig,
+// core.build.AppVersionConfig / AppBuildConfig, features.trakt.TraktConfig,
+// features.simkl.SimklConfig, features.mdblist.MdbListConfig, features.debrid.PremiumizeConfig,
+// features.player.skip.IntroDbConfig, features.details.ImdbEpisodeRatingsConfig and
+// features.tmdb.TmdbConfig. The remaining feature configs (community) stay in composeApp.
 abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -56,6 +59,9 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     abstract val simklAppName: Property<String>
 
     @get:Input
+    abstract val mdbListClientId: Property<String>
+
+    @get:Input
     abstract val premiumizeClientId: Property<String>
 
     @get:Input
@@ -67,9 +73,18 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     @get:Input
     abstract val imdbTapframeBaseUrl: Property<String>
 
+    @get:Input
+    abstract val tmdbApiKey: Property<String>
+
     @TaskAction
     fun generate() {
         val outDir = outputDir.get().asFile
+        if (tmdbApiKey.get().isBlank()) {
+            logger.warn(
+                "TMDB_API_KEY is blank — TmdbConfig.API_KEY will be empty and every TMDB call " +
+                    "will fail. Set TMDB_API_KEY in local.properties (or the environment)."
+            )
+        }
         outDir.resolve("com/nuvio/app/core/network").apply {
             mkdirs()
             resolve("SupabaseConfig.kt").writeText(
@@ -120,6 +135,21 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 """.trimMargin()
             )
         }
+        // Upstream 60ee0160: the TMDB key is bundled at build time instead of typed in by the
+        // user. Generated in :shared (not composeApp, which deletes its stale copy) because the
+        // whole features/tmdb package lives here.
+        outDir.resolve("com/nuvio/app/features/tmdb").apply {
+            mkdirs()
+            resolve("TmdbConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.tmdb
+                |
+                |object TmdbConfig {
+                |    const val API_KEY = "${tmdbApiKey.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
         // Fork: no REDIRECT_URI. tvOS authenticates Simkl through the PIN flow (see
         // SimklAuthRepository), which takes a client id and nothing else — upstream's
         // SIMKL_REDIRECT_URI belongs to the redirect-OAuth flow the fork does not run.
@@ -132,6 +162,22 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |object SimklConfig {
                 |    const val CLIENT_ID = "${simklClientId.get()}"
                 |    const val APP_NAME = "${simklAppName.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
+        // Upstream 8fe994bd: MDBList account device-flow client id. Upstream's first cut shipped a
+        // hard-coded default client id; its 550f6f04 merge (2026-09-21) replaced that default with
+        // "" so the id now has to come from local.properties / the environment. Mirrored: no
+        // default. A blank id makes MdbListAuthRepository.hasRequiredCredentials() false.
+        outDir.resolve("com/nuvio/app/features/mdblist").apply {
+            mkdirs()
+            resolve("MdbListConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.mdblist
+                |
+                |object MdbListConfig {
+                |    const val CLIENT_ID = "${mdbListClientId.get()}"
                 |}
                 """.trimMargin()
             )
@@ -269,10 +315,12 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     traktRedirectUri.set(sharedRuntimeConfigValue("TRAKT_REDIRECT_URI", "nuvio://auth/trakt"))
     simklClientId.set(sharedRuntimeConfigValue("SIMKL_CLIENT_ID"))
     simklAppName.set(sharedRuntimeConfigValue("SIMKL_APP_NAME", "nuvio"))
+    mdbListClientId.set(sharedRuntimeConfigValue("MDBLIST_CLIENT_ID"))
     premiumizeClientId.set(sharedRuntimeConfigValue("PREMIUMIZE_CLIENT_ID"))
     introDbUrl.set(sharedRuntimeConfigValue("INTRODB_API_URL"))
     imdbRatingsBaseUrl.set(sharedRuntimeConfigValue("IMDB_RATINGS_API_BASE_URL"))
     imdbTapframeBaseUrl.set(sharedRuntimeConfigValue("IMDB_TAPFRAME_API_BASE_URL"))
+    tmdbApiKey.set(sharedRuntimeConfigValue("TMDB_API_KEY"))
 }
 
 tasks.withType<KotlinCompilationTask<*>>().configureEach {
@@ -362,11 +410,15 @@ kotlin {
             // AddonPlatform.android uses okhttp + IPv4FirstDns directly (matches composeApp).
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
         }
-        // Mirrors composeApp's commonTest dependency declaration — kotlin-test only. Runs via the
+        // kotlin-test (as composeApp) plus upstream's coroutines-test. Runs via the
         // native test tasks (:shared:iosSimulatorArm64Test / :shared:tvosSimulatorArm64Test, need
         // a macOS simulator host) and, since the jvm() target above, :shared:jvmTest on any host.
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            // Upstream 8fe994bd: the MDBList auth/account tests use runTest / virtual time. Same
+            // inline coordinate upstream uses, so gradle/libs.versions.toml stays byte-identical
+            // to upstream's catalog.
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.kotlinx.coroutines.get()}")
         }
         // JUnit runner for kotlin-test on the jvm target (jvmMain itself needs no extra deps —
         // its actuals are plain java.* / java.time.* / java.net.*, see src/jvmMain).

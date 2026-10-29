@@ -5,9 +5,11 @@ import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.catalog.CatalogPage
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.tmdb.TmdbImageSizes
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tmdb.buildTmdbUrl
 import com.nuvio.app.features.tmdb.normalizeTmdbLanguage
+import com.nuvio.app.features.tmdb.tmdbImageUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -23,8 +25,7 @@ object TmdbCollectionSourceResolver {
 
     suspend fun resolve(source: CollectionSource, page: Int = 1): CatalogPage = withContext(Dispatchers.Default) {
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
         val language = normalizeTmdbLanguage(settings.language)
         val sourceType = source.tmdbType()
 
@@ -42,8 +43,7 @@ object TmdbCollectionSourceResolver {
     suspend fun importMetadata(sourceType: TmdbCollectionSourceType, id: Int): TmdbSourceImportMetadata =
         withContext(Dispatchers.Default) {
             val settings = TmdbSettingsRepository.snapshot()
-            val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-                ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+            val apiKey = TmdbSettingsRepository.effectiveApiKey()
             val language = normalizeTmdbLanguage(settings.language)
             when (sourceType) {
                 TmdbCollectionSourceType.LIST -> {
@@ -63,7 +63,7 @@ object TmdbCollectionSourceResolver {
                     ) ?: error(resourceString("TMDB collection not found", StringKey.collections_tmdb_collection_not_found))
                     TmdbSourceImportMetadata(
                         title = body.name?.takeIf { it.isNotBlank() },
-                        coverImageUrl = imageUrl(body.posterPath, "w500") ?: imageUrl(body.backdropPath, "w1280"),
+                        coverImageUrl = imageUrl(body.posterPath, TmdbImageSizes.POSTER) ?: imageUrl(body.backdropPath, "w1280"),
                     )
                 }
 
@@ -109,9 +109,7 @@ object TmdbCollectionSourceResolver {
     suspend fun searchCompanies(query: String): List<TmdbCompanySearchResult> = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
-        val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
         fetch<TmdbCompanySearchResponse>(
             endpoint = "search/company",
             apiKey = apiKey,
@@ -123,8 +121,7 @@ object TmdbCollectionSourceResolver {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
         val language = normalizeTmdbLanguage(settings.language)
         fetch<TmdbCollectionSearchResponse>(
             endpoint = "search/collection",
@@ -136,9 +133,7 @@ object TmdbCollectionSourceResolver {
     suspend fun searchKeywords(query: String): Map<Int, String> = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyMap()
-        val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
         fetch<TmdbKeywordSearchResponse>(
             endpoint = "search/keyword",
             apiKey = apiKey,
@@ -153,8 +148,7 @@ object TmdbCollectionSourceResolver {
 
     suspend fun genres(mediaType: TmdbCollectionMediaType): Map<Int, String> = withContext(Dispatchers.Default) {
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
         val language = normalizeTmdbLanguage(settings.language)
         val endpoint = when (mediaType) {
             TmdbCollectionMediaType.MOVIE -> "genre/movie/list"
@@ -398,7 +392,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -412,7 +406,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -422,7 +416,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -430,7 +424,7 @@ object TmdbCollectionSourceResolver {
             rawReleaseDate = releaseDate,
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -445,7 +439,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -459,7 +453,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -474,7 +468,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -488,7 +482,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -549,10 +543,8 @@ private fun MutableMap<String, String>.putIfNotBlank(key: String, value: String?
     }
 }
 
-private fun imageUrl(path: String?, size: String): String? {
-    val clean = path?.takeIf { it.isNotBlank() } ?: return null
-    return "https://image.tmdb.org/t/p/$size$clean"
-}
+// I1 (Steven beta.19-rc1 verdict, BUG-134): the URL is built once, in `TmdbImageSizes.kt`.
+private fun imageUrl(path: String?, size: String): String? = tmdbImageUrl(path, size)
 
 @Serializable
 private data class TmdbListResponse(

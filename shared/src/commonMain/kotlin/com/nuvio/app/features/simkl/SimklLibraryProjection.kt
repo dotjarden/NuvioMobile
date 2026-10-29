@@ -1,5 +1,7 @@
 package com.nuvio.app.features.simkl
 
+import com.nuvio.app.core.i18n.StringKey
+import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.library.LibraryItem
 import com.nuvio.app.features.library.LibrarySection
@@ -11,11 +13,21 @@ internal const val SIMKL_STATUS_SELECTION_GROUP = "simkl:status"
 internal data class SimklLibraryStatusDefinition(
     val status: SimklListStatus,
     val key: String,
-    val title: String,
+    /** English default; the shown name is [title], resolved when read (see below). */
+    val fallbackTitle: String,
+    val titleKey: StringKey,
     val trackingStatus: TrackingListStatus,
     val supportedContentTypes: Set<String>,
     val isMembershipDestination: Boolean = true,
-)
+) {
+    /**
+     * The localized status name, resolved on every read: these definitions initialise before the
+     * platform installs its string provider, so a resolved value stored in them would freeze
+     * English. Upstream `LibrarySectionTitles.kt` maps the same keys at render time.
+     */
+    val title: String
+        get() = resourceString(fallbackTitle, titleKey)
+}
 
 internal data class SimklLibraryProjection(
     val items: List<LibraryItem>,
@@ -26,28 +38,32 @@ internal val simklLibraryStatusDefinitions = listOf(
     SimklLibraryStatusDefinition(
         status = SimklListStatus.WATCHING,
         key = "simkl:status:watching",
-        title = "Watching",
+        fallbackTitle = "Watching",
+        titleKey = StringKey.library_status_watching,
         trackingStatus = TrackingListStatus.WATCHING,
         supportedContentTypes = setOf("series", "anime"),
     ),
     SimklLibraryStatusDefinition(
         status = SimklListStatus.PLAN_TO_WATCH,
         key = "simkl:status:plantowatch",
-        title = "Plan to Watch",
+        fallbackTitle = "Plan to Watch",
+        titleKey = StringKey.library_status_plan_to_watch,
         trackingStatus = TrackingListStatus.PLAN_TO_WATCH,
         supportedContentTypes = setOf("movie", "series", "anime"),
     ),
     SimklLibraryStatusDefinition(
         status = SimklListStatus.ON_HOLD,
         key = "simkl:status:hold",
-        title = "On Hold",
+        fallbackTitle = "On Hold",
+        titleKey = StringKey.library_status_on_hold,
         trackingStatus = TrackingListStatus.ON_HOLD,
         supportedContentTypes = setOf("series", "anime"),
     ),
     SimklLibraryStatusDefinition(
         status = SimklListStatus.COMPLETED,
         key = "simkl:status:completed",
-        title = "Completed",
+        fallbackTitle = "Completed",
+        titleKey = StringKey.library_status_completed,
         trackingStatus = TrackingListStatus.COMPLETED,
         supportedContentTypes = setOf("movie", "series", "anime"),
         isMembershipDestination = false,
@@ -55,7 +71,8 @@ internal val simklLibraryStatusDefinitions = listOf(
     SimklLibraryStatusDefinition(
         status = SimklListStatus.DROPPED,
         key = "simkl:status:dropped",
-        title = "Dropped",
+        fallbackTitle = "Dropped",
+        titleKey = StringKey.library_status_dropped,
         trackingStatus = TrackingListStatus.DROPPED,
         supportedContentTypes = setOf("movie", "series", "anime"),
     ),

@@ -2,7 +2,8 @@ import Foundation
 
 nonisolated struct LiveTVLoadResult: Sendable {
     let channels: [LiveTVChannel]
-    let programmes: [LiveTVProgramme]
+    /// Programmes by guide ID, each list sorted by start. Grouped here, off the main actor.
+    let programmes: [String: [LiveTVProgramme]]
     let guideWarning: String?
 }
 
@@ -10,21 +11,43 @@ actor LiveTVService {
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 90
+        configuration.timeoutIntervalForResource = 600  // provider guides can be hundreds of MB
         return URLSession(configuration: configuration)
     }()
-    private func fetch(_ url: URL, limit: Int = 32 * 1024 * 1024) async throws -> Data {
-        let (bytes, response) = try await session.bytes(from: url)
-        guard let response = response as? HTTPURLResponse else { throw LiveTVError.response(0) }
-        guard (200..<300).contains(response.statusCode) else { throw LiveTVError.response(response.statusCode) }
-        guard response.expectedContentLength <= limit else { throw LiveTVError.tooLarge }
-        var data = Data()
-        for try await byte in bytes {
-            if data.count >= limit { throw LiveTVError.tooLarge }
-            data.append(byte)
+    /// Downloads to a temporary file rather than appending the body byte by byte, which was the
+    /// slowest part of loading a large playlist or guide. The caller owns (and removes) the file.
+    private func download(_ url: URL, limit: Int) async throws -> URL {
+        let (file, response) = try await session.download(from: url)
+        let kept = FileManager.default.temporaryDirectory.appendingPathComponent("livetv-\(UUID().uuidString)")
+        try FileManager.default.moveItem(at: file, to: kept)
+        do {
+            guard let response = response as? HTTPURLResponse else { throw LiveTVError.response(0) }
+            guard (200..<300).contains(response.statusCode) else { throw LiveTVError.response(response.statusCode) }
+            let size = (try? kept.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size <= limit else { throw LiveTVError.tooLarge }
+            try Task.checkCancellation()
+            return kept
+        } catch {
+            try? FileManager.default.removeItem(at: kept)
+            throw error
+        }
+    }
+    private func fetch(_ url: URL, limit: Int = 64 * 1024 * 1024) async throws -> Data {
+        let file = try await download(url, limit: limit)
+        defer { try? FileManager.default.removeItem(at: file) }
+        return try Data(contentsOf: file)
+    }
+    /// Provider guides for tens of thousands of channels are often hundreds of MB, and many are
+    /// gzipped. The guide is parsed as a stream from disk, never held in memory whole.
+    private func guide(_ url: URL, guideIDs: Set<String>) async throws -> [String: [LiveTVProgramme]] {
+        var file = try await download(url, limit: 2 * 1024 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: file) }
+        if let unzipped = try LiveTVGzip.inflate(file) {
+            try? FileManager.default.removeItem(at: file)
+            file = unzipped
         }
         try Task.checkCancellation()
-        return data
+        return Dictionary(grouping: try XMLTVParser(guideIDs: guideIDs).parse(contentsOf: file), by: \.channelID)
     }
     func load(_ source: LiveTVSource, onChannels: @escaping @Sendable ([LiveTVChannel]) async -> Void = { _ in }) async throws -> LiveTVLoadResult {
         guard let base = LiveTVURL.parse(source.address) else { throw LiveTVError.invalidURL }
@@ -45,18 +68,55 @@ actor LiveTVService {
         }
         try Task.checkCancellation()
         await onChannels(channels)
-        var programmes: [LiveTVProgramme] = [], warning: String?
+        var programmes: [String: [LiveTVProgramme]] = [:], warning: String?
         if let guideURL {
-            do { programmes = try XMLTVParser().parse(try await fetch(guideURL, limit: 64 * 1024 * 1024)) }
+            let ids = Set(channels.map(\.guideID).filter { !$0.isEmpty })
+            do { programmes = try await guide(guideURL, guideIDs: ids) }
             catch is CancellationError { throw CancellationError() }
-            catch { warning = "Channels loaded, but the programme guide is unavailable. Check the guide address and refresh." }
+            catch {
+                // Say why, without the address (it can carry credentials).
+                let reason: String
+                switch error {
+                case let error as LiveTVError: reason = error.errorDescription ?? "It could not be read."
+                case let error as URLError where error.code == .timedOut: reason = "The provider took too long to send it."
+                case let error as URLError: reason = "The connection failed (\(error.code.rawValue))."
+                default: reason = "It could not be read."
+                }
+                // Xtream channels fall back to per-channel now/next (`LiveTVStore.requestGuide`),
+                // so a refused full guide is not worth a warning there.
+                if source.kind == .m3u { warning = "Channels loaded, but the programme guide is unavailable. \(reason)" }
+            }
         }
         return .init(channels: channels, programmes: programmes, guideWarning: warning)
     }
-    private func endpoint(_ base: URL, path: String, source: LiveTVSource, action: String? = nil) throws -> URL {
+    /// Now/next for one Xtream channel (`get_short_epg`). Titles and descriptions arrive base64.
+    func shortGuide(_ source: LiveTVSource, channel: LiveTVChannel) async throws -> [LiveTVProgramme] {
+        guard let base = LiveTVURL.parse(source.address) else { throw LiveTVError.invalidURL }
+        let streamID = channel.url.deletingPathExtension().lastPathComponent
+        let data = try await fetch(endpoint(base, path: "player_api.php", source: source, action: "get_short_epg",
+                                            extra: [.init(name: "stream_id", value: streamID), .init(name: "limit", value: "6")]),
+                                   limit: 4 * 1024 * 1024)
+        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let listings = root?["epg_listings"] as? [[String: Any]] ?? []
+        func text(_ value: Any?) -> String {
+            guard let raw = value as? String else { return "" }
+            if let decoded = Data(base64Encoded: raw), let string = String(data: decoded, encoding: .utf8) { return string }
+            return raw
+        }
+        return listings.compactMap { item -> LiveTVProgramme? in
+            guard let start = string(item["start_timestamp"]).flatMap(Double.init),
+                  let end = string(item["stop_timestamp"]).flatMap(Double.init), end > start else { return nil }
+            let title = text(item["title"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return LiveTVProgramme(channelID: LiveTVStore.guideKey(channel), title: title.isEmpty ? "Untitled programme" : title,
+                                   summary: text(item["description"]).trimmingCharacters(in: .whitespacesAndNewlines),
+                                   start: Date(timeIntervalSince1970: start), end: Date(timeIntervalSince1970: end))
+        }.sorted { $0.start < $1.start }
+    }
+    private func endpoint(_ base: URL, path: String, source: LiveTVSource, action: String? = nil, extra: [URLQueryItem] = []) throws -> URL {
         var components = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         components.queryItems = [.init(name: "username", value: source.username), .init(name: "password", value: source.password)]
         if let action { components.queryItems?.append(.init(name: "action", value: action)) }
+        components.queryItems?.append(contentsOf: extra)
         guard let url = components.url else { throw LiveTVError.invalidURL }; return url
     }
     private func xtream(_ source: LiveTVSource, base: URL) async throws -> [LiveTVChannel] {

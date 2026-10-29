@@ -3,8 +3,10 @@ package com.nuvio.app.features.search
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.localizedMediaTypeLabel
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.addons.AddonCatalog
-import com.nuvio.app.features.addons.AddonExtraProperty
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.addons.firstEnabledManifestError
@@ -21,6 +23,8 @@ import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeCatalogSection
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.filterReleasedItems
+import com.nuvio.app.features.tmdb.TmdbPersonSearchService
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -31,8 +35,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
+import kotlin.time.TimeSource
+import com.nuvio.app.features.catalog.CatalogInflightStats
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -56,6 +65,10 @@ object SearchRepository {
     private var activeJob: Job? = null
     private var activeDiscoverJob: Job? = null
     private var lastRequestKey: String? = null
+    /// C1 (Search & Discover batch 2026-10-06): the id published with [lastRequestKey], returned
+    /// again by a deduped same-key `search()`.
+    private var lastRequestId: Long = 0L
+    private var requestSequence: Long = 0L
     private var discoverSources: List<DiscoverCatalogOption> = emptyList()
     private var lastDiscoverHideUnreleasedContent: Boolean? = null
     /// Upstream 085e8dc6 / Codex r3: whether an enabled addon's manifest was still loading when the
@@ -66,16 +79,18 @@ object SearchRepository {
     private var discoverManifestsPending = false
     private var lastDiscoverHasPendingAddonManifests: Boolean? = null
 
+    /// Returns the [SearchUiState.requestId] this call published, or the one it re-used when the
+    /// same-key guard deduped it (Search & Discover batch 2026-10-06, C1). Kotlin callers that
+    /// ignore the value are unaffected; tvOS keeps it as the hold's active request id.
     fun search(
         query: String,
         addons: List<ManagedAddon>,
         disabledCatalogKeys: Set<String> = emptySet(),
         forceRefresh: Boolean = false,
-    ) {
+    ): Long {
         val normalizedQuery = query.trim()
         if (normalizedQuery.isBlank()) {
-            clear()
-            return
+            return publishCleared()
         }
 
         // Upstream 085e8dc6 (#1819): manifests still loading are not "no addons" — publish loading,
@@ -87,6 +102,7 @@ object SearchRepository {
         if (activeAddons.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
+            val requestId = nextRequestId()
             _uiState.value = SearchUiState(
                 isLoading = hasPendingAddonManifests,
                 emptyStateReason = when {
@@ -95,8 +111,10 @@ object SearchRepository {
                     else -> SearchEmptyStateReason.NoActiveAddons
                 },
                 errorMessage = addonManifestErrorMessage,
+                requestId = requestId,
+                query = normalizedQuery,
             )
-            return
+            return requestId
         }
 
         val requests = buildSearchRequests(
@@ -111,14 +129,18 @@ object SearchRepository {
         if (requests.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
+            val requestId = nextRequestId()
             _uiState.value = SearchUiState(
                 isLoading = hasPendingAddonManifests,
                 emptyStateReason = if (hasPendingAddonManifests) null else SearchEmptyStateReason.NoSearchCatalogs,
                 lastFanOut = fanOutLine,
+                requestId = requestId,
+                query = normalizedQuery,
             )
-            return
+            return requestId
         }
 
+        val tmdbPeopleEnabled = TmdbSettingsRepository.snapshot().enabled
         val requestKey = buildString {
             append(normalizedQuery.lowercase())
             append('|')
@@ -128,6 +150,9 @@ object SearchRepository {
             // is still pending; the flag must be part of the key or the same query re-issued after
             // that manifest fails is deduped by the same-key guard and the state never settles.
             append(hasPendingAddonManifests)
+            append('|')
+            // C3: toggling TMDB must re-run the query so the People row appears or goes.
+            append(tmdbPeopleEnabled)
             append('|')
             append(
                 requests.joinToString(separator = "|") { request ->
@@ -140,54 +165,76 @@ object SearchRepository {
         // Upstream (981b8bc7) also refetches a completed same-key search when not forced; tvOS
         // keeps the plain same-key reuse — search here only re-fires from the typing debounce on
         // screen re-entry, where a refetch would just flash-blank retained results.
-        if (!forceRefresh && requestKey == lastRequestKey) return
+        // C1: a deduped call publishes nothing and hands back the id the running/settled state
+        // already carries, so the caller's hold stays keyed on the live request.
+        if (!forceRefresh && requestKey == lastRequestKey) return lastRequestId
         lastRequestKey = requestKey
 
         activeJob?.cancel()
-        _uiState.value = SearchUiState(isLoading = true, lastFanOut = fanOutLine)
+        val myId = nextRequestId()
+        lastRequestId = myId
+        _uiState.value = SearchUiState(
+            isLoading = true,
+            lastFanOut = fanOutLine,
+            requestId = myId,
+            query = normalizedQuery,
+            peopleLoading = tmdbPeopleEnabled,
+        )
 
         activeJob = scope.launch {
-            val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
-            val jobs = requests.mapIndexed { index, request ->
+            // C3: sibling of the fan-out, never awaited by the channel loop; cancelled with the job.
+            if (tmdbPeopleEnabled) {
                 launch {
-                    runCatching { request.toSection(forceRefresh = forceRefresh) }
-                        .fold(
-                            onSuccess = { section ->
-                                resultChannel.trySend(
-                                    IndexedSearchResult(
-                                        index = index,
-                                        section = section,
-                                    ),
-                                )
-                            },
-                            onFailure = { error ->
-                                if (error is CancellationException) throw error
-                                resultChannel.trySend(
-                                    IndexedSearchResult(
-                                        index = index,
-                                        error = error,
-                                    ),
-                                )
+                    val found = TmdbPersonSearchService.searchPeople(normalizedQuery)
+                    publish(myId) {
+                        it.copy(
+                            people = found,
+                            peopleLoading = false,
+                            // BUG-208: people never hide a RequestFailed (it carries the Retry).
+                            emptyStateReason = if (found.isNotEmpty() && it.emptyStateReason != SearchEmptyStateReason.RequestFailed) {
+                                null
+                            } else {
+                                it.emptyStateReason
                             },
                         )
+                    }
+                }
+            }
+            val resultChannel = Channel<IndexedSearchOutcome>(Channel.UNLIMITED)
+            val jobs = requests.mapIndexed { index, request ->
+                launch {
+                    // C2: an empty page is an Empty outcome, not a thrown error; only real
+                    // failures become Failed.
+                    // B18 (BUG-155 (b)): one slow add-on no longer holds the search open for the
+                    // transport's 60 s timeout; past SEARCH_CATALOG_TIMEOUT_MS it is a failed source.
+                    // BUG-208: a thrown failure (Cinemeta's 504 on an uncached query) gets one retry.
+                    val outcome = request.fetchOutcomeWithRetry(forceRefresh = forceRefresh)
+                    resultChannel.trySend(IndexedSearchOutcome(index = index, outcome = outcome))
                 }
             }
             val closeChannelJob = launch {
                 jobs.joinAll()
                 resultChannel.close()
             }
-            val results = arrayOfNulls<IndexedSearchResult>(requests.size)
+            val results = arrayOfNulls<SearchCatalogOutcome>(requests.size)
 
             try {
                 for (result in resultChannel) {
-                    results[result.index] = result
-                    val sections = results.orderedSections()
-                    if (sections.isNotEmpty()) {
-                        _uiState.value = SearchUiState(
-                            isLoading = true,
-                            sections = sections,
-                            lastFanOut = fanOutLine,
-                        )
+                    results[result.index] = result.outcome
+                    // C2: sections, groups and suggestions come from the same outcome array on
+                    // every publish, so the grouped and per-add-on views never disagree.
+                    val snapshot = buildSearchResultsSnapshot(normalizedQuery, results.filterNotNull())
+                    if (snapshot.sections.isNotEmpty()) {
+                        publish(myId) {
+                            it.copy(
+                                isLoading = true,
+                                sections = snapshot.sections,
+                                lastFanOut = fanOutLine,
+                                query = normalizedQuery,
+                                groups = snapshot.groups,
+                                suggestions = snapshot.suggestions,
+                            )
+                        }
                     }
                 }
             } finally {
@@ -195,41 +242,85 @@ object SearchRepository {
                 resultChannel.close()
             }
 
-            val completedResults = results.filterNotNull()
-            val sections = results.orderedSections()
-            val firstFailure = completedResults.firstNotNullOfOrNull { it.error?.message }
-            val allFailed = completedResults.isNotEmpty() && completedResults.all { it.error != null }
+            val outcomes = results.filterNotNull()
+            val snapshot = buildSearchResultsSnapshot(normalizedQuery, outcomes)
+            val firstFailure = outcomes.firstNotNullOfOrNull { outcome ->
+                (outcome as? SearchCatalogOutcome.Failed)?.error?.message
+            }
+            // BUG-208: surface the failure whenever nothing succeeded, even if another add-on
+            // answered Empty or TMDB people arrived; RequestFailed is what carries the Retry.
+            val failedWithoutSuccess = outcomes.none { it is SearchCatalogOutcome.Success } &&
+                outcomes.any { it is SearchCatalogOutcome.Failed }
 
-            _uiState.value = SearchUiState(
-                isLoading = sections.isEmpty() && hasPendingAddonManifests,
-                sections = sections,
-                emptyStateReason = when {
-                    sections.isNotEmpty() -> null
-                    hasPendingAddonManifests -> null
-                    allFailed -> SearchEmptyStateReason.RequestFailed
-                    else -> SearchEmptyStateReason.NoResults
-                },
-                errorMessage = if (allFailed) firstFailure else null,
-                lastFanOut = fanOutLine,
-            )
+            publish(myId) {
+                // C3: copy, not a fresh state, so people that already landed survive.
+                it.copy(
+                    isLoading = snapshot.sections.isEmpty() && hasPendingAddonManifests,
+                    sections = snapshot.sections,
+                    // C2 behaviour change (accepted): an all-empty search is NoResults now, not
+                    // RequestFailed — the empty page used to be thrown as an error.
+                    emptyStateReason = resolveEmptyState(
+                        outcomes = outcomes,
+                        pending = hasPendingAddonManifests,
+                        hasPeople = it.people.isNotEmpty(),
+                    ),
+                    errorMessage = if (failedWithoutSuccess) firstFailure else null,
+                    lastFanOut = fanOutLine,
+                    query = normalizedQuery,
+                    groups = snapshot.groups,
+                    suggestions = snapshot.suggestions,
+                )
+            }
         }
+        return myId
     }
 
     fun clear() {
+        publishCleared()
+    }
+
+    private fun publishCleared(): Long {
         activeJob?.cancel()
         lastRequestKey = null
-        _uiState.value = SearchUiState()
+        val requestId = nextRequestId()
+        _uiState.value = SearchUiState(requestId = requestId)
+        return requestId
+    }
+
+    private fun nextRequestId(): Long {
+        requestSequence += 1
+        return requestSequence
+    }
+
+    /// C1 (Search & Discover batch 2026-10-06): the only way a running search writes its state.
+    /// Compare-and-set on [SearchUiState.requestId]: once a newer `search()`/`clear()`/`reset()`
+    /// has published its own id, a late write from the cancelled job (its channel loop can still
+    /// be draining when `cancel()` lands) is dropped here instead of reaching the UI.
+    private inline fun publish(requestId: Long, transform: (SearchUiState) -> SearchUiState) {
+        _uiState.update { current ->
+            if (current.requestId != requestId) current else transform(current).copy(requestId = requestId)
+        }
+    }
+
+    /// Test seam (C1): replaces the per-catalog network fetch so common tests can hold a search
+    /// in flight (or feed it pages) without touching the network. Null in production.
+    internal var searchPageFetcherForTest: (suspend (SearchCatalogRequest) -> CatalogPage)? = null
+
+    /// Test seam for [publish]: lets common tests show a stale id is a no-op without a network.
+    internal fun publishForTest(requestId: Long, transform: (SearchUiState) -> SearchUiState) {
+        publish(requestId, transform)
     }
 
     fun reset() {
         activeJob?.cancel()
         activeDiscoverJob?.cancel()
         lastRequestKey = null
+        lastRequestId = 0L
         discoverSources = emptyList()
         lastDiscoverHideUnreleasedContent = null
         discoverManifestsPending = false
         lastDiscoverHasPendingAddonManifests = null
-        _uiState.value = SearchUiState()
+        _uiState.value = SearchUiState(requestId = nextRequestId())
         _discoverUiState.value = DiscoverUiState()
     }
 
@@ -324,7 +415,9 @@ object SearchRepository {
             ?: typeOptions.first()
         val catalogOptions = sources.filter { it.type == selectedType }
         val selectedCatalog = restoredCatalog ?: catalogOptions.first()
-        val selectedGenre = selectedCatalog.resolveGenreSelection(current.selectedGenre)
+        val selectedGenre = selectedCatalog.resolveGenreSelection(
+            current.selectedGenre ?: DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+        )
 
         _discoverUiState.value = DiscoverUiState(
             typeOptions = typeOptions,
@@ -374,7 +467,9 @@ object SearchRepository {
             selectedType = type,
             catalogOptions = catalogOptions,
             selectedCatalogKey = selectedCatalog.key,
-            selectedGenre = selectedCatalog.resolveGenreSelection(null),
+            selectedGenre = selectedCatalog.resolveGenreSelection(
+                DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+            ),
             items = emptyList(),
             isLoading = false,
             nextSkip = null,
@@ -392,7 +487,9 @@ object SearchRepository {
         val selectedCatalog = current.catalogOptions.firstOrNull { it.key == catalogKey } ?: return
         _discoverUiState.value = current.copy(
             selectedCatalogKey = selectedCatalog.key,
-            selectedGenre = selectedCatalog.resolveGenreSelection(null),
+            selectedGenre = selectedCatalog.resolveGenreSelection(
+                DiscoverSelectionStorage.loadGenre(selectedCatalog.key),
+            ),
             items = emptyList(),
             isLoading = false,
             nextSkip = null,
@@ -417,6 +514,7 @@ object SearchRepository {
             emptyStateReason = null,
             errorMessage = null,
         )
+        DiscoverSelectionStorage.saveGenre(selectedCatalog.key, normalizedGenre)
         loadDiscoverFeed(reset = true)
     }
 
@@ -712,52 +810,84 @@ object SearchRepository {
     private fun searchCatalogKey(manifestId: String, type: String, catalogId: String): String =
         "$manifestId:$type:$catalogId"
 
-    private fun buildDiscoverSources(addons: List<ManagedAddon>): List<DiscoverCatalogOption> =
-        addons.mapNotNull { addon ->
-            val manifest = addon.manifest ?: return@mapNotNull null
-            addon to manifest
-        }.flatMap { (addon, manifest) ->
-            manifest.catalogs
-                .filter { catalog -> catalog.supportsDiscover() }
-                .map { catalog ->
-                    val genreExtra = catalog.genreExtra()
-                    DiscoverCatalogOption(
-                        key = "${manifest.id}:${catalog.type}:${catalog.id}",
-                        addonName = addon.displayTitle,
-                        manifestUrl = addon.manifestUrl,
-                        type = catalog.type,
-                        catalogId = catalog.id,
-                        catalogName = catalog.name,
-                        genreOptions = genreExtra?.options.orEmpty(),
-                        genreRequired = genreExtra?.isRequired == true,
-                        supportsPagination = catalog.supportsPagination(),
-                    )
-                }
+    /// BUG-208: one attempt under [SEARCH_CATALOG_TIMEOUT_MS]; a thrown error becomes Failed,
+    /// cancellation propagates.
+    private suspend fun SearchCatalogRequest.attemptOutcome(forceRefresh: Boolean): SearchCatalogOutcome =
+        runCatching {
+            withTimeoutOrNull(SEARCH_CATALOG_TIMEOUT_MS) { fetchOutcome(forceRefresh = forceRefresh) }
+                ?: SearchCatalogOutcome.Failed(request = this, error = SearchCatalogTimeoutException(catalogId))
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            SearchCatalogOutcome.Failed(request = this, error = error)
         }
 
-    private suspend fun SearchCatalogRequest.toSection(forceRefresh: Boolean): HomeCatalogSection {
+    /// BUG-208: Cinemeta's search origin answers an uncached query with HTTP 504 after ~6 s about
+    /// one time in four, and a second try usually lands (origin warmed). A thrown failure is
+    /// retried once after [SEARCH_CATALOG_RETRY_DELAY_MS] under its own timeout; a timeout is not
+    /// (it already spent the budget). Classified by exception type: the message is localized.
+    /// The failed shared fetch has already left the in-flight map, so the retry is a fresh GET.
+    private suspend fun SearchCatalogRequest.fetchOutcomeWithRetry(forceRefresh: Boolean): SearchCatalogOutcome {
+        val started = TimeSource.Monotonic.markNow()
+        val first = attemptOutcome(forceRefresh)
+        val firstError = (first as? SearchCatalogOutcome.Failed)?.error
+        val retryable = firstError != null && firstError !is SearchCatalogTimeoutException
+        val result = if (retryable) {
+            delay(SEARCH_CATALOG_RETRY_DELAY_MS)
+            attemptOutcome(forceRefresh)
+        } else {
+            first
+        }
+        if (CatalogInflightStats.searchCatalogProbe) {
+            val outcomeLabel = when (result) {
+                is SearchCatalogOutcome.Success -> "ok"
+                is SearchCatalogOutcome.Empty -> "empty"
+                is SearchCatalogOutcome.Failed -> "failed"
+            }
+            val retryLabel = when {
+                !retryable -> "none"
+                result is SearchCatalogOutcome.Failed -> "failed"
+                else -> "ok"
+            }
+            val errorClass = (firstError ?: (result as? SearchCatalogOutcome.Failed)?.error)
+                ?.let { it::class.simpleName } ?: "-"
+            println(
+                "[SearchPerf] catalog q=\"$query\" key=${addon.manifest?.id}:$type:$catalogId " +
+                    "outcome=$outcomeLabel ms=${started.elapsedNow().inWholeMilliseconds} " +
+                    "err=$errorClass retry=$retryLabel",
+            )
+        }
+        return result
+    }
+
+    /// C2: fetch + unreleased filter + custom posters, split from [toSection]. An empty page (or
+    /// one the unreleased filter empties) is [SearchCatalogOutcome.Empty], not a thrown error.
+    private suspend fun SearchCatalogRequest.fetchOutcome(forceRefresh: Boolean): SearchCatalogOutcome {
         val manifest = requireNotNull(addon.manifest)
-        val page = fetchCatalogPage(
-            manifestUrl = manifest.transportUrl,
-            type = type,
-            catalogId = catalogId,
-            search = query,
-            forceRefresh = forceRefresh,
-        ).withUnreleasedFilter()
-        val items = page.items
-        require(items.isNotEmpty()) {
-            resourceString("No search results returned for $catalogName.", StringKey.search_error_no_results_for_catalog, catalogName)
-        }
+        val page = (
+            searchPageFetcherForTest?.invoke(this)
+                ?: fetchCatalogPage(
+                    manifestUrl = manifest.transportUrl,
+                    type = type,
+                    catalogId = catalogId,
+                    search = query,
+                    forceRefresh = forceRefresh,
+                )
+            ).withUnreleasedFilter()
+        if (page.items.isEmpty()) return SearchCatalogOutcome.Empty(request = this)
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH)
+        val items = page.items.withCustomPosterUrls(posterPattern)
+        if (items.isEmpty()) return SearchCatalogOutcome.Empty(request = this)
 
-        return HomeCatalogSection(
-            key = sectionKey(),
-            title = resourceString("$catalogName • ${type.displayLabel()}", StringKey.discover_catalog_context, catalogName, type.displayLabel()),
-            subtitle = addon.displayTitle,
-            addonName = addon.displayTitle,
-            target = toCatalogTarget(manifestTransportUrl = manifest.transportUrl),
+        return SearchCatalogOutcome.Success(
+            request = this,
             items = items,
-            availableItemCount = page.rawItemCount,
-            hasMore = supportsPagination && page.nextSkip != null,
+            section = toSection(
+                items = items,
+                manifestTransportUrl = manifest.transportUrl,
+                rawItemCount = page.rawItemCount,
+                nextSkip = page.nextSkip,
+            ),
         )
     }
 
@@ -813,6 +943,9 @@ object SearchRepository {
                         page.items
                     } else {
                         mergeCatalogItems(latest.items, page.items)
+                    }.let { items ->
+                        CustomPosterUrlRepository.ensureLoaded()
+                        items.withCustomPosterUrls(CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH))
                     }
                     val supportsPagination = selectedCatalog.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
                     val loadedNewItems = reset || mergedItems.size > latest.items.size
@@ -874,14 +1007,10 @@ object SearchRepository {
     }
 }
 
-private data class IndexedSearchResult(
+private data class IndexedSearchOutcome(
     val index: Int,
-    val section: HomeCatalogSection? = null,
-    val error: Throwable? = null,
+    val outcome: SearchCatalogOutcome,
 )
-
-private fun Array<IndexedSearchResult?>.orderedSections(): List<HomeCatalogSection> =
-    mapNotNull { result -> result?.section }
 
 private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
     if (!HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent) return this
@@ -936,6 +1065,31 @@ internal fun SearchCatalogRequest.toCatalogTarget(manifestTransportUrl: String):
         catalogId = catalogId,
         search = query,
         supportsPagination = supportsPagination,
+    )
+
+/// The per-add-on results section for one catalog (C2: split out of the fetch so grouping tests
+/// can build a [SearchCatalogOutcome.Success] without a network). Unchanged shape: title
+/// "Catalog • Type", the BUG-48 query-carrying See All target, pagination from the page.
+internal fun SearchCatalogRequest.toSection(
+    items: List<MetaPreview>,
+    manifestTransportUrl: String,
+    rawItemCount: Int = items.size,
+    nextSkip: Int? = null,
+): HomeCatalogSection =
+    HomeCatalogSection(
+        key = sectionKey(),
+        title = resourceString(
+            "$catalogName • ${localizedMediaTypeLabel(type)}",
+            StringKey.discover_catalog_context,
+            catalogName,
+            localizedMediaTypeLabel(type),
+        ),
+        subtitle = addon.displayTitle,
+        addonName = addon.displayTitle,
+        target = toCatalogTarget(manifestTransportUrl = manifestTransportUrl),
+        items = items,
+        availableItemCount = rawItemCount,
+        hasMore = supportsPagination && nextSkip != null,
     )
 
 /// BUG-33: the results list is `ForEach(model.sections, id: \.key)` (SearchView.swift), so two
@@ -999,32 +1153,6 @@ private fun AddonCatalog.supportsSearch(): Boolean =
     extra.any { property -> property.name == "search" } &&
         extra.none { property -> property.isRequired && property.name != "search" }
 
-private fun AddonCatalog.supportsDiscover(): Boolean {
-    if (extra.any { property -> property.name == "search" && property.isRequired }) {
-        return false
-    }
-
-    return extra.none { property ->
-        when (property.name) {
-            "genre" -> property.isRequired && property.options.isEmpty()
-            "skip" -> false
-            "search" -> false
-            else -> property.isRequired
-        }
-    }
-}
-
-private fun AddonCatalog.genreExtra(): AddonExtraProperty? =
-    extra.firstOrNull { property -> property.name == "genre" }
-
-private fun DiscoverCatalogOption.resolveGenreSelection(requestedGenre: String?): String? =
-    when {
-        genreOptions.isEmpty() -> null
-        requestedGenre != null && genreOptions.contains(requestedGenre) -> requestedGenre
-        genreRequired -> genreOptions.firstOrNull()
-        else -> null
-    }
-
 private fun DiscoverUiState.canReuseDiscoverState(
     sources: List<DiscoverCatalogOption>,
 ): Boolean {
@@ -1056,10 +1184,12 @@ private fun List<MetaPreview>.previewNames(limit: Int = 5): String {
 private fun String.displayLabel(): String =
     localizedMediaTypeLabel(this)
 
-private fun String.typeSortKey(): String =
-    when (lowercase()) {
-        "movie" -> "0_movie"
-        "series" -> "1_series"
-        "anime" -> "2_anime"
-        else -> "9_$this"
-    }
+/** B18 (BUG-155 (b)): a search catalog request's own time limit, well under the transport's 60 s. */
+internal const val SEARCH_CATALOG_TIMEOUT_MS: Long = 10_000
+
+/** BUG-208: pause before the single retry of a failed search catalog. */
+internal const val SEARCH_CATALOG_RETRY_DELAY_MS: Long = 250
+
+/** A search catalog that did not answer within [SEARCH_CATALOG_TIMEOUT_MS]. */
+internal class SearchCatalogTimeoutException(catalogId: String) :
+    Exception("search catalog $catalogId timed out after ${SEARCH_CATALOG_TIMEOUT_MS / 1000} s")

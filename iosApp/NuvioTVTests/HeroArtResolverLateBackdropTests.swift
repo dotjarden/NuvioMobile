@@ -1,0 +1,228 @@
+import SharedCore
+import XCTest
+@testable import NuvioTV
+import UIKit
+
+/// Unit tests for `HeroArtResolver.shouldAdoptLateBackdrop` (`Screens/HomeView.swift`), the pure
+/// predicate behind `adoptLateBackdrop`.
+///
+/// 2026-09-08 finding (simulator rig, the tester's real collections): when Home focus lands on a
+/// collection folder, `HeroArtResolver.present(_:isFolder:)` waits up to `folderDeadline` (1.5 s)
+/// for the folder's backdrop; on a cold cache the fetch routinely misses that deadline, so the
+/// probe logs `present item=nuvio.folder:… backdrop=none logo=text waited=1509` and the hero
+/// commits with NO backdrop — `folderHeroPreview` passes `poster: nil`, so unlike a title hero
+/// there is no stand-in, and the screen just stays blank. The backdrop fetch is never cancelled
+/// (round 3's design) and lands in `ArtworkStore` regardless; `adoptLateBackdrop` is where that
+/// late image gets painted onto the CURRENT hero instead of being wasted.
+///
+/// `adoptLateBackdrop` itself cannot be driven from here: it is `private`, and the resolver's own
+/// test file documents why `present` has no injection seam for `ArtworkStore.fetch` — there is no
+/// way to make a fetch land deterministically AFTER a real 400 ms/1.5 s deadline in a unit test
+/// without either touching `ArtworkStore` (outside this task's ownership) or a live view. So, per
+/// the fallback this task specifies, only the pure guard logic is exercised here — the same
+/// treatment `isVisibleRepaint` got in `HeroCommitCoordinatorTests` for the same reason. The
+/// non-pure half (the fetch-task wiring that calls `adoptLateBackdrop` with a genuinely late
+/// image) stays covered the way the rest of `present`'s wiring already is: by test20/test31/Leg C
+/// on device/simulator, plus `HeroPresentArtWaitTests.testStalledBackdropResumesAtTheDeadlineWithTheCachedLogo`,
+/// which already pins that a backdrop landing after `deadlineElapsed()` is dropped BY THE WAIT
+/// OBJECT for `wait.backdrop` itself — i.e. that the fetch closure's own `adoptLateBackdrop` call
+/// reads the late image off its own local, not off `wait.backdrop` (which stays nil). A second
+/// finding the same day (the deadline hand-off race, where the image arrives between
+/// `deadlineElapsed()` and the resolve task's own commit) added `wait.lateBackdrop`, retaining
+/// that same dropped image for one more read from the resolve task itself; see
+/// `testDeadlineThenLateBackdropIsRetainedForAdoption` and
+/// `testCancelledWaitNeverRetainsALateBackdrop` in that same test file.
+final class HeroArtResolverLateBackdropTests: XCTestCase {
+
+    private func makeImage() -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1))
+        return renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+    }
+
+    /// The shape the finding describes: a folder committed with no backdrop (deadline miss), the
+    /// late fetch is for the SAME identity that is still on screen, and no newer resolve has
+    /// started. This is the one case the whole method exists to handle.
+    func testAdoptsWhenTheLivePresentationHasNoBackdropAtAll() {
+        XCTAssertTrue(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "nuvio.folder:abc",
+            presentedIdentity: "nuvio.folder:abc",
+            presentedBackdrop: nil,
+            resolveTaskIsNil: true,
+            identity: "nuvio.folder:abc"))
+    }
+
+    /// The whole safety argument (BUG-42/BUG-90's no-double-commit rule): a hero that already has
+    /// ANY bitmap on screen — a title's primary, a title's poster stand-in, or a folder's own
+    /// earlier-landed backdrop — must never have it swapped out from under the viewer by a late
+    /// arrival. This is the guard that must never be relaxed.
+    func testNeverReplacesANonNilPresentedBackdrop() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "nuvio.folder:abc",
+            presentedIdentity: "nuvio.folder:abc",
+            presentedBackdrop: makeImage(),
+            resolveTaskIsNil: true,
+            identity: "nuvio.folder:abc"))
+    }
+
+    /// A poster stand-in counts as "art already on screen" too, even though it is not the item's
+    /// own primary backdrop — the late fetch must not paint over it either.
+    func testNeverReplacesAPosterStandIn() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1",
+            presentedIdentity: "movie:1",
+            presentedBackdrop: makeImage(), // stands in for a poster fallback bitmap
+            resolveTaskIsNil: true,
+            identity: "movie:1"))
+    }
+
+    /// The viewer has navigated to a different hero since this fetch started: `present` moved
+    /// `targetIdentity` on. The late image belongs to nothing on screen any more.
+    func testDoesNotAdoptWhenANewerPresentHasSupersededTheTarget() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "nuvio.folder:xyz",
+            presentedIdentity: "nuvio.folder:abc",
+            presentedBackdrop: nil,
+            resolveTaskIsNil: true,
+            identity: "nuvio.folder:abc"))
+    }
+
+    /// `presented` has already moved past this identity (e.g. the same-identity refresh path
+    /// replaced it, or focus round-tripped back to a different item) even though `targetIdentity`
+    /// has not yet been reassigned. Belt-and-braces alongside the `targetIdentity` check.
+    func testDoesNotAdoptWhenThePresentedIdentityHasMovedOn() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "nuvio.folder:abc",
+            presentedIdentity: "nuvio.folder:xyz",
+            presentedBackdrop: nil,
+            resolveTaskIsNil: true,
+            identity: "nuvio.folder:abc"))
+    }
+
+    /// A resolve for this exact identity is still in flight (e.g. `present` was re-invoked for a
+    /// byte-identical target and a fresh `resolveTask` is running). The deadline-driven commit
+    /// this method exists to patch up has not happened yet, so there is nothing to adopt onto.
+    func testDoesNotAdoptWhileAResolveIsStillInFlight() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "nuvio.folder:abc",
+            presentedIdentity: "nuvio.folder:abc",
+            presentedBackdrop: nil,
+            resolveTaskIsNil: false,
+            identity: "nuvio.folder:abc"))
+    }
+
+    // MARK: beta.19-rc1 verdict (review r2, P3-2): the card-size stand-in
+
+    /// A title committed the SAME picture at a card's size (`backdrop=small`) because its legacy
+    /// re-decode missed the deadline. That decode, landing late, may replace it: the one bitmap on
+    /// screen a late arrival may replace (the method then also requires a larger bitmap and a rest).
+    func testReplacesTheSmallStandInOfTheSamePicture() {
+        XCTAssertTrue(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1",
+            presentedIdentity: "movie:1",
+            presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true,
+            resolveTaskIsNil: true,
+            identity: "movie:1"))
+    }
+
+    /// The stand-in mark relaxes only the bitmap rule: a newer target, a presentation that moved on,
+    /// or a resolve in flight still refuse the late image.
+    func testSmallStandInKeepsEveryOtherGuard() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:2", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: true, identity: "movie:1"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:2", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: true, identity: "movie:1"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: true, resolveTaskIsNil: false, identity: "movie:1"))
+    }
+
+    /// Unmarked (the default, every pre-existing caller): a poster stand-in, a primary, a folder's
+    /// own backdrop all still block, exactly as `testNeverReplacesAPosterStandIn` pins.
+    func testUnmarkedBitmapStillBlocks() {
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: "movie:1", presentedIdentity: "movie:1", presentedBackdrop: makeImage(),
+            presentedIsSmallStandIn: false, resolveTaskIsNil: true, identity: "movie:1"))
+    }
+
+    // MARK: beta.19-rc1 verdict (review r3, P3 #1): never inside the stand-in commit's cross-fade
+
+    /// Review r3's scenario: the legacy decode lands 50 ms after the `small` stand-in's commit, with
+    /// the rows already at rest (a Right onto a card in view scrolls nothing). The replacement sleeps
+    /// out the rest of the commit's span before its rest wait, so the previous title's backdrop
+    /// finishes its 0.3 s fade instead of dropping out at ~90 % opacity.
+    func testLateReplacementWaitsOutTheStandInCrossfade() {
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.05), 0.35, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertGreaterThanOrEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.05) + 0.05, 0.3,
+                                    "the replacement starts no earlier than the end of the 0.3 s fade")
+    }
+
+    /// Past the span the wait is 0 (a decode that lands late enough adopts at the next rest, as
+    /// before), and the span covers the whole `HeroCrossfadeImage` swap: the 0.3 s fade plus the
+    /// 0.1 s before it releases the outgoing bitmap.
+    func testNoExtraWaitOnceTheCrossfadeIsOver() {
+        XCTAssertEqual(HeroArtResolver.commitCrossfadeSpan, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 0.4), 0, accuracy: 1e-9)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: 1.2), 0)
+    }
+
+    /// A reading no clock should give (negative, NaN, infinite) waits the whole span: never 0.
+    func testImpossibleReadingsWaitTheWholeSpan() {
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: -0.2), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .nan), HeroArtResolver.commitCrossfadeSpan)
+        XCTAssertEqual(HeroArtResolver.lateStandInFadeWait(sinceCommit: .infinity), HeroArtResolver.commitCrossfadeSpan)
+    }
+}
+
+// MARK: - UX-19: late logo adoption
+
+extension HeroArtResolverLateBackdropTests {
+    /// The late logo is adopted only for the identity still targeted AND on screen, only when that
+    /// commit had no logo, and only once the resolve that committed it is gone.
+    func testLateLogoAdoptionGuards() {
+        let logo = UIImage()
+        XCTAssertTrue(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                          presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"))
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:b", presentedIdentity: "movie:a",
+                                                           presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"),
+                       "the target moved on")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:b",
+                                                           presentedLogo: nil, resolveTaskIsNil: true, identity: "movie:a"),
+                       "another hero is on screen")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                           presentedLogo: logo, resolveTaskIsNil: true, identity: "movie:a"),
+                       "a logo is already up: nothing to adopt, nothing to swap")
+        XCTAssertFalse(HeroArtResolver.shouldAdoptLateLogo(targetIdentity: "movie:a", presentedIdentity: "movie:a",
+                                                           presentedLogo: nil, resolveTaskIsNil: false, identity: "movie:a"),
+                       "a resolve in flight commits its own")
+    }
+
+    /// The text swaps key on `phaseKey` (the logo's presence), so a late logo is a phased swap and a
+    /// synopsis gap-fill is not; `swapIdentity` stays the title, the trailer's arming key.
+    func testPhaseKeyFollowsTheLogoAndSwapIdentityDoesNot() {
+        let item = MetaPreview(
+            id: "tt1", type: "movie", name: "A",
+            poster: nil, banner: nil, logo: nil,
+            posterShape: .landscape,
+            description: nil, releaseInfo: nil, rawReleaseDate: nil,
+            popularity: nil, voteCount: nil, imdbRating: nil,
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
+        )
+        let text = HeroPresentation(item: item, backdrop: nil, logo: nil, identity: "movie:tt1")
+        let withLogo = HeroPresentation(item: item, backdrop: nil, logo: UIImage(), identity: "movie:tt1")
+        XCTAssertEqual(text.swapIdentity, "movie:tt1")
+        XCTAssertEqual(withLogo.swapIdentity, "movie:tt1", "the title key never changes with the logo")
+        XCTAssertEqual(text.phaseKey, "movie:tt1")
+        XCTAssertEqual(withLogo.phaseKey, "movie:tt1+logo")
+    }
+}

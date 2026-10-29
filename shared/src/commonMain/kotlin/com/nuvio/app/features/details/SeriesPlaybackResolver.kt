@@ -144,6 +144,7 @@ fun MetaDetails.seriesPrimaryAction(
     todayIsoDate: String,
     preferFurthestEpisode: Boolean = true,
     showUnairedNextUp: Boolean = false,
+    allowRewatch: Boolean = false,
 ): SeriesPrimaryAction? =
     seriesPrimaryAction(
         content = WatchingContentRef(type = type, id = id),
@@ -152,6 +153,7 @@ fun MetaDetails.seriesPrimaryAction(
         todayIsoDate = todayIsoDate,
         preferFurthestEpisode = preferFurthestEpisode,
         showUnairedNextUp = showUnairedNextUp,
+        allowRewatch = allowRewatch,
     )
 
 fun MetaDetails.seriesPrimaryAction(
@@ -161,16 +163,21 @@ fun MetaDetails.seriesPrimaryAction(
     todayIsoDate: String,
     preferFurthestEpisode: Boolean = true,
     showUnairedNextUp: Boolean = false,
+    allowRewatch: Boolean = false,
 ): SeriesPrimaryAction? =
     decideSeriesPrimaryAction(
         content = content,
-        episodes = videos.map(MetaVideo::toDomainReleasedEpisode),
+        episodes = videos.filterNot { video ->
+            entries.any { entry -> entry.parentMetaId == content.id && entry.parentMetaType.equals(content.type, true) &&
+                video.season in entry.excludedNextUpSeasons }
+        }.map(MetaVideo::toDomainReleasedEpisode),
         progressRecords = entries.map(WatchProgressEntry::toDomainProgressRecord),
         watchedRecords = watchedItems.map(WatchedItem::toDomainWatchedRecord),
         todayIsoDate = todayIsoDate,
         preferFurthestEpisode = preferFurthestEpisode,
         showUnairedNextUp = showUnairedNextUp,
         defaultVideoId = defaultVideoId,
+        allowRewatch = allowRewatch,
     )?.toLegacySeriesPrimaryAction()
 
 fun MetaVideo.playLabel(): String =

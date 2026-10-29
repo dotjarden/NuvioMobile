@@ -45,6 +45,7 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        ranking: StreamAutoPlayRanking = StreamAutoPlayRanking.LIST_ORDER,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -59,6 +60,7 @@ object StreamAutoPlaySelector {
             bingeGroupOnly = bingeGroupOnly,
             debridEnabled = debridEnabled,
             activeResolverProviderId = activeResolverProviderId,
+            ranking = ranking,
         ).stream
 
     fun evaluateAutoPlayStream(
@@ -74,6 +76,10 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        // beta.19-rc1 verdict (A, BUG-136): only FIRST_STREAM consults this. Kotlin callers get
+        // LIST_ORDER by default (mobile unchanged); Swift has to pass it explicitly because
+        // Kotlin default arguments do not bridge.
+        ranking: StreamAutoPlayRanking = StreamAutoPlayRanking.LIST_ORDER,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -128,7 +134,16 @@ object StreamAutoPlaySelector {
         }
         val matchingStreams = when (mode) {
             StreamAutoPlayMode.MANUAL -> emptyList()
-            StreamAutoPlayMode.FIRST_STREAM -> candidateStreams
+            // beta.19-rc1 verdict (A, BUG-136): BEST_QUALITY orders the streams that arrived by
+            // resolution > HDR/DV > cached > size (stable for ties). The binge-group stream
+            // (`preferredStream`) is still put first below, and `readyStreams` keeps this order,
+            // so the failover walk (`autoPlayCandidates`) is ranked too.
+            StreamAutoPlayMode.FIRST_STREAM ->
+                if (ranking == StreamAutoPlayRanking.BEST_QUALITY) {
+                    StreamQualityRank.rankBest(candidateStreams)
+                } else {
+                    candidateStreams
+                }
             StreamAutoPlayMode.REGEX_MATCH -> {
                 val pattern = regexPattern.trim()
 
@@ -195,6 +210,25 @@ object StreamAutoPlaySelector {
             },
         )
     }
+
+    /** Direction C (D2): the walk's own playability rule, for [StreamBestPick]. */
+    internal fun isAutoPlayableStream(
+        stream: StreamItem,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): Boolean = stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
+
+    /**
+     * Direction C (D2): "Cached Sources Only" - a link the active debrid service already has cached.
+     * The Kotlin twin of Swift `FirstPlayAutoPlayController.Policy.isCachedDebridLink` (positive cache
+     * evidence on the active resolver; plain HTTP never qualifies).
+     */
+    internal fun isCachedDebridLink(
+        stream: StreamItem,
+        debridEnabled: Boolean,
+        activeResolverProviderId: String?,
+    ): Boolean = debridEnabled && stream.isAddonDebridCandidate &&
+        stream.isReadyDebridAutoPlay(activeResolverProviderId)
 
     private fun StreamItem.isAutoPlayable(
         debridEnabled: Boolean,

@@ -16,8 +16,35 @@ import SharedCore
 /// report across three betas (reproduced in the simulator 2026-08-29/30). The fix hoists every
 /// expanded row to be a direct `SettingsSection` child in its own right — see the per-view
 /// comments below for what that retired.
+///
+/// Home Stage & Strip (H8, 2026-10-05): a new first "Layout" section holds the Home Layout picker
+/// (Stage by default, Classic = the previous Home) and, in Stage only, the Ambient Background
+/// switch. Stage has no rotating banner, so it hides the four rows that only configure one: Show
+/// Hero, Nuvio-Style Hero, Hero Sources and Autoplay Hero Trailer. Their stored values are never
+/// touched; they simply do nothing in Stage and are back as they were when the layout returns to
+/// Classic. Trailer Location reads Background / In Row in Stage (the stage always exists, so
+/// Background always takes effect) and keeps today's Hero / Poster wording and captions in
+/// Classic. Upcoming Episodes, Catalogs and Show Catalog Type are the same in both layouts.
 struct HomeScreenSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
+
+    /// Home Stage & Strip (H1): which Home the viewer gets, `HomeLayout.rawValue` ("stage" |
+    /// "classic"). Device-local, not synced; HomeView and the folder page read the same key live
+    /// through `HomeLayout`, so the flip applies as soon as the picker writes it. An unset or
+    /// unknown value reads as the default (Stage).
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+    /// FEAT-71 (Steven, rc4 verdict 2026-10-16): the Stage folder page's Rows / Grid choice, moved out
+    /// of the folder page's Edit band into Settings (`FolderLayoutDefault`, device-local). Stored as
+    /// the enum itself (`String` raw value), so the picker binds to it directly; an unset or unknown
+    /// value reads as the default (Rows).
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
+    /// Batch F: Classic's own Collections Layout default (Grid unless changed).
+    @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
+
+    /// Home Stage & Strip (H3): the soft wash of the focused title's colors behind the stage.
+    /// Default ON. Local-only, not synced; the wash layer reads the same key
+    /// (`AmbientWashSetting`). Only offered while Home Layout is Stage.
+    @AppStorage(AmbientWashSetting.defaultsKey) private var ambientBackground = AmbientWashSetting.defaultValue
 
     /// Mirrors the poster-card's `inline_trailers_enabled` key (BrowseComponents.swift) so this
     /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
@@ -37,16 +64,32 @@ struct HomeScreenSettingsPane: View {
 
     /// Where the "Trailers on Focus" muted preview plays: the poster card itself (default) or the
     /// hero banner. Only meaningful while `inlineTrailersEnabled` is on. Local-only, not synced.
+    /// The raw values stay "poster" / "hero" in both layouts; only the picker wording differs (Stage
+    /// reads them as In Row / Background, Classic as Poster / Hero).
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
+
+    /// beta.19-rc1 verdict (M4, FEAT-52 "Trailer Start Delay"): how long a focus-dwelled trailer waits
+    /// before it starts. Same device-local `@AppStorage` pattern as the three trailer keys above (no
+    /// Kotlin, no sync); the value is `TrailerStartDelay.rawValue` ("auto" | "1" | "2" | "3") and
+    /// `TrailerStartDelay.current()` reads it once per dwell. Default Automatic = the rows have
+    /// stopped moving, plus one second.
+    @AppStorage(TrailerStartDelay.storageKey) private var trailerStartDelay = TrailerStartDelay.automatic.rawValue
 
     /// 2026-08-30 fix: replaces the `isExpanded` that used to live inside the now-deleted
     /// `HeroSourcesGroup`/`HomeCatalogsGroup`. Plain `@State`, same behavior as before — no
-    /// persistence, so both sections start collapsed on every (re)visit to Settings.
+    /// persistence, so Hero Sources starts collapsed on every (re)visit to Settings (the catalog list moved
+    /// to the Add-ons hub).
     @State private var heroSourcesExpanded = false
-    @State private var catalogsExpanded = false
+
+    /// Home Stage & Strip (H1): the layout this pane is configuring, resolved through
+    /// `HomeLayout.resolve` so an unset or unknown stored value reads as Stage, the same as every
+    /// other reader.
+    private var isStage: Bool { HomeLayout.resolve(homeLayoutRaw) == .stage }
 
     var body: some View {
-        SettingsSection(nil) {
+        layoutSection
+
+        SettingsSection(String(localized: "Home Rows")) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
             // switch must stay reachable when no catalog add-on is installed (Codex round 1).
             //
@@ -54,13 +97,15 @@ struct HomeScreenSettingsPane: View {
             // it sits OUTSIDE the `model.catalogs.isEmpty` branch below, so whatever the catalog
             // list does — arrives, shrinks, empties — the Home Screen pane always has at least one
             // focusable row for the focus engine to land on, and the sidebar can always enter it.
-            // Do not move this row inside the branch.
+            // Do not move this row inside the branch. (The Home Layout picker in the section above
+            // is now a second always-present row; this one keeps its floor role regardless.)
             SettingsToggleRow(
                 title: String(localized: "Upcoming Episodes"),
                 subtitle: upcomingRowEnabled
                     ? String(localized: "A row under Continue Watching with your shows' next episodes airing in the next 14 days")
                     : String(localized: "No Upcoming row on Home"),
-                isOn: $upcomingRowEnabled
+                isOn: $upcomingRowEnabled,
+                descriptionID: .homeUpcoming
             )
 
             if model.catalogs.isEmpty {
@@ -87,7 +132,8 @@ struct HomeScreenSettingsPane: View {
                 SettingsActionRow(
                     title: String(localized: "Refresh Add-ons"),
                     subtitle: String(localized: "Re-check installed add-ons for catalogs."),
-                    systemImage: "arrow.clockwise"
+                    systemImage: "arrow.clockwise",
+                    descriptionID: .homeRefreshAddons
                 ) {
                     AddonRepository.shared.refreshAll()
                 }
@@ -99,22 +145,33 @@ struct HomeScreenSettingsPane: View {
                 // behavior that also silently took the description panel away with it, which is
                 // precisely the trap the reporter hit three times; both states now state what
                 // they DO, and neither implies losing the description.
-                SettingsToggleRow(
-                    title: String(localized: "Show Hero"),
-                    subtitle: model.heroEnabled
-                        ? String(localized: "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
-                        : String(localized: "No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
-                    isOn: Binding(
-                        get: { model.heroEnabled },
-                        set: { model.setHeroEnabled($0) }
+                //
+                // Home Stage & Strip (H8): Stage has no rotating banner or focus panel to
+                // configure, so Show Hero and the two groups below it that configure the banner
+                // (Nuvio-Style Hero, Hero Sources) exist only in Classic. Their stored values are
+                // never touched: they do nothing in Stage and are back as they were in Classic.
+                if !isStage {
+                    SettingsToggleRow(
+                        title: String(localized: "Show Hero"),
+                        subtitle: model.heroEnabled
+                            ? String(localized: "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
+                            : String(localized: "No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
+                        isOn: Binding(
+                            get: { model.heroEnabled },
+                            set: { model.setHeroEnabled($0) }
+                        ),
+                        descriptionID: .homeShowHero
                     )
-                )
+                    // FEAT-61 (Batch M D8, 2026-10-19): the Synopsis Length picker is gone; Classic
+                    // always draws up to 4 lines where they fit (`PinnedRowGeometry.LongSynopsis`).
+                }
 
                 // Everything inside this branch configures the ROTATING banner specifically —
                 // its layout and which catalogs feed it — so it stays hidden with Show Hero off,
                 // where there are no hero pages to lay out or source (FEAT-15: the focus panel
-                // always uses the pinned Nuvio presentation, see HomeView.heroNuvioStyle).
-                if model.heroEnabled {
+                // always uses the pinned Nuvio presentation, see HomeView.heroNuvioStyle). It is
+                // also Classic-only (see above).
+                if !isStage && model.heroEnabled {
                     // UX-2 hero redesign v2: title/description on the left with the artwork
                     // reading on the right (Nuvio-style, OPT-IN) vs the classic lower-left
                     // logo layout (default). UX-7 extension: the Nuvio-style hero is also
@@ -126,7 +183,8 @@ struct HomeScreenSettingsPane: View {
                         subtitle: heroNuvioStyle
                             ? String(localized: "Title and description on the left, artwork on the right, hero pinned while rows scroll")
                             : String(localized: "Classic layout with the logo on the lower left"),
-                        isOn: $heroNuvioStyle
+                        isOn: $heroNuvioStyle,
+                        descriptionID: .homeNuvioStyleHero
                     )
 
                     // Collections are hard-forced to heroSourceEnabled = false on the Kotlin side
@@ -153,7 +211,8 @@ struct HomeScreenSettingsPane: View {
                         SettingsDisclosureRow(
                             title: String(localized: "Hero Sources"),
                             subtitle: heroSourcesSummary,
-                            isExpanded: heroSourcesExpanded && !heroSourceCatalogs.isEmpty
+                            isExpanded: heroSourcesExpanded && !heroSourceCatalogs.isEmpty,
+                            descriptionID: .homeHeroSources
                         ) {
                             heroSourcesExpanded.toggle()
                         }
@@ -173,29 +232,37 @@ struct HomeScreenSettingsPane: View {
 
                 SettingsToggleRow(
                     title: String(localized: "Trailers on Focus"),
-                    // Codex gate r3/r4: the enabled summary names the surface that will ACTUALLY
-                    // play — "Hero" only when the hero location can take effect (same conditions
-                    // as the two fallback captions below); otherwise the poster, which is what
-                    // the user will see in the classic layout or with no hero source enabled.
-                    subtitle: !inlineTrailersEnabled
-                        ? String(localized: "Posters show artwork only")
-                        : heroLocationEffective
-                            ? String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
-                            : String(localized: "Posters play a muted trailer preview after a moment of focus"),
-                    isOn: $inlineTrailersEnabled
+                    subtitle: trailersOnFocusSubtitle,
+                    isOn: $inlineTrailersEnabled,
+                    descriptionID: .homeTrailersOnFocus
                 )
 
                 if inlineTrailersEnabled {
                     trailerLocationRow
                 }
 
-                SettingsToggleRow(
-                    title: String(localized: "Autoplay Hero Trailer"),
-                    subtitle: heroTrailerAutoplay
-                        ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
-                        : String(localized: "The hero shows artwork only"),
-                    isOn: $heroTrailerAutoplay
-                )
+                // Home Stage & Strip (H8): the hero's own autoplay is a Classic-banner setting; the
+                // stage has no such switch (its trailer is Trailer Location above), so the row is
+                // Classic-only and its stored value is left alone.
+                if !isStage {
+                    SettingsToggleRow(
+                        title: String(localized: "Autoplay Hero Trailer"),
+                        subtitle: heroTrailerAutoplay
+                            ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
+                            : String(localized: "The hero shows artwork only"),
+                        isOn: $heroTrailerAutoplay,
+                        descriptionID: .homeHeroTrailerAutoplay
+                    )
+                }
+
+                // beta.19-rc1 verdict (M4, FEAT-52): only while a trailer can actually start on a dwell
+                // — the poster/hero preview on focus, or (Classic only) the hero's own autoplay. With
+                // both off there is nothing for the delay to delay. Sits right after the switches that
+                // enable it. In Stage only Trailers on Focus can start one: a stored Autoplay Hero
+                // Trailer value does nothing there, so it must not keep this row up.
+                if inlineTrailersEnabled || (!isStage && heroTrailerAutoplay) {
+                    trailerStartDelayRow
+                }
 
                 SettingsToggleRow(
                     title: String(localized: "Show Catalog Type in Titles"),
@@ -205,35 +272,18 @@ struct HomeScreenSettingsPane: View {
                     isOn: Binding(
                         get: { model.showCatalogType },
                         set: { model.setShowCatalogType($0) }
-                    )
+                    ),
+                    descriptionID: .homeCatalogType
                 )
 
-                // Focus note (2026-08-30): same hoist as Hero Sources above — "Catalogs" is a
-                // header row followed, only while expanded, by one `CatalogSettingRow` per
-                // catalog, each its own `SettingsSection` child / List row. This is the group the
-                // device video (2026-08-29) caught rendering blank: `HomeCatalogsGroup` put its
-                // rows' text and reorder chips straight into a shared List row, where none of them
-                // ever got the system's focused-row label inversion, and (independently) none of
-                // them could ever actually receive focus for the reason in the file header
-                // comment. `CatalogSettingRow` is also reshaped below — see its own comment — so a
-                // single row can stay reachable without needing three separate focus targets.
-                SettingsDisclosureRow(
+                // Add-ons hub C, H4 (D3): the catalog list moved to the Add-ons hub; the page is the
+                // same `CatalogOrderView`, pushed from here.
+                SettingsLinkRow(
                     title: String(localized: "Catalogs"),
-                    subtitle: catalogsSummary,
-                    isExpanded: catalogsExpanded && !model.catalogs.isEmpty
+                    subtitle: String(localized: "\(catalogsSummary) \u{00B7} managed in Add-ons"),
+                    descriptionID: .homeCatalogs
                 ) {
-                    catalogsExpanded.toggle()
-                }
-
-                if catalogsExpanded && !model.catalogs.isEmpty {
-                    ForEach(model.catalogs, id: \.key) { item in
-                        CatalogSettingRow(
-                            item: item,
-                            onToggle: { model.toggleCatalog(item) },
-                            onUp: { model.moveUp(item) },
-                            onDown: { model.moveDown(item) }
-                        )
-                    }
+                    CatalogOrderView(model: model)
                 }
             }
         }
@@ -246,56 +296,178 @@ struct HomeScreenSettingsPane: View {
             if !enabled { heroSourcesExpanded = false }
         }
         .onChange(of: model.catalogs.isEmpty) { _, isEmpty in
-            if isEmpty {
-                heroSourcesExpanded = false
-                catalogsExpanded = false
-            }
+            if isEmpty { heroSourcesExpanded = false }
         }
         // The Hero Sources group can also vanish alone: every remaining catalog being a
         // collection removes just that header while the pane and Catalogs group stay.
         .onChange(of: model.catalogs.contains(where: { !$0.isCollection })) { _, hasCatalogSources in
             if !hasCatalogSources { heroSourcesExpanded = false }
         }
+        // Home Stage & Strip (H8): Hero Sources only exists in Classic, so entering Stage drops its
+        // expansion too (same reasoning as the resets above: a stale flag would resurrect an
+        // expanded group the next time Classic returns, instead of the collapsed-on-recreation
+        // behavior). Written from here because the picker lives in the sibling Layout section.
+        .onChange(of: homeLayoutRaw) { _, raw in
+            if HomeLayout.resolve(raw) == .stage { heroSourcesExpanded = false }
+        }
+    }
+
+    // MARK: - Layout section (Home Stage & Strip, H8)
+
+    /// The new first section: the Home Layout picker (always present, so the pane has a second
+    /// focus floor beside Upcoming Episodes) and, in Stage only, the Ambient Background switch.
+    /// Both sit outside the `model.catalogs.isEmpty` branch below, so they stay reachable with no
+    /// add-on installed. Stage and Classic read the same `home_layout` key through `HomeLayout`:
+    /// HomeView and the folder page see a flip live, with no remount and no relaunch.
+    @ViewBuilder
+    private var layoutSection: some View {
+        SettingsSection(String(localized: "Layout")) {
+            SettingsPickerRow(
+                title: String(localized: "Home Layout"),
+                selection: Binding(
+                    get: { HomeLayout.resolve(homeLayoutRaw) },
+                    set: { homeLayoutRaw = $0.rawValue }
+                ),
+                options: HomeLayout.allCases,
+                descriptionID: .homeLayout,
+                label: { $0.label }
+            )
+
+            // FEAT-71 + Batch F (Steven rc6): how a collection folder opens, kept per Home layout
+            // (Stage defaults to Rows, Classic to Grid). A folder's own hold-menu choice wins.
+            SettingsPickerRow(
+                title: String(localized: "Collections Layout"),
+                selection: isStage ? $folderLayoutDefault : $classicFolderLayoutDefault,
+                options: FolderLayoutDefault.allCases,
+                descriptionID: .homeCollectionsLayout,
+                label: { $0.label }
+            )
+
+            // The wash is part of the stage (it fills the background behind the focused title), so
+            // there is nothing for the switch to control in Classic. Its stored value is kept.
+            if isStage {
+                SettingsToggleRow(
+                    title: String(localized: "Ambient Background"),
+                    subtitle: ambientBackground
+                        ? String(localized: "A soft wash of the focused title's colors fills the background")
+                        : String(localized: "Plain background"),
+                    isOn: $ambientBackground,
+                    descriptionID: .homeAmbientBackground
+                )
+            }
+        }
+    }
+
+    /// The "Trailers on Focus" subtitle. Codex gate r3/r4: the enabled summary names the surface
+    /// that will ACTUALLY play. Classic says "hero" only when the hero location can take effect
+    /// (same conditions as the two fallback captions in `trailerLocationRow`); otherwise the
+    /// poster, which is what the viewer will see in the classic layout or with no hero source
+    /// enabled. Home Stage & Strip (H8): Stage always has a stage, so Background always takes
+    /// effect and says so; In Row keeps the poster wording.
+    private var trailersOnFocusSubtitle: String {
+        guard inlineTrailersEnabled else { return String(localized: "Posters show artwork only") }
+        if heroLocationEffective {
+            return isStage
+                ? String(localized: "Trailers play muted behind the title at the top after you rest on a poster")
+                : String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
+        }
+        return String(localized: "Posters play a muted trailer preview after a moment of focus")
     }
 
     /// Settings-side mirror of `HomeView.heroFocusTrailerMode`'s settings terms: "Hero" is
     /// selected AND the layout pins a hero (Show Hero off → focus panel; Nuvio-style on with at
     /// least one hero source, the best proxy Settings has for the hero fan-out producing a
     /// surface). Exactly the complement of the two fallback captions in `trailerLocationRow`.
+    ///
+    /// Home Stage & Strip (H8): the stage always exists, so in Stage "Background" (the stored
+    /// "hero") always takes effect and none of the Classic conditions apply.
     private var heroLocationEffective: Bool {
+        if isStage { return trailerPlaybackLocation == "hero" }
         guard trailerPlaybackLocation == "hero" else { return false }
         if !model.heroEnabled { return true }
         return heroNuvioStyle && model.catalogs.contains(where: { $0.heroSourceEnabled })
+    }
+
+    /// FEAT-52 "Trailer Start Delay": Automatic (the rows stop moving, then one second) or a fixed
+    /// 1 / 2 / 3 s counted from focus, never before the rows stop. The description is the kit's
+    /// focused-row explainer: Classic keeps its own copy, and Stage has one that does not mention
+    /// the hero (each id is written as a literal in its own branch, which is what the description
+    /// coverage test scans for).
+    @ViewBuilder
+    private var trailerStartDelayRow: some View {
+        if isStage {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Start Delay"),
+                selection: trailerStartDelayBinding,
+                options: TrailerStartDelay.allCases,
+                descriptionID: .homeTrailerStartDelayStage,
+                label: { $0.label }
+            )
+        } else {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Start Delay"),
+                selection: trailerStartDelayBinding,
+                options: TrailerStartDelay.allCases,
+                descriptionID: .homeTrailerStartDelay,
+                label: { $0.label }
+            )
+        }
+    }
+
+    private var trailerStartDelayBinding: Binding<TrailerStartDelay> {
+        Binding(get: { TrailerStartDelay(rawValue: trailerStartDelay) ?? .automatic },
+                set: { trailerStartDelay = $0.rawValue })
+    }
+
+    private var trailerLocationBinding: Binding<String> {
+        Binding(
+            get: { trailerPlaybackLocation },
+            set: { trailerPlaybackLocation = $0 }
+        )
     }
 
     /// Dependent chip row shown only while "Trailers on Focus" is on: picks whether the muted
     /// preview plays in the poster card (default) or the hero banner. The classic (non-Nuvio-
     /// style) hero layout has no artwork region to preview into, so a caption explains that
     /// "Hero" falls back to the poster there.
+    ///
+    /// Home Stage & Strip (H8): in Stage the same two stored values read Background ("hero", the
+    /// trailer plays behind the title at the top) and In Row ("poster", the focused poster turns
+    /// into the playing card), Background listed first. The stage always exists, so neither
+    /// Classic fallback caption applies there. Classic is unchanged: Poster / Hero and both
+    /// captions.
     @ViewBuilder
     private var trailerLocationRow: some View {
-        SettingsPickerRow(
-            title: String(localized: "Trailer Location"),
-            selection: Binding(
-                get: { trailerPlaybackLocation },
-                set: { trailerPlaybackLocation = $0 }
-            ),
-            options: ["poster", "hero"],
-            label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
-        )
-        if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
-            Text("In the classic hero layout, trailers play in the poster.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-        }
-        // Same silent-mismatch guard for the other configuration where "Hero" cannot take
-        // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
-        // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
-        if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
-            && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
-            Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
+        if isStage {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Location"),
+                selection: trailerLocationBinding,
+                options: ["hero", "poster"],
+                descriptionID: .homeTrailerLocationStage,
+                label: { $0 == "hero" ? String(localized: "Background") : String(localized: "In Row") }
+            )
+        } else {
+            SettingsPickerRow(
+                title: String(localized: "Trailer Location"),
+                selection: trailerLocationBinding,
+                options: ["poster", "hero"],
+                descriptionID: .homeTrailerLocation,
+                label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
+            )
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
+                Text("In the classic hero layout, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            // Same silent-mismatch guard for the other configuration where "Hero" cannot take
+            // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
+            // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
+                && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
+                Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
         }
     }
 
@@ -348,6 +520,32 @@ struct HomeScreenSettingsPane: View {
 /// fix, the env keys in DesignSystem/FlatControlStyles.swift, and the `@FocusState`-publishing
 /// pattern all still apply to other custom containers elsewhere in the app — nothing here changes
 /// them, they just have no publisher left in this file, so they default to false / are inert).
+private struct SettingsDisclosureRow: View {
+    let title: String
+    let subtitle: String
+    let isExpanded: Bool
+    /// FEAT-50: passed straight to the label (the `\.isFocused` read site).
+    var descriptionID: SettingsDescriptionID? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            // D11 V2 (Gate 2 sim pass, `g2-pane-4-detailpage-row.png`): the shared kit chrome, so
+            // this row sits on the same rest platter as every row around it (and the platter fades
+            // out on focus exactly like theirs). Trailing glyph stays the up/down disclosure
+            // chevron, in the kit's trailing-value size and `.secondary`.
+            SettingsRowChrome {
+                SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
+            } trailing: {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(SettingsRowFont.subtitle)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+}
 
 /// A single Hero Sources row: catalog title + add-on, with an on/off indicator. At the 2-source
 /// limit an OFF row is INERT — it still takes focus and still reads normally, it just refuses the
@@ -411,6 +609,11 @@ private struct HeroSourceRow: View {
                 dimmed: !interactive
             )
         }
+        // D11 V1/V2 (Gate 2 sim pass): the same style `SettingsToggleRow` applies, so an expanded
+        // hero source shows the capsule switch, sits on the rest platter with the kit insets, and
+        // keeps the system focus platter. The label (and its `\.isFocused` dimming read) stays
+        // inside the style's Button label, so the Wave 9 r3 reasoning above still holds.
+        .toggleStyle(SettingsSwitchToggleStyle())
         // Kept from `SettingsToggleRow`: the UITest harness's state-aware toggle helper reads this
         // exact value, and it is a friendlier VoiceOver value than "1"/"0".
         .accessibilityValue(item.heroSourceEnabled ? Text("On") : Text("Off"))
@@ -432,57 +635,9 @@ private struct HeroSourceRowLabel: View {
     private static let inertRowOpacity: Double = 0.4
 
     var body: some View {
-        SettingsRowLabel(title: title, subtitle: subtitle)
+        SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: .homeHeroSource)
             // Never dim what the platter is currently lighting: on the near-white focus platter a
             // 0.4-opacity label is the "vanishes into the platter" failure (BUG-58/65).
             .opacity(dimmed && !isFocused ? Self.inertRowOpacity : 1)
-    }
-}
-
-/// A Home-catalog row: title + add-on, with an enable/disable indicator and reorder via long-press
-/// context menu.
-///
-/// 2026-08-30 fix, full redesign: the previous shape put three independent focus targets (an
-/// enable toggle chip plus up/down reorder chips) inside one row. Hoisting `CatalogSettingRow`
-/// itself out to be its own List row (see the call site above) fixes reachability for the row as a
-/// whole, but three chips *within* one row would just recreate the identical one-focus-target trap
-/// one level down — a List row still exposes only one focus target, so at most one of those three
-/// chips could ever be focused. Rather than hoist the chips too (which would triple the row count
-/// and make "enable" and "reorder" show up as separate list entries), the whole row is now ONE
-/// `Button` whose primary action is the enable toggle, with reorder moved to a long-press
-/// `.contextMenu` (same pattern as the Library tab's remove-from-library menu, see
-/// `LibraryView.swift`). Down/up navigation between catalogs — the reorder gesture people actually
-/// reach for while scanning a list — now just works, and Select+hold reaches the rarer reorder
-/// action without needing its own focus target.
-private struct CatalogSettingRow: View {
-    let item: HomeCatalogSettingsItem
-    let onToggle: () -> Void
-    let onUp: () -> Void
-    let onDown: () -> Void
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: Theme.Spacing.lg) {
-                SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName)
-                    .opacity(item.enabled ? 1 : 0.55)
-                Spacer()
-                Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
-                    .rowAccentTint(item.enabled)
-            }
-        }
-        .contextMenu {
-            Button {
-                onUp()
-            } label: {
-                Label(String(localized: "Move Up"), systemImage: "chevron.up")
-            }
-            Button {
-                onDown()
-            } label: {
-                Label(String(localized: "Move Down"), systemImage: "chevron.down")
-            }
-        }
-        .accessibilityLabel(item.displayTitle)
-        .accessibilityValue(item.enabled ? Text("Enabled") : Text("Disabled"))
     }
 }

@@ -10,7 +10,7 @@ struct TabBarPresentation: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> CoordinatorController {
         CoordinatorController(visibility: visibility,
-            sidebar: SidebarChrome.isEnabled() || UserDefaults.standard.bool(forKey: "debug.sidebarSpike"))
+            sidebar: NavigationChrome.isRail() || UserDefaults.standard.bool(forKey: "debug.sidebarSpike"))
     }
 
     func updateUIViewController(_ controller: CoordinatorController, context: Context) {

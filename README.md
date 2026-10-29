@@ -17,6 +17,17 @@ cd NuvioTV
 
 Follow its [build instructions](https://github.com/dotjarden/NuvioTV/blob/main/BUILDING.md). Build the **NuvioTV** Xcode scheme from `NuvioMobile/iosApp/iosApp.xcodeproj`. Downloadable fork builds, when published, belong to [dotjarden's releases](https://github.com/dotjarden/NuvioTV/releases).
 
+### Build configuration
+
+`local.properties` in this folder holds the server address and keys; git ignores it, so a fresh clone has none and sign-in then talks to `localhost`. Create it with Nuvio's public values before the first build:
+
+```
+SUPABASE_URL=https://api.nuvio.tv
+SUPABASE_ANON_KEY=sb_publishable_1Clq8rlTVACkdcZuqr6_AD__xUUC_EN
+```
+
+The same file can carry a TMDB key and the Trakt, Simkl, MDBList and IntroDB ids.
+
 ## Fork changes
 
 The maintained version adds Live TV, a revised Apple TV interface, combined Search/discovery filters, shared player controls, account/profile improvements, organized settings and Remote Setup, and navigation fixes. See [FORK_CHANGES.md](FORK_CHANGES.md) and the [project overview](https://github.com/dotjarden/NuvioTV#changes-in-this-fork).

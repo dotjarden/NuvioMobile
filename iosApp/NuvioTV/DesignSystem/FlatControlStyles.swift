@@ -126,14 +126,18 @@ extension ButtonStyle where Self == SettingsRowButtonStyle {
 /// native tvOS pickers treat a focused selected item.
 struct ChipButtonStyle: ButtonStyle {
     var selected = false
+    /// Stream picker A (P2): a rest fill that replaces the 10 % pill (an error-tinted source chip).
+    /// Focus and selection still win, in that order.
+    var tint: Color? = nil
 
     func makeBody(configuration: Configuration) -> some View {
-        ChipBody(configuration: configuration, selected: selected)
+        ChipBody(configuration: configuration, selected: selected, tint: tint)
     }
 
     private struct ChipBody: View {
         let configuration: Configuration
         let selected: Bool
+        let tint: Color?
         @Environment(\.isFocused) private var isFocused
         @Environment(\.settingsRowIsFocused) private var externalFocus
         // BUG-65 container half: this chip can be sitting on a near-white platter that a SIBLING's
@@ -149,6 +153,7 @@ struct ChipButtonStyle: ButtonStyle {
         private var fill: Color {
             if focused { return FocusLook.platter }
             if selected { return Theme.Palette.accent }
+            if let tint { return tint }
             // At rest on a container platter the 10%-white pill is invisible against the platter it
             // sits on; the same 10% the other way round reads as a light-grey pill on white, and
             // keeps the focused chip (a FULL-white platter, plus lift and shadow) distinguishable
@@ -186,11 +191,40 @@ struct ChipButtonStyle: ButtonStyle {
     }
 }
 
+/// A pill on the mpv player's transport bar. Not a `ButtonStyle`: the pills are not focusable (the
+/// controller routes the remote and passes `focused`). At rest a dark translucent disc; focused, the
+/// app's system-focus look (near-white platter, dark glyph, small lift).
+/// BUG-180 (Steven rc7): the resting disc was live glass and every pill carried a lift shadow, both
+/// re-sampled from the 4K/HDR video each frame (film behind the bar at ~10 fps on mpv). Player-only
+/// view, so the change stays on the player: solid `PlayerSurfaceStyle` disc, no shadow.
+struct PlayerPillDisc: View {
+    let symbol: String
+    let focused: Bool
+
+    var body: some View {
+        let glyph = Image(systemName: symbol)
+            .font(.system(size: 26, weight: .semibold))
+            .foregroundStyle(focused ? FocusLook.onPlatter : Color.white)
+            .frame(width: 62, height: 62)
+        Group {
+            if focused {
+                glyph.background(Circle().fill(FocusLook.platter))
+            } else {
+                glyph.playerSurface(in: Circle(), fill: PlayerSurfaceStyle.chipFill)
+            }
+        }
+        .scaleEffect(focused ? FocusLook.liftScale : 1)
+        .animation(FocusLook.anim, value: focused)
+    }
+}
+
 extension ButtonStyle where Self == ChipButtonStyle {
     /// Capsule chip with no selection state.
     static var chip: ChipButtonStyle { .init() }
     /// Chip that fills with the theme accent when selected (at rest; focus overrides).
     static func chip(selected: Bool) -> ChipButtonStyle { .init(selected: selected) }
+    /// Chip with a rest `tint` instead of the grey pill (stream picker A, P2: error source chips).
+    static func chip(selected: Bool, tint: Color?) -> ChipButtonStyle { .init(selected: selected, tint: tint) }
 }
 
 /// Subtitle/meta text inside a `.chip`-styled button (e.g. a catalog chip's addon-name line,

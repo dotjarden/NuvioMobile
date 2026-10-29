@@ -1,0 +1,994 @@
+import Combine
+import SwiftUI
+import UIKit
+
+// Home Stage & Strip (P1 §3): the strip. One row per page, paged by the Wave 0.5 spike's
+// mechanism a2, which measured right on the Living Room Apple TV (one 0.51–0.73 s glide per press,
+// exactly on the page boundary, nothing after):
+//
+//  - a vertical `ScrollView` whose pages are each `pageHeight` tall, row top-aligned, with
+//    `.scrollTargetLayout()` + `.scrollTargetBehavior(.viewAligned)` and a trailing `peek` spacer,
+//    so the last row can reach the top;
+//  - the focus engine moves focus; the app animates `.scrollPosition(id:anchor: .top)` to the
+//    focused row (0.5 s ease-out), which overrides the engine's slower scroll.
+//
+// Content height = n·P + peek and the viewport is P + peek, so row k rests at exactly k·P.
+//
+// Reused by the folder Rows page (P2 §2.8, S4): `menuPagesToTop: false` installs no exit handler
+// (Menu pops there), `reportsTab: nil` writes no tab-bar mirror.
+
+/// S4: the external handle to the pager's focus-request rungs (§3.3). `StageController.requestFocus`
+/// forwards here; the pager installs itself on appear and uninstalls itself on disappear.
+///
+/// Review r1 (P1): the installed closure captures the pager's value, which holds the controller that
+/// owns this handle. Left installed, that cycle kept every popped folder Rows page's controller alive,
+/// and with it the stage's decoded 3840 px art and the page's view model. The owner check matters
+/// because Home's placeholder ↔ pager swap (and any remount) can run the incoming pager's `onAppear`
+/// before the outgoing one's `onDisappear`, which must not clear the incoming pager's closure.
+@MainActor
+final class StripPagerHandle {
+    typealias Request = @MainActor (_ rowKey: String, _ itemId: String?, _ reason: String) -> Void
+    typealias Cancel = @MainActor (_ reason: String) -> Void
+    typealias SyncPage = @MainActor (_ reason: String) -> Void
+    typealias Gate = @MainActor (_ rowKey: String?) -> Void
+
+    private var request: Request?
+    /// BUG-156 (a): drops the pager's in-flight request (the viewer moved during a pop restore).
+    private var cancel: Cancel?
+    /// BUG-156 (B13): pages the strip to the row that holds focus, after a held page (see
+    /// `StageController.uncoverHoldsPage`) turned out not to be the engine's move.
+    private var syncPage: SyncPage?
+    /// BUG-156 (B13): while a landed pop restore's window is open, only this row can take focus.
+    private var gate: Gate?
+    /// The installed pager's box (one per pager instance).
+    private weak var owner: AnyObject?
+
+    /// Whether a pager is mounted and listening.
+    var isInstalled: Bool { request != nil }
+
+    /// BUG-176: the installed pager's rows, in order (empty when none is installed).
+    var rowKeys: [String] { (owner as? StripPagerBox)?.rowKeys ?? [] }
+
+    func install(owner: AnyObject, cancel: Cancel? = nil, syncPage: SyncPage? = nil,
+                 gate: Gate? = nil, _ request: @escaping Request) {
+        self.owner = owner
+        self.request = request
+        self.cancel = cancel
+        self.syncPage = syncPage
+        self.gate = gate
+    }
+
+    /// Clears the closure only if `owner` is still the installed pager.
+    func uninstall(owner: AnyObject) {
+        guard self.owner === owner else { return }
+        self.owner = nil
+        request = nil
+        cancel = nil
+        syncPage = nil
+        gate?(nil)
+        gate = nil
+    }
+
+    /// BUG-156 (B13): see `gate`. nil opens every row again.
+    func setUncoverGate(_ rowKey: String?) {
+        gate?(rowKey)
+    }
+
+    /// BUG-156 (B13): see `syncPage`. No-op when the strip already shows the focused row.
+    func syncPageToFocus(reason: String) {
+        syncPage?(reason)
+    }
+
+    /// BUG-156 (a): stands the installed pager's in-flight focus request down (no-op when none).
+    func cancelRequest(reason: String) {
+        cancel?(reason)
+    }
+
+    func requestFocus(rowKey: String, itemId: String?, reason: String = "external") {
+        guard let request else {
+            StageStripProbe.shared.log("restore row=\(rowKey) item=\(itemId ?? "-") rung=0 landed=0 reason=\(reason) nopager")
+            return
+        }
+        request(rowKey, itemId, reason)
+    }
+}
+
+/// The pager's per-hop bookkeeping, in a reference box so a hop writes no view state beyond
+/// `positionId` (the BUG-126 rule).
+@MainActor
+final class StripPagerBox {
+    var rowKeys: [String] = []
+    var rowIndex = 0
+    /// The row that owns focus, or nil while focus is outside the strip.
+    var focusedRowKey: String?
+    /// W2-5 (a): the pager's one ownership value (`StripPager.ownership`), made on its first body.
+    var ownership: PinnedRowFocusOwnership?
+    /// Review r1 P3-4: the host callbacks, refreshed on every pager body, so the ownership value
+    /// (made once, on the first body's copy) always calls the latest closures.
+    var onRowChange: ((_ index: Int, _ key: String) -> Void)?
+    var onPageStart: ((_ toIndex: Int, _ seconds: TimeInterval) -> Void)?
+    var onStripFocusLost: (() -> Void)?
+
+    /// Review r2 (P2-1): drops every closure that captures the pager or its host (`ownership`
+    /// captures a pager copy, the callbacks capture the host), so the box cannot retain itself
+    /// through the pager's `@State` once the strip has left the screen. The next body remakes them.
+    func releaseHostClosures() {
+        ownership = nil
+        onRowChange = nil
+        onPageStart = nil
+        onStripFocusLost = nil
+    }
+    /// Rows currently reporting ownership. Empty one runloop turn after a release = focus left the
+    /// strip (#17); a row-to-row move never empties it, in either report order.
+    var owners = Set<String>()
+    /// A Menu page-to-top or an external request in flight: reports from OTHER rows are ignored
+    /// until it lands or `programmaticDeadline` passes (the engine may briefly land elsewhere while
+    /// the target row scrolls in).
+    var programmaticTarget: String?
+    var programmaticDeadline: TimeInterval = 0
+    /// Stales every rung of an older focus request.
+    var restoreGeneration = 0
+    var requestSequence = 0
+    /// Review r3 (P3-3): Reduce Motion, mirrored here so a page started from the handle's closure
+    /// (which runs on the pager value copied at install) reads the live setting.
+    var reduceMotion = false
+
+    // MARK: Mounted window (review r1, A P2-5)
+    //
+    // Kept here, not in `@State`: the window moves on every Down/Up, and as pager state it re-ran
+    // the pager's body on every hop, and with it every mounted row's (their closures never compare
+    // equal), in the same update that starts the glide (the BUG-126 class). Each page observes its
+    // own `StripPageMount`, so a move re-renders only the pages that mount or unmount.
+
+    /// The index the mounted window is centred on (`StripMountWindow`): the focused row, or the
+    /// target of a programmatic request so its row is mounted before the rungs ask it for focus.
+    private(set) var windowCenter = 0
+    /// Rows a long glide passes (Menu → row 0 from row 5), kept mounted until the page ends so the
+    /// glide never runs through empty pages or unmounts the row it leaves.
+    private(set) var glideSpan: ClosedRange<Int>?
+    private var mounts: [String: StripPageMount] = [:]
+
+    /// Inside the window or the glide span, or the row holds focus. Review r2 (P2-1): a focused row
+    /// the window moves away from (Menu under Reduce Motion, whose glide span opens and closes in one
+    /// call; a row the engine landed on mid-glide) stays mounted until it reports the release. An
+    /// unmounted row never reports it, which left a stale key in `owners` and switched off the
+    /// focus-lost detection (the background trailer kept playing behind the tab bar, and rows that
+    /// arrived while focus was outside hid above row 0 again).
+    func isMounted(_ index: Int, key: String, count: Int) -> Bool {
+        StripMountWindow.range(center: windowCenter, count: count).contains(index)
+            || glideSpan?.contains(index) == true
+            || owners.contains(key)
+    }
+
+    /// Page `key`'s mount flag, created on first use with the window's current answer.
+    func mount(for key: String, at index: Int, count: Int) -> StripPageMount {
+        if let existing = mounts[key] { return existing }
+        let created = StripPageMount(isMounted(index, key: key, count: count))
+        mounts[key] = created
+        return created
+    }
+
+    func moveWindow(to index: Int) {
+        guard windowCenter != index else { return }
+        windowCenter = index
+        refreshMounts()
+    }
+
+    func setGlideSpan(_ span: ClosedRange<Int>?) {
+        guard glideSpan != span else { return }
+        glideSpan = span
+        refreshMounts()
+    }
+
+    /// Re-derives every page's flag from `rowKeys` and the window; only a flag that changes
+    /// publishes. Never prunes: the body can create a new row's flag before `rowKeys` catches up.
+    func refreshMounts() {
+        let count = rowKeys.count
+        for (index, key) in rowKeys.enumerated() {
+            mounts[key]?.set(isMounted(index, key: key, count: count))
+        }
+    }
+
+    /// Drops the flags of rows that left the strip (`rowKeysChanged`, with the current keys).
+    func pruneMounts(keeping live: Set<String>) {
+        guard mounts.keys.contains(where: { !live.contains($0) }) else { return }
+        mounts = mounts.filter { live.contains($0.key) }
+    }
+}
+
+/// One strip page's mount flag (review r1, A P2-5), observed only by that page's `StripPageSlot`.
+@MainActor
+final class StripPageMount: ObservableObject {
+    @Published private(set) var isMounted: Bool
+
+    init(_ isMounted: Bool) {
+        self.isMounted = isMounted
+    }
+
+    func set(_ mounted: Bool) {
+        if isMounted != mounted { isMounted = mounted }
+    }
+}
+
+/// One strip page's content: the row while the page is mounted, an empty page of the same height
+/// otherwise. Nothing in an empty page can take focus, and Down/Up only ever move to an adjacent
+/// row, which is mounted.
+/// Batch F: reports a strip row's natural height (fit mode only; off, it adds nothing).
+private struct StripRowHeightReader: ViewModifier {
+    let key: String
+    let enabled: Bool
+    let report: (String, CGFloat) -> Void
+
+    private func send(_ height: CGFloat) {
+        #if DEBUG
+        StageStripProbe.shared.log("fit row=\(key) h=\(Int(height))")
+        #endif
+        report(key, height)
+    }
+
+    func body(content: Content) -> some View {
+        if enabled {
+            // Its natural height: the page proposes its full height, and a row with any flexible
+            // child would otherwise fill it and report the fixed page back.
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { proxy in
+                        let height = proxy.size.height.rounded(.up)
+                        Color.clear
+                            .onAppear { send(height) }
+                            .onChange(of: height) { _, new in send(new) }
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// Batch F: true inside a strip page while Short Rows Fit is on. A wide-poster card then drops its
+/// reserved grown-trailer slot (`InlineTrailerCard.shapeSlotSizer`), so its row is only as tall as
+/// it really is and grows while the trailer plays. Classic's planners size rows with the slot, so
+/// it stays false everywhere else.
+private struct StripRowFitsHeightKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var stripRowFitsHeight: Bool {
+        get { self[StripRowFitsHeightKey.self] }
+        set { self[StripRowFitsHeightKey.self] = newValue }
+    }
+}
+
+private struct StripPageSlot<Content: View>: View {
+    @ObservedObject var mount: StripPageMount
+    let content: () -> Content
+
+    var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StripPageSlot")
+        #endif
+        if mount.isMounted {
+            content()
+        } else {
+            Color.clear
+        }
+    }
+}
+
+/// W2-5 (a): the strip's `.scrollPosition(id:)` value, in a reference the pager holds without
+/// observing. Only `StripScroller` observes it.
+@MainActor
+final class StripScrollPosition: ObservableObject {
+    @Published var id: String?
+}
+
+/// W2-5 (a): the strip's `ScrollView` and its `.scrollPosition`. The only view that observes the
+/// position, so a page (one write per Down/Up, inside the glide's `withAnimation`) re-runs this
+/// body alone. `content` is stored as built by the pager's last update; re-emitting the same value
+/// leaves every page slot, row and card un-invalidated.
+private struct StripScroller<Content: View>: View {
+    @ObservedObject var position: StripScrollPosition
+    let content: Content
+
+    init(position: StripScrollPosition, @ViewBuilder content: () -> Content) {
+        self.position = position
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+        }
+        .scrollPosition(id: $position.id, anchor: .top)
+        #if DEBUG
+        // BUG-176 diagnostic: the scroll view's own position writes (an engine scroll shows here
+        // with no `page to=` before it).
+        .onChange(of: position.id) { old, new in
+            StageStripProbe.shared.log("position \(old ?? "-") -> \(new ?? "-")")
+        }
+        #endif
+    }
+}
+
+private enum StripPagerTuning {
+    /// How long a programmatic target holds off other rows' ownership reports (spike rule).
+    static let programmaticWindow: TimeInterval = 1.5
+    /// The restore rungs after the first (next-runloop) one, in seconds. The last one lands on the
+    /// row's first card (§3.3).
+    static let rungDelays: [(rung: Int, delay: TimeInterval)] = [(2, 0.3), (3, 0.7), (4, 1.0)]
+    static let firstCardRung = 4
+    /// How long after the last rung an unlanded request stays live before it expires.
+    static let expiryGrace: TimeInterval = 0.3
+}
+
+/// See the file header.
+struct StripPager<Row: View>: View {
+    let rowKeys: [String]
+    let geometry: StripGeometry
+    /// Signal, memory, pager handle; tells the swap driver about pages.
+    let controller: StageController
+    /// Tab bar content-scroll link: Home and the folder Rows page (P2, #9).
+    let linksTabBar: Bool
+    /// "Home" → `.reportsScrollToTabBar` (the probe mirror); nil on the folder page.
+    let reportsTab: String?
+    /// S4: false → no `.onExitCommand` at all (the folder page pops on Menu).
+    let menuPagesToTop: Bool
+    /// The host's Menu-at-row-0 handler (nil = the system default).
+    let atTopExit: (() -> Void)?
+    let onRowChange: (_ index: Int, _ key: String) -> Void
+    /// Rail Hide While Browsing (#8, §6): the page's target index and its animation length.
+    let onPageStart: (_ toIndex: Int, _ seconds: TimeInterval) -> Void
+    /// #17: focus left the strip (tab bar, rail).
+    let onStripFocusLost: () -> Void
+    private let row: (_ key: String) -> Row
+
+    /// W2-5 (a): the strip's `.scrollPosition` id, observed only by `StripScroller` (see `body`).
+    /// Held, never observed here: before, as `@State`, every page re-ran this body and with it
+    /// every mounted row (fresh closures). Reads and writes go through `positionId`.
+    @State private var position = StripScrollPosition()
+    @State private var focusRequest = PinnedRowFocusRequest.none
+    /// Flips only between row 0 and row 1, so the host is not re-rendered per hop.
+    @State private var atTop = true
+    /// BUG-156 (B13): the only row that may take focus while a landed pop restore's window is open
+    /// (the device focus engine's late restoration otherwise lands on a neighbour and the scroll
+    /// view reveals it: 294 pt of visible detour on the Living Room ATV, 10-18).
+    @State private var uncoverGateKey: String?
+    /// Batch F: each mounted row's measured height, read only with `StageStripTuning.fitRows`.
+    @State private var fitHeights: [String: CGFloat] = [:]
+    /// Per-hop bookkeeping, including the mounted window (see `StripPagerBox`).
+    @State private var box = StripPagerBox()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(rowKeys: [String],
+         geometry: StripGeometry,
+         controller: StageController,
+         linksTabBar: Bool,
+         reportsTab: String?,
+         menuPagesToTop: Bool,
+         atTopExit: (() -> Void)?,
+         onRowChange: @escaping (_ index: Int, _ key: String) -> Void,
+         onPageStart: @escaping (_ toIndex: Int, _ seconds: TimeInterval) -> Void,
+         onStripFocusLost: @escaping () -> Void,
+         @ViewBuilder row: @escaping (_ key: String) -> Row) {
+        self.rowKeys = rowKeys
+        self.geometry = geometry
+        self.controller = controller
+        self.linksTabBar = linksTabBar
+        self.reportsTab = reportsTab
+        self.menuPagesToTop = menuPagesToTop
+        self.atTopExit = atTopExit
+        self.onRowChange = onRowChange
+        self.onPageStart = onPageStart
+        self.onStripFocusLost = onStripFocusLost
+        self.row = row
+    }
+
+    /// The strip's scroll position id (see `position`). A write that does not change it publishes
+    /// nothing, as an unchanged `@State` write did.
+    private var positionId: String? {
+        get { position.id }
+        nonmutating set {
+            if position.id != newValue { position.id = newValue }
+        }
+    }
+
+    /// W2-5 (a): see the `.environment(\.pinnedRowFocusOwnership, …)` line in `body`.
+    private var ownership: PinnedRowFocusOwnership {
+        box.onRowChange = onRowChange
+        box.onPageStart = onPageStart
+        box.onStripFocusLost = onStripFocusLost
+        if let made = box.ownership { return made }
+        let pager = self
+        let made = PinnedRowFocusOwnership(report: { key, owns in
+            pager.handleOwnership(key, owns: owns)
+        })
+        box.ownership = made
+        return made
+    }
+
+    /// Only the Home strip drives the shared motion probe (the folder page has its own readout).
+    private var ownsProbe: Bool { reportsTab != nil && StageStripProbe.enabled }
+
+    var body: some View {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("StripPager")
+        #endif
+        // Hoisted so the render-time `visualEffect` closure captures plain numbers (no view value).
+        let page = geometry.pageHeight
+        let leading = geometry.contentLeading
+        let trailing = geometry.trailingMargin
+        let exitHandler: (() -> Void)? = atTop ? atTopExit : { pageToTop() }
+        // W2-5 (a): the scroll position lives in `StripScroller`, which alone observes it, so a
+        // page's position write re-runs that leaf and not this body. The pages below are built
+        // once per pager update and handed over as a stored value: a position write re-emits the
+        // same value, so no page slot, row or card re-evaluates for a glide.
+        StripScroller(position: position) {
+            // Not a `LazyVStack`: it recreated the row ABOVE the focused one while focus was landing
+            // on it (Up from row i: focus reached row i−1's remembered card, the row was rebuilt as
+            // the strip began to scroll, focus dropped to nil, and the engine re-entered the row
+            // through its focus section at the card nearest the screen centre; end-of-Wave-2 FA87
+            // walk). Every page frame exists eagerly, so `.scrollPosition(id:)` and the view-aligned
+            // targets see the whole strip; only the rows inside `StripMountWindow` mount real content,
+            // so the row above and the row below the focused one are always stable.
+            VStack(alignment: .leading, spacing: 0) {
+                pages(page: page, leading: leading, trailing: trailing)
+            }
+            .scrollTargetLayout()
+            .background(alignment: .topLeading) {
+                if linksTabBar {
+                    // Row 0 rests at offset 0 (bar shown); row k ≥ 1 rests at k·P ≥ 388 pt, far past
+                    // the 68 pt bar (fully hidden). Exact rests mean the bar is never half shown.
+                    TabBarContentScrollLinkAttacher(pinnedContainer: false)
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                }
+            }
+            // BUG-156 (a): the viewer-input clock a pop restore reads to tell the viewer's own
+            // press or swipe from the focus engine's late restoration (`ViewerInputClock`).
+            // Installed once on the window; zero-size, never hit-tested.
+            .background(alignment: .topLeading) {
+                ViewerInputClockInstaller()
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+            }
+            .background(alignment: .topLeading) {
+                if ownsProbe {
+                    StageStripMarker()
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .scrollTargetBehavior(.viewAligned)
+        // BUG-176 (Steven rc7; device pass 2026-10-18): while the pop restore's gate is closed the
+        // strip does not scroll for focus. The engine's late restoration lands on a neighbour row's
+        // `UIKitFocusableFillerItem` (its horizontal scroller's stand-in, which `.disabled` does not
+        // cover) and scrolled the strip up a row; the regrab then glided it back.
+        .scrollDisabled(uncoverGateKey != nil)
+        // D4 / #3: the spike's clip, with its top edge feathered across the stage's 24 pt bottom
+        // gutter, so a row leaving upward softens there and never draws over the synopsis. A
+        // clip/mask never touches focusability.
+        .scrollClipDisabled()
+        .modifier(StripEdgeMaskModifier())
+        .rowsMotionStamp(.vertical)
+        .modifier(StripTabBarReportModifier(tab: reportsTab))
+        .modifier(StripExitCommandModifier(installed: menuPagesToTop, handler: exitHandler))
+        .environment(\.pinnedRowFocusRequest, focusRequest)
+        // W2-5 (a): one ownership value per pager, made on the first body and kept in the box, so
+        // the environment value is bit-identical on every later pager update and no row's
+        // `PinnedRowUpFallbackTarget` is invalidated by a fresh closure. It runs on the pager value
+        // copied on that first body, as the handle's closures do (`box.rowKeys`, review r2 P3-3).
+        .environment(\.pinnedRowFocusOwnership, ownership)
+        .environment(\.stripFocusMemory, controller.memory)
+        .environment(\.rowRestSource, .custom(controller.signal))
+        .onAppear {
+            controller.pagerHandle.install(owner: box, cancel: { reason in
+                cancelRowFocusRequest(reason: reason)
+            }, syncPage: { reason in
+                syncPageToFocusedRow(reason: reason)
+            }, gate: { key in
+                if uncoverGateKey != key { uncoverGateKey = key }
+            }) { key, itemId, reason in
+                requestRowFocus(key, itemId: itemId, reason: reason)
+            }
+            if positionId == nil, let first = rowKeys.first {
+                positionId = first
+            }
+        }
+        // Review r1 (P1): see `StripPagerHandle`. A push over the page, a tab switch or a pop
+        // uninstalls; coming back installs again before anything can ask for focus (the rail's
+        // return routes register on appear too).
+        .onDisappear {
+            controller.pagerHandle.uninstall(owner: box)
+            // Review r2 (P2-1): the box's cached ownership value captures a copy of this pager,
+            // whose `@State` wrapper holds the box: released here, like the handle above, so a
+            // popped folder page's model and controller are not kept alive by their own strip.
+            box.releaseHostClosures()
+        }
+        .onChange(of: rowKeys, initial: true) { _, keys in
+            rowKeysChanged(keys)
+        }
+        #if DEBUG
+        .onChange(of: fitHeights) { _, _ in noteFitDebug() }
+        #endif
+        .onChange(of: reduceMotion, initial: true) { _, motion in
+            box.reduceMotion = motion
+        }
+        .onChange(of: probeConfiguration, initial: true) { _, _ in
+            guard ownsProbe else { return }
+            StageStripProbe.shared.configure(pageHeight: geometry.pageHeight,
+                                             stripHeight: geometry.stripHeight,
+                                             rowCount: rowKeys.count)
+        }
+    }
+
+    @ViewBuilder
+    private func pages(page: CGFloat, leading: CGFloat, trailing: CGFloat) -> some View {
+        let count = rowKeys.count
+        let pagerBox = box
+        ForEach(Array(rowKeys.enumerated()), id: \.element) { index, key in
+            // Outside the window an empty page of the same height (`StripPageSlot`).
+            let pageForRow = fitPageHeight(key, page: page)
+            StripPageSlot(mount: pagerBox.mount(for: key, at: index, count: count)) {
+                row(key)
+                    .padding(.leading, leading)
+                    .padding(.trailing, trailing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.stripRowFitsHeight, StageStripTuning.fitRows)
+                    .modifier(StripRowHeightReader(key: key, enabled: StageStripTuning.fitRows) { key, height in
+                        noteFitHeight(height, for: key)
+                    })
+            }
+            .frame(height: pageForRow, alignment: .top)
+            .disabled(uncoverGateKey.map { $0 != key } ?? false)
+            // §3.4: render-time only, no state writes. The page at rest is exactly 1, so the
+            // focused card's lift renders untouched; the peeking page reads 0.6.
+            .modifier(StripPageOpacityModifier(pageHeight: pageForRow))
+            .id(key)
+        }
+        // Batch F review r1 P2: with fit pages the last row must still be able to rest at the strip's
+        // top (viewport = P + peek), so the spacer after it makes up what it is shorter than P.
+        // Every earlier row then has at least as much content after it.
+        Color.clear.frame(height: geometry.peek + max(0, page - (rowKeys.last.map { fitPageHeight($0, page: page) } ?? page)))
+    }
+
+    /// Batch F: a row's measured height. The first measurement lands at once (a page sized before
+    /// it shows), later ones animate (review r1 P3-1: a wide card's trailer growing or shrinking
+    /// moves the next heading with it instead of stepping ahead of the tile).
+    /// Only the anchored row and rows below it animate (review r2 P3-A): a row ABOVE the anchor that
+    /// resizes (a morphed card collapsing as the Down that leaves it starts the glide) would move
+    /// the anchored row under the glide's own animation; it applies at once instead.
+    private func noteFitHeight(_ height: CGFloat, for key: String) {
+        guard fitHeights[key] != height else { return }
+        let keys = box.rowKeys
+        let aboveAnchor: Bool = {
+            guard let anchor = positionId, let anchorIndex = keys.firstIndex(of: anchor),
+                  let index = keys.firstIndex(of: key) else { return false }
+            return index < anchorIndex
+        }()
+        if fitHeights[key] == nil || box.reduceMotion || aboveAnchor {
+            fitHeights[key] = height
+        } else {
+            withAnimation(.easeOut(duration: Self.fitResizeSeconds)) { fitHeights[key] = height }
+        }
+    }
+
+    /// Batch F: the page resize after a row's first measurement.
+    static var fitResizeSeconds: TimeInterval { 0.3 }
+
+    /// Batch F: the fixed page, or (fit mode) the row's measured height plus the focus lift above
+    /// and below it (BUG-191: the feather's 24 with No Zoom), never taller than the fixed page
+    /// (`StripGeometry.fitPageHeight`). An unmeasured row keeps the fixed page.
+    private func fitPageHeight(_ key: String, page: CGFloat) -> CGFloat {
+        guard StageStripTuning.fitRows, let measured = fitHeights[key], measured > 0 else { return page }
+        return StripGeometry.fitPageHeight(measured: measured, page: page, focusLift: geometry.focusLift)
+    }
+
+    #if DEBUG
+    /// BUG-191: `debug_strip_fit` (`StripFitDebugLabel`), every measured row in strip order as
+    /// `key=<rowKey> m=<measured> h=<page>`, so a UI leg can check h ≥ m + 24 under No Zoom.
+    private func noteFitDebug() {
+        let page = geometry.pageHeight
+        let entries = rowKeys.compactMap { key -> String? in
+            guard let measured = fitHeights[key] else { return nil }
+            return "key=\(key) m=\(StageDebugLabel.number(measured)) h=\(StageDebugLabel.number(fitPageHeight(key, page: page)))"
+        }
+        controller.swap.debug.setFit(entries.isEmpty ? "-" : entries.joined(separator: " | "))
+    }
+    #endif
+
+    private var probeConfiguration: String {
+        "\(geometry.pageHeight)|\(geometry.stripHeight)|\(rowKeys.count)"
+    }
+
+    // MARK: Ownership (§3.1)
+
+    private func handleOwnership(_ key: String, owns: Bool) {
+        guard owns else {
+            let pagerBox = box
+            pagerBox.owners.remove(key)
+            // Review r2 (P2-1): a row kept mounted only because it held focus can go now.
+            pagerBox.refreshMounts()
+            // One runloop turn later: a row-to-row move reports the destination's `true` in the same
+            // turn (in either order), so only a real exit leaves `owners` empty here.
+            DispatchQueue.main.async {
+                guard pagerBox.owners.isEmpty, pagerBox.focusedRowKey != nil else { return }
+                pagerBox.focusedRowKey = nil
+                StageStripProbe.shared.log("focus left the strip from row=\(key)")
+                pagerBox.onStripFocusLost?()
+            }
+            return
+        }
+        box.owners.insert(key)
+        // F5: a completed request must not be re-applied by a row that remounts later.
+        if focusRequest.rowKey == key {
+            focusRequest = PinnedRowFocusRequest(rowKey: nil, generation: focusRequest.generation)
+        }
+        if let target = box.programmaticTarget {
+            if target == key {
+                box.programmaticTarget = nil
+                // Review r1 (A P2-2): landed, so the later rungs stand down now. A rung that ran
+                // after the viewer moved on (a Down at 0.2 s after Menu; a second Menu that sent
+                // focus to the tab bar) re-issued the request, and the row pulled focus back.
+                box.restoreGeneration &+= 1
+            } else if ProcessInfo.processInfo.systemUptime < box.programmaticDeadline {
+                StageStripProbe.shared.log("ownership \(key) ignored: programmatic target \(target) in flight")
+                return
+            } else {
+                // The window passed and another row holds focus: the viewer has moved on, so the
+                // request must not land later (see `expireRequest`).
+                box.programmaticTarget = nil
+                dropStaleRequest(keeping: key)
+            }
+        }
+        guard key != box.focusedRowKey else { return }
+        box.focusedRowKey = key
+        // Review r2 (P3-3): `box.rowKeys`, not `rowKeys`. The handle's closure (an external request,
+        // and its expiry, which can land here) runs on the pager value copied at install time.
+        guard let index = box.rowKeys.firstIndex(of: key) else { return }
+        let previous = box.rowIndex
+        box.rowIndex = index
+        box.moveWindow(to: index)
+        controller.currentRowKey = key
+        // A frame-time window per hop (no-op unless `debug.collectionFrameProbe` is on).
+        CollectionFocusFrameSampler.shared.arm(rowKey: key, gif: false)
+        // BUG-156 (B13, Steven: "scrolls back towards the top and then immediately jumps back"):
+        // after a pop, the focus engine's own late restoration lands on another row 0.5-1 s in, and
+        // the pop restore re-grabs it. Paging to that row first was the visible detour. While the
+        // restore would re-grab this move, the strip stays on the restored row; if the restore
+        // retires instead (a late viewer press), `syncPageToFocusedRow` catches the strip up.
+        let held = controller.uncoverHoldsPage(forRowKey: key)
+        if held {
+            StageStripProbe.shared.log("page held key=\(key) reason=uncover")
+        } else {
+            page(to: key, index: index, from: previous)
+        }
+        // A held page keeps `atTop` on the row the strip shows, so a Menu press inside the
+        // re-grab window still pages to the top instead of leaving (review r1 P3-2).
+        let top = index == 0
+        if !held, atTop != top { atTop = top }
+        if ownsProbe, previous != index {
+            StageStripProbe.shared.noteRowChange(from: previous, to: index, key: key)
+        }
+        #if DEBUG
+        controller.swap.debug.setRow(index, key: key)
+        controller.swap.debug.setAtTop(top)
+        #endif
+        box.onRowChange?(index, key)
+    }
+
+    // MARK: Paging
+
+    /// BUG-156 (B13): page to the row that holds focus when a held page left the strip elsewhere.
+    private func syncPageToFocusedRow(reason: String) {
+        guard let key = box.focusedRowKey, positionId != key,
+              let index = box.rowKeys.firstIndex(of: key) else { return }
+        let previous = positionId.flatMap { box.rowKeys.firstIndex(of: $0) } ?? index
+        StageStripProbe.shared.log("page sync key=\(key) reason=\(reason)")
+        page(to: key, index: index, from: previous)
+        let top = index == 0
+        if atTop != top { atTop = top }
+    }
+
+    /// `alongside` (W2-A, #16) runs inside the page's own transaction: Menu's first focus rung, so
+    /// the focus write and the position animation are one transaction. With no page to run (already
+    /// on `key`) it runs at once.
+    private func page(to key: String, index: Int, from previous: Int, alongside: (() -> Void)? = nil) {
+        guard positionId != key else {
+            alongside?()
+            return
+        }
+        let seconds = box.reduceMotion ? 0 : StageStripTuning.pageSeconds
+        // A glide longer than the mounted window keeps every row it passes mounted until it ends.
+        let span = min(previous, index)...max(previous, index)
+        let longGlide = span.count > StripMountWindow.radius + 1
+        let pagerBox = box
+        if longGlide { pagerBox.setGlideSpan(span) }
+        let signal = controller.signal
+        #if DEBUG
+        controller.swap.debug.setPage(key)
+        #endif
+        let generation = signal.pageStarted(duration: seconds)
+        box.onPageStart?(index, seconds)
+        StageStripProbe.shared.log("page to=\(index) key=\(key) seconds=\(seconds) gen=\(generation)")
+        if seconds == 0 {
+            positionId = key
+            alongside?()
+            signal.pageEnded(generation: generation)
+            if longGlide { pagerBox.setGlideSpan(nil) }
+        } else {
+            // #15: the page ends at its animation's real completion, not at a nominal 0.5 s.
+            withAnimation(.easeOut(duration: seconds), completionCriteria: .logicallyComplete) {
+                positionId = key
+                alongside?()
+            } completion: {
+                signal.pageEnded(generation: generation)
+                if longGlide, pagerBox.glideSpan == span { pagerBox.setGlideSpan(nil) }
+            }
+        }
+    }
+
+    /// Menu at row > 0 (§6): page to row 0 and put focus on its remembered card.
+    ///
+    /// W2-A (#16): the page and the first focus rung go out in ONE transaction. The device spike's
+    /// Menu → row 0 was one 1.36 s motion, the engine's scroll winning over the app's glide; the
+    /// first rung used to follow a runloop after the page, so the focus write and the position
+    /// animation were two transactions. Now the request is written inside the page's
+    /// `withAnimation`, so row 0 takes focus in the same update the glide starts. The device pass
+    /// measures it (the main session's item); the later rungs are unchanged.
+    private func pageToTop() {
+        guard let first = box.rowKeys.first else { return }
+        if ownsProbe { StageStripProbe.shared.notePress("menu") }
+        requestRowFocus(first, itemId: controller.memory.itemId(for: first), reason: "menu",
+                        firstRungInPage: true)
+        controller.swap.noteFocusActivity()
+    }
+
+    private func rowKeysChanged(_ keys: [String]) {
+        let previousFirst = box.rowKeys.first
+        box.rowKeys = keys
+        let live = Set(keys)
+        box.pruneMounts(keeping: live)
+        // Batch F review r1 P3-5: forget measured heights of rows that left.
+        if fitHeights.keys.contains(where: { !live.contains($0) }) {
+            fitHeights = fitHeights.filter { live.contains($0.key) }
+        }
+        // Review r1 (A P3-7): a row removed from the data while it holds focus (its last Continue
+        // Watching entry removed from the hold menu, Upcoming emptying) never reports `false`. Left
+        // in `owners`, it kept `onStripFocusLost` from ever firing again.
+        box.owners.formIntersection(live)
+        if let focused = box.focusedRowKey, !live.contains(focused) {
+            let pagerBox = box
+            // One turn later, as in `handleOwnership`: the row that takes focus reports first.
+            DispatchQueue.main.async {
+                guard pagerBox.owners.isEmpty, let stale = pagerBox.focusedRowKey,
+                      !pagerBox.rowKeys.contains(stale) else { return }
+                pagerBox.focusedRowKey = nil
+                StageStripProbe.shared.log("focus left the strip: row=\(stale) removed")
+                pagerBox.onStripFocusLost?()
+            }
+        }
+        if positionId == nil, let first = keys.first {
+            positionId = first
+        }
+        guard let key = box.focusedRowKey else {
+            followRowsWhileOutside(keys, previousFirst: previousFirst)
+            return
+        }
+        guard let index = keys.firstIndex(of: key), index != box.rowIndex else {
+            box.refreshMounts()
+            return
+        }
+        // Rows were inserted or removed above the focused row; `.scrollPosition(id:)` keeps it in
+        // place, only its index moved.
+        box.rowIndex = index
+        box.refreshMounts()
+        box.moveWindow(to: index)
+        let top = index == 0
+        if atTop != top { atTop = top }
+        #if DEBUG
+        controller.swap.debug.setRow(index, key: key)
+        controller.swap.debug.setAtTop(top)
+        #endif
+        box.onRowChange?(index, key)
+    }
+
+    /// Review r1 (A P2-6): rows changed while focus is outside the strip (the tab bar at launch, the
+    /// rail). `.scrollPosition(id:)` keeps the shown row anchored, so a row arriving above row 0
+    /// (Upcoming, a late Continue Watching) sat hidden above the viewport, the linked tab bar hid,
+    /// and the stage showed a title from a row that wasn't on screen. A strip resting on row 0
+    /// follows the new first row; one resting further down keeps its row, and its index follows.
+    private func followRowsWhileOutside(_ keys: [String], previousFirst: String?) {
+        if box.rowIndex == 0, let first = keys.first, first != previousFirst,
+           positionId == previousFirst || positionId.map({ !keys.contains($0) }) == true {
+            positionId = first
+            StageStripProbe.shared.log("rows changed outside the strip: row 0 is now \(first)")
+        }
+        guard let shown = positionId, let index = keys.firstIndex(of: shown) else {
+            box.refreshMounts()
+            return
+        }
+        box.rowIndex = index
+        box.refreshMounts()
+        box.moveWindow(to: index)
+        let top = index == 0
+        if atTop != top { atTop = top }
+        #if DEBUG
+        controller.swap.debug.setRow(index, key: shown)
+        controller.swap.debug.setAtTop(top)
+        #endif
+    }
+
+    // MARK: Focus requests (§3.3)
+
+    /// The rungs: issue at the next runloop, re-issue at 0.3 s and 0.7 s while the row has not taken
+    /// focus, then at 1.0 s on the row's FIRST card. Generation-guarded; each rung logs
+    /// `[StageStrip] restore row= item= rung= landed=`. A row that is far away is paged to first, so
+    /// it is realized before its cards are asked to take focus.
+    ///
+    /// `firstRungInPage` (Menu, #16): rung 1 is written inside the page's own transaction instead of
+    /// on the next runloop. A row that mounts only with this request's window move still takes it
+    /// when it mounts (`pinnedRowUpFallbackTarget` re-applies a live request on appear, F5), and the
+    /// timed rungs cover the rest.
+    private func requestRowFocus(_ key: String, itemId: String?, reason: String,
+                                 firstRungInPage: Bool = false) {
+        guard let index = box.rowKeys.firstIndex(of: key) else {
+            StageStripProbe.shared.log("restore row=\(key) item=\(itemId ?? "-") rung=0 landed=0 reason=\(reason) norow")
+            return
+        }
+        box.restoreGeneration &+= 1
+        let generation = box.restoreGeneration
+        // A far row (Menu → row 0 from row 5, a rail restore) is outside the mounted window: move
+        // the window first, so the row exists when the rungs ask it for focus.
+        box.moveWindow(to: index)
+        box.programmaticTarget = key
+        box.programmaticDeadline = ProcessInfo.processInfo.systemUptime + StripPagerTuning.programmaticWindow
+        let from = box.rowIndex
+        #if DEBUG
+        // `-debug.uncoverStealMs` stands in for the device focus engine's late restoration, which
+        // moves focus without a page; the page (or the B13 hold) must come from the focus handler.
+        // One attempt, as the engine makes one (later rungs would outlive the B13 gate's window).
+        if reason == "debug-steal" {
+            DispatchQueue.main.async {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+            return
+        }
+        #endif
+        if firstRungInPage {
+            page(to: key, index: index, from: from) {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+        } else {
+            page(to: key, index: index, from: from)
+            DispatchQueue.main.async {
+                runRung(1, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+        }
+        for entry in StripPagerTuning.rungDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + entry.delay) {
+                runRung(entry.rung, key: key, itemId: itemId, reason: reason, generation: generation)
+            }
+        }
+        let lastDelay = StripPagerTuning.rungDelays.last?.delay ?? 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + lastDelay + StripPagerTuning.expiryGrace) {
+            expireRequest(key: key, reason: reason, generation: generation)
+        }
+    }
+
+    /// A request that never landed must not stay live. The last rung leaves it in the environment,
+    /// and a row that remounts later re-applies a live request on appear (F5), so it would take
+    /// focus seconds afterwards, in the middle of the viewer's next press. On the folder Rows page
+    /// one Down paged twice that way (end-of-Wave-2 FA87 walk): the page's first-focus request for
+    /// a row still off screen never landed, and the row re-applied it when Down scrolled it in. So
+    /// the request expires after its last rung, and the strip then follows the row that actually
+    /// holds focus, whose ownership report the in-flight window had set aside.
+    private func expireRequest(key: String, reason: String, generation: Int) {
+        guard box.restoreGeneration == generation else { return }   // landed, or a newer request
+        box.restoreGeneration &+= 1
+        if box.programmaticTarget == key { box.programmaticTarget = nil }
+        dropStaleRequest(keeping: nil)
+        StageStripProbe.shared.log("restore row=\(key) expired reason=\(reason)")
+        if let owner = box.owners.first(where: { $0 != key }), owner != box.focusedRowKey {
+            handleOwnership(owner, owns: true)
+        }
+        // BUG-156 (review r1 P3-1): a re-grab whose rungs never landed leaves focus on the row
+        // whose page was held; catch the strip up to it.
+        syncPageToFocusedRow(reason: "expired")
+    }
+
+    /// BUG-156 (a): the viewer moved while a pop restore's request was in flight. Its later rungs
+    /// stand down, and a row the viewer's move reached (set aside by the in-flight window) is
+    /// followed now, as `expireRequest` does. No-op when nothing is in flight.
+    private func cancelRowFocusRequest(reason: String) {
+        guard let key = box.programmaticTarget ?? focusRequest.rowKey else { return }
+        box.restoreGeneration &+= 1
+        box.programmaticTarget = nil
+        focusRequest = PinnedRowFocusRequest(rowKey: nil, generation: focusRequest.generation)
+        StageStripProbe.shared.log("restore row=\(key) cancelled reason=\(reason)")
+        if let owner = box.owners.first, owner != box.focusedRowKey {
+            handleOwnership(owner, owns: true)
+        }
+    }
+
+    /// Clears a live focus request for any row but `keeping`, and stands its remaining rungs down.
+    private func dropStaleRequest(keeping key: String?) {
+        guard let pending = focusRequest.rowKey, pending != key else { return }
+        focusRequest = PinnedRowFocusRequest(rowKey: nil, generation: focusRequest.generation)
+        box.restoreGeneration &+= 1
+    }
+
+    private func runRung(_ rung: Int, key: String, itemId: String?, reason: String, generation: Int) {
+        guard box.restoreGeneration == generation else { return }
+        let landed = box.focusedRowKey == key
+        if rung > 1, landed {
+            StageStripProbe.shared.log("restore row=\(key) item=\(itemId ?? "-") rung=\(rung) landed=1 reason=\(reason)")
+            box.restoreGeneration &+= 1   // landed: the later rungs stand down
+            return
+        }
+        let firstCard = rung == StripPagerTuning.firstCardRung
+        box.requestSequence &+= 1
+        focusRequest = PinnedRowFocusRequest(rowKey: key,
+                                             generation: box.requestSequence,
+                                             itemId: firstCard ? nil : itemId,
+                                             forceFirst: firstCard)
+        StageStripProbe.shared.log("restore row=\(key) item=\(firstCard ? "first" : (itemId ?? "-")) rung=\(rung) landed=\(landed ? 1 : 0) reason=\(reason)")
+    }
+}
+
+/// D4 / #3: the strip's clip mask (`StripEdgeMask`), its top edge feathered across the stage's
+/// bottom gutter.
+private struct StripEdgeMaskModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.mask(alignment: .top) {
+            StripEdgeMask(gutter: StripGeometry.stageBottomGap)
+        }
+    }
+}
+
+/// §3.4: a strip page's opacity by its offset from the strip top (render time, no state writes).
+private struct StripPageOpacityModifier: ViewModifier {
+    let pageHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        // Hoisted so the render-time closure captures a plain number.
+        let page = pageHeight
+        content.visualEffect { content, proxy in
+            content.opacity(StripGeometry.pageOpacity(
+                minY: proxy.frame(in: .scrollView(axis: .vertical)).minY,
+                pageHeight: page))
+        }
+    }
+}
+
+/// `.reportsScrollToTabBar(tab:)` without the `isScrolledDown` binding (§6): the strip's own
+/// `onRowChange` owns that, and TabBarStateProbe keeps its mirror. Absent when `tab` is nil.
+private struct StripTabBarReportModifier: ViewModifier {
+    let tab: String?
+
+    func body(content: Content) -> some View {
+        if let tab {
+            content.reportsScrollToTabBar(tab: tab)
+        } else {
+            content
+        }
+    }
+}
+
+/// Menu (§6, S4): `installed` is the host's constant (`menuPagesToTop`), so the branch never flips
+/// mid-session; the handler itself switches between page-to-top and the host's at-top exit.
+private struct StripExitCommandModifier: ViewModifier {
+    let installed: Bool
+    let handler: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if installed {
+            content.onExitCommand(perform: handler)
+        } else {
+            content
+        }
+    }
+}
+

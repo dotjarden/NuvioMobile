@@ -62,6 +62,65 @@ enum TrailerProbe {
     }
 }
 
+/// BUG-128 A/B legs: launch-latched trailer playback knobs. NOT probes: honoured regardless of
+/// `debug.trailerProbe`, and every default is today's behaviour. Flip from About (next launch) or
+/// pass `-debug.trailerMaxFps 30` / `-debug.trailerBufferSeconds 10` / `-debug.trailerLetterboxProbeOff YES`.
+enum TrailerTuning {
+    struct Values: Equatable {
+        var forwardBufferSeconds: Double?
+        var maxFps: Int
+        var letterboxProbeOff: Bool
+        var ladder: Int
+    }
+
+    /// Pure parsing so tests need no UserDefaults. Absent, zero and negative values fall back to defaults.
+    nonisolated static func parse(buffer: Any?, maxFps: Any?, letterboxProbeOff: Any?, ladder: Any?) -> Values {
+        func number(_ v: Any?) -> Double? {
+            if let n = v as? NSNumber { return n.doubleValue }
+            if let s = v as? String { return Double(s.trimmingCharacters(in: .whitespaces)) }
+            return nil
+        }
+        // nan / inf / 1e999 must fall back to defaults (and never reach Int(...), which traps).
+        func finite(_ v: Double?) -> Double? { v.flatMap { $0.isFinite ? $0 : nil } }
+        func flag(_ v: Any?) -> Bool {
+            if let b = v as? Bool { return b }
+            if let n = v as? NSNumber { return n.boolValue }
+            if let s = v as? String { return ["yes", "true", "1"].contains(s.lowercased()) }
+            return false
+        }
+        // Convert only inside [1, Int.max): large negatives would trap in Int(...) too.
+        func positiveInt(_ v: Double?) -> Int {
+            guard let d = v, d >= 1, d < Double(Int.max) else { return 0 }
+            return Int(d)
+        }
+        let buf = number(buffer).flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
+        let fps = positiveInt(number(maxFps))
+        let lad = positiveInt(number(ladder))
+        return Values(forwardBufferSeconds: buf, maxFps: fps, letterboxProbeOff: flag(letterboxProbeOff), ladder: lad)
+    }
+
+    private nonisolated static let values: Values = {
+        let d = UserDefaults.standard
+        let v = parse(
+            buffer: d.object(forKey: "debug.trailerBufferSeconds"),
+            maxFps: d.object(forKey: "debug.trailerMaxFps"),
+            letterboxProbeOff: d.object(forKey: "debug.trailerLetterboxProbeOff"),
+            ladder: d.object(forKey: "debug.trailerLadder")
+        )
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] tuning buffer=%@ maxFps=%d probeOff=%@ ladder=%d",
+                  v.forwardBufferSeconds.map { String($0) } ?? "auto", v.maxFps,
+                  v.letterboxProbeOff ? "YES" : "NO", v.ladder)
+        }
+        return v
+    }()
+
+    nonisolated static var forwardBufferSeconds: Double? { values.forwardBufferSeconds }
+    nonisolated static var maxFps: Int { values.maxFps }
+    nonisolated static var letterboxProbeOff: Bool { values.letterboxProbeOff }
+    nonisolated static var ladder: Int { values.ladder }
+}
+
 /// BUG-55: the two inline-trailer gates (`inline_trailers_enabled` + tvOS Auto-Play Video
 /// Previews) both default OFF, and a fresh sideload container silently resets the first — a
 /// session where trailers "just don't play" needs its gate state in the log. Deliberately NOT
@@ -209,6 +268,20 @@ enum TrailerFailureCause {
         switch self {
         case .badURL, .watchdogTimeout: return nil
         case let .itemFailed(error), let .failedToPlayToEnd(error): return error
+        }
+    }
+
+    /// beta.19-rc1 verdict (B2): whether this failure looks like the connection to the player's source
+    /// (a dead loopback listener, a network error) rather than the media itself. `playbackFailed`
+    /// asks `TrailerLocalHLS` to verify its listener when this is true for a loopback URL.
+    /// A start-watchdog timeout counts (an item that never loads is what a dead loopback port looks
+    /// like); an item/play-to-end failure counts only when it carries an `NSURLErrorDomain` error
+    /// (-1004 "could not connect" and friends); a bad URL never does.
+    var isConnectionClass: Bool {
+        switch self {
+        case .watchdogTimeout: return true
+        case .badURL: return false
+        case .itemFailed, .failedToPlayToEnd: return underlyingError?.domain == NSURLErrorDomain
         }
     }
 

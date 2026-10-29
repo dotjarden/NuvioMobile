@@ -71,6 +71,10 @@ enum CollectionFocusFrameProbe {
 /// entire app, paused whenever no measurement window is open, so the probe itself costs nothing
 /// while idle).
 ///
+/// Callers (beta.19-rc1 verdict F adds the last two): `CollectionRowView` (folder steps), Home's
+/// row-hop handler (`row=<rowKey>`), `CatalogRowView`'s horizontal steps (`row=h:<section key>`),
+/// and the optional steady timer (`row=steady`, see `steadyIntervalSeconds`).
+///
 /// `arm(rowKey:gif:)` is called from `CollectionRowView`'s `.onChange(of: focusedFolderId)` right
 /// after the existing `onFolderFocusChange` callback, so the 600 ms window covers the hero-commit
 /// work that focus change triggers upstream, not just the tile's own `.animation`. It opens a
@@ -99,7 +103,38 @@ final class CollectionFocusFrameSampler: NSObject {
     private var sequence = 0
     private var closeWorkItem: DispatchWorkItem?
 
+    /// beta.19-rc1 verdict (F, FEAT-54 frame-time gate): `debug.frameSamplerSteadyS` (Int seconds,
+    /// read once at launch, 0 = off). When set, a repeating timer opens a `row=steady` window every
+    /// N seconds, so a stretch at rest (an inline trailer playing inside a masked row) gets frame
+    /// timings too, not just focus steps. Measures only while `debug.collectionFrameProbe` is on.
+    ///
+    ///     -debug.collectionFrameProbe YES -debug.frameSamplerSteadyS 2
+    nonisolated static let steadyIntervalSeconds: Int =
+        max(0, UserDefaults.standard.integer(forKey: "debug.frameSamplerSteadyS"))
+    private var steadyTimer: Timer?
+
     private override init() { super.init() }
+
+    /// Starts the steady-window timer when `debug.frameSamplerSteadyS` is set. Idempotent; called
+    /// once from `NuvioTVApp.init`.
+    func startSteadyWindowsIfConfigured() {
+        let interval = Self.steadyIntervalSeconds
+        guard interval > 0, steadyTimer == nil else { return }
+        let timer = Timer(timeInterval: TimeInterval(interval), repeats: true) { [weak self] _ in
+            // Scheduled on the main run loop below, so this fires on the main thread.
+            MainActor.assumeIsolated { self?.armSteady() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        steadyTimer = timer
+        NSLog("[CollectionFrameProbe] steady windows every %lds (measured while the probe is on)", interval)
+    }
+
+    /// A steady window never cuts a focus-step window short: if one is open, this tick is skipped.
+    private func armSteady() {
+        guard CollectionFocusFrameProbe.enabled else { return }
+        if let link = displayLink, !link.isPaused { return }
+        arm(rowKey: "steady", gif: false)
+    }
 
     /// Opens a new 600 ms measurement window for one focus step. If a window is already open
     /// (a focus step landed inside another one's 600 ms), that window is closed first — emitting
@@ -204,4 +239,34 @@ enum CollectionFocusAB {
     /// Agent A's HomeView hook reads this constant rather than hard-coding 0.2 at its own call
     /// site, so both halves of leg 1/3 stay in sync if this value ever changes.
     static let heroCommitDeferral: TimeInterval = 0.2
+}
+
+/// beta.18 verdict (BUG-126): launch-latched Int bitmask `debug.rowStepAB` for the row-to-row
+/// stutter A/B on device (read once):
+///
+///     defaults write com.nuvio.media.NuvioTV debug.rowStepAB -int 3
+///
+///   - bit 1 (`deferHeroCommitUntilRest`): after its 0.2 s dwell, `HomeHeroFocusModel` waits for the
+///     engine's reveal motion to be quiet (0.12 s) before committing the hero, capped at 0.5 s.
+///   - bit 2 (`handlerOnlyRowStateOffBody`): `focusedRowKey`/`lastRowFocusChangeAt` are written to
+///     the input box only, not mirrored into `@State`, so a row hop does not re-evaluate Home's body.
+enum RowStepAB {
+    static let deferHeroCommitUntilRest = 1
+    static let handlerOnlyRowStateOffBody = 2
+    static let mask: Int = UserDefaults.standard.integer(forKey: "debug.rowStepAB")
+
+    nonisolated static func isSet(_ bit: Int, in mask: Int) -> Bool { mask & bit != 0 }
+
+    /// Motion must have been quiet this long before the deferred hero commit runs.
+    nonisolated static let restThreshold: TimeInterval = 0.12
+    nonisolated static let pollInterval: TimeInterval = 0.05
+    nonisolated static let maxWait: TimeInterval = 0.5
+
+    /// Pure wait policy for bit 1: how long to sleep before re-checking, or nil to commit now.
+    /// `elapsed` is the time already spent waiting (after the base dwell).
+    nonisolated static func heroCommitDelay(sinceMotion: TimeInterval, elapsed: TimeInterval) -> TimeInterval? {
+        if sinceMotion >= restThreshold { return nil }
+        if elapsed >= maxWait { return nil }
+        return min(pollInterval, maxWait - elapsed)
+    }
 }

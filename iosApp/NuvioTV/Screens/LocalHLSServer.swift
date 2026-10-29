@@ -60,9 +60,14 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let bandwidth: Int
     /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
     /// download + convert just-in-time on first request and are cached here for the session.
-    private let subtitles: [SubtitleRendition]
-    /// Per-rendition AUTOSELECT/DEFAULT (parallel to `subtitles`; empty = legacy flags).
-    private let subtitleFlags: [SubtitleRenditionFlags]
+    /// Lock-guarded: late add-on renditions (P4, B17) are appended mid-session by `setSubtitles`;
+    /// every read goes through `subtitleSnapshot()`.
+    private var _subtitles: [SubtitleRendition]
+    /// Per-rendition AUTOSELECT/DEFAULT (parallel to `_subtitles`; empty = legacy flags).
+    private var _subtitleFlags: [SubtitleRenditionFlags]
+    /// P4 [C-1]: while non-nil, the master carries `#EXT-X-START:TIME-OFFSET=<sec>,PRECISE=YES` so a
+    /// rebuilt item loads at the playhead instead of t=0. Nil renders the master unchanged.
+    private var _startOffsetSec: Double?
     /// Settings → Playback → Strip SDH Subtitles: addon/sidecar files run through the shared
     /// `SubtitleSdhFilter` as they are converted to VTT (SDH stripping, native path — the mpv path
     /// sets `sub-filter-sdh` instead). Sampled at session start; converted VTTs are cached, so a
@@ -83,6 +88,16 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private var _subtitleSlots = 1
     let masterName = "master.m3u8"
     let mediaName = "media.m3u8"
+    /// Player P3: publish the `EXT-X-I-FRAMES-ONLY` rendition (`SeekPreviewMode.allowsIFrames`,
+    /// sampled once by the coordinator, so a change applies to the next playback). False = the
+    /// pre-P3 master byte for byte, and `iframe.m3u8` / `iframe-NNNNN.m4s` answer 404.
+    let iFrames: Bool
+    /// DEBUG `-debug.iframeIndependentMaster` (device item 7, the paused-scrub re-check): the master
+    /// also carries `EXT-X-INDEPENDENT-SEGMENTS`. Off by default and in Release: the media playlist's
+    /// segments can start on an HEVC CRA with leading pictures, so the claim is false there (C19).
+    let independentMaster: Bool
+    /// How `iframe-NNNNN.m4s` is cut (trim in every build; DEBUG `-debug.iframeMode cut` for A/B).
+    private let iFrameServeMode: IFrameFragment.ServeMode
 
     // JIT serve tuning.
     /// Max time to block a not-yet-produced segment. CoreMedia KILLS a variant after ~6s of silence on
@@ -116,6 +131,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
          subtitles: [SubtitleRendition] = [],
          subtitleFlags: [SubtitleRenditionFlags] = [],
          stripSdh: Bool = false,
+         iFrames: Bool = false,
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
@@ -126,12 +142,50 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.selectedAudio = selectedAudio
         self.requestAudioTrack = requestAudioTrack
         self.bandwidth = bandwidth
-        self.subtitles = subtitles
-        self.subtitleFlags = subtitleFlags
+        self._subtitles = subtitles
+        self._subtitleFlags = subtitleFlags
         self.stripSdh = stripSdh
+        self.iFrames = iFrames
+        var independentMaster = false
+        var serveMode = IFrameFragment.ServeMode.defaultMode
+        #if DEBUG
+        independentMaster = iFrames && UserDefaults.standard.bool(forKey: "debug.iframeIndependentMaster")
+        let parsed = IFrameFragment.ServeMode.parse(UserDefaults.standard.string(forKey: "debug.iframeMode"))
+        serveMode = parsed.mode
+        if let ignored = parsed.ignored {
+            print("[HLS] iframeMode \"\(ignored)\" ignored (trim|cut), using \(serveMode.rawValue)")
+        }
+        print("[HLS] master iframes=\(iFrames ? 1 : 0) independent=\(independentMaster ? 1 : 0)"
+              + (iFrames ? " iframePlaylist independent=1 mode=\(serveMode.rawValue)" : ""))
+        #endif
+        self.independentMaster = independentMaster
+        self.iFrameServeMode = serveMode
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    private func subtitleSnapshot() -> ([SubtitleRendition], [SubtitleRenditionFlags]) {
+        lock.lock(); defer { lock.unlock() }
+        return (_subtitles, _subtitleFlags)
+    }
+
+    /// P4 (B17): replace the subtitle renditions (existing entries first and unchanged, late ones
+    /// appended) and their flags. The master is rendered per request, so the next master fetch
+    /// carries the new EXT-X-MEDIA lines; existing indices/names never change, so cached VTTs stay
+    /// valid.
+    func setSubtitles(_ renditions: [SubtitleRendition], flags: [SubtitleRenditionFlags]) {
+        lock.lock()
+        let added = renditions.count - _subtitles.count
+        _subtitles = renditions
+        _subtitleFlags = flags
+        lock.unlock()
+        print("[HLS] subtitles now \(renditions.count) (+\(added))")
+    }
+
+    /// P4 [C-1]: render `EXT-X-START` into the master (nil = none, byte-identical master).
+    func setStartOffset(_ sec: Double?) {
+        lock.lock(); _startOffsetSec = sec; lock.unlock()
     }
 
     /// Swap the master-playlist signaling (used for the minimal-signaling retry).
@@ -162,6 +216,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     var subtitleDelayMs: Int { lock.lock(); defer { lock.unlock() }; return _subtitleDelayMs }
     var subtitleGeneration: Int { lock.lock(); defer { lock.unlock() }; return _subtitleGeneration }
+
+    /// Sync Line (P5 B19): the converted offset-zero WebVTT for a rendition, nil until AVPlayer has
+    /// fetched that rendition's body at least once.
+    func cachedBaseVTT(index: Int) -> String? { lock.lock(); defer { lock.unlock() }; return vttBase[index] }
 
     /// `sub-<index>-g<generation>.vtt` — the delay-stamped body name a media playlist points at.
     static func delayedVTTName(index: Int, generation: Int) -> String { "sub-\(index)-g\(generation).vtt" }
@@ -239,13 +297,19 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     func renderedPlaylist(named name: String) -> String? {
         switch name {
         case masterName:
-            lock.lock(); let signaling = _signaling; let slots = _subtitleSlots; lock.unlock()
-            let master = map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
+            lock.lock()
+            let signaling = _signaling; let slots = _subtitleSlots
+            let subtitles = _subtitles; let subtitleFlags = _subtitleFlags; let startOffset = _startOffsetSec
+            lock.unlock()
+            let master = map.masterPlaylist(signaling: signaling, audioRenditions: currentAudioRenditions(),
                                             bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
-                                            subtitleFlags: subtitleFlags)
-            return Self.expandSubtitleSlots(master, slots: slots)
+                                            subtitleFlags: subtitleFlags, iFrames: iFrames,
+                                            independentSegments: independentMaster)
+            return Self.insertingStart(Self.expandSubtitleSlots(master, slots: slots), offsetSec: startOffset)
         case mediaName:
             return map.mediaPlaylist()
+        case SegmentMap.iFramePlaylistName:
+            return iFrames ? map.iFramePlaylist() : nil
         default:
             // aud-T.m3u8 — an audio rendition: same segment grid as the video playlist, its own
             // init map and segment names.
@@ -254,6 +318,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             }
             // sub-N-sK.m3u8 — a delay slot's twin of sub-N.m3u8; same content, same rendition.
             let slotted = Self.parseSubtitlePlaylistName(name)
+            let subtitles = subtitleSnapshot().0
             guard let rendition = subtitles.first(where: {
                 $0.playlistName == name || (!$0.isEmbedded && $0.index == slotted?.index)
             }) else { return nil }
@@ -281,6 +346,32 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 "#EXT-X-ENDLIST",
             ].joined(separator: "\n") + "\n"
         }
+    }
+
+    /// P4 [C-2]: the audio renditions with DEFAULT following the track AVPlayer's selection names
+    /// (`selectedAudio`), so a rebuilt item starts on the track the worker produces instead of the
+    /// one that was default at session start. Unknown or unmatched selection → the stored flags.
+    private func currentAudioRenditions() -> [AudioRendition] {
+        guard let selected = selectedAudio(), audioRenditions.contains(where: { $0.streamIndex == selected }) else {
+            return audioRenditions
+        }
+        return audioRenditions.map {
+            AudioRendition(streamIndex: $0.streamIndex, name: $0.name, language: $0.language, channels: $0.channels,
+                           codecToken: $0.codecToken, isDefault: $0.streamIndex == selected)
+        }
+    }
+
+    /// `#EXT-X-START:TIME-OFFSET=…,PRECISE=YES` right after `#EXT-X-VERSION` (nil = unchanged).
+    static func insertingStart(_ master: String, offsetSec: Double?) -> String {
+        guard let offsetSec else { return master }
+        var lines = master.components(separatedBy: "\n")
+        let start = String(format: "#EXT-X-START:TIME-OFFSET=%.3f,PRECISE=YES", max(0, offsetSec))
+        if let i = lines.firstIndex(where: { $0.hasPrefix("#EXT-X-VERSION") }) {
+            lines.insert(start, at: i + 1)
+        } else {
+            lines.insert(start, at: min(1, lines.count))
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Start listening on loopback and return the URL of the master playlist, or nil if no port could
@@ -450,6 +541,22 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
+        // iframe-NNNNN.m4s (P3): the boundary keyframe of seg-NNNNN.m4s. AVKit asks for a spread
+        // of these at item load and while the finger scrubs; a request must never move the remux
+        // frontier. A segment inside the producing window is awaited with the JIT poll (the device
+        // spike showed AVKit prefetching the next three at load, and a 404 there switched the whole
+        // rendition off); one outside the window answers 404 and AVKit shows no preview there.
+        if let idx = SegmentMap.iFrameSegmentIndex(name) {
+            guard iFrames else {
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
+                     on: connection, requestPath: name)
+                return
+            }
+            serveIFrame(name: name, idx: idx, rangeHeader: rangeHeader, isHead: isHead, on: connection,
+                        deadline: Date().addingTimeInterval(blockTimeout), live: live)
+            return
+        }
+
         // init.mp4 / seg-NNNNN.m4s / esub-K-NNNNN.vtt / aud-T-init.mp4 / aud-T-NNNNN.m4s — produced
         // just-in-time by the remux; block until present. A file of a NON-active audio track makes
         // the remux switch tracks (info-panel W3) — AVPlayer only requests a rendition's files once
@@ -474,7 +581,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// (AVPlayer keeps playing; the menu entry just doesn't render cues).
     private func serveSubtitle(name: String, rangeHeader: String?, isHead: Bool, on connection: NWConnection) {
         guard let index = Self.parseSubtitleVTTName(name)?.index,
-              let rendition = subtitles.first(where: { !$0.isEmbedded && $0.index == index }),
+              let rendition = subtitleSnapshot().0.first(where: { !$0.isEmbedded && $0.index == index }),
               let sourceURL = rendition.sourceURL else {
             send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
                  on: connection, requestPath: name)
@@ -533,6 +640,50 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// seg-2's poll repositioning 21→2→21). Only a request that was OUT of window on arrival
     /// repositions, exactly once.
     private enum JITMode { case poll, repositioned }
+
+    /// `iframe-NNNNN.m4s`: the produced segment's first sample (see `IFrameFragment`). A segment not
+    /// produced yet but inside the producing window is polled until `deadline`; outside it, 404. Never
+    /// moves the remux frontier.
+    private func serveIFrame(name: String, idx: Int, rangeHeader: String?, isHead: Bool,
+                             on connection: NWConnection, deadline: Date, live: ConnLive) {
+        guard live.alive else { connection.cancel(); return }
+        guard idx >= 1, idx <= map.count else {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Out of range".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+        let segURL = rootDir.appendingPathComponent(String(format: "seg-%05d.m4s", idx))
+        if let data = try? Data(contentsOf: segURL, options: .mappedIfSafe) {
+            // Trim in every build (C20): a segment the trimmer cannot cut answers 404 and never goes
+            // out whole, which is the shape the spike saw break a remux mid-play.
+            let mode = iFrameServeMode
+            guard let body = IFrameFragment.body(for: data, mode: mode) else {
+                #if DEBUG
+                print("[HLS] iframe \(name) not cut (mode=\(mode.rawValue), seg \(data.count)b) → 404")
+                #endif
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Not cut".utf8),
+                     on: connection, requestPath: name)
+                return
+            }
+            #if DEBUG
+            NSLog("[HLS] iframe %@ from seg (%ld → %ld bytes, mode=%@)", name, data.count, body.count, mode.rawValue)
+            #endif
+            serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            return
+        }
+        let (producing, pending) = producingInfo()
+        let effective = pending ?? producing
+        let inWindow = idx >= effective && idx <= effective + blockMargin
+        guard inWindow, Date() < deadline else {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Not produced".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+        connQueue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.serveIFrame(name: name, idx: idx, rangeHeader: rangeHeader, isHead: isHead,
+                              on: connection, deadline: deadline, live: live)
+        }
+    }
 
     /// Serve a media file if it exists; otherwise wait (async re-scheduling, no thread held) up to
     /// `deadline`, then 503 — ALWAYS answering inside CoreMedia's ~6s no-response window. A request

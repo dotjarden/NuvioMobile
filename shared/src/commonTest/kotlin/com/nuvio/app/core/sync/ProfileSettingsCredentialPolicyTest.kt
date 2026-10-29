@@ -49,6 +49,27 @@ class ProfileSettingsCredentialPolicyTest {
         // to unwrap it, or every present local credential reads as blank and remote wins —
         // exactly the inversion Codex round 5 caught.
         val remote = buildJsonObject {
+            put("mdblist_enabled", JsonPrimitive(true))
+            put("mdblist_api_key", encodeSyncString("remote"))
+        }
+        val local = buildJsonObject {
+            put("mdblist_api_key", encodeSyncString("local"))
+        }
+
+        val merged = preservingLocalProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, remote, local)
+
+        assertEquals(encodeSyncString("local"), merged["mdblist_api_key"])
+        assertEquals(JsonPrimitive(true), merged["mdblist_enabled"])
+    }
+
+    /**
+     * Upstream df589078: the personal TMDB key is an optional credential again, so it follows the
+     * MDBList rules — a local key survives a remote blob apply, a remote-only key is stripped and
+     * extracted for staging, and the push side never carries it. (rc13 dropped it on both sides.)
+     */
+    @Test
+    fun `TMDB personal key follows the provider credential rules`() {
+        val remote = buildJsonObject {
             put("tmdb_enabled", JsonPrimitive(true))
             put("tmdb_api_key", encodeSyncString("remote"))
         }
@@ -57,9 +78,17 @@ class ProfileSettingsCredentialPolicyTest {
         }
 
         val merged = preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, local)
+        val remoteOnly = preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, buildJsonObject { })
+        val sanitized = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, local)
 
         assertEquals(encodeSyncString("local"), merged["tmdb_api_key"])
         assertEquals(JsonPrimitive(true), merged["tmdb_enabled"])
+        assertFalse("tmdb_api_key" in remoteOnly)
+        assertFalse("tmdb_api_key" in sanitized)
+        assertEquals(
+            mapOf("tmdb_api_key" to "remote"),
+            extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote),
+        )
     }
 
     /**
@@ -93,18 +122,18 @@ class ProfileSettingsCredentialPolicyTest {
     @Test
     fun `blank local credential is treated as absent`() {
         val remote = buildJsonObject {
-            put("tmdb_api_key", encodeSyncString("remote"))
+            put("mdblist_api_key", encodeSyncString("remote"))
         }
         val local = buildJsonObject {
-            put("tmdb_api_key", encodeSyncString(""))
+            put("mdblist_api_key", encodeSyncString(""))
         }
 
-        val merged = preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, local)
+        val merged = preservingLocalProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, remote, local)
 
-        assertFalse("tmdb_api_key" in merged)
+        assertFalse("mdblist_api_key" in merged)
         assertEquals(
-            mapOf("tmdb_api_key" to "remote"),
-            extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote),
+            mapOf("mdblist_api_key" to "remote"),
+            extractLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, remote),
         )
     }
 
@@ -112,9 +141,9 @@ class ProfileSettingsCredentialPolicyTest {
     @Test
     fun `blank legacy remote values are not extracted`() {
         val remote = buildJsonObject {
-            put("tmdb_api_key", encodeSyncString(" "))
+            put("mdblist_api_key", encodeSyncString(" "))
         }
 
-        assertEquals(emptyMap(), extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote))
+        assertEquals(emptyMap(), extractLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, remote))
     }
 }

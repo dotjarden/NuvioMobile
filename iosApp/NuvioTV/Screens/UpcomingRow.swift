@@ -19,9 +19,29 @@ struct UpcomingRow: View {
     /// 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last — and, since rc14 (BUG-122), this row too (a short landscape-card row).
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    @Environment(\.pinnedRowIsLast) private var isLastRow
+    @Environment(\.posterStyle) private var posterStyle
+    /// BUG-146 second trim: nil outside the Stage strip (Classic keeps `md` under the heading).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
+
+    /// rc14 (BUG-122): see `ContinueWatchingRow.shortRowCompensation` — structural twin.
+    private var shortRowCompensation: CGFloat {
+        let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let natural = cardTopReach + Theme.Size.landscapeHeight + caption + cardBottomReach
+        return PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                            naturalLabel: natural,
+                                                            isLastRow: isLastRow)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("UpcomingRow")
+        #endif
+        // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
             // CatalogRowView's structural comment — all paddings must stay positive).
             if cardTopReach == 0 {
@@ -45,17 +65,34 @@ struct UpcomingRow: View {
                             )
                             .padding(.top, cardTopReach)
                             .padding(.bottom, cardBottomReach)
+                            // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for
+                            // every row but Home's last. `.top` so the artwork and caption do not
+                            // move a point.
+                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                   alignment: .top)
                         }
                         .cardFocusButtonStyle()
                         .posterButtonShape()
                         .focused($focusedKey, equals: item.showKey)
                         .id(item.showKey)
+                        // BUG-175 (Steven rc7): same as Continue Watching — the focused landscape
+                        // card draws over its right neighbour.
+                        .zIndex(focusedKey == item.showKey ? 1 : 0)
                     }
                 }
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).
-                .padding(.vertical, Theme.Spacing.lg)
+                // BUG-146: 12 on top inside the Stage strip, `lg` on Classic (`StripShelfPadding`).
+                .stripShelfPadding()
             }
+            .scrollClipDisabled()
+            // BUG-118: see `RowEdgeEffectStyleModifier`.
+            .rowEdgeEffectStyle()
             // BUG-37: pinned title rides down to the viewport's clip edge like every other row.
+            //
+            // beta.19-rc1 verdict (review r1, B P2-3): AFTER `.rowEdgeEffectStyle()`, as in
+            // `ContinueWatchingRow` (structural twin), `CatalogRowView` and `CollectionRowView`: before
+            // it the title sat inside the Soft mask and a scrolled row faded "Upcoming" to 0.61 alpha
+            // at x = 0. The mask never changes layout, so the title's geometry is unchanged.
             .overlay(alignment: .topLeading) {
                 if cardTopReach > 0 {
                     Text("Upcoming")
@@ -76,12 +113,18 @@ struct UpcomingRow: View {
                         .allowsHitTesting(false)
                 }
             }
-            .scrollClipDisabled()
         }
         .focusSection()
+        // rc14 (BUG-122): see `ContinueWatchingRow` — cancels the floor's layout growth, after the
+        // focus section so every focusable frame stays inside it.
+        .padding(.bottom, -shortRowCompensation)
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
         .pinnedRowSettleTracking(rowKey: "upcoming", isFocused: focusedKey != nil)
+        // BUG-112 (Item A)
+        .pinnedRowUpFallbackTarget(rowKey: "upcoming",
+                                   firstId: items.first?.showKey,
+                                   focus: $focusedKey)
         .onChange(of: focusedKey) { _, newKey in
             onItemFocusChange?(newKey.flatMap { key in items.first { $0.showKey == key } })
         }

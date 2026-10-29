@@ -3,6 +3,9 @@ package com.nuvio.app.features.catalog
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.TmdbCollectionSourceResolver
 import com.nuvio.app.features.collection.catalogRouteKey
@@ -149,6 +152,7 @@ object CatalogRepository {
                     items = items,
                     selected = target.sortOption,
                     sourceMode = libraryState.sourceMode,
+                    listKey = target.sectionType,
                 )
                     .map { it.toMetaPreview() }
                     .let(::dedupeCatalogItems)
@@ -233,8 +237,10 @@ object CatalogRepository {
                         loadedNewItems = loadedNewItems,
                         consecutiveDuplicatePages = if (reset) 0 else current.consecutiveDuplicatePages,
                     )
+                    CustomPosterUrlRepository.ensureLoaded()
+                    val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME)
                     _uiState.value = CatalogUiState(
-                        items = mergedItems,
+                        items = mergedItems.withCustomPosterUrls(posterPattern),
                         isLoading = false,
                         nextSkip = paginationState.nextSkip,
                         consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,

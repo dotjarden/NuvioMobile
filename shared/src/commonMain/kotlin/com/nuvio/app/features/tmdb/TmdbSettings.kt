@@ -2,6 +2,11 @@ package com.nuvio.app.features.tmdb
 
 data class TmdbSettings(
     val enabled: Boolean = false,
+    /**
+     * Optional personal TMDB key (upstream df589078). Blank means "use the bundled
+     * [TmdbConfig.API_KEY]" — read the key to call with through
+     * [TmdbSettingsRepository.effectiveApiKey], never this field directly.
+     */
     val apiKey: String = "",
     val language: String = "en",
     val useTrailers: Boolean = true,
@@ -16,7 +21,4 @@ data class TmdbSettings(
     val useSeasonPosters: Boolean = true,
     val useMoreLikeThis: Boolean = true,
     val useCollections: Boolean = true,
-) {
-    val hasApiKey: Boolean
-        get() = apiKey.isNotBlank()
-}
+)

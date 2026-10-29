@@ -2,36 +2,44 @@ import SwiftUI
 
 enum PlayerPanelTab: String, CaseIterable, Identifiable {
     case info, subtitles, audio
-    /// Shared playback controls; each engine supplies its supported actions.
+    /// Engine-specific fourth tab (the mpv player's Playback: speed · timing · episodes · sources).
     case playback
+    /// Files with chapters (mpv player).
+    case chapters
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .info: return String(localized: "Details")
+        case .info: return String(localized: "Info")
         case .subtitles: return String(localized: "Subtitles")
         case .audio: return String(localized: "Audio")
         case .playback: return String(localized: "Playback")
+        case .chapters: return String(localized: "Chapters")
         }
     }
 }
 
-/// Engine-supported content for the shared Playback tab.
+/// Content for the optional fourth tab; supplied by the engine that has one.
 struct PlayerPanelExtraTab {
     let content: AnyView
-    init<V: View>(@ViewBuilder content: () -> V) {
-        self.content = AnyView(content())
-    }
+    init<V: View>(@ViewBuilder content: () -> V) { self.content = AnyView(content()) }
 }
 
-/// Shared bottom drawer for native, MPV, and Live TV playback. Select commits a tab;
-/// navigation focus alone does not rebuild the content. Back closes the drawer first.
+/// The app-drawn swipe-down top panel (Infuse-style rendition of the classic tvOS player panel):
+/// full width, anchored to the top, glass over the live video, a centred tab row (Info · Subtitles ·
+/// Audio) whose selection follows focus, and the tab's content below. Presented by
+/// `NativePlayerHostController` (which also owns Menu-to-close); playback continues underneath.
+///
+/// Focus: the tab row and the content are separate focus sections, so Down from a tab enters the
+/// content list and Up returns to the tabs. Left/Right on the tab row switches tabs. Everything
+/// uses system focus (docs/design/hig-hybrid-contract.md) — no custom rings.
 struct PlayerTopPanel: View {
     @ObservedObject var model: PlayerTopPanelModel
     var extraTab: PlayerPanelExtraTab? = nil
     @State private var tab: PlayerPanelTab
-    init(model: PlayerTopPanelModel, extraTab: PlayerPanelExtraTab? = nil, initialTab: PlayerPanelTab = .playback) {
-        self.model = model
+
+    init(model: PlayerTopPanelModel, extraTab: PlayerPanelExtraTab? = nil, initialTab: PlayerPanelTab = .info) {
+        _model = ObservedObject(wrappedValue: model)
         self.extraTab = extraTab
         _tab = State(initialValue: initialTab)
     }
@@ -40,29 +48,33 @@ struct PlayerTopPanel: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .bottom) {
+        ZStack(alignment: .top) {
             // Full-screen clear layer so the hosting view fills the window (focus + gestures).
-            LinearGradient(stops: [.init(color: .clear, location: 0),
-                                   .init(color: .black.opacity(0.88), location: 0.36),
-                                   .init(color: .black.opacity(0.97), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: 760)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            Color.clear.ignoresSafeArea()
             if shown {
                 panel
-                    .onAppear { DispatchQueue.main.async { focusedTab = tab } }
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .ignoresSafeArea()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             withAnimation(reduceMotion ? nil : PlayerChipStyle.animation) { shown = true }
+            focusedTab = tab
         }
-        .onAppear { model.onPresentation?(); model.setDetailsVisible(tab == .info) }
-        .onChange(of: tab) { _, value in model.setDetailsVisible(value == .info) }
-        .onDisappear { model.setDetailsVisible(false) }
+        .onChange(of: focusedTab) { oldValue, newValue in
+            guard let newValue else { return }
+            if oldValue == nil, newValue != tab {
+                // Focus came back UP from the content list: land on the current tab (the focus
+                // engine picks the geometrically nearest one, which would silently switch tabs).
+                focusedTab = tab
+            } else {
+                tab = newValue
+            }
+        }
+        // BUG-180: tells the engine which tab is on screen (mpv refreshes Stream Info only for Info).
+        .onChange(of: tab, initial: true) { _, newValue in model.onTabChange?(newValue) }
+        .onAppear { model.onPresentation?() }
+        .onDisappear { model.onDismissal?() }
         .onExitCommand { model.onClose?() }
     }
 
@@ -71,34 +83,39 @@ struct PlayerTopPanel: View {
             tabRow
                 .focusSection()
             content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .focusSection()
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(24)
-        .frame(width: 1640, height: 460, alignment: .topLeading)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 60)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .padding(.top, Theme.Spacing.xl)
+        .padding(.bottom, Theme.Spacing.lg)
+        .frame(maxWidth: .infinity, alignment: .top)
+        // Only the bottom corners are rounded (the top edge is the screen edge). BUG-180 (Steven rc7):
+        // a solid fill, not glass + shadow — a full-width glass panel re-sampled the 4K/HDR video every
+        // frame and dragged the film behind it to ~10 fps on mpv.
+        .playerSurface(in: UnevenRoundedRectangle(bottomLeadingRadius: Theme.Radius.hero,
+                                                  bottomTrailingRadius: Theme.Radius.hero, style: .continuous))
     }
 
     private var tabRow: some View {
-        GlassEffectContainer(spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(tabs) { item in
-                    Button(item.title) { tab = item }
-                        .buttonStyle(.glass)
-                        .font(Theme.Font.body)
-                        .controlSize(.small)
-                        .focused($focusedTab, equals: item)
-                        .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
-                        .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
-                }
+        HStack(spacing: Theme.Spacing.md) {
+            ForEach(tabs) { item in
+                Button(item.title) { tab = item }
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(item == tab ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                    .focused($focusedTab, equals: item)
+                    .accessibilityIdentifier("player.panel.tab.\(item.rawValue)")
+                    .accessibilityValue(Text(verbatim: item == tab ? "selected" : ""))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var tabs: [PlayerPanelTab] {
-        [.audio, .subtitles, .playback, .info]
+        var out: [PlayerPanelTab] = [.info, .subtitles, .audio]
+        if extraTab != nil { out.append(.playback) }
+        if !model.chapters.isEmpty { out.append(.chapters) }
+        return out
     }
 
     @ViewBuilder
@@ -111,7 +128,9 @@ struct PlayerTopPanel: View {
         case .audio:
             PlayerAudioTab(model: model)
         case .playback:
-            if let extraTab { extraTab.content } else { Text("Playback controls are available below the video.") }
+            if let extraTab { extraTab.content } else { EmptyView() }
+        case .chapters:
+            PlayerChaptersTab(model: model)
         }
     }
 }
@@ -161,26 +180,5 @@ struct PlayerPanelSectionCaption: View {
             .font(Theme.Font.caption.weight(.semibold))
             .foregroundStyle(Theme.Palette.textSecondary)
             .padding(.bottom, Theme.Spacing.xxs)
-    }
-}
-
-/// Short settings lists size to their content; long lists keep remote scrolling within the panel.
-struct PlayerPanelScroll<Content: View>: View {
-    var maximumHeight: CGFloat = 320
-    var showsIndicators = false
-    @ViewBuilder var content: () -> Content
-    @State private var contentHeight: CGFloat = 120
-
-    var body: some View {
-        ScrollView(.vertical, showsIndicators: showsIndicators) {
-            content()
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(8)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    if abs(contentHeight - height) > 0.5 { contentHeight = height }
-                }
-        }
-        .frame(height: min(max(contentHeight, 1), maximumHeight))
-        .scrollBounceBehavior(.basedOnSize)
     }
 }
