@@ -1317,6 +1317,11 @@ private struct RailTabRootModifier: ViewModifier {
                 .environment(\.railTabIndex, index)
                 .modifier(RailReservedWidthModifier(index: index))
                 .modifier(RailContentGateModifier())
+                // Rail and Top Tabs are one choice: in Rail mode the system tab bar must never
+                // show. `TabBarPresentation` hides it in UIKit, but a NavigationStack push (the
+                // Settings panes) re-resolved SwiftUI's default `.automatic` and painted the top
+                // tabs over the rail. A constant `.hidden` preference cannot flicker on replay.
+                .toolbarVisibility(.hidden, for: .tabBar)
         } else {
             content
         }
