@@ -604,29 +604,35 @@ final class LiveTVExperienceTests: XCTestCase {
     }
 
     // Fixture: python3 scripts/tests/livetv_fixture.py (serves ports 8766 and 8767).
-    @MainActor func testLiveTVShelvesHeroAndGuide() throws {
+    @MainActor func testLiveTVCategoriesListAndGuide() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--live-tv-ui-test"]
         app.launch()
         let nature = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture Nature")).firstMatch
         XCTAssertTrue(nature.waitForExistence(timeout: 45), app.debugDescription)
-        XCTAssertEqual(app.buttons["On Now"].value as? String, "selected")
-        let news = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture News 24")).firstMatch
-        XCTAssertTrue(news.exists, "Every category gets its own row")
-        let shelves = XCTAttachment(screenshot: app.screenshot())
-        shelves.name = "Live TV shelves and hero"; shelves.lifetime = .keepAlways; add(shelves)
+        XCTAssertEqual(app.buttons["Channels"].value as? String, "selected")
+        let news = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "News,")).firstMatch
+        XCTAssertTrue(news.exists, "Every category is listed in the left column")
+        select(news, in: app)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture News 24")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture Nature")).firstMatch.exists,
+                       "Selecting a category shows only its channels")
+        add(screenshot(app, "Live TV categories and channel list"))
         select(app.buttons["Guide"], in: app)
         XCTAssertEqual(app.buttons["Guide"].value as? String, "selected")
-        let programme = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture Nature, ")).firstMatch
+        let programme = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Fixture News 24, ")).firstMatch
         XCTAssertTrue(programme.waitForExistence(timeout: 10), "The guide lists programmes from XMLTV")
-        let channelColumn = app.buttons["Fixture Nature"]
+        let channelColumn = app.buttons["Fixture News 24"]
         XCTAssertTrue(channelColumn.exists)
         let columnX = channelColumn.frame.minX
         select(app.buttons["Later"], in: app)
         XCTAssertEqual(channelColumn.frame.minX, columnX, accuracy: 2, "The channel column stays fixed")
-        let guide = XCTAttachment(screenshot: app.screenshot())
-        guide.name = "Live TV guide"; guide.lifetime = .keepAlways; add(guide)
+        add(screenshot(app, "Live TV guide"))
+    }
+
+    private func screenshot(_ app: XCUIApplication, _ name: String) -> XCTAttachment {
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = name; shot.lifetime = .keepAlways; return shot
     }
 
     @MainActor func testGuideAndNativeSourceManagement() throws {

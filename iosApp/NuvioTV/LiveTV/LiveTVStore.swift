@@ -35,9 +35,12 @@ enum LiveTVSecureStorage {
     private(set) var channelsByID: [String: LiveTVChannel] = [:]
     private(set) var channelsByGroup: [String: [LiveTVChannel]] = [:]
     private(set) var groups: [String] = []
+    /// 1-based position in the provider's order, shown as the channel number.
+    private(set) var channelNumbers: [String: Int] = [:]
+    private(set) var favoriteChannels: [LiveTVChannel] = []
     @Published private(set) var loading = false
     @Published var error: String?
-    @Published private(set) var favorites = Set<String>()
+    @Published private(set) var favorites = Set<String>() { didSet { favoriteChannels = channels.filter { favorites.contains($0.id) } } }
     @Published private(set) var recent: [String] = []
     @Published private(set) var programmes: [UUID: [String: [LiveTVProgramme]]] = [:]
     @Published private(set) var refreshedAt: Date?
@@ -57,6 +60,8 @@ enum LiveTVSecureStorage {
         channelsByGroup = Dictionary(grouping: channels, by: \.group)
         groups = channelsByGroup.keys.filter { !["All channels", "Favorites", "Recent"].contains($0) }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        channelNumbers = Dictionary(channels.enumerated().map { ($1.id, $0 + 1) }, uniquingKeysWith: { first, _ in first })
+        favoriteChannels = channels.filter { favorites.contains($0.id) }
     }
     private var refreshTask: Task<Void, Never>?
     func start() async {
@@ -76,6 +81,9 @@ enum LiveTVSecureStorage {
         let snapshot = sources
         let service = service
         var failures: [String] = []
+        // Only a source that failed outright blocks the cache; a missing guide still caches the
+        // channels, so reopening a large provider does not download everything again.
+        var sourceFailed = false
         await withTaskGroup(of: (LiveTVSource, LiveTVLoadResult?, String?).self) { group in
             var pending = snapshot.makeIterator()
             func enqueue(_ source: LiveTVSource) {
@@ -98,14 +106,15 @@ enum LiveTVSecureStorage {
                 if let result {
                     if result.guideWarning == nil { programmes[source.id] = result.programmes }
                     if let warning = result.guideWarning { failures.append("\(source.name): \(warning)") }
-                } else if let failure { failures.append("\(source.name): \(failure)") }
+                } else if let failure { failures.append("\(source.name): \(failure)"); sourceFailed = true }
                 if let source = pending.next() { enqueue(source) }
             }
         }
         guard generation == token, !Task.isCancelled else { return }
-        loaded = failures.isEmpty; refreshedAt = Date()
+        loaded = !sourceFailed; refreshedAt = Date()
         error = failures.isEmpty ? nil : failures.joined(separator: "\n")
-        if failures.isEmpty {
+        epgRequested = []
+        if !sourceFailed {
             await LiveTVCache.shared.write(.init(fingerprint: LiveTVCache.fingerprint(snapshot), date: Date(),
                 channels: channels, programmes: programmes), profile: profile)
         }
@@ -147,7 +156,7 @@ enum LiveTVSecureStorage {
         recent.removeAll { $0 == channel.id }; recent.insert(channel.id, at: 0); recent = Array(recent.prefix(30)); persistPreferences()
     }
     func schedule(for channel: LiveTVChannel, after date: Date = Date()) -> ArraySlice<LiveTVProgramme> {
-        let all = programmes[channel.sourceID]?[channel.guideID] ?? []
+        let all = programmes[channel.sourceID]?[Self.guideKey(channel)] ?? []
         // Sorted by start, so the first programme still running is found by binary search.
         var low = 0, high = all.count
         while low < high { let mid = (low + high) / 2; if all[mid].end > date { high = mid } else { low = mid + 1 } }
@@ -158,7 +167,46 @@ enum LiveTVSecureStorage {
         guard let first = upcoming.first else { return (nil, nil) }
         return first.isCurrent(at: date) ? (first, upcoming.dropFirst().first) : (nil, first)
     }
-    var favoriteChannels: [LiveTVChannel] { channels.filter { favorites.contains($0.id) } }
+    nonisolated static func guideKey(_ channel: LiveTVChannel) -> String { channel.guideID.isEmpty ? "id:" + channel.id : channel.guideID }
+
+    // MARK: Per-channel guide (Xtream short EPG)
+
+    /// Some providers refuse the full XMLTV download (HTTP 401 on xmltv.php is common), so Xtream
+    /// channels ask for their own now/next as they are shown. Newest requests go first, a few
+    /// at a time, and results are published in batches so browsing never waits on them.
+    private var epgRequested = Set<String>()
+    private var epgQueue: [LiveTVChannel] = []
+    private var epgWorkers = 0
+    private var epgPending: [UUID: [String: [LiveTVProgramme]]] = [:]
+    private var epgFlush: Task<Void, Never>?
+    func requestGuide(for channel: LiveTVChannel) {
+        guard schedule(for: channel).isEmpty,
+              let source = sources.first(where: { $0.id == channel.sourceID }), source.kind == .xtream,
+              epgRequested.insert(channel.id).inserted else { return }
+        epgQueue.append(channel)
+        if epgQueue.count > 40 { epgRequested.remove(epgQueue.removeFirst().id) }
+        pumpGuideRequests()
+    }
+    private func pumpGuideRequests() {
+        while epgWorkers < 4, let channel = epgQueue.popLast() {
+            guard let source = sources.first(where: { $0.id == channel.sourceID }) else { continue }
+            epgWorkers += 1
+            let service = service
+            Task {
+                let listings = (try? await service.shortGuide(source, channel: channel)) ?? []
+                epgWorkers -= 1
+                epgPending[channel.sourceID, default: [:]][Self.guideKey(channel)] = listings
+                if epgFlush == nil {
+                    epgFlush = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        for (source, byKey) in epgPending { programmes[source, default: [:]].merge(byKey) { old, new in new.isEmpty ? old : new } }
+                        epgPending = [:]; epgFlush = nil
+                    }
+                }
+                pumpGuideRequests()
+            }
+        }
+    }
     var recentChannels: [LiveTVChannel] { recent.compactMap { channelsByID[$0] } }
     private func persistPreferences() {
         // IDs from M3U can contain URLs. Persist opaque SHA256 keys instead of those URLs.

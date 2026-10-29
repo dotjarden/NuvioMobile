@@ -8,11 +8,11 @@ struct LiveTVGuideView: View {
     @ObservedObject var store: LiveTVStore
     let channels: [LiveTVChannel]
     let now: Date
+    var labelWidth: CGFloat = 300
+    var hourWidth: CGFloat = 480
     let onPlay: (LiveTVChannel) -> Void
     let onProgramme: (LiveTVProgramme) -> Void
     @State private var offset = 0
-    private let hourWidth: CGFloat = 480
-    private let labelWidth: CGFloat = 300
     private let labelGap: CGFloat = 16
     private let rowHeight: CGFloat = 96
     private let window: TimeInterval = 10800
@@ -70,8 +70,8 @@ struct LiveTVGuideView: View {
         let programmes = Array(store.schedule(for: channel, after: start).prefix { $0.start < end })
         return HStack(spacing: labelGap) {
             Button { onPlay(channel) } label: {
-                HStack(spacing: 16) {
-                    LiveTVLogo(channel: channel).frame(width: 64, height: 44)
+                HStack(spacing: 14) {
+                    LiveTVLogo(channel: channel).frame(width: 56, height: 40)
                     Text(channel.name).font(.callout.weight(.semibold)).lineLimit(2)
                     Spacer(minLength: 0)
                     if store.favorites.contains(channel.id) { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow) }
@@ -107,6 +107,7 @@ struct LiveTVGuideView: View {
             }
             .frame(width: hourWidth * window / 3600, height: rowHeight, alignment: .leading)
         }
+        .onAppear { store.requestGuide(for: channel) }
     }
 
     private func cell(_ programme: LiveTVProgramme, channel: LiveTVChannel, width: CGFloat) -> some View {

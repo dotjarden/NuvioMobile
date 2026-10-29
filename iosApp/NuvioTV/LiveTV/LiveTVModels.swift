@@ -130,9 +130,14 @@ nonisolated final class XMLTVParser: NSObject, XMLParserDelegate {
         window = DateInterval(start: now.addingTimeInterval(-Self.window.past), duration: Self.window.past + Self.window.future)
         self.guideIDs = guideIDs
     }
-    func parse(_ data: Data) throws -> [LiveTVProgramme] {
+    func parse(_ data: Data) throws -> [LiveTVProgramme] { try run(XMLParser(data: data)) }
+    func parse(contentsOf file: URL) throws -> [LiveTVProgramme] {
+        guard let parser = XMLParser(contentsOf: file) else { throw LiveTVError.invalidGuide }
+        return try run(parser)
+    }
+    private func run(_ parser: XMLParser) throws -> [LiveTVProgramme] {
         programmes = []; isTV = false; inside = false
-        let parser = XMLParser(data: data); parser.shouldResolveExternalEntities = false; parser.delegate = self
+        parser.shouldResolveExternalEntities = false; parser.delegate = self
         guard parser.parse(), isTV else { throw LiveTVError.invalidGuide }
         return programmes.sorted { $0.start < $1.start }
     }
@@ -194,4 +199,26 @@ nonisolated final class XMLTVParser: NSObject, XMLParserDelegate {
 
 nonisolated enum LiveTVIdentity {
     static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
+}
+
+/// Gzip support for `.xml.gz` guides: strips the gzip header and inflates the raw DEFLATE body
+/// with Foundation's zlib decompressor.
+nonisolated enum LiveTVGzip {
+    /// Returns a new file with the inflated guide, or nil when `file` is not gzip.
+    static func inflate(_ file: URL) throws -> URL? {
+        let data = try Data(contentsOf: file, options: .mappedIfSafe)
+        guard data.count > 18, data[data.startIndex] == 0x1f, data[data.startIndex + 1] == 0x8b, data[data.startIndex + 2] == 8 else { return nil }
+        let flags = data[data.startIndex + 3]
+        var offset = 10
+        if flags & 0x04 != 0 { offset += 2 + Int(data[data.startIndex + offset]) + Int(data[data.startIndex + offset + 1]) << 8 }
+        if flags & 0x08 != 0 { while offset < data.count, data[data.startIndex + offset] != 0 { offset += 1 }; offset += 1 }
+        if flags & 0x10 != 0 { while offset < data.count, data[data.startIndex + offset] != 0 { offset += 1 }; offset += 1 }
+        if flags & 0x02 != 0 { offset += 2 }
+        guard offset < data.count - 8 else { throw LiveTVError.invalidGuide }
+        let body = data.subdata(in: data.startIndex + offset..<data.endIndex - 8)
+        guard let inflated = try? (body as NSData).decompressed(using: .zlib) as Data else { throw LiveTVError.invalidGuide }
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("livetv-\(UUID().uuidString).xml")
+        try inflated.write(to: output)
+        return output
+    }
 }
