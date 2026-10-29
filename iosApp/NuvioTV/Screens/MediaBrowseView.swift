@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import SharedCore
 
 /// Movie/show entry points share the existing catalog pipeline and detail/player routes.

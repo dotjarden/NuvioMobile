@@ -7,7 +7,8 @@ struct DetailLayoutUITestFixture: View {
     static let preview = MetaPreview(id: "detail-layout", type: "series", name: "North Coast",
         poster: nil, banner: nil, logo: nil, posterShape: .poster,
         description: nil, releaseInfo: "2026", rawReleaseDate: nil, popularity: nil,
-        voteCount: nil, imdbRating: "8.4", genres: ["Drama", "Mystery"])
+        voteCount: nil, imdbRating: "8.4", genres: ["Drama", "Mystery"],
+        rawPosterUrl: nil, landscapePoster: nil, rawLandscapePosterUrl: nil, customPosterApplied: false)
 
     var body: some View {
         NavigationStack {

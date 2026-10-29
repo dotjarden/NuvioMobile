@@ -17,7 +17,7 @@ final class PlaybackProgressRecorder {
     /// Used when the item duration is not yet finite at `readyToPlay`. nil for "Start Over".
     func pendingResumePercent() -> Double? {
         guard context.tracksProgress else { return nil }
-        Self.pendingResumePercent(startFromBeginning: context.startFromBeginning, entry: savedEntry())
+        return Self.pendingResumePercent(startFromBeginning: context.startFromBeginning, entry: savedEntry())
     }
 
     /// Pure form of `pendingResumePercent()`. "Start Over" wins before the saved entry is read
@@ -44,7 +44,7 @@ final class PlaybackProgressRecorder {
     /// "Start Over" (`context.startFromBeginning`) ignores saved progress: always nil.
     func resumePositionSec(actualDurationSec: Double = 0) -> Double? {
         guard context.tracksProgress else { return nil }
-        Self.resumePositionSec(startFromBeginning: context.startFromBeginning,
+        return Self.resumePositionSec(startFromBeginning: context.startFromBeginning,
                                actualDurationSec: actualDurationSec, entry: savedEntry())
     }
 
