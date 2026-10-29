@@ -175,6 +175,103 @@ final class NuvioTVUITests: XCTestCase {
         }
     }
 
+    // MARK: - Verified presses (ui-legs, 2026-10-22)
+    //
+    // Every Select / Play-Pause in this class follows a focus read of the element it is meant for,
+    // in the same route, right before the press (the blind-route audit: a blind Select on this
+    // fixture once created real profiles). These press only when `isTarget()` holds on that read;
+    // otherwise they attach a screenshot and the focused labels and do NOT press. The throwing form
+    // fails the leg (a thrown error), or skips it when nothing on screen reports focus at all (the
+    // runtime cannot verify); the Bool form records a failure and leaves the rest to the caller.
+
+    private struct UnverifiedFocus: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    private func buttonName(_ button: XCUIRemote.Button) -> String {
+        button == .playPause ? "Play/Pause" : (button == .select ? "Select" : "the button")
+    }
+
+    /// Labels (or `<identifier>`) of every element reporting focus, from one snapshot.
+    private func focusedLabelList(_ app: XCUIApplication) -> [String] {
+        focusedNodes(app).map { $0.label.isEmpty ? "<\($0.identifier)>" : $0.label }
+    }
+
+    private func pressVerified(_ app: XCUIApplication, _ what: String, button: XCUIRemote.Button = .select,
+                               holdFor: TimeInterval? = nil, when isTarget: () -> Bool) throws {
+        if isTarget() {
+            if let holdFor { remote.press(button, forDuration: holdFor) } else { remote.press(button) }
+            return
+        }
+        let focused = focusedLabelList(app)
+        shot(app, "unverified_\(what)")
+        if focused.isEmpty {
+            throw XCTSkip("\(what): no element reports focus on this runtime — not pressing \(buttonName(button)) blind")
+        }
+        throw UnverifiedFocus(description: "\(what): focus is not on the intended element (focused: \(focused)) — not pressing \(buttonName(button))")
+    }
+
+    @discardableResult
+    private func pressIfVerified(_ app: XCUIApplication, _ what: String, button: XCUIRemote.Button = .select,
+                                 when isTarget: () -> Bool) -> Bool {
+        if isTarget() {
+            remote.press(button)
+            return true
+        }
+        shot(app, "unverified_\(what)")
+        XCTFail("\(what): focus is not on the intended element (focused: \(focusedLabelList(app))) — not pressing \(buttonName(button))")
+        return false
+    }
+
+    /// The `settings_category_<raw>` of the focused Settings ROOT row, language-independent: the
+    /// identifier on the deepest focused element or inside its subtree (a List row's focus sits on
+    /// its Cell, which carries the localized label but not the identifier — first full run, test05).
+    private func focusedRootCategoryRaw(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var focused: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused.append(node) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        func search(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier.hasPrefix("settings_category_") { return String(node.identifier.dropFirst("settings_category_".count)) }
+            for child in node.children { if let hit = search(child) { return hit } }
+            return nil
+        }
+        return focused.last.flatMap(search)
+    }
+
+    /// The deepest focused element's label when focus sits on a content card in a Home row: not a
+    /// tab-bar button and not the hero's CTA ("Go to …", "Open Folder"). nil otherwise.
+    private func focusedHomeCardLabel(_ app: XCUIApplication) -> String? {
+        let tabs: Set<String> = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        guard let label = focusedNodes(app).map(\.label).last(where: { !$0.isEmpty }) else { return nil }
+        if tabs.contains(label) || label.hasPrefix("Go to") || label.hasPrefix("Open Folder") { return nil }
+        return label
+    }
+
+    /// The deepest focused element's label when it sits inside a Search RESULT container
+    /// (`search.topResult` or a `search.group.*` row), from one snapshot; nil elsewhere (keyboard,
+    /// suggestion chips, People).
+    private func focusedSearchResultLabel(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var hits: [(container: String?, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot, _ container: String?) {
+            let id = node.identifier
+            let isContainer = id == "search.topResult" || id == "search.people" || id == "search.suggestions"
+                || id.hasPrefix("search.group.")
+            let here = isContainer ? id : container
+            if node.hasFocus { hits.append((here, node.label)) }
+            node.children.forEach { walk($0, here) }
+        }
+        walk(root, nil)
+        guard let hit = hits.last(where: { !$0.label.isEmpty }) ?? hits.last,
+              let container = hit.container,
+              container == "search.topResult" || container.hasPrefix("search.group.") else { return nil }
+        return hit.label
+    }
+
     /// Launch and pass the profile gate (profile "Chris", no PIN, first in the row and focused by
     /// default). Lands on Home.
     ///
@@ -200,83 +297,199 @@ final class NuvioTVUITests: XCTestCase {
     ///    a full relaunch instead, the only reliable recovery.
     /// `forceFreshLaunch` forces that same relaunch unconditionally, for tests that must not
     /// inherit any prior UI state (settings-pane scroll/focus, pushed screens) from suite order.
+    ///
+    /// Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and every leg in
+    /// this class was written against Classic (the hero, the pinned rows, `debug_hero`,
+    /// `debug_pinned`, the Down-count walks). So the helper pins Classic through the argument
+    /// domain (`-home_layout classic`) unless a leg asks for another layout: `"stage"` for the
+    /// Stage legs, `nil` for a leg that flips the Home Layout picker itself (the argument domain
+    /// would shadow the picker's write, P2 §3.1). Only an argument-less Classic launch may reuse a
+    /// running instance, and only one that is Tabs-mode Classic: an instance another class left in
+    /// Rail mode (`rail_state` mounted) or on Stage Home (`debug_stage` mounted) is relaunched
+    /// rather than reused. That also retires FEAT-30's sidebar recovery branch: Rail mode is only
+    /// ever a launch argument, so its instances are never reused here.
     @discardableResult
-    private func launchToHome(extraArguments: [String] = [], forceFreshLaunch: Bool = false) -> XCUIApplication {
+    private func launchToHome(extraArguments: [String] = [], forceFreshLaunch: Bool = false,
+                              homeLayout: String? = "classic") -> XCUIApplication {
         let app = XCUIApplication()
+        if let homeLayout { app.launchArguments += ["-home_layout", homeLayout] }
         app.launchArguments += extraArguments
-        if extraArguments.isEmpty && !forceFreshLaunch && app.state == .runningForeground {
-            app.activate()
-            pause(2)
-            let chris = app.buttons["Chris"]
-            if chris.waitForExistence(timeout: 8) {
-                if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-                remote.press(.select)
-                pause(10)
-                return app
-            }
-            // FEAT-30: in sidebar mode there is no system tab bar to recover through at all —
-            // `app.buttons["Home"]` never exists, so the Menu-press recovery below (which only
-            // stops pressing Menu once that button is visible) would burn its whole budget
-            // pressing Menu blind. That is actively dangerous here, not just wasted motion: Menu
-            // while a sidebar row already has focus is the system's suspend-the-app default
-            // (`SidebarOverlay` installs no exit handler of its own — see its doc comment), and a
-            // prior test could easily have left focus sitting on one. Detect the mode by the
-            // sidebar's own rows/container existing (the same signal `openTab` uses, not a
-            // `UserDefaults` read this process has no access to) and recover through THAT helper's
-            // own sidebar branch, which reaches Home with no Menu press anywhere in its path.
-            if app.otherElements["sidebar_overlay"].exists || app.buttons["sidebar_item_Home"].exists {
-                openTab(app, named: "Home")
-                pause(1)
-                return app
-            }
-            // Already past the profile gate, somewhere inside the app (a prior test's end state —
-            // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
-            // ONLY while the root tab bar is off screen (see the header comment), then reselect
-            // the Home tab so every test starts from the same top-of-Home state a fresh launch
-            // gives. `.exists` alone is NOT the right stop signal: the failed run's hierarchy
-            // dumps show the bar's buttons stay in the tree when scrolled off screen (frame.minY
-            // -604…-1510) and sit at ~+62 when actually visible — and only the visible-bar state
-            // is the one where a Menu press escapes to the springboard (off-screen-deep Menu is
-            // the BUG-27 jump-to-top interception, and pushed covers remove the bar entirely).
-            let homeTab = app.buttons["Home"]
-            var escapedToSpringboard = false
-            for _ in 0..<4 {
-                if homeTab.exists, homeTab.frame.minY > 0 { break }
-                remote.press(.menu)
-                pause(1.2)
-                if app.state != .runningForeground {
-                    escapedToSpringboard = true
-                    break
-                }
-            }
-            if !escapedToSpringboard {
-                press(.up, times: 8, gap: 0.5)
-                if !moveFocus(.left, until: homeTab, max: 8) {
-                    _ = moveFocus(.right, until: homeTab, max: 8)
-                }
-                remote.press(.select)
-                pause(3)
-                press(.down, times: 1)
-                pause(1)
-                return app
-            }
-            // Springboard escape: fall through to app.launch() below.
+        if extraArguments.isEmpty && !forceFreshLaunch && homeLayout == "classic" && app.state == .runningForeground,
+           reuseRunningClassicInstance(app) {
+            return app
         }
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch; a short wait
         // silently dropped the suite onto the sign-in screen and every screenshot was of AuthView.
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
     }
 
+    /// The reuse half of `launchToHome` (see its header): activates the running instance and brings
+    /// it back to the top of Classic Home. Returns false when the caller must relaunch instead: the
+    /// instance runs the navigation rail or Stage Home (another class's launch arguments), or a
+    /// recovery Menu press escaped to the springboard.
+    private func reuseRunningClassicInstance(_ app: XCUIApplication) -> Bool {
+        app.activate()
+        pause(2)
+        // Rail mode has no system tab bar for the Menu recovery below to stop on, and Menu inside a
+        // Menu-opened rail suspends the app (P4 R4): never recover through it, relaunch.
+        if railMode(app) { return false }
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 8) {
+            guard DetailEntryRoute.selectChrisTile(self, app, timeout: 5) == true else { return false }
+            pause(10)
+            return !stageHomeMounted(app)
+        }
+        // Already past the profile gate, somewhere inside the app (a prior test's end state —
+        // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
+        // ONLY while the root tab bar is off screen (see the header comment), then reselect
+        // the Home tab so every test starts from the same top-of-Home state a fresh launch
+        // gives. `.exists` alone is NOT the right stop signal: the failed run's hierarchy
+        // dumps show the bar's buttons stay in the tree when scrolled off screen (frame.minY
+        // -604…-1510) and sit at ~+62 when actually visible — and only the visible-bar state
+        // is the one where a Menu press escapes to the springboard (off-screen-deep Menu is
+        // the BUG-27 jump-to-top interception, and pushed covers remove the bar entirely).
+        let homeTab = app.buttons["Home"]
+        for _ in 0..<4 {
+            if homeTab.exists, homeTab.frame.minY > 0 { break }
+            remote.press(.menu)
+            pause(1.2)
+            // Springboard escape: relaunch, never `activate()` out of it.
+            if app.state != .runningForeground { return false }
+        }
+        press(.up, times: 8, gap: 0.5)
+        if !moveFocus(.left, until: homeTab, max: 8) {
+            _ = moveFocus(.right, until: homeTab, max: 8)
+        }
+        // ui-legs: never Select an unverified tab — relaunch instead.
+        guard homeTab.exists, homeTab.hasFocus else { return false }
+        remote.press(.select)
+        pause(3)
+        // A Stage Home is not what an argument-less leg in this class was written against.
+        if stageHomeMounted(app) { return false }
+        press(.down, times: 1)
+        pause(1)
+        return true
+    }
+
+    /// Stage Home (Home Stage & Strip) is on screen: its DEBUG `debug_stage` readout is mounted.
+    private func stageHomeMounted(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["debug_stage"].firstMatch.exists
+    }
+
+    // MARK: - Navigation rail (H9, FEAT-45; replaced FEAT-30's sidebar)
+    //
+    // `-sidebar_style rail` (or FEAT-30's stored "sidebar", read as Rail) swaps the system tab bar
+    // for the floating pill rail (`DesignSystem/NavigationRail.swift`). Its always-mounted DEBUG
+    // probe, `rail_state armed= expanded= focused= reason= gated= vis= shown= tab= route= inset=
+    // gmode=`, is the harness's view of it: `focused` is the rail's own `@FocusState` (-1 = none),
+    // readable on every runtime. The items are `rail_item_<Title>`: plain labels at rest, Buttons
+    // only while armed. The rail opens on a Left the focus engine cannot place from a tab's
+    // leftmost item, on Menu at a tab root, and when focus lands on the hidden tab bar (S1). The
+    // helpers here open it by Left only: Menu inside a Menu-opened rail suspends the app (P4 R4),
+    // and Menu down a page pages or pops before it ever reaches the rail.
+
+    /// The rail's items in `TabView` selection order (`RailItem`), which is also its `focused=` id.
+    private static let railItemTitles = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile", "Discover"]
+
+    /// The rail's items TOP TO BOTTOM by `focused=` id. Search & Discover (A6): with Discover as its
+    /// own tab (the default placement) the Discover item (id 6) sits between Search and Library, so
+    /// ids are no longer in visual order; read from whether `rail_item_Discover` is mounted.
+    private func railVisualOrder(_ app: XCUIApplication) -> [Int] {
+        app.descendants(matching: .any)["rail_item_Discover"].firstMatch.exists
+            ? [0, 1, 6, 2, 3, 4, 5] : [0, 1, 2, 3, 4, 5]
+    }
+
+    /// Rail mode is on: `rail_state` is mounted in Rail mode only.
+    private func railMode(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["rail_state"].firstMatch.exists
+    }
+
+    private func railState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["rail_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    private func railToken(_ app: XCUIApplication, _ key: String) -> String? {
+        Self.probeToken(railState(app), key: key)
+    }
+
+    /// The rail's focused item id (`rail_state focused=`), -1 when no item holds focus.
+    private func railFocusedItem(_ app: XCUIApplication) -> Int {
+        Int(railToken(app, "focused") ?? "") ?? -1
+    }
+
+    /// Opens the rail by Left and returns whether it expanded: up to 15 Lefts, until `rail_state`
+    /// reads `expanded=1`. A Left walk reaches the tab's leftmost item and the next Left arms the
+    /// rail (`reason=left`). Classic's hero carousel takes a Left for itself (it pages; the Classic
+    /// route vetoes the arm), and a long linear search keyboard can outlast the walk, so when the
+    /// first walk does not open it the helper steps Down once (into the rows, or the results) and
+    /// walks again. Never Menu.
+    @discardableResult
+    private func openRail(_ app: XCUIApplication) -> Bool {
+        func expanded() -> Bool { railToken(app, "expanded") == "1" }
+        if expanded() { return true }
+        for attempt in 0..<2 {
+            for _ in 0..<15 {
+                remote.press(.left)
+                pause(0.4)
+                if expanded() { return true }
+            }
+            if attempt == 0 {
+                remote.press(.down)
+                pause(1.0)
+            }
+        }
+        return expanded()
+    }
+
+    /// With the rail open, moves its focus to item `index` by the probe's `focused=` id.
+    @discardableResult
+    private func moveRailFocus(_ app: XCUIApplication, to index: Int) -> Bool {
+        let order = railVisualOrder(app)
+        for _ in 0..<10 {
+            let focused = railFocusedItem(app)
+            if focused == index { return true }
+            if focused < 0 { pause(0.3); continue }
+            let here = order.firstIndex(of: focused) ?? focused, there = order.firstIndex(of: index) ?? index
+            remote.press(here < there ? .down : .up)
+            pause(0.5)
+        }
+        return railFocusedItem(app) == index
+    }
+
     /// Press `direction` until `element` has focus (or the budget runs out).
     @discardableResult
+    /// Whether `element` holds focus, by frame when its own `hasFocus` never reports. On tvOS 26.5
+    /// a `Menu`'s focusable node is not the element that carries its identifier or label: an open
+    /// menu's options are labelled `Other` elements inside unlabelled `Cell`s, and the Cell is what
+    /// reports focus (W3 re-run tree dump); the folder Edit menu's focused node is an unlabelled
+    /// `Other` over its button. Same centre (±12 pt vertically, ±40 pt horizontally) counts.
+    private func hasFocusByFrame(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists else { return false }
+        if element.hasFocus { return true }
+        let focused = app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        guard focused.exists else { return false }
+        let a = focused.frame, b = element.frame
+        return abs(a.midY - b.midY) < 12 && abs(a.midX - b.midX) < 40
+    }
+
+    private func moveFocus(_ app: XCUIApplication, _ direction: XCUIRemote.Button, untilFrameOf element: XCUIElement, max: Int = 12) -> Bool {
+        for _ in 0..<max {
+            if hasFocusByFrame(app, element) { return true }
+            remote.press(direction)
+            pause(0.7)
+        }
+        return hasFocusByFrame(app, element)
+    }
+
     private func moveFocus(_ direction: XCUIRemote.Button, until element: XCUIElement, max: Int = 12) -> Bool {
         for _ in 0..<max {
             if element.exists && element.hasFocus { return true }
@@ -286,67 +499,35 @@ final class NuvioTVUITests: XCTestCase {
         return element.exists && element.hasFocus
     }
 
-    /// Moves focus to a Settings SIDEBAR category row by name. beta.15 §C5 root-cause finding
-    /// (confirmed via `app.debugDescription`, not guessed): the native List wraps every sidebar
-    /// row in a `Cell` that carries the real "Focused" accessibility trait — `app.buttons[name]`
-    /// (the label this harness has always queried) NEVER reports `hasFocus`, only the
-    /// wrapping Cell does. `moveFocus(until: app.buttons["Appearance"], max: 10)` therefore never
-    /// detects arrival and silently burns its whole press budget, overshooting to wherever that
-    /// many Down presses land — in one captured run that was "About" (the LAST category) while
-    /// aiming for "Appearance" (2 rows down), because the sidebar has 7 categories and category
-    /// walks that target something other than the first/last row in the walked direction were
-    /// landing on the wrong pane's content entirely (test04/test16's real failure mode: they were
-    /// asserting About's debug rows, not Appearance's). Checks `app.cells[title]` in addition to
-    /// the button so arrival is actually detected.
-    @discardableResult
-    private func moveToSidebarRow(_ app: XCUIApplication, _ direction: XCUIRemote.Button, named title: String, max: Int = 12) -> Bool {
-        let button = app.buttons[title]
-        let cell = app.cells[title]
-        func focused() -> Bool { button.hasFocus || (cell.exists && cell.hasFocus) }
-        for _ in 0..<max {
-            if button.exists && focused() { return true }
-            remote.press(direction)
-            pause(0.7)
-        }
-        return button.exists && focused()
-    }
-
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it.
     ///
-    /// FEAT-30: on a device with the sidebar overlay on (`sidebar_style` = `"sidebar"`), the
-    /// system tab bar this function has always driven does not exist at all — `SidebarOverlay`
-    /// (`DesignSystem/SidebarOverlay.swift`) replaces it. Detected by the sidebar's own rows
-    /// EXISTING, not by reading the `UserDefaults` key directly (the harness has no access to the
-    /// sim's defaults from inside the test process, and existence is exactly what the app itself
-    /// renders off of), so tabs-mode callers see byte-identical behaviour below — the sidebar
-    /// branch is a new `if`, not a change to the existing walk.
+    /// H9 (FEAT-45, replaced FEAT-30's sidebar): in Rail mode the system tab bar this function has
+    /// always driven does not exist. Detected by the rail's own `rail_state` probe, not by reading
+    /// the `UserDefaults` key (the harness has no access to the sim's defaults from inside the test
+    /// process), so tabs-mode callers see byte-identical behaviour below — the rail branch is an
+    /// `if`, not a change to the tab-bar walk. The rail branch opens the rail by Left (never by
+    /// Menu, see `openRail`), moves to `rail_item_<title>` by the probe's `focused=` id, selects
+    /// it, and waits out the hand-off ladder (2.5 s on Search, whose keyboard arrives late).
+    /// Selecting an item hands focus to the tab's content, so no post-select Down is needed.
     private func openTab(_ app: XCUIApplication, named title: String) {
-        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
-        if app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists {
-            // The panel is visible even collapsed (showing only the CURRENT tab's own row), and it
-            // only expands to show every row once focus actually lands ON one of them
-            // (`SidebarOverlay.isExpanded` = `focusedItem != nil`). So climb Up until ANY
-            // `sidebar_item_*` row holds focus — deliberately not a Menu press: Menu while the
-            // sidebar already has focus is the system's suspend-the-app default (see
-            // `launchToHome`'s header comment on the springboard-escape class), so this walk must
-            // never rely on it.
-            func anySidebarRowFocused() -> Bool {
-                tabNames.contains { app.buttons["sidebar_item_\($0)"].exists && app.buttons["sidebar_item_\($0)"].hasFocus }
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        if railMode(app) {
+            guard let index = Self.railItemTitles.firstIndex(of: title) else {
+                XCTFail("openTab: '\(title)' is not a rail item (the rail branch takes the English tab titles)")
+                return
             }
-            for _ in 0..<40 {
-                if anySidebarRowFocused() { break }
-                remote.press(.up)
-                pause(0.35)
+            guard openRail(app) else {
+                XCTFail("openTab(\(title)): the navigation rail never opened from a Left walk — \(railState(app))")
+                return
             }
-            let target = app.buttons["sidebar_item_\(title)"]
-            if !moveFocus(.down, until: target, max: 6) {
-                _ = moveFocus(.up, until: target, max: 8)
+            guard moveRailFocus(app, to: index) else {
+                // Never Select blind: with the rail's focus unknown it could pick another tab, and
+                // with the rail closed it would press a content item.
+                XCTFail("openTab(\(title)): could not move the rail's focus to item \(index) — \(railState(app))")
+                return
             }
             remote.press(.select)
-            // Selecting a row releases focus into the new tab's content (see
-            // `SidebarOverlay.basePanel`), so unlike the tab-bar branch below no post-select
-            // press is needed to leave the chrome.
-            pause(2)
+            pause(2.5)
             return
         }
 
@@ -363,16 +544,153 @@ final class NuvioTVUITests: XCTestCase {
         if !moveFocus(.right, until: tab, max: 6) {
             _ = moveFocus(.left, until: tab, max: 8)
         }
-        remote.press(.select)
+        guard pressIfVerified(app, "openTab_\(title)", when: { tab.exists && tab.hasFocus }) else { return }
         pause(2)
         press(.down, times: 1)
     }
 
-    /// Types `text` on the tvOS full-screen system keyboard by walking to each letter key in turn
-    /// and selecting it. Best-effort, same spirit as test19DiscoverSurvivesSearch's typing step
-    /// (see its header comment): this harness has no verified key-to-key adjacency map for the
+    // MARK: - Settings root navigation (detail-settings-revamp W3-C, FEAT-50)
+    //
+    // Settings is a `NavigationStack`: a root `List` of ten categories (`settings_root_list`, each
+    // row `settings_category_<raw>`) and one pushed pane per category (`settings_pane_<raw>`).
+    // Select on a root row pushes the pane and focus lands on the pane's FIRST focusable row; Menu
+    // inside a pane pops back to the root with focus on the category just left. There is no
+    // sidebar and no Right-into-the-pane step any more. Duplicated per file (house rule: every UI
+    // test file owns its helpers).
+
+    /// The fixed root order, mirroring `SettingsCategory.allCases` (SettingsView.swift).
+    private static let settingsRootOrder: [(title: String, raw: String)] = [
+        ("Account & Profiles", "accountProfiles"), ("Services", "services"), ("Appearance", "appearance"),
+        ("Home Screen", "homeScreen"), ("Detail Page", "detailPage"), ("Player", "player"),
+        ("Sources", "sources"), ("Subtitles & Audio", "subtitlesAudio"), ("About", "about"),
+        ("Developer", "developer"),
+    ]
+
+    /// Whether the Settings ROOT list is on screen (a pushed pane removes it from the tree).
+    private func settingsRootPresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_root_list"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_category_'"))
+                .firstMatch.exists
+    }
+
+    /// Whether a pushed Settings pane is on screen.
+    private func settingsPanePresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_pane_title"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_pane_'"))
+                .firstMatch.exists
+    }
+
+    /// Identifier + label of every element that reports focus, from ONE snapshot (a List row's
+    /// focus can sit on its wrapping Cell or on the inner Button; reading both in one pass avoids
+    /// the per-element `hasFocus` sweep).
+    private func focusedNodes(_ app: XCUIApplication) -> [(identifier: String, label: String)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(identifier: String, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append((node.identifier, node.label)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// The title of the focused Settings ROOT row, or nil. Detected by the row's identifier
+    /// (`settings_category_<raw>`) or by a focused element whose label begins with a category
+    /// title (corrections F9).
+    private func focusedSettingsRootTitle(_ app: XCUIApplication) -> String? {
+        let nodes = focusedNodes(app)
+        for node in nodes where node.identifier.hasPrefix("settings_category_") {
+            let raw = String(node.identifier.dropFirst("settings_category_".count))
+            if let entry = Self.settingsRootOrder.first(where: { $0.raw == raw }) { return entry.title }
+        }
+        for node in nodes {
+            if let entry = Self.settingsRootOrder.first(where: { node.label.hasPrefix($0.title) }) { return entry.title }
+        }
+        return nil
+    }
+
+    /// Opens the Settings tab and makes sure the ROOT list is showing: pops any pane the persisted
+    /// path left open (Menu only while a pane is up and the root is absent — Menu AT the root
+    /// reveals the sidebar or leaves the app). Returns whether the root is on screen.
+    @discardableResult
+    private func enterSettingsRoot(_ app: XCUIApplication) -> Bool {
+        openTab(app, named: "Settings")
+        pause(0.8)
+        for _ in 0..<3 where !settingsRootPresent(app) && settingsPanePresent(app) {
+            remote.press(.menu)
+            pause(1.2)
+        }
+        return settingsRootPresent(app)
+    }
+
+    /// With the root showing, puts focus on the root row `title` WITHOUT pushing it.
+    ///
+    /// Arrival is detected by identifier / focused label; when detection never fires the walk falls
+    /// back to the fixed root order: Down ×12 parks on the LAST row (Down from the last row does
+    /// nothing), then Up by the distance. (Up ×12 to the tab bar then Down is NOT deterministic:
+    /// Down from the tab bar lands on the root's preferred row, which is the last category opened,
+    /// not the first.) Returns whether arrival was DETECTED (false after a blind fallback).
+    @discardableResult
+    private func focusSettingsRootRow(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let index = Self.settingsRootOrder.firstIndex(where: { $0.title == title }) else {
+            XCTFail("focusSettingsRootRow: unknown category '\(title)'")
+            return false
+        }
+        if focusedSettingsRootTitle(app) == title { return true }
+        for _ in 0..<10 {
+            remote.press(.down)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        for _ in 0..<10 {
+            remote.press(.up)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        press(.down, times: 12, gap: 0.4)
+        press(.up, times: Self.settingsRootOrder.count - 1 - index, gap: 0.6)
+        pause(0.6)
+        return focusedSettingsRootTitle(app) == title
+    }
+
+    /// Opens Settings, returns to the root, focuses the category `title` and pushes it. Returns
+    /// whether `settings_pane_<raw>` appeared.
+    @discardableResult
+    private func openSettingsCategory(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let entry = Self.settingsRootOrder.first(where: { $0.title == title }) else {
+            XCTFail("openSettingsCategory: unknown category '\(title)'")
+            return false
+        }
+        guard enterSettingsRoot(app) else {
+            XCTFail("openSettingsCategory(\(title)): the Settings root list never appeared")
+            return false
+        }
+        focusSettingsRootRow(app, named: title)
+        guard pressIfVerified(app, "openSettingsCategory_\(entry.raw)", when: { focusedSettingsRootTitle(app) == title }) else {
+            return false
+        }
+        pause(1.5)
+        return app.descendants(matching: .any)["settings_pane_\(entry.raw)"].waitForExistence(timeout: 4)
+    }
+
+    /// Settings › Developer (the probe readouts moved here from About in the revamp).
+    @discardableResult
+    private func openDeveloper(_ app: XCUIApplication) -> Bool {
+        openSettingsCategory(app, named: "Developer")
+    }
+
+    /// Types `text` on the tvOS system keyboard by walking to each letter key in turn and
+    /// selecting it. Best-effort: this harness has no verified key-to-key adjacency map for the
     /// keyboard grid, so a character the walk can't reach just stops the whole attempt rather than
     /// guessing blind arrow-press counts. Returns whether every character was found and selected.
+    ///
+    /// The entry field is Search's system search field (`app.searchFields`, S1 W1: an inline
+    /// keyboard is always on screen there, focus is already in it after `openTab`, and Select
+    /// types a key — so callers must NOT press Select to "open" it) when one exists, else the
+    /// first plain text field (the Settings server-URL field, which still opens a full-screen
+    /// keyboard).
     @discardableResult
     private func typeOnKeyboard(_ app: XCUIApplication, _ text: String) -> Bool {
         // tvOS 27's full-screen keyboard exposes `app.keys` elements but their `hasFocus` never
@@ -381,7 +699,8 @@ final class NuvioTVUITests: XCTestCase {
         // focused keyboard on both runtimes — proved by the manual BUG-47 repro — so try that
         // first and validate it landed by watching the entry field's value; only fall back to
         // walking keys when synthesis provably changed nothing.
-        let entryField = app.textFields.firstMatch
+        let entryField = app.searchFields.firstMatch.exists ? app.searchFields.firstMatch : app.textFields.firstMatch
+        if app.searchFields.firstMatch.exists { focusSearchKeyboard(app) }
         let before = (entryField.exists ? entryField.value as? String : nil) ?? ""
         app.typeText(text)
         pause(0.8)
@@ -402,6 +721,86 @@ final class NuvioTVUITests: XCTestCase {
             pause(0.25)
         }
         return true
+    }
+
+    /// Whether a key of the inline search keyboard holds focus, from ONE snapshot of the keyboard
+    /// (reliable on the 26.5 runtime FA87 runs; keys never report focus on 27.0).
+    private func searchKeyboardHasFocus(_ app: XCUIApplication) -> Bool {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists, let root = try? keyboard.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool {
+            node.hasFocus || node.children.contains(where: walk)
+        }
+        return walk(root)
+    }
+
+    /// Puts focus on the inline search keyboard before typing. `openTab`'s closing Down can run
+    /// before the keyboard exists on a first open (1–2 s on FA87), and then focus lands on the
+    /// first content below instead (S1 W4 run: a Recent Searches chip). Waits for the keyboard,
+    /// then steps Down from the tab bar or Up/Left from content until a key holds focus.
+    /// 26.5-only beyond the wait: on the 27.0 runtime keys never report focus, so there it only
+    /// waits for the keyboard and returns true (stepping would walk Up into the tab bar).
+    @discardableResult
+    private func focusSearchKeyboard(_ app: XCUIApplication) -> Bool {
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { pause(1); return true }
+        let tabNames = ["Home", "Search", "Discover", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<4 {
+            if searchKeyboardHasFocus(app) { return true }
+            // Armed rail items carry the same LABELS as the tab bar's buttons, so
+            // `app.buttons["Search"]` matches them too: check the rail first, by its own probe
+            // (Right leaves the rail for Search's content, S1 W2 carried into the rail).
+            let inRail = railMode(app) && railFocusedItem(app) >= 0
+            let onTabBar = tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+            if inRail {
+                remote.press(.right)
+            } else if onTabBar {
+                remote.press(.down)
+            } else {
+                remote.press(searchKeyboardIsGrid(app) ? .left : .up)
+            }
+            pause(0.7)
+        }
+        return searchKeyboardHasFocus(app)
+    }
+
+    /// The search field's text without the system's decorations: an empty field reports the
+    /// prompt, and the value can carry a ", Press ￼ to change keyboards" hint (S1 W4 run).
+    private func searchFieldText(_ app: XCUIApplication) -> String {
+        var value = (app.searchFields.firstMatch.value as? String) ?? ""
+        if let hint = value.range(of: ", Press ") { value = String(value[..<hint.lowerBound]) }
+        return value == "Search movies & shows" ? "" : value
+    }
+
+    /// Whether Search's inline keyboard is the GRID layout (a 6-column block on the left, results
+    /// to its RIGHT) rather than the LINEAR one FA87 uses (one row of keys across the top, results
+    /// below). Measured by the keyboard's frame: linear ≈ (80, 261, 1760, 66), grid is under 900
+    /// wide. S1 W1.
+    private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
+        app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
+    }
+
+    /// Moves focus from Search's inline keyboard into the first results row: one Down on the
+    /// linear keyboard, Right×7 across the grid keyboard's six columns. S1 W1. Search & Discover
+    /// (B3 d): the suggestion chips (`search.suggestions`) sit between the keyboard and the
+    /// results, so one more Down steps past them when they are on screen.
+    private func enterSearchResults(_ app: XCUIApplication) {
+        if searchKeyboardIsGrid(app) { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        if searchSuggestionsShown(app) { press(.down, times: 1) }
+        pause(1)
+    }
+
+    /// The inverse of `enterSearchResults`: first results row back to the inline keyboard (Up on
+    /// the linear keyboard, Left×7 on the grid one), one more Up across the suggestion chips.
+    private func returnToSearchKeyboard(_ app: XCUIApplication) {
+        if searchSuggestionsShown(app) { press(.up, times: 1) }
+        if searchKeyboardIsGrid(app) { press(.left, times: 7, gap: 0.5) } else { press(.up, times: 1) }
+        pause(1)
+    }
+
+    /// The suggestion chip row (B3 d) is on screen.
+    private func searchSuggestionsShown(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["search.suggestions"].firstMatch.exists
     }
 
     /// Whichever button currently holds focus, or nil if none does. `hasFocus` isn't a reliable
@@ -464,7 +863,10 @@ final class NuvioTVUITests: XCTestCase {
     func test01InlineTrailerDwell() throws {
         // Trailers on Focus is opt-in (default OFF since 05dd8ecd) — force it via the argument
         // domain so this test never depends on the sim's stored settings.
-        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES"])
+        // beta.19-rc1 verdict (M3/M4): the dwell is now a rest gate (Automatic = rows stopped + 1 s).
+        // `-trailer_start_delay 1` pins the legacy "about 1 s from focus" cadence this walk's
+        // screenshot timings were written against (a fixed N counts from focus, never before rest).
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-trailer_start_delay", "1"])
         shot(app, "01a_home")
 
         // Hero → Continue Watching → Streaming → first *movies* catalog row (portrait cards, the
@@ -492,7 +894,14 @@ final class NuvioTVUITests: XCTestCase {
 
         // Mute toggle while playing: the glyph in the tile's bottom-trailing corner must flip
         // between speaker.slash.fill and speaker.wave.2.fill. (Audio itself is device-only.)
-        remote.press(.playPause)
+        // ui-legs: Play/Pause and the closing Select go only to the Home card this walk dwelt on,
+        // read here (a tab, the hero CTA or an unreadable focus gets no press).
+        // The card's composed label carries a live trailer readout ("debug_trailerTile … stage=…,
+        // <title>"), so the card is matched by its title, the part after the last ", ".
+        func cardTitle(_ label: String?) -> String? { label?.components(separatedBy: ", ").last }
+        let dwellCard = cardTitle(focusedHomeCardLabel(app))
+        NSLog("[test01] dwell card: \(dwellCard ?? "none")")
+        try pressVerified(app, "01_mute_on_card", button: .playPause, when: { dwellCard != nil })
         pause(2)
         shot(app, "01i_after_playpause")
 
@@ -516,7 +925,7 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "01n_refocus_cache_hit")
 
         // Select → Detail: inline player must tear down, Detail loads (⇒ focus was never lost).
-        remote.press(.select)
+        try pressVerified(app, "01_card_to_detail", when: { dwellCard != nil && cardTitle(focusedHomeCardLabel(app)) == dwellCard })
         pause(4)
         shot(app, "01o_detail_from_card")
         XCTAssertTrue(app.state == .runningForeground, "app should survive card → detail push")
@@ -526,14 +935,11 @@ final class NuvioTVUITests: XCTestCase {
 
     func test02DetailAutoPlayAndPoster() throws {
         let app = launchToHome()
-        // Land on a *movies catalog* row (portrait cards → NavigationLink to DetailView). The
-        // Continue Watching and Streaming rows above it open the stream picker / entity browse
-        // instead, so going only 3 rows deep verifies the wrong screen.
-        press(.down, times: 4)
-        pause(0.5)
+        // ui-legs (2026-10-22): the blind "Down ×4, Select" into a catalog row's Detail now goes
+        // through the shared, focus-verified Search route (`DetailEntryRoute`); on the fixture's
+        // current Home that walk could land on a Continue Watching card (the player) or a folder.
         shot(app, "02x_row_before_select")
-        remote.press(.select)
-        pause(2.5)
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         shot(app, "02a_detail_early_poster_layer") // before trailer resolves: poster right
         pause(3)
         shot(app, "02b_detail_trailer_bg")         // bg trailer active ⇒ poster hidden
@@ -566,11 +972,9 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         shot(app, "03c_scrolled_back_bar_visible")
 
-        // Detail page is immersive: bar hidden while pushed, back on pop.
-        press(.down, times: 3)
-        pause(0.5)
-        remote.press(.select)
-        pause(3)
+        // Detail page is immersive: bar hidden while pushed, back on pop. ui-legs: into Detail by
+        // the verified Search route, not a blind "Down ×3, Select".
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         shot(app, "03d_detail_bar_hidden")
         remote.press(.menu)
         pause(2)
@@ -586,28 +990,35 @@ final class NuvioTVUITests: XCTestCase {
     /// Run explicitly via -only-testing when a repro session left the profile hero-off.
     func test00zRestoreShowHeroOn() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        press(.down, times: 1)   // Home Screen category (activates on focus)
-        pause(1.5)
-        // Enter the pane, then walk UP until the FOCUSED row is Show Hero (the pane's first row;
-        // entering can land focus on any row — the previous attempt selected whatever had focus
-        // and collaterally toggled Trailers on Focus OFF). 26.5 reports hasFocus reliably.
-        press(.right, times: 1)
-        pause(1.0)
-        func focusedButton() -> XCUIElement {
-            app.buttons.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        // Revamp (FEAT-50): push the Home Screen pane from the Settings root. The push lands on
+        // the pane's FIRST row. Home Stage & Strip: that is now "Home Layout" (the Layout
+        // section), then "Upcoming Episodes", then Show Hero, which exists in Classic only (this
+        // class launches Classic, see `launchToHome`) — so walk DOWN to Show Hero (Up as the
+        // fallback), never selecting an unverified row: the attempt before this walk existed
+        // selected whatever had focus and collaterally toggled Trailers on Focus OFF.
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        // The focused row: its wrapping Cell (composed "Title, …, On/Off" label) or the inner
+        // control, via the union helper. A toggle's state is on `.value` for the control and at
+        // the end of the Cell's composed label, so read both.
+        func focusedLabel() -> String { focusedButton(app)?.label ?? "" }
+        func focusedIsOff() -> Bool {
+            guard let row = focusedButton(app) else { return false }
+            return (row.value as? String) == "Off" || (row.value as? String) == "0" || row.label.hasSuffix(", Off") || row.label.hasSuffix("Off")
         }
         for _ in 0..<6 {
-            if focusedButton().label.contains("Show Hero") { break }
+            if focusedLabel().contains("Show Hero") { break }
+            press(.down, times: 1)
+            pause(0.8)
+        }
+        for _ in 0..<6 {
+            if focusedLabel().contains("Show Hero") { break }
             press(.up, times: 1)
             pause(0.8)
         }
         shot(app, "00z_before_toggle")
-        XCTAssertTrue(focusedButton().label.contains("Show Hero"),
-                      "focus must be on the Show Hero row before toggling, got: \(focusedButton().label)")
-        if focusedButton().label.contains("Off") {
+        XCTAssertTrue(focusedLabel().contains("Show Hero"),
+                      "focus must be on the Show Hero row before toggling, got: \(focusedLabel())")
+        if focusedLabel().contains("Show Hero"), focusedIsOff() {
             remote.press(.select)
             pause(2.0)
         }
@@ -615,10 +1026,15 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Hero Sources"].waitForExistence(timeout: 6),
                       "Show Hero must be ON (Hero Sources group renders only then)")
 
-        // Repair the collateral from the previous attempt: Trailers on Focus back ON.
-        press(.down, times: 1)
-        pause(0.8)
-        if focusedButton().label.contains("Trailers on Focus"), focusedButton().label.contains("Off") {
+        // Repair the collateral from the previous attempt: Trailers on Focus back ON. It sits a
+        // few rows below Show Hero once the hero group is expanded (Nuvio-Style Hero, Hero
+        // Sources), so walk to it by label instead of a fixed count.
+        for _ in 0..<5 {
+            if focusedLabel().contains("Trailers on Focus") { break }
+            press(.down, times: 1)
+            pause(0.8)
+        }
+        if focusedLabel().contains("Trailers on Focus"), focusedIsOff() {
             remote.press(.select)
             pause(1.5)
         }
@@ -635,72 +1051,61 @@ final class NuvioTVUITests: XCTestCase {
         openTab(app, named: "Settings")
         shot(app, "04a_settings")
 
-        // Appearance category → the two Detail-page toggle rows. ("Trailers on Focus" lives in
-        // the Home Screen category, not here — asserted in the 04c step below.)
-        //
-        // beta.15 §C5, two stacked root-cause findings from an `app.debugDescription`
-        // investigation (not guessed):
-        // (1) `moveFocus(until: app.buttons["Appearance"], ...)` never detects arrival — the
-        //     sidebar's native-List "Focused" trait lives on the row's wrapping `Cell`, not the
-        //     inner Button this harness queries by label — so it silently burns its whole press
-        //     budget and can overshoot past the intended category entirely (a captured run
-        //     landed on "About", the LAST category, while aiming for "Appearance" two rows down).
-        //     Fixed via `moveToSidebarRow`, which also checks a same-labeled Cell.
-        // (2) the detail pane is a real native `List`: unlike the pre-C1 hand-rolled ScrollView
-        //     (which rendered every row up front), a List only mounts rows near the current focus
-        //     — a bare existence check for a row several sections down (Auto-Play Trailer /
-        //     Poster in Detail Background, both in the Poster Style section, well past Theme)
-        //     fails even with a generous `waitForExistence` because nothing ever scrolls it into
-        //     view. Entering the pane (press Right) and walking to each row with
-        //     `walkToRowByTreeIndex` (the existing hop-to-last-materialized-row technique) fixes
-        //     this instead of assuming the row is already on screen.
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        shot(app, "04b_appearance")
-        let appearanceSidebarX = appearance.frame.maxX
+        // Revamp (FEAT-50): the two Detail-page rows moved from Appearance into their own
+        // "Detail Page" pane. Settings is a root list + pushed panes now: `openSettingsCategory`
+        // pushes the pane and focus lands on its first row (no sidebar, no Right). The pane is
+        // still a lazy native `List`, so each row is reached with `walkToRowByTreeIndex` (the
+        // hop-to-last-materialised-row walk) rather than assumed to be on screen. "Poster in
+        // Detail Background" (Layout section) sits above "Auto-Play Trailer on Detail" (Trailers
+        // section), so walk them in that order — both walks only move down.
+        XCTAssertTrue(openSettingsCategory(app, named: "Detail Page"), "Settings › Detail Page pane did not open")
+        shot(app, "04b_detail_page")
         func rowExists(_ prefix: String) -> Bool {
             app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch.exists
         }
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Auto-Play Trailer on Detail", sidebarMaxX: appearanceSidebarX, category: "Appearance")
-        XCTAssertTrue(rowExists("Auto-Play Trailer on Detail"), "Auto-Play Trailer row missing")
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Poster in Detail Background", sidebarMaxX: appearanceSidebarX, category: "Appearance")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Poster in Detail Background", sidebarMaxX: 0, category: "Detail Page")
         XCTAssertTrue(rowExists("Poster in Detail Background"), "Poster in Detail Background row missing")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Auto-Play Trailer on Detail", sidebarMaxX: 0, category: "Detail Page")
+        XCTAssertTrue(rowExists("Auto-Play Trailer on Detail"), "Auto-Play Trailer row missing")
 
-        // "Home Screen" category (the Home Rows *section* lives inside it) sits directly below
-        // Appearance in the sidebar, and categories activate on FOCUS.
-        //
-        // beta.15 §C5 finding (from a captured screenshot, not guessed): `press(.left, times: 1)`
-        // + `moveToSidebarRow(down, named: "Home Screen", max: 4)` overshot all the way to
-        // "About" (the LAST category — the detail pane in "04c_home_rows" showed About's Commit/
-        // tvOS/Device/Source rows) even though the same helper correctly stopped at "Appearance"
-        // moments earlier in this same test. The Cell-focus detection this helper relies on is
-        // not consistently reliable turn-to-turn, so rather than trust it for a NON-terminal,
-        // small-distance move, anchor at a known EXTREME position first (Up until Account &
-        // Services — a no-op past the top, so it lands there regardless of whether detection
-        // fires) and then walk the sidebar's fixed, never-reordered category list by a plain
-        // press COUNT, which needs no focus detection to be correct.
-        press(.left, times: 1)
-        pause(1)
-        _ = moveToSidebarRow(app, .up, named: "Account & Services", max: 10)
-        pause(0.5)
-        let homeScreen = app.buttons["Home Screen"]
-        press(.down, times: 3, gap: 0.6) // Account & Services → Playback → Appearance → Home Screen
+        // Home Screen leg: Menu pops back to the root with focus on Detail Page (index 4); Home
+        // Screen is the row directly above it (index 3), then Select pushes it.
+        remote.press(.menu)
         pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4)
+                      || app.descendants(matching: .any)["settings_category_homeScreen"].exists,
+                      "Menu from the Detail Page pane must pop back to the Settings root")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Detail Page", "pop must return focus to the Detail Page row")
+        press(.up, times: 1)
+        pause(0.8)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Home Screen", "Up from Detail Page must land on Home Screen")
+        try pressVerified(app, "04_home_screen_row", when: { focusedSettingsRootTitle(app) == "Home Screen" })
+        pause(1.5)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4),
+                      "Select on Home Screen must push its pane")
         shot(app, "04c_home_rows")
-        let homeScreenSidebarX = homeScreen.frame.maxX
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Show Hero", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        // Home Stage & Strip (P2 §3.2): the pane opens on the new Layout section, whose first row
+        // is the Home Layout picker in both layouts. Show Hero and Hero Sources below are Classic
+        // only (this class launches Classic, see `launchToHome`).
+        XCTAssertTrue(rowExists("Home Layout"), "Home Layout row missing from the top of the Home Screen pane")
+        let explainer = app.staticTexts["settings_explainer_title"]
+        if explainer.waitForExistence(timeout: 3) {
+            // The explainer names the focused row once it reports (it shows the pane summary
+            // until then), so poll briefly rather than read once.
+            var landed = explainer.label
+            for _ in 0..<12 where landed != "Home Layout" {
+                pause(0.25)
+                landed = explainer.label
+            }
+            XCTAssertEqual(landed, "Home Layout", "the pane's first focused row must be Home Layout")
+        }
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Show Hero", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Show Hero"), "Show Hero row missing")
         // Hero Sources is a disclosure Button (SettingsDisclosureRow) directly below "Nuvio-Style
         // Hero", not a toggle — its composed label is "Hero Sources, <summary>".
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hero Sources", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hero Sources", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Hero Sources"), "Hero Sources group missing")
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Trailers on Focus", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Trailers on Focus", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Trailers on Focus"), "Trailers on Focus row missing")
         shot(app, "04d_hero_sources_list")
     }
@@ -713,7 +1118,12 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "05a_settings_de")
         // Category names are localized; walk a few and screenshot whatever renders.
         press(.down, times: 2)
-        remote.press(.select)
+        // ui-legs: Select only on a Settings root category row, never Account & Profiles (the
+        // row identifiers are language-independent).
+        try pressVerified(app, "05_settings_category_de", when: {
+            guard let raw = focusedRootCategoryRaw(app) else { return false }
+            return raw != "accountProfiles"
+        })
         pause(1.5)
         shot(app, "05b_settings_de_category")
         press(.down, times: 3)
@@ -753,16 +1163,10 @@ final class NuvioTVUITests: XCTestCase {
         pause(3) // let row artwork decode
         shot(app, "07a_cards_baseline")
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Into the content pane: Corners → "Round" (28pt — the biggest visual jump from the
         // default 12).
-        press(.right, times: 1)
-        pause(1)
         let round = app.buttons["Round"]
         if !moveFocus(.down, until: round, max: 16) { _ = moveFocus(.up, until: round, max: 16) }
         if round.exists && round.hasFocus {
@@ -837,13 +1241,7 @@ final class NuvioTVUITests: XCTestCase {
         pause(3)
         shot(app, "09a_cards_depth_should_be_on")
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         let square = app.buttons["Square"]
         if moveFocus(.down, until: square, max: 16) {
@@ -854,11 +1252,13 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "09b_corners_after_square_defocused")
 
-        let depthToggle = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Card Depth'")).firstMatch
-        _ = moveFocus(.down, until: depthToggle, max: 24)
+        // ui-legs: walked by tree index with the landing verified (the old Down walk keyed on a
+        // `Card Depth` match that never reported focus and ran on to "Import Badge Pack" — first
+        // full run); Select only on the Card Depth row.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Card Depth", sidebarMaxX: 0, category: "Appearance")
         pause(1)
         shot(app, "09c_depth_before_press")
-        remote.press(.select)
+        try pressVerified(app, "09_card_depth_toggle", when: { focusedButton(app)?.label.hasPrefix("Card Depth") == true })
         pause(4)
         shot(app, "09d_depth_4s_after_press")
 
@@ -897,13 +1297,7 @@ final class NuvioTVUITests: XCTestCase {
     /// pane, card depth second).
     func test12ResetAppearanceDefaults() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         let resets = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Reset to Defaults'"))
         // Poster style reset.
         let posterReset = resets.element(boundBy: 0)
@@ -927,13 +1321,7 @@ final class NuvioTVUITests: XCTestCase {
     /// and a focused ON toggle row. Restores the Ocean theme at the end (theme syncs per profile).
     func test13WhiteThemeContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         // The theme swatches are the pane's FIRST row — walk RIGHT along it to White.
         let white = app.buttons["White"]
         _ = moveFocus(.right, until: white, max: 8)
@@ -943,25 +1331,34 @@ final class NuvioTVUITests: XCTestCase {
         }
         shot(app, "13a_white_theme_applied")
 
-        // The money shot pre-fix: walk focus back to the SIDEBAR — the focused row is always the
-        // selected category, whose label was raw accent (white on the white platter).
-        press(.left, times: 8, gap: 0.6)
-        pause(1)
-        shot(app, "13b_sidebar_focused_selected")
+        // The money shot pre-fix was the focused + selected category row (raw accent label on
+        // the white platter). Revamp: there is no sidebar; Menu pops the pane back to the
+        // Settings root with focus on the Appearance row, which is that same surface now.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "13b_root_category_focused")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Menu from Appearance must pop to the root with focus on Appearance")
 
-        // Back into the pane: focus an ON toggle row (Auto-Play Trailer defaults on for this
-        // profile) so the checkmark renders on the white platter.
-        press(.right, times: 1)
-        pause(1)
-        let autoPlay = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Auto-Play Trailer'")).firstMatch
-        _ = moveFocus(.down, until: autoPlay, max: 16)
+        // Back into the pane (Select re-pushes it, landing on the swatches), then focus a toggle
+        // row so the switch renders on the white platter. Auto-Play Trailer moved to the Detail
+        // Page pane in the revamp; Accent Focus Ring is the Appearance toggle directly below the
+        // swatches.
+        try pressVerified(app, "13_appearance_row", when: { focusedSettingsRootTitle(app) == "Appearance" })
+        pause(1.5)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4), "Select on Appearance must re-push the pane")
+        press(.down, times: 1)
         pause(1)
         shot(app, "13c_toggle_row_focused")
 
-        // Restore the Ocean theme (the account's real setting): back up to the swatch row,
-        // then walk left along it.
+        // Restore the Ocean theme (the account's real setting): climb to the swatch row (it
+        // reports focus; Up past it goes to the tab bar, so stop on it), then walk along it.
         let ocean = app.buttons["Ocean"]
-        press(.up, times: 4, gap: 0.6)
+        let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
+        for _ in 0..<6 {
+            if swatches.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.6)
+        }
         if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
         if ocean.exists && ocean.hasFocus {
             remote.press(.select)
@@ -979,13 +1376,7 @@ final class NuvioTVUITests: XCTestCase {
         // fresh launch (repo state truth)" — forceFreshLaunch makes that literal, and makes the
         // test independent of test10's end state (which fed it the springboard escape in-suite).
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         let medium = app.buttons["Medium"]
         _ = moveFocus(.down, until: medium, max: 10)
         pause(1)
@@ -1090,19 +1481,15 @@ final class NuvioTVUITests: XCTestCase {
         // Accent Focus Ring existence assert below fails ("no matches found") even though the
         // row renders fine (same test passed isolated on the same build). A fresh launch
         // guarantees the sidebar-default Settings entry this test's walk assumes.
+        // Home Stage & Strip (P4 §4.1, #22): "Hide Hero Artwork While Browsing" exists only while
+        // Home Layout is Classic; `launchToHome` pins Classic, which this leg depends on.
         let app = launchToHome(forceFreshLaunch: true)
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         // FEAT-14: opt-in "Accent Focus Ring" toggle (default OFF), Theme section — the first
-        // section in the pane, so content-pane focus (the press(.right, 1) above lands on the
-        // theme swatches row) reaches it in a single Down press. Screenshot + existence/label
-        // check only — do NOT select it, this test asserts the OFF default, not the ON behavior.
+        // section in the pane, so the push (which lands on the theme swatches row) reaches it in
+        // a single Down press. Screenshot + existence/label check only — do NOT select it, this
+        // test asserts the OFF default, not the ON behavior.
         // beta.15 §C5: SettingsToggleRow is now a real `Toggle` whose resolved element type is
         // ambiguous between `.switch` and `.toggle` on this SDK (see focusedButton's comment) —
         // looked up via `descendants(matching: .any)` rather than either type-scoped query. The
@@ -1112,38 +1499,42 @@ final class NuvioTVUITests: XCTestCase {
         let accentRing = app.descendants(matching: .any).matching(
             NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
         ).firstMatch
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        press(.down, times: 1)
         pause(1)
         shot(app, "16c_accent_ring_toggle_default_off")
         XCTAssertTrue(accentRing.exists, "FEAT-14 Accent Focus Ring toggle must exist in the Theme section")
+        // Scan every same-labelled candidate (Cell / Button / Switch / StaticText): `firstMatch`
+        // can be the bare StaticText, which carries no value at all (g3 run: "got: Optional()").
+        let ringCandidates = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'"))
+            .allElementsBoundByIndex
+            .map { "t\($0.elementType.rawValue):v=<\(String(describing: $0.value))>:l=<\($0.label.suffix(16))>" }
+            .joined(separator: " | ")
         XCTAssertEqual(
-            toggleState(accentRing), false,
-            "Accent Focus Ring must default OFF, got: \(String(describing: accentRing.value)) / label: \(accentRing.label)"
+            toggleState(app: app, labelPrefix: "Accent Focus Ring"), false,
+            "Accent Focus Ring must default OFF — candidates: \(ringCandidates)"
         )
 
         let renamed = app.descendants(matching: .any).matching(
             NSPredicate(format: "label BEGINSWITH 'Hide Hero Artwork'")
         ).firstMatch
-        _ = moveFocus(.down, until: renamed, max: 16)
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hide Hero Artwork", sidebarMaxX: 0, category: "Appearance")
         pause(1)
         shot(app, "16a_hero_toggle_renamed")
         XCTAssertTrue(renamed.waitForExistence(timeout: 4), "renamed BUG-24 toggle must exist in Appearance")
 
-        press(.left, times: 1)
-        pause(1)
-        let contentSources = app.buttons["Content Sources"]
-        if !moveToSidebarRow(app, .down, named: "Content Sources", max: 10) {
-            _ = moveToSidebarRow(app, .up, named: "Content Sources", max: 10)
-        }
-        remote.press(.select)
+        // Search Sources leg (FEAT-10). Revamp: "Content Sources" is now the "Sources" pane, and
+        // the Search section sits behind ~15 focusable rows (Auto-Play, source Filters, TMDB,
+        // MDBList, Library & Watch Progress), so walk to its first row by label instead of a
+        // fixed Down count. Menu pops Appearance back to the root first.
+        remote.press(.menu)
         pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        // Walk down far enough to bring the Search Sources section into view (it sits below
-        // the TMDB and MDBList sections).
-        press(.down, times: 10, gap: 0.6)
+        XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
         pause(1)
         shot(app, "16b_search_sources_section")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Recent Searches'")).firstMatch.exists,
+                      "Recent Searches row (Search Sources section) missing from the Sources pane")
         XCTAssertTrue(app.state == .runningForeground)
     }
 
@@ -1164,13 +1555,20 @@ final class NuvioTVUITests: XCTestCase {
     /// this measures whether focus-driven scrolling feeds `onScrollGeometryChange` at all.
     func test17DetailScrollDarkening() throws {
         let app = launchToHome()
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(2)
-        remote.press(.select)
-        pause(8)
+        // ui-legs: the blind hero-CTA Select (Up ×6, Down ×1) is the verified Search route now.
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         ux6Probe(app, "17a_detail_opened")
         shot(app, "17a_detail_top")
+        // FEAT-35 (Cinematic, the default layout): the synopsis is the hero's four-line teaser
+        // (`detail_synopsis_teaser`), not the beta.18 panel (`detail_synopsis_panel` is Classic
+        // only — test80). The hero-CTA path does not open a Detail on every fixture state (the
+        // first beta.18 run stayed on Home: `debug_ux6 MISSING`), so the teaser is asserted only
+        // when the page did open; test33 carries the reliable proof.
+        if app.staticTexts["debug_ux6"].exists {
+            let teaserShown = app.descendants(matching: .any)["detail_synopsis_teaser"].waitForExistence(timeout: 5)
+            XCTAssertTrue(teaserShown, "detail_synopsis_teaser missing on a Cinematic Detail (title may have no overview)")
+        }
+        shot(app, "17c_synopsis_teaser")
 
         press(.down, times: 4, gap: 1.0)
         pause(1.5)
@@ -1193,39 +1591,41 @@ final class NuvioTVUITests: XCTestCase {
     /// focus positions and this harness already accepts duplication over shared helpers).
     func test18FocusedSettingsRowLegibility() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Accent Focus Ring toggle (Theme section, top of pane) — one Down press from the
-        // swatches row that content-pane focus lands on. Real `Toggle` = `.switch` (C5).
-        let accentRing = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
-        ).firstMatch
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        // swatches row the push lands on. Revamp: toggle rows report focus only on their Cell, so
+        // a `moveFocus(until:)` on the label could overshoot; use the fixed one-row step.
+        press(.down, times: 1)
         pause(1)
         shot(app, "18a_row_focused_dark")
 
-        // Back up to the swatch row, then right along it to White (test13's walk).
-        press(.up, times: 4, gap: 0.6)
+        // Back up to the swatch row (Up from the swatches leaves for the tab bar, so climb one row
+        // at a time and stop on a focused swatch), then along it to White (test13's walk).
+        let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
+        func climbToSwatches() {
+            for _ in 0..<6 {
+                if swatches.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { return }
+                remote.press(.up)
+                pause(0.6)
+            }
+        }
+        climbToSwatches()
         let white = app.buttons["White"]
         if !moveFocus(.right, until: white, max: 8) { _ = moveFocus(.left, until: white, max: 8) }
         if white.exists && white.hasFocus {
             remote.press(.select)
-            pause(2.5) // theme change rebuilds the tree (.id flip)
+            pause(2.5) // theme change rebuilds the tree (.id flip); the pane survives (path restore)
         }
 
-        // Refocus the same toggle row under the new theme.
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        // Refocus the same toggle row under the new theme (focus returns to the pressed swatch).
+        climbToSwatches()
+        press(.down, times: 1)
         pause(1)
         shot(app, "18b_row_focused_white")
 
         // Restore Ocean (the account's real setting) so later tests aren't affected.
-        press(.up, times: 4, gap: 0.6)
+        climbToSwatches()
         let ocean = app.buttons["Ocean"]
         if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
         if ocean.exists && ocean.hasFocus {
@@ -1423,10 +1823,8 @@ final class NuvioTVUITests: XCTestCase {
         // cards → NavigationLink to DetailView), not the Continue Watching / Streaming rows
         // above it which open the stream picker / entity browse instead.
         let app = launchToHome()
-        press(.down, times: 4)
-        pause(0.5)
-        remote.press(.select)
-        pause(2.5)
+        // ui-legs: into Detail by the verified Search route, not a blind "Down ×4, Select".
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
 
         // Walk focus down toward the Trailers & Extras shelf (test17's detail-scroll walk).
         press(.down, times: 10, gap: 0.5)
@@ -1535,30 +1933,28 @@ final class NuvioTVUITests: XCTestCase {
     /// shows up under a specific race window (immediate Menu vs. Menu after pagination) still gets
     /// exercised.
     ///
-    /// Query typing is best-effort (see `typeOnKeyboard` / test19's header comment on the tvOS
-    /// keyboard grid): if it can't be driven on a given run this still asserts the app survived
-    /// the attempt, but the actual crash probe below needs real results to reach a "See All" card,
-    /// so a failed type makes the rest of the test a no-op pass.
+    /// Query typing is best-effort (see `typeOnKeyboard` / test19's header comment on Search's
+    /// system search field): if it can't be driven on a given run this still asserts the app
+    /// survived the attempt, but the actual crash probe below needs real results to reach a "See
+    /// All" card, so a failed type makes the rest of the test a no-op pass. S1 W1: focus is
+    /// already in the inline keyboard after `openTab`, so there is no Select-to-open-keyboard and
+    /// no Menu-to-dismiss step — results render live under the keyboard.
     func test23SearchSeeAllBackNoCrash() throws {
-        let app = launchToHome(forceFreshLaunch: true)
+        // Search & Discover (B6): grouped rows (the default) have no See All; one row per add-on
+        // keeps S1's sections and their See All card.
+        let app = launchToHome(extraArguments: ["-search_rows_mode", "per_addon"], forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(1.5)
 
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
-        remote.press(.select)
-        pause(2) // full-screen keyboard presentation
 
         // Broad query so real result rows (and a "See All" card) are likely regardless of which
         // addons are installed on the signed-in profile.
         let typed = typeOnKeyboard(app, "batman")
-        remote.press(.menu) // dismiss the keyboard back to the results list either way
         pause(2.5) // debounce + results fetch
         shot(app, "23a_search_results")
         // Prerequisite failures are LOUD: this test is the BUG-47 regression gate, and a silent
@@ -1572,7 +1968,7 @@ final class NuvioTVUITests: XCTestCase {
         }
 
         let seeAll = seeAllCard(app)
-        press(.down, times: 1) // out of the search field, into the first results row
+        enterSearchResults(app) // out of the keyboard, into the first results row
 
         for iteration in 1...3 {
             // On the tvOS 27.0 runtime under Xcode 26.6, `hasFocus` NEVER reads true for these
@@ -1587,7 +1983,10 @@ final class NuvioTVUITests: XCTestCase {
                 return
             }
             press(.right, times: 3, gap: 0.6) // land on the row-end See All card
-            remote.press(.select)
+            walkFocusOntoSeeAll(app) // ui-legs: Select only once See All itself reads focused
+            try pressVerified(app, "23_see_all_\(iteration)", when: {
+                focusedButton(app)?.label.localizedCaseInsensitiveContains("See All") == true
+            })
 
             if iteration == 1 {
                 // Back almost immediately — the race window the `stopped` guard closes (device
@@ -1651,7 +2050,9 @@ final class NuvioTVUITests: XCTestCase {
     private func selectIntoSeeAllGrid(_ app: XCUIApplication, shotName: String) -> Bool {
         for attempt in 0..<6 {
             walkFocusOntoSeeAll(app)
-            remote.press(.select)
+            guard pressIfVerified(app, "\(shotName)_see_all", when: {
+                focusedButton(app)?.label.localizedCaseInsensitiveContains("See All") == true
+            }) else { return false }
             pause(2.5)
             if !app.staticTexts["debug_ux6"].exists {
                 shot(app, shotName)
@@ -1720,18 +2121,14 @@ final class NuvioTVUITests: XCTestCase {
         // Search path into a grid.
         openTab(app, named: "Search")
         pause(1.5)
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
-        if !searchField.hasFocus {
-            _ = moveFocus(.up, until: searchField, max: 6)
-        }
-        remote.press(.select)
-        pause(2)
+        // S1 W1: focus is already in the inline keyboard after `openTab` — type straight into
+        // the field (no Select to open a keyboard, no Menu to dismiss one).
         let typed = typeOnKeyboard(app, "batman")
-        remote.press(.menu)
         pause(2.5)
         guard typed else {
             XCTFail("UX-13 gate not exercised: the tvOS keyboard grid could not be driven")
@@ -1739,7 +2136,7 @@ final class NuvioTVUITests: XCTestCase {
         }
         // Same lazy-materialization + broken-hasFocus caveats as test23: existence-driven walk.
         let searchSeeAll = seeAllCard(app)
-        press(.down, times: 1)
+        enterSearchResults(app)
         guard walkRightUntilExists(searchSeeAll, max: 60) else {
             shot(app, "24x_no_seeall")
             XCTFail("UX-13 gate not exercised: no reachable See All card on Home or in Search results")
@@ -1764,18 +2161,16 @@ final class NuvioTVUITests: XCTestCase {
     /// about color itself (the measurement is done on the exported PNGs).
     func test25HomeScreenPaneContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let homeScreen = app.buttons["Home Screen"]
-        _ = moveToSidebarRow(app, .down, named: "Home Screen", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
 
         // Fixed press counts, no hasFocus: `SettingsToggleRow` buttons do not report focus to
         // XCUITest even on 26.5 (the first probe run walked straight past both toggles to the
-        // Catalogs row) — itself a data point for BUG-45's focus-propagation hypothesis. The
-        // pane's first focusable row is the Show Hero toggle; one Down is Nuvio-Style Hero.
+        // Catalogs row) — itself a data point for BUG-45's focus-propagation hypothesis.
+        // Revamp: the push lands on the pane's FIRST row, which is now "Upcoming Episodes"; Show
+        // Hero is one Down below it and Nuvio-Style Hero one further (it renders only while Show
+        // Hero is on — the fixture's default).
+        press(.down, times: 1)
+        pause(1)
         shot(app, "25a_show_hero_focused")
         press(.down, times: 1)
         pause(1)
@@ -2038,7 +2433,7 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     /// Cold-launches Home with the release-safe `debug.homeHeroProbe` knob(s) set, reads the
-    /// `hero_probe_blob` off Settings › About, and fails loudly (never silently skips) if the
+    /// `hero_probe_blob` off Settings › Developer, and fails loudly (never silently skips) if the
     /// buffer produced no readable lines - see `heroProbeLines`'s doc for why that can happen
     /// independent of whether `HomeHeroProbe` actually logged anything.
     @discardableResult
@@ -2053,16 +2448,15 @@ final class NuvioTVUITests: XCTestCase {
         return (app, lines)
     }
 
-    /// Navigates to Settings › About (from wherever Home currently has focus) and reads the
+    /// Navigates to Settings › Developer (from wherever Home currently has focus) and reads the
     /// `hero_probe_blob`. Split out from `launchAndReadHeroProbe` so Leg C can read it a second
     /// time mid-session, after navigating away and back, without a fresh launch.
     @discardableResult
     private func readHeroProbeAboutPane(_ app: XCUIApplication, shotPrefix: String) -> [String] {
-        openTab(app, named: "Settings")
-        let about = app.buttons["About"]
-        _ = moveFocus(.down, until: about, max: 8)
-        press(.right, times: 1)
-        pause(1.5)
+        // Revamp: the probe readouts moved from About into the Developer pane; the Hero Paint
+        // Diagnostics block is that pane's first section, so the blob is on screen on push.
+        XCTAssertTrue(openDeveloper(app), "\(shotPrefix): Settings › Developer pane did not open")
+        pause(1.0)
         shot(app, "\(shotPrefix)_about_probe")
         let lines = heroProbeLines(app)
         if lines.isEmpty {
@@ -2274,13 +2668,11 @@ final class NuvioTVUITests: XCTestCase {
 
         openTab(app, named: "Search")
         pause(1.5)
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         if searchField.waitForExistence(timeout: 4) {
-            if !searchField.hasFocus { _ = moveFocus(.up, until: searchField, max: 6) }
-            remote.press(.select)
-            pause(2.0)
+            // S1 W1: focus is already in the inline keyboard after `openTab`; type into it
+            // directly. No Menu "dismiss" — Menu from the keyboard now goes to the tab bar.
             _ = typeOnKeyboard(app, "a")
-            remote.press(.menu) // dismiss the keyboard back to results
             pause(1.5)
         }
         openTab(app, named: "Home")
@@ -2342,14 +2734,8 @@ final class NuvioTVUITests: XCTestCase {
         // Appearance toggle inside ONE launch so both measurements are of the same card (two
         // launches focused different cards and the first version of this test skipped itself).
         let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
         func focusedPosterShot(_ name: String) throws -> (CGRect, UIImage) {
             openTab(app, named: "Home")
@@ -2367,7 +2753,7 @@ final class NuvioTVUITests: XCTestCase {
             return (card.frame, screenshot.image)
         }
         openAppearance()
-        let sidebarX = appearance.frame.maxX
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
         let (frameOff, imageOff) = try focusedPosterShot("32a_ring_off")
         openAppearance()
@@ -2449,14 +2835,8 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     private func restoreAppearanceBaseline(_ app: XCUIApplication) throws {
-        let appearance = app.buttons["Appearance"]
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        let sidebarX = appearance.frame.maxX
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         // Theme → Ocean (swatches report focus; selecting the already-selected theme is a no-op).
         let ocean = app.buttons["Ocean"]
         let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
@@ -2465,13 +2845,15 @@ final class NuvioTVUITests: XCTestCase {
             remote.press(.up)
             pause(0.4)
         }
-        // Right FIRST: Ocean is the 2nd swatch, and Left from Crimson leaves the row for the
-        // sidebar (whose focus SWITCHES panes) — the recording of the 2026-08-16 failure.
+        // Right FIRST (kept from the sidebar era, harmless now: Left from Crimson used to leave
+        // the row for the sidebar, the recording of the 2026-08-16 failure).
         if !moveFocus(.right, until: ocean, max: 6) { _ = moveFocus(.left, until: ocean, max: 6) }
         if ocean.exists && ocean.hasFocus {
             remote.press(.select)
-            pause(2.5) // theme change re-identifies the tree; focus may land back on the sidebar
-            if appearance.hasFocus { press(.right, times: 1); pause(1) }
+            pause(2.5) // theme change re-identifies the tree; the path restore keeps the pane
+            if !app.descendants(matching: .any)["settings_pane_appearance"].exists {
+                XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Appearance pane lost after the theme change and could not be reopened")
+            }
         }
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
         try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: false, sidebarMaxX: sidebarX, category: "Appearance")
@@ -2480,41 +2862,114 @@ final class NuvioTVUITests: XCTestCase {
         try ensureToggleRow(app, labelPrefix: "Card Depth", on: false, sidebarMaxX: sidebarX, category: "Appearance")
     }
 
-    // MARK: - UX-8: Hide Discover toggle round-trip
+    // MARK: - UX-8 → Search & Discover A5: Discover placement round-trip
 
-    /// Settings → Content Sources → "Hide Discover" ON ⇒ the Search tab must show NO Discover
-    /// header; OFF again ⇒ it must come back (test19's existence check, inverted then restored).
-    /// Toggle rows never report focus (test25), so `ensureToggleRow` walks by counted rows and
-    /// asserts the row's accessibility value flipped — a mis-landed walk fails loudly.
-    func test29HideDiscoverToggle() throws {
+    /// Search & Discover (A5) retired UX-8's Sources "Hide Discover" toggle: Discover's place is the
+    /// Appearance › Navigation "Discover" picker (`appearance_row_discover`): Own Tab (default) /
+    /// Under Search / Off, Off syncing as Hide Discover. This leg:
+    ///   1. PICKER-DRIVEN: from the default (Own Tab: a Discover tab, no entry row on Search) picks
+    ///      Under Search → Search's idle page carries `search.discoverEntry` and the tab is gone;
+    ///      then picks Own Tab again → the tab is back, the entry row gone. Only these two values
+    ///      go through the picker: Off writes the synced Hide Discover flag, and a run that failed
+    ///      between Off and the restore would leave the fixture profile with Discover hidden.
+    ///   2. ARGUMENT-DRIVEN: `-discover_placement off` (the DEBUG override over the stored value
+    ///      and the synced flag) → no entry row and no Discover tab. The rail half of each
+    ///      placement (`rail_item_Discover`) is StageDiscoverUITests.testD06.
+    /// The `defer` re-picks Own Tab whenever the picker half moved away from it.
+    func test29DiscoverPlacementRoundTrip() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        let contentSources = app.buttons["Content Sources"]
-        func openContentSources() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Content Sources", max: 10)
+
+        func entryRow() -> XCUIElement { app.descendants(matching: .any)["search.discoverEntry"].firstMatch }
+        /// The Discover TAB: a tab-bar button labelled "Discover". Read on Search's root, where no
+        /// other button carries that label (the Appearance picker row does, so never read it there).
+        func discoverTab() -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "label == 'Discover' AND identifier != 'appearance_row_discover'")).firstMatch
+        }
+        func openSearchIdle() {
+            openTab(app, named: "Search")
+            pause(2.5)
+            XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
+        }
+        /// Appearance › Navigation › Discover → `option`. Returns whether the row then reads it.
+        func pickPlacement(_ option: String) -> Bool {
+            guard openSettingsCategory(app, named: "Appearance") else {
+                XCTFail("Settings › Appearance pane did not open")
+                return false
+            }
+            let row = app.descendants(matching: .any)["appearance_row_discover"].firstMatch
+            for _ in 0..<16 where !hasFocusByFrame(app, row) {
+                remote.press(.down)
+                pause(0.6)
+            }
+            guard hasFocusByFrame(app, row) else {
+                XCTFail("focus never reached appearance_row_discover — focused: \(focusedNodes(app).map(\.label)); not pressing Select blind")
+                return false
+            }
+            shot(app, "29_appearance_discover_row")
             remote.press(.select)
             pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            let choice = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@ AND identifier != 'appearance_row_discover'", option)).firstMatch
+            guard choice.waitForExistence(timeout: 4) else {
+                XCTFail("the Discover picker's option '\(option)' never appeared")
+                remote.press(.menu)
+                return false
+            }
+            if !moveFocus(app, .up, untilFrameOf: choice, max: 3) {
+                _ = moveFocus(app, .down, untilFrameOf: choice, max: 4)
+            }
+            guard hasFocusByFrame(app, choice) else {
+                XCTFail("focus never reached the '\(option)' option — focused: \(focusedNodes(app).map(\.label))")
+                remote.press(.menu)
+                return false
+            }
+            remote.press(.select)
+            pause(3.0) // ContentView remounts on the placement key; the pane path is restored
+            let rowAfter = app.descendants(matching: .any)["appearance_row_discover"].firstMatch
+            let reads = rowAfter.waitForExistence(timeout: 5)
+                && (((rowAfter.value as? String) ?? "").contains(option) || rowAfter.label.contains(option)
+                    || app.staticTexts[option].exists)
+            shot(app, "29_picked_\(option.replacingOccurrences(of: " ", with: "_"))")
+            return reads
         }
-        openContentSources()
-        let sidebarX = contentSources.frame.maxX
-        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: true, sidebarMaxX: sidebarX, category: "Content Sources")
-        shot(app, "29a_hide_discover_on")
 
-        openTab(app, named: "Search")
-        pause(2.5)
-        shot(app, "29b_search_without_discover")
-        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
-        XCTAssertFalse(app.staticTexts["Discover"].exists, "Discover header still on Search with Hide Discover ON")
+        // Precondition: the default is Own Tab.
+        openSearchIdle()
+        shot(app, "29a_default_own_tab")
+        guard discoverTab().exists, !entryRow().exists else {
+            throw XCTSkip("fixture precondition: the default placement is not Own Tab (Discover tab present=\(discoverTab().exists), entry row present=\(entryRow().exists)); a stored discover_placement or a synced Hide Discover is set")
+        }
 
-        openContentSources()
-        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: false, sidebarMaxX: sidebarX, category: "Content Sources")
-        openTab(app, named: "Search")
+        var restoreNeeded = false
+        defer {
+            if restoreNeeded { _ = pickPlacement("Own Tab") }
+        }
+
+        // 1a. Under Search, through the picker.
+        restoreNeeded = true
+        XCTAssertTrue(pickPlacement("Under Search"), "the Discover row must read Under Search after the pick")
+        openSearchIdle()
+        shot(app, "29b_under_search")
+        XCTAssertTrue(entryRow().waitForExistence(timeout: 6), "Under Search: Search's idle page must carry the Discover entry row")
+        XCTAssertFalse(discoverTab().exists, "Under Search: there must be no Discover tab")
+
+        // 1b. Own Tab again, through the picker (the restore).
+        XCTAssertTrue(pickPlacement("Own Tab"), "the Discover row must read Own Tab after the pick")
+        restoreNeeded = false
+        openSearchIdle()
+        shot(app, "29c_own_tab_again")
+        XCTAssertTrue(discoverTab().waitForExistence(timeout: 6), "Own Tab: the Discover tab must be back")
+        XCTAssertFalse(entryRow().exists, "Own Tab: Search's idle page must not carry the entry row")
+
+        // 2. Off, through the argument domain.
+        let off = launchToHome(extraArguments: ["-discover_placement", "off"], forceFreshLaunch: true)
+        openTab(off, named: "Search")
         pause(2.5)
-        shot(app, "29c_search_with_discover_again")
-        XCTAssertTrue(app.staticTexts["Discover"].waitForExistence(timeout: 8), "Discover did not return after Hide Discover OFF")
-        XCTAssertTrue(app.state == .runningForeground)
+        shot(off, "29d_off")
+        XCTAssertTrue(off.searchFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached (Off)")
+        XCTAssertFalse(off.descendants(matching: .any)["search.discoverEntry"].firstMatch.exists, "Off: no Discover entry row on Search")
+        XCTAssertFalse(off.buttons.matching(NSPredicate(format: "label == 'Discover'")).firstMatch.exists, "Off: no Discover tab")
+        XCTAssertTrue(off.state == .runningForeground)
     }
 
     // MARK: - FEAT-18: in-tile title while the focus trailer plays (Hide Titles on)
@@ -2527,19 +2982,14 @@ final class NuvioTVUITests: XCTestCase {
     /// Compare 28b (still art + overlay) / 28c (playing + overlay) — the bottom-left of the wide
     /// tile must carry a logo or the title text over a dark foot scrim.
     func test28InlineTrailerTitleOverlayWithHiddenLabels() throws {
-        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES"], forceFreshLaunch: true)
+        // beta.19-rc1 verdict (M3/M4): pinned to the legacy ~1 s-from-focus start (see test01).
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES", "-trailer_start_delay", "1"], forceFreshLaunch: true)
         try restoreAppearanceBaseline(app) // portrait rows, no ring — the reporter's row shape
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
         openAppearance()
-        let sidebarX = appearance.frame.maxX
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Hide Titles", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         shot(app, "28a_hide_titles_toggled_on")
 
@@ -2564,51 +3014,55 @@ final class NuvioTVUITests: XCTestCase {
     /// launch, beta.12 lesson) — into the reporter's configuration (u/mrStevenx3, `p2qudtq`
     /// t73.5: Accent Focus Ring ON, No Zoom on Focus ON), turns Card Depth on with the Bold edge,
     /// and captures Home rows at Edge Coverage = Top ("En haut" — the reporter's "upwards") and
-    /// again at Full. Restores: depth section reset, both toggles back OFF (state-aware, so a
-    /// re-run after a failure cannot invert leftover state). Human/agent compares 27b vs 27d
-    /// against the mobile app's Top rendering (a full-perimeter outline whose alpha ramps
-    /// top→bottom, `composeApp/.../CardDepthEffect.kt`).
+    /// again at Full. Human/agent compares 27b vs 27d against the mobile app's Top rendering (a
+    /// full-perimeter outline whose alpha ramps top→bottom, `composeApp/.../CardDepthEffect.kt`).
+    ///
+    /// harness-w4 (2026-10-23): C3a turned the Edge / Sheen / Edge Coverage chip rows into
+    /// `SettingsPickerRow` menus ("Edge › Subtle", "Sheen › Soft", "Edge Coverage › Top"), so the
+    /// leg drives the pickers now: focus is moved onto the row by frame and read EXACTLY (the
+    /// focused node's label is the row's title or "title, value", or an unlabelled node on the
+    /// row's line while the explainer names it; "Edge" must never match "Edge Coverage"), the
+    /// menu opens only on that read, and the option is selected only once it reads focused
+    /// (`chooseMenuOption`). The rows' values are read before anything is picked; the `defer` puts
+    /// the pickers back to them and then runs test30's baseline (Card Depth OFF, both focus
+    /// toggles OFF, Ocean), whether the leg passed, failed or skipped.
     func test27CardDepthCoverageAB() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
-        // Chip rows keep the column you arrive in — walk to the row, then Left/Right by chip
-        // (chips DO report focus).
-        func selectChip(_ name: String, rowPrefix: String, sidebarX: CGFloat) throws {
-            try walkToRowByTreeIndex(app, targetLabelPrefix: rowPrefix, sidebarMaxX: sidebarX, category: "Appearance")
-            let chip = app.buttons[name]
-            // Chips report focus: prove the walk landed on the row before sliding along it.
-            let rowChips = ["Subtle", "Balanced", "Bold", "Off", "Soft", "Bright", "Top", "Half", "Full"]
-            guard rowChips.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) else {
-                XCTFail("walk to chip row '\(rowPrefix)' did not land on a chip row"); return
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
+        var originals: [(row: String, value: String, options: [String])] = []
+        defer {
+            restoreCardDepthPickers(app, originals)
+            do {
+                try restoreAppearanceBaseline(app)
+            } catch {
+                XCTFail("test27 restore: the appearance baseline could not be restored — \(error)")
             }
-            // Right FIRST: Left from the leftmost chip leaves the row for the sidebar (pane
-            // switch), while Right past the last chip is a no-op.
-            if !moveFocus(.right, until: chip, max: 4) { _ = moveFocus(.left, until: chip, max: 4) }
-            guard chip.exists && chip.hasFocus else { XCTFail("chip \(name) never focused"); return }
-            remote.press(.select)
-            pause(0.8)
+            shot(app, "27e_restored")
         }
 
         try restoreAppearanceBaseline(app) // Ocean, portrait rows, everything OFF — a known start
         openAppearance()
-        let sidebarX = appearance.frame.maxX
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         shot(app, "27a_ring_and_nozoom_on")
         try ensureToggleRow(app, labelPrefix: "Card Depth", on: true, sidebarMaxX: sidebarX, category: "Appearance")
-        XCTAssertTrue(app.buttons["Top"].waitForExistence(timeout: 2), "Edge Coverage chips never appeared — Card Depth not on")
-        // The chip rows are labelled by their first chip in the AX tree — anchor on "Subtle"
-        // (edge row) and "Top" (coverage row).
-        try selectChip("Bold", rowPrefix: "Subtle", sidebarX: sidebarX)
-        try selectChip("Top", rowPrefix: "Top", sidebarX: sidebarX)
+        guard pollUntil(3, { self.settingsRowSnapshot(app, exactTitle: "Edge Coverage").row != nil }) else {
+            XCTFail("the Card Depth picker rows (Edge, Sheen, Edge Coverage) never appeared — Card Depth not on")
+            return
+        }
+        guard let edgeBefore = cardDepthRowValue(app, "Edge", options: Self.cardDepthEdgeOptions),
+              let coverageBefore = cardDepthRowValue(app, "Edge Coverage", options: Self.cardDepthCoverageOptions) else {
+            throw XCTSkip("the Card Depth picker values are unreadable (Edge=\(cardDepthRowValue(app, "Edge", options: Self.cardDepthEdgeOptions) ?? "?"), Edge Coverage=\(cardDepthRowValue(app, "Edge Coverage", options: Self.cardDepthCoverageOptions) ?? "?")) — nothing was picked")
+        }
+        originals = [("Edge", edgeBefore, Self.cardDepthEdgeOptions),
+                     ("Edge Coverage", coverageBefore, Self.cardDepthCoverageOptions)]
+        add(XCTAttachment(string: "Card Depth pickers before the leg: Edge=\(edgeBefore) Edge Coverage=\(coverageBefore)"))
+
+        try pickCardDepth(app, row: "Edge", option: "Bold", options: Self.cardDepthEdgeOptions)
+        try pickCardDepth(app, row: "Edge Coverage", option: "Top", options: Self.cardDepthCoverageOptions)
         shot(app, "27a2_depth_bold_top_selected")
 
         openTab(app, named: "Home")
@@ -2620,24 +3074,150 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "27b2_home_rows_depth_TOP_second_card")
 
         openAppearance()
-        try selectChip("Full", rowPrefix: "Top", sidebarX: sidebarX)
+        // Back down to the section by the toggle row (the tree-index walk handles the pane's lazy
+        // rows), then onto the picker by frame.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Card Depth", sidebarMaxX: sidebarX, category: "Appearance")
+        try pickCardDepth(app, row: "Edge Coverage", option: "Full", options: Self.cardDepthCoverageOptions)
         shot(app, "27c_depth_full_selected")
         openTab(app, named: "Home")
         press(.down, times: 3, gap: 1.0)
         pause(3)
         shot(app, "27d_home_rows_depth_FULL")
-
-        // Restore everything (depth OFF, both focus toggles OFF, theme) through the shared
-        // state-aware baseline — the same routine test30 runs standalone.
-        try restoreAppearanceBaseline(app)
-        shot(app, "27e_restored")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - Card Depth picker rows (harness-w4, test27)
+
+    /// The options of the Card Depth section's picker rows (`CardDepthControls`, English fixture).
+    private static let cardDepthEdgeOptions = ["Off", "Subtle", "Balanced", "Bold"]
+    private static let cardDepthCoverageOptions = ["Top", "Half", "Full"]
+
+    /// A row label that names EXACTLY `title`: the title itself, or a Cell's composed "title, …".
+    private func labelNamesRow(_ label: String, _ title: String) -> Bool {
+        label == title || label.hasPrefix(title + ",")
+    }
+
+    /// One snapshot: the deepest focused node, the frame of the Settings row titled exactly `title`
+    /// (its Cell, Button or Other; else its title text), and the explainer's title (which names the
+    /// focused row).
+    private func settingsRowSnapshot(_ app: XCUIApplication, exactTitle title: String)
+        -> (focused: XCUIElementSnapshot?, row: CGRect?, explainer: String) {
+        guard let root = try? app.snapshot() else { return (nil, nil, "") }
+        var focused: XCUIElementSnapshot?
+        var rowFrame: CGRect?
+        var textFrame: CGRect?
+        var explainer = ""
+        let rowTypes: [XCUIElement.ElementType] = [.cell, .button, .other]
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused = node }
+            if node.identifier == "settings_explainer_title" {
+                explainer = node.label
+            } else if node.frame.height > 0, labelNamesRow(node.label, title) {
+                if rowFrame == nil, rowTypes.contains(node.elementType) { rowFrame = node.frame }
+                if textFrame == nil, node.elementType == .staticText { textFrame = node.frame }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return (focused, rowFrame ?? textFrame, explainer)
+    }
+
+    /// Whether the Settings row titled exactly `title` holds focus: the deepest focused node names
+    /// it, or it is an unlabelled node on the row's line (±14 pt; a picker row's focus can sit on a
+    /// Cell with no label) while the explainer names no OTHER row.
+    private func cardDepthRowHasFocus(_ app: XCUIApplication, _ title: String) -> Bool {
+        let read = settingsRowSnapshot(app, exactTitle: title)
+        guard let focused = read.focused else { return false }
+        if labelNamesRow(focused.label, title) { return true }
+        if !focused.label.isEmpty { return false }
+        if !read.explainer.isEmpty, read.explainer != title { return false }
+        guard let row = read.row else { return false }
+        return abs(focused.frame.midY - row.midY) < 14
+    }
+
+    /// Moves focus onto the row titled `title`, one Up/Down at a time toward its frame, reading after
+    /// every press. Never Select.
+    private func focusSettingsRowExact(_ app: XCUIApplication, _ title: String, max: Int = 8) -> Bool {
+        for _ in 0..<max {
+            if cardDepthRowHasFocus(app, title) { return true }
+            let read = settingsRowSnapshot(app, exactTitle: title)
+            if let focused = read.focused, let row = read.row {
+                remote.press(focused.frame.midY > row.midY ? .up : .down)
+            } else {
+                remote.press(.down) // the row is below the List's materialised part
+            }
+            pause(0.7)
+        }
+        return cardDepthRowHasFocus(app, title)
+    }
+
+    /// The value the picker row titled `title` shows, from one snapshot: the row element's `.value`,
+    /// its composed "title, value" label, or an option text on the row's line, right of its start.
+    private func cardDepthRowValue(_ app: XCUIApplication, _ title: String, options: [String]) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var rowNodes: [XCUIElementSnapshot] = []
+        var optionTexts: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier != "settings_explainer_title", node.frame.height > 0 {
+                if labelNamesRow(node.label, title) {
+                    rowNodes.append(node)
+                } else if node.elementType == .staticText, options.contains(node.label) {
+                    optionTexts.append(node)
+                }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        for node in rowNodes {
+            if let value = node.value as? String, options.contains(value) { return value }
+            if let option = options.first(where: { node.label.hasSuffix(", \($0)") || node.label.contains(", \($0),") }) {
+                return option
+            }
+        }
+        guard let anchor = rowNodes.first?.frame else { return nil }
+        return optionTexts.first { abs($0.frame.midY - anchor.midY) < 14 && $0.frame.minX > anchor.minX }?.label
+    }
+
+    /// Picks `option` on the Card Depth picker row `title`: focus onto the row (read exactly), the
+    /// menu opened only on that read, the option selected only once it reads focused. Asserts the
+    /// row then shows `option`.
+    private func pickCardDepth(_ app: XCUIApplication, row title: String, option: String, options: [String]) throws {
+        guard focusSettingsRowExact(app, title) else {
+            shot(app, "unverified_card_depth_\(title)")
+            throw UnverifiedFocus(description: "focus never settled on the Card Depth '\(title)' row (focused: \(focusedLabelList(app))) — not opening its menu")
+        }
+        try chooseMenuOption(app, option, what: "Card Depth \(title)", onRow: title,
+                             rowFocused: { self.cardDepthRowHasFocus(app, title) })
+        let shows = pollUntil(3) { self.cardDepthRowValue(app, title, options: options) == option }
+        XCTAssertTrue(shows, "Card Depth '\(title)' must read '\(option)' after the pick (reads \(cardDepthRowValue(app, title, options: options) ?? "unreadable"))")
+    }
+
+    /// test27's `defer`: puts each picker the leg changed back to the value it read before (Card
+    /// Depth must be on for the pickers to exist; the baseline that follows turns it off).
+    private func restoreCardDepthPickers(_ app: XCUIApplication, _ originals: [(row: String, value: String, options: [String])]) {
+        guard !originals.isEmpty else { return }
+        guard openSettingsCategory(app, named: "Appearance") else {
+            XCTFail("test27 restore: Settings › Appearance did not open; Card Depth pickers left as the leg set them (wanted \(originals.map { "\($0.row)=\($0.value)" }))")
+            return
+        }
+        do {
+            try ensureToggleRow(app, labelPrefix: "Card Depth", on: true, sidebarMaxX: 0, category: "Appearance")
+            for original in originals where cardDepthRowValue(app, original.row, options: original.options) != original.value {
+                try pickCardDepth(app, row: original.row, option: original.value, options: original.options)
+            }
+            add(XCTAttachment(string: "Card Depth pickers restored: " + originals.map {
+                "\($0.row)=\(cardDepthRowValue(app, $0.row, options: $0.options) ?? "?") (wanted \($0.value))"
+            }.joined(separator: ", ")))
+        } catch {
+            XCTFail("test27 restore: the Card Depth pickers could not be put back to \(originals.map { "\($0.row)=\($0.value)" }) — \(error)")
+        }
     }
 
     /// Moves focus to the pane row whose label starts with `targetLabelPrefix` — a row that does
     /// NOT report focus to XCUITest (SettingsToggleRow, test25) — by COUNTING ROWS in the AX
-    /// tree. Precondition: focus is on the pane's FIRST row (just pressed Right from the
-    /// sidebar). Rows are grouped by frame.minY (chip rows hold several buttons side by side but
+    /// tree. Precondition: focus is on the pane's FIRST row (just pushed from the Settings root by
+    /// `openSettingsCategory`; revamp: there is no sidebar, so callers pass `sidebarMaxX: 0` and
+    /// every Cell with minX > 20 is a pane row — the explainer column has no Cells). Rows are grouped by frame.minY (chip rows hold several buttons side by side but
     /// are ONE row for Down/Up), so Downs = row-index distance. Lazy culling means the target
     /// may not be in the tree from the top: then hop to the LAST materialised row (its label is
     /// known and it is on-screen after the hop, so it is re-findable), re-capture, repeat.
@@ -2684,19 +3264,21 @@ final class NuvioTVUITests: XCTestCase {
             return r.firstIndex(where: { row in abs(row[0].frame.minY - y) < 6 })
         }
         var anchorLabel: String? = nil // set after a hop; looked up with lastIndex (hops only go down)
-        if focusedButton(app).map(inPane) != true {
+        if settingsRootPresent(app) || focusedButton(app).map(inPane) != true {
             for _ in 0..<24 {
-                if let f = focusedButton(app), tabNames.contains(f.label) {
-                    remote.press(.down); pause(0.8)
+                // Revamp (FEAT-50): focus sitting on the Settings ROOT list (a pane was popped, or
+                // never pushed) is recovered by pushing `category` again. Root category rows are
+                // cells too, so this check must run before the "in pane" break below.
+                if settingsRootPresent(app) {
+                    guard openSettingsCategory(app, named: category) else {
+                        XCTFail("walkToRowByTreeIndex: could not re-open '\(category)' from the Settings root")
+                        break
+                    }
                     if let g = focusedButton(app), inPane(g) { break }
                     continue
                 }
-                if let f = focusedButton(app), f.frame.minX <= sidebarMaxX + 20 {
-                    if f.label != category {
-                        if !moveToSidebarRow(app, .down, named: category, max: 8) { _ = moveToSidebarRow(app, .up, named: category, max: 8) }
-                        pause(1)
-                    }
-                    remote.press(.right); pause(0.8)
+                if let f = focusedButton(app), tabNames.contains(f.label) {
+                    remote.press(.down); pause(0.8)
                     if let g = focusedButton(app), inPane(g) { break }
                     continue
                 }
@@ -2762,13 +3344,35 @@ final class NuvioTVUITests: XCTestCase {
     /// with no usable `.value`. nil when neither shape is recognized (caller should treat that as
     /// "unknown", not silently OFF).
     private func toggleState(_ element: XCUIElement) -> Bool? {
+        // Revamp (D11 V1): the switch-styled row is a Button carrying `.accessibilityValue("On"/"Off")`
+        // plus the toggle trait, so the value can surface on a Button, a Cell or a Switch, and a
+        // Switch-typed element may report "1"/"0". Accept all of them.
         if let value = element.value as? String {
-            if value == "On" { return true }
-            if value == "Off" { return false }
+            if value == "On" || value == "1" { return true }
+            if value == "Off" || value == "0" { return false }
+        }
+        if let number = element.value as? NSNumber, element.elementType == .switch || element.elementType == .toggle {
+            return number.boolValue
         }
         let label = element.label
         if label.hasSuffix(", On") { return true }
         if label.hasSuffix(", Off") { return false }
+        return nil
+    }
+
+    /// Every element whose label starts with `labelPrefix` (the Cell, the Button / Switch, the bare
+    /// StaticText — the same row surfaces several times), scanned for a readable On/Off state:
+    /// a real `.value` first, then a Cell's composed ", On"/", Off" label. nil when none is readable.
+    private func toggleState(app: XCUIApplication, labelPrefix: String) -> Bool? {
+        let matches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
+            .allElementsBoundByIndex
+        for e in matches {
+            if let value = e.value as? String, ["On", "Off", "1", "0"].contains(value) {
+                return value == "On" || value == "1"
+            }
+        }
+        for e in matches { if let state = toggleState(e) { return state } }
         return nil
     }
 
@@ -2789,16 +3393,7 @@ final class NuvioTVUITests: XCTestCase {
         // "Off" — a silent wrong answer that pressed Select on a toggle it had not actually read.
         // Scan the candidates instead, prefer the one with a real value, and treat unreadable as
         // a loud failure.
-        func readState() -> Bool? {
-            let matches = app.descendants(matching: .any)
-                .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
-                .allElementsBoundByIndex
-            for e in matches where (e.value as? String) == "On" || (e.value as? String) == "Off" {
-                return (e.value as? String) == "On"
-            }
-            for e in matches { if let s = toggleState(e) { return s } }
-            return nil
-        }
+        func readState() -> Bool? { toggleState(app: app, labelPrefix: labelPrefix) }
         func describeCandidates() -> String {
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
@@ -2813,7 +3408,16 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         if before != on {
-            remote.press(.select)
+            // ui-legs: the walk's post-condition is checked here, not assumed: Select only on the
+            // row. The walk can finish one row past the target onto a picker row whose focused Cell
+            // has no label (first full run: on "Edge" under Card Depth), so nudge toward the row by
+            // frame, one press at a time, reading focus after each.
+            for _ in 0..<4 {
+                guard let direction = settingsRowNudge(app, labelPrefix) else { break }
+                remote.press(direction)
+                pause(0.7)
+            }
+            try pressVerified(app, "toggle_\(labelPrefix)", when: { settingsRowHasFocus(app, labelPrefix) })
             pause(1.5)
         }
         guard let after = readState() else {
@@ -2821,6 +3425,43 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         XCTAssertEqual(after, on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF") (was \(before)) — candidates: \(describeCandidates())")
+    }
+
+    /// The deepest focused element and the control of the Settings row whose label starts with
+    /// `labelPrefix` (a Cell, Button, Switch or Toggle; section headers are text and never match),
+    /// from one snapshot.
+    private func settingsRowFrames(_ app: XCUIApplication, _ labelPrefix: String) -> (focused: XCUIElementSnapshot?, row: XCUIElementSnapshot?) {
+        guard let root = try? app.snapshot() else { return (nil, nil) }
+        var focused: XCUIElementSnapshot?
+        var row: XCUIElementSnapshot?
+        let rowTypes: [XCUIElement.ElementType] = [.cell, .button, .switch, .toggle]
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { focused = node }
+            if row == nil, rowTypes.contains(node.elementType), node.label.hasPrefix(labelPrefix), node.frame.height > 0 { row = node }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return (focused, row)
+    }
+
+    /// ui-legs: whether the Settings row `labelPrefix` holds focus — the deepest focused element's
+    /// label starts with it, or that element sits on the row (same vertical centre ±14 pt; a row's
+    /// focus can sit on a Cell with no label).
+    private func settingsRowHasFocus(_ app: XCUIApplication, _ labelPrefix: String) -> Bool {
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused else { return false }
+        if focused.label.hasPrefix(labelPrefix) { return true }
+        guard let row = frames.row else { return false }
+        return abs(focused.frame.midY - row.frame.midY) < 14
+    }
+
+    /// ui-legs: the D-pad press that moves focus toward the Settings row `labelPrefix` (Up when focus
+    /// sits below it), or nil when it already holds focus or either frame is unreadable.
+    private func settingsRowNudge(_ app: XCUIApplication, _ labelPrefix: String) -> XCUIRemote.Button? {
+        if settingsRowHasFocus(app, labelPrefix) { return nil }
+        let frames = settingsRowFrames(app, labelPrefix)
+        guard let focused = frames.focused, let row = frames.row else { return nil }
+        return focused.frame.midY > row.frame.midY ? .up : .down
     }
 
     // MARK: - Home "Upcoming" row (next airing episodes of followed shows)
@@ -2877,8 +3518,8 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(badgeCard.exists, "no Upcoming card with an S00E00 code + air-date pill in the tree")
 
         // Select → the show's Detail page (a pushed screen: the root tab bar leaves the tree's
-        // visible band). Menu pops back.
-        remote.press(.select)
+        // visible band). Menu pops back. ui-legs: only while an Upcoming card reads focused.
+        try pressVerified(app, "34_upcoming_card", when: { badgeCards.allElementsBoundByIndex.contains { $0.hasFocus } })
         pause(4)
         shot(app, "34b_detail_from_upcoming")
         let homeTab = app.buttons["Home"]
@@ -2890,7 +3531,7 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - Self-hosted server discovery (review step, non-destructive)
 
-    /// Settings → Account & Services → "Connect to a Self-Hosted Server" → type the URL of a
+    /// Settings → Account & Profiles → "Connect to a Self-Hosted Server" → type the URL of a
     /// loopback stub serving `/.well-known/nuvio` → "Check Server" → the REVIEW step must show
     /// the discovered backend. Also exercises the typed-error path (the official host is
     /// refused with the "already selected" copy) and that Back returns to the entry step.
@@ -2898,26 +3539,36 @@ final class NuvioTVUITests: XCTestCase {
     /// and wipes local data on the signed-in sim; the destructive half lives in
     /// `ScratchServerSwitchTests` (scratch-device only).
     func test35ServerDiscoveryReview() throws {
+        // ui-legs (2026-10-22): this leg walks and selects rows of the Account & Profiles pane on
+        // the signed-in fixture, which a blind run must never touch. Opt-in only.
+        guard ProcessInfo.processInfo.environment["NUVIO_ACCOUNT_ROWS"] == "1" else {
+            throw XCTSkip("walks Account & Profiles rows — set TEST_RUNNER_NUVIO_ACCOUNT_ROWS=1 to run it deliberately")
+        }
         let stub = DiscoveryStubServer(document: .init(emailPasswordAuth: true, tvLogin: false))
         try stub.start()
         defer { stub.stop() }
 
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let account = app.buttons["Account & Services"]
-        if !(account.exists && account.hasFocus) { _ = moveToSidebarRow(app, .up, named: "Account & Services", max: 8) }
-        remote.press(.select)
-        pause(1.2)
-        press(.right, times: 1)
-        pause(1)
-        let sidebarX = account.frame.maxX
+        // Revamp: "Account & Services" split into "Account & Profiles" (Account, Server, Remote
+        // Setup) and "Services"; the Server section lives in the former.
+        XCTAssertTrue(openSettingsCategory(app, named: "Account & Profiles"), "Settings › Account & Profiles pane did not open")
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         shot(app, "35a_account_pane")
+        // The FA87 guest fixture runs an anonymous session: the Account section then offers
+        // "Sign In to Nuvio" instead of "Sign Out". Record which, so the closing check asserts the
+        // session the test STARTED with is untouched (signed in stays signed in, guest stays guest).
+        let signOutRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign Out'")).firstMatch
+        let signInRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign In to Nuvio'")).firstMatch
+        _ = signOutRow.waitForExistence(timeout: 4) || signInRow.waitForExistence(timeout: 2)
+        let startedSignedIn = signOutRow.exists
+        let startedAsGuest = !startedSignedIn && signInRow.exists
 
-        // The Server section sits right under Account; walk there by tree index.
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Services")
+        // The Server section sits right under Account (the "Server" value row is not focusable,
+        // so the link row is one Down from Sign In / Sign Out); walk there by tree index.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Profiles")
         let connectRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Connect to a Self-Hosted Server'")).firstMatch
-        guard connectRow.exists else { XCTFail("Server section row missing from Account & Services"); return }
-        remote.press(.select)
+        guard connectRow.exists else { XCTFail("Server section row missing from Account & Profiles"); return }
+        try pressVerified(app, "35_connect_row", when: { focusedButton(app)?.label.hasPrefix("Connect to a Self-Hosted Server") == true })
         pause(1.5)
 
         let urlField = app.textFields["server.url"]
@@ -2931,7 +3582,7 @@ final class NuvioTVUITests: XCTestCase {
         // 1) Negative path: the official host is refused with a typed error.
         func enterUrl(_ text: String) -> Bool {
             if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
-            remote.press(.select)
+            guard pressIfVerified(app, "35_url_field", when: { urlField.hasFocus }) else { return false }
             pause(2) // full-screen keyboard
             // Clear anything pre-filled (a custom server's discovery base is pre-filled when
             // one is active; on the official sim it is empty) — select-all isn't available on
@@ -2952,7 +3603,7 @@ final class NuvioTVUITests: XCTestCase {
         // Server is the leftmost control of the row, Left past it is a no-op).
         func focusCheckServer() { press(.down, times: 1); press(.left, times: 2, gap: 0.5) }
         focusCheckServer()
-        remote.press(.select)
+        try pressVerified(app, "35_check_server", when: { hasFocusByFrame(app, check) })
         pause(2)
         let officialError = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "official server")).firstMatch
         XCTAssertTrue(officialError.waitForExistence(timeout: 8), "typing the official host must surface the 'official server' discovery error")
@@ -2962,7 +3613,7 @@ final class NuvioTVUITests: XCTestCase {
         // Menu-commit keeps the text — so re-open the keyboard and replace it: tvOS keyboards
         // have a clear ("Clear") key; fall back to appending if clearing isn't reachable.
         if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
-        remote.press(.select)
+        try pressVerified(app, "35_url_field_again", when: { urlField.hasFocus })
         pause(2)
         let clearKey = app.keys["Clear"]
         if clearKey.waitForExistence(timeout: 2) {
@@ -2985,7 +3636,7 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         focusCheckServer()
-        remote.press(.select)
+        try pressVerified(app, "35_check_server_stub", when: { hasFocusByFrame(app, check) })
 
         let reviewTitle = app.staticTexts["server.review"]
         guard reviewTitle.waitForExistence(timeout: 20) else {
@@ -3007,7 +3658,7 @@ final class NuvioTVUITests: XCTestCase {
             // Back is the rightmost control of the review's button row.
             press(.down, times: 8, gap: 0.4)
             press(.right, times: 2, gap: 0.5)
-            remote.press(.select)
+            try pressVerified(app, "35_back", when: { hasFocusByFrame(app, back) })
             pause(1.5)
             XCTAssertTrue(urlField.waitForExistence(timeout: 5), "Back must return to the URL entry step")
         }
@@ -3015,8 +3666,16 @@ final class NuvioTVUITests: XCTestCase {
         remote.press(.menu) // dismiss the cover
         pause(1.5)
         XCTAssertTrue(app.state == .runningForeground)
-        // Still signed in: the Account & Services pane's Sign Out row must still be around.
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign Out'")).firstMatch.waitForExistence(timeout: 6), "the non-destructive flow must leave the account signed in")
+        // Session untouched: the Account & Profiles pane's Sign Out row (signed-in fixture) or
+        // Sign In to Nuvio row (guest fixture) must still be around.
+        if startedSignedIn {
+            XCTAssertTrue(signOutRow.waitForExistence(timeout: 6), "the non-destructive flow must leave the account signed in")
+        } else if startedAsGuest {
+            XCTAssertTrue(signInRow.waitForExistence(timeout: 6), "the non-destructive flow must leave the guest session as it was (Sign In to Nuvio row gone)")
+            throw XCTSkip("the fixture is an anonymous guest session (Account offers \"Sign In to Nuvio\"), so the signed-in half of this check cannot run; the discovery review flow and the guest-session check above did run")
+        } else {
+            throw XCTSkip("could not tell whether the fixture started signed in (neither Sign Out nor Sign In to Nuvio was found in Account & Profiles)")
+        }
     }
 
 
@@ -3033,13 +3692,7 @@ final class NuvioTVUITests: XCTestCase {
     /// passing vacuously.
     func test26ThemeSwatchFocusedLabelLegible() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Violet is neither the account's selected theme (Ocean) nor an edge swatch, so its
         // at-rest label is textSecondary and the focused read is purely the isFocused branch.
@@ -3094,13 +3747,7 @@ final class NuvioTVUITests: XCTestCase {
     /// the measured platter instead and skips loudly if no platter is ever seen.
     func test36AppearanceToggleRowFocusedContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // beta.15 §C5: real `Toggle` = `.switch` element, not `.button`.
         let ringRow = app.descendants(matching: .any).matching(
@@ -3272,6 +3919,10 @@ final class NuvioTVUITests: XCTestCase {
                 // stored settings have Autoplay Hero Trailer on would otherwise satisfy the
                 // phase assertion with the carousel's own attempt. Forced off for both legs.
                 "-hero_trailer_autoplay", "NO",
+                // beta.19-rc1 verdict (M3/M4): the baseline below must land inside the dwell, so the
+                // start delay is pinned to the legacy ~1 s-from-focus value (a fixed N counts from
+                // focus, never before the rows stop; Automatic would be rest + 1 s).
+                "-trailer_start_delay", "1",
             ]
         }
 
@@ -3437,56 +4088,78 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(posterApp.state == .runningForeground, "app must survive the poster-location leg")
     }
 
-    // MARK: - beta.15 §C5: native-List Settings focus graph
+    // MARK: - FEAT-50: Settings root / pane / pop focus graph
 
-    /// Sanity check for the SettingsView.swift focus-graph doc comment (two-pane split, C1–C3
-    /// native-List conversion): default focus lands in the sidebar (never the detail pane), Right
-    /// enters the detail list on a real focusable row, and Menu backs out one level at a time
-    /// without ever exiting the app. Existence-driven throughout (27.0-class runtimes never
-    /// report `hasFocus` reliably — see the tvOS UI sim-verification field notes) rather than
-    /// asserting on `hasFocus` directly.
+    /// Sanity check for the SettingsView.swift / SettingsRootView.swift focus-graph doc comments
+    /// (detail-settings-revamp, FEAT-50 "Native Split + Explainer"): Settings opens on the ROOT
+    /// list with focus on a category row, Down walks the ten categories to Developer (the last
+    /// row), Select pushes a pane, Menu pops back to the root with focus on the category just left,
+    /// and Menu at the root (tabs mode) never exits the app straight from the pane.
     func test40SettingsFocusGraph() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
+        // Not `openTab`: its trailing Down (the "step into content" move every other tab needs)
+        // overshoots here. The 10-02 evidence capture (`g1-settings-root.png`) shows the Settings
+        // tab's Select already landing focus in the root list, so that Down moved focus from
+        // Account & Profiles to Services before the default could be read. Walk to the tab and
+        // Select by hand; press Down only if focus is still on the tab bar afterwards.
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<40 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.35)
+        }
+        let settingsTab = app.buttons["Settings"]
+        if !moveFocus(.right, until: settingsTab, max: 6) { _ = moveFocus(.left, until: settingsTab, max: 8) }
+        try pressVerified(app, "40_settings_tab", when: { settingsTab.exists && settingsTab.hasFocus })
+        pause(2)
+        if focusedSettingsRootTitle(app) == nil, tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) {
+            press(.down, times: 1)
+        }
         shot(app, "40a_settings_default_focus")
 
-        // Default focus: the sidebar's first category (Account & Services) must exist, and the
-        // walk must NOT already be inside the detail pane — i.e. a sidebar category button is
-        // reachable without ever having pressed Right. `openTab` itself presses Down once after
-        // Select (its standard "step into content" move), so re-affirm the sidebar landing here
-        // rather than trusting that alone.
-        let accountServices = app.buttons["Account & Services"]
-        XCTAssertTrue(accountServices.waitForExistence(timeout: 6), "sidebar's first category (Account & Services) must exist on Settings entry")
+        // Root on entry: the list and its first category row exist (a cold launch has no path).
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 6),
+                      "Settings must open on the root list (settings_root_list)")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_category_accountProfiles"].exists,
+                      "the root's first category row (settings_category_accountProfiles) must exist on entry")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Account & Profiles",
+                       "cold entry must focus the first category (the root's preferred row with no last category)")
 
-        // Walk down the sidebar to About (6 categories below Account & Services: Playback,
-        // Appearance, Home Screen, Content Sources, Advanced, About).
-        let about = app.buttons["About"]
-        _ = moveFocus(.down, until: about, max: 8)
-        pause(1)
-        shot(app, "40b_sidebar_about")
-        XCTAssertTrue(about.exists, "About sidebar row must exist after walking Down x6 from the top")
+        // Down ×9 walks every category to the last one, Developer (headers are not focusable).
+        press(.down, times: 9, gap: 0.7)
+        pause(0.8)
+        shot(app, "40b_root_developer")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Developer", "Down ×9 from Account & Profiles must land on Developer")
 
-        // Right enters the detail pane on About's first focusable row (SettingsValueRow rows are
-        // NOT focusable by design — About's pane doc/kit note guarantees at least one focusable
-        // control, e.g. a link or action row, per the BUG-47 requirement). Existence-driven: after
-        // Right, SOME element beyond the sidebar's right edge must hold focus or at least exist
-        // freshly-mounted near the top of the detail list.
-        press(.right, times: 1)
-        pause(1)
-        shot(app, "40c_detail_first_row")
-        XCTAssertTrue(app.state == .runningForeground, "app must still be foreground after entering the About detail pane")
+        // Up ×1: About.
+        press(.up, times: 1)
+        pause(0.8)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "About", "Up from Developer must land on About")
 
-        // Menu: pops the detail selection back toward the sidebar / tab bar, one level at a time.
-        // It must never exit the app to the springboard — the Settings tab bar button must still
-        // exist afterward (tabs stay in the AX tree even off-screen at negative Y, per
-        // launchToHome's own recovery-dance comment; `.exists` alone is the correct check here
-        // since this assertion only cares that the app is still showing SOME reachable UI, not
-        // that the bar is scrolled into view).
+        // Select pushes the About pane.
+        try pressVerified(app, "40_about_row", when: { focusedSettingsRootTitle(app) == "About" })
+        pause(1.5)
+        shot(app, "40c_about_pane")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_about"].waitForExistence(timeout: 4),
+                      "Select on About must push settings_pane_about")
+        XCTAssertFalse(app.descendants(matching: .any)["settings_root_list"].exists,
+                       "the root list must leave the screen while a pane is pushed")
+
+        // Menu pops back to the root, focus on About (pop focus return).
         remote.press(.menu)
         pause(1.5)
-        shot(app, "40d_after_menu")
-        XCTAssertTrue(app.state == .runningForeground, "Menu from the Settings detail pane must not exit the app")
-        XCTAssertTrue(app.buttons["Settings"].exists, "Settings tab bar button must still exist after Menu — the app must not have been kicked to the springboard")
+        shot(app, "40d_after_menu_pop")
+        XCTAssertTrue(app.state == .runningForeground, "Menu from a Settings pane must not exit the app")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                      "Menu from the About pane must pop to the root list")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "About", "the pop must return focus to the About row")
+
+        // Menu at the root (tabs mode) moves focus to the tab bar; the app must still be up.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "40e_after_root_menu")
+        XCTAssertTrue(app.state == .runningForeground, "the first Menu at the Settings root must not exit the app")
+        XCTAssertTrue(app.buttons["Settings"].exists, "Settings tab bar button must still exist after Menu at the root")
     }
 
     // MARK: - P-1d: forced no-trailer must never bloom the poster
@@ -3510,6 +4183,9 @@ final class NuvioTVUITests: XCTestCase {
             // Deterministic row geometry (test37's trick): removes the Upcoming row so the
             // down×4 walk below has a stable target.
             "-home_upcoming_row_enabled", "NO",
+            // beta.19-rc1 verdict (M3/M4): pin the gate to the legacy ~1 s-from-focus start so it
+            // fires well inside this test's 10 s window (rest + 3 s ceiling + 1 s at the latest).
+            "-trailer_start_delay", "1",
         ], forceFreshLaunch: true)
 
         // Same down×4 walk as test01/test37 to a resting portrait poster in the first movies row.
@@ -3563,6 +4239,49 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground, "app must survive the forced-no-trailer dwell window")
     }
 
+    // MARK: - Seeded collections (beta.19-rc1 verdict, C)
+
+    /// beta.19-rc1 verdict (C, BUG-135): the folder-page seed — one pinned collection with one
+    /// folder of two Cinemeta catalogs plus the All tab (three chips). The source's `addonId` is
+    /// Cinemeta's manifest id (`CollectionCatalogResolver.kt` also falls back to type + catalog id).
+    ///
+    /// Gate 2 fix: the folder carries a `heroBackdropUrl` (a stable metahub background) because a
+    /// focused folder reaches the Home hero, and so the `debug_hero` probe's `fitem=nuvio-folder://…`
+    /// that test69 walks by, only when it has a backdrop or a title logo
+    /// (`HomeView.folderHeroPreview`, BUG-38). No `titleLogoUrl`: the folder page must keep its TEXT
+    /// title, which test69 reads as a `staticText`. The backdrop is never drawn on the folder page
+    /// itself (BUG-38 round three), so it changes nothing test69 measures.
+    private static let folderProbeSeedJson = """
+    [{"id":"zzfolderprobe-collection","title":"ZZFolderProbe","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderprobe-folder","title":"ZZFolderProbeFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"}]}]}]
+    """
+
+    /// Home Stage & Strip (P2 §4.3): the folder Rows page fixture. One pinned collection (so its
+    /// folder tile is Stage Home's first strip card) with one folder over FOUR sources: three
+    /// Cinemeta catalogs, which load, and a missing add-on, which fails at once ("Addon not found")
+    /// so the page's removal rule runs (`rows=3 removed=1`). No `titleLogoUrl`, so the folder title
+    /// is a staticText inside `folder_stage_logo`. Legs that read it (test104–108) pass
+    /// `-folder_layout_grid ""`, which shadows any stored Grid choice (FEAT-71 moved the Layout pick to Settings; test105 drives `-folder_layout_default`),
+    /// that choice through the Edit menu; every one re-seeds `"[]"` in its `defer`.
+    private static let folderRowsSeedJson = """
+    [{"id":"zzfolderrows-collection","title":"ZZFolderRows","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderrows-folder","title":"ZZFolderRowsFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","coverImageUrl":"https://images.metahub.space/poster/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"imdbRating"},{"provider":"addon","addonId":"zz.missing.addon","type":"movie","catalogId":"zzmissing"}]}]}]
+    """
+
+    /// beta.19-rc1 verdict (C, BUG-135): a fresh launch to Home with `json` imported as the active
+    /// profile's collections through the DEBUG-only `-debug.collectionsSeedJsonB64` knob
+    /// (`HomeViewModel.applyCollectionsSeedIfRequested`). The import REPLACES and persists the
+    /// profile's collections, so a test using this re-seeds `"[]"` in its `defer` (the FA87
+    /// fixture has none of its own). No harness guard: the app refuses the seed on a signed-in
+    /// cloud account (`[CollectionsSeed] imported=false refused=signedIn`), so the worst case on a
+    /// real account is a skipped test, never synced test data. `homeLayout` as `launchToHome`'s
+    /// (Classic unless a leg asks for Stage).
+    private func launchToHomeWithSeededCollections(_ json: String, extraArguments: [String] = [],
+                                                   homeLayout: String? = "classic") -> XCUIApplication {
+        let b64 = Data(json.utf8).base64EncodedString()
+        return launchToHome(extraArguments: ["-debug.collectionsSeedJsonB64", b64] + extraArguments,
+                            forceFreshLaunch: true, homeLayout: homeLayout)
+    }
+
+
     // MARK: - H-2: the folder page is logo-only, never the parent collection's title
 
     /// Seeds ONE collection via the DEBUG-only `-debug.collectionsSeedJsonB64` knob
@@ -3612,7 +4331,7 @@ final class NuvioTVUITests: XCTestCase {
         app.launchArguments += ["-debug.collectionsSeedJsonB64", seedB64]
         app.launch()
 
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         let continueAsGuest = app.buttons["Continue as Guest"]
         guard chris.waitForExistence(timeout: 20) || continueAsGuest.waitForExistence(timeout: 20) else {
             XCTFail("app never reached a profile gate (Chris picker or Welcome) after launch")
@@ -3630,13 +4349,13 @@ final class NuvioTVUITests: XCTestCase {
         // via the Add Profile cover (name field on screen), an existing guest instead shows a
         // normal picker tile.
         if !continueAsGuest.hasFocus { _ = moveFocus(.up, until: continueAsGuest, max: 4) }
-        remote.press(.select)
+        try pressVerified(app, "42_continue_as_guest", when: { continueAsGuest.hasFocus })
         pause(3)
 
         if app.staticTexts["Add Profile"].exists, app.textFields.firstMatch.exists {
             let name = app.textFields.firstMatch
             if !name.hasFocus { _ = moveFocus(.up, until: name, max: 4) }
-            remote.press(.select)
+            try pressVerified(app, "42_name_field", when: { name.hasFocus })
             pause(2)
             app.typeText("Guest")
             pause(0.8)
@@ -3645,7 +4364,7 @@ final class NuvioTVUITests: XCTestCase {
             let save = app.buttons["Save"]
             if save.waitForExistence(timeout: 3) {
                 if !save.hasFocus { _ = moveFocus(.down, until: save, max: 6) }
-                remote.press(.select)
+                try pressVerified(app, "42_save", when: { save.hasFocus })
                 pause(6)
             }
             // ScratchServerSwitchTests' documented finding: the picker stops taking arrow presses
@@ -3659,7 +4378,8 @@ final class NuvioTVUITests: XCTestCase {
         }
 
         if !app.buttons["Home"].exists {
-            remote.press(.select) // whichever profile tile the fresh launch defaulted focus to
+            // ui-legs: only the guest profile this leg made ("Guest"), read focused; never another tile.
+            try pressVerified(app, "42_guest_tile", when: { focusedLabelList(app).contains { $0.contains("Guest") } })
             pause(4)
         }
         guard app.buttons["Home"].waitForExistence(timeout: 30) else {
@@ -3694,8 +4414,8 @@ final class NuvioTVUITests: XCTestCase {
         )
 
         // Open the seeded folder (its tile should already hold focus — CollectionRowView's
-        // `focusSection` contains only that one tile in this seed).
-        remote.press(.select)
+        // `focusSection` contains only that one tile in this seed). ui-legs: verified, not assumed.
+        try pressVerified(app, "42_seeded_folder_tile", when: { focusedLabelList(app).contains { $0.contains(folderTitle) } })
         pause(2.5)
         shot(app, "42c_folder_page")
 
@@ -3973,69 +4693,62 @@ final class NuvioTVUITests: XCTestCase {
     /// same discipline as test12/test13.
     func test43ThemePickerKeepsCategoryAndTintsSettings() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         shot(app, "43a_appearance_before")
 
-        // Right enters the detail pane and lands on the swatch row (the pane's first row).
-        press(.right, times: 1)
-        pause(1)
+        // The push lands on the swatch row (the pane's first focusable row).
         let emerald = app.buttons["Emerald"]
         XCTAssertTrue(moveFocus(.right, until: emerald, max: 8), "must be able to reach the Emerald swatch")
-        remote.press(.select)
+        try pressVerified(app, "43_emerald", when: { emerald.exists && emerald.hasFocus })
         pause(3) // the .id() remount
 
         // Defect 1: the swatch row must still be on screen. Pre-fix this was the Account &
-        // Services pane (Sign Out / Server / Connect Trakt) and every swatch was gone.
-        // Defect 2 also shows here: the sidebar's category glyphs are emerald in this capture.
+        // Services pane (Sign Out / Server / Connect Trakt) and every swatch was gone. Revamp
+        // (FEAT-50): the Settings path (`[.appearance]`) is owned by ContentView above the `.id`
+        // boundary, so the rebuilt stack must come back on the Appearance PANE, not the root.
         shot(app, "43b_after_theme_change")
         XCTAssertTrue(
             app.buttons["Crimson"].waitForExistence(timeout: 6),
-            "the Appearance pane must survive a theme change — a swatch press that lands the user back on Account & Services reads as 'the picker did nothing'"
+            "the Appearance pane must survive a theme change — a swatch press that lands the user back on the Settings root reads as 'the picker did nothing'"
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["settings_pane_appearance"].exists,
+            "the Settings path must be restored to the Appearance pane after the theme remount"
         )
 
         // Defect 2, close up: walk down to the picker rows — the focused one wears the white
-        // platter with platter-flipped text (`SettingsAccentTint` hands the colour back to
-        // `.primary`), the ones at rest carry the theme accent on their trailing value. Capture
-        // only, no assertion: where focus lands after the `.id` remount is not deterministic
-        // (observed both ways on 2026-08-25 — sometimes still on the pressed swatch, sometimes back
-        // on the sidebar via `prefersDefaultFocus`), so this walk is best-effort framing.
+        // platter with platter-flipped text, the ones at rest carry their `value ›`. Capture only,
+        // no assertion on where focus lands after the `.id` remount (not deterministic).
         press(.down, times: 3, gap: 0.7)
         shot(app, "43c_picker_rows_focused_and_at_rest")
-        press(.left, times: 1, gap: 0.9)
-        pause(0.8)
-        shot(app, "43d_sidebar_focused")
+        // Revamp: no sidebar to step Left into — Menu pops to the root, focus on Appearance.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "43d_root_appearance_focused")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Menu from the Appearance pane must pop to the root with focus on Appearance")
 
         // Restore CRIMSON — profile-scoped, and it syncs to the real account, so this test must not
         // leave the fixture on Emerald.
         //
-        // Do it from a COLD RELAUNCH rather than walking back. There is no reliable route into the
-        // swatch row once focus has left it (three failure modes, all observed 2026-08-25): walking
-        // UP from a detail row skips the horizontal swatch `ScrollView` and exits to the tab bar;
-        // Left from a detail row goes to the SIDEBAR (focus graph) rather than along the row; and
-        // Right from the sidebar re-enters on the row that last had focus, which a category switch
-        // does not clear. A fresh launch has no such memory: Right from the sidebar lands on the
-        // pane's FIRST row — the swatch row — and Crimson is the leftmost swatch, so walking left
-        // always reaches it.
+        // Do it from a COLD RELAUNCH rather than walking back (2026-08-25: there was no reliable
+        // route back into the horizontal swatch `ScrollView` once focus had left it). A fresh
+        // launch has no path and no focus memory: the push lands on the pane's FIRST row — the
+        // swatch row — and Crimson is the leftmost swatch, so walking left always reaches it.
         let relaunched = launchToHome(forceFreshLaunch: true)
-        openTab(relaunched, named: "Settings")
-        moveToSidebarRow(relaunched, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(2)
-        press(.right, times: 1)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(relaunched, named: "Appearance"), "Settings › Appearance pane did not open after the relaunch")
+        pause(0.5)
         XCTAssertTrue(
             moveFocus(.left, until: relaunched.buttons["Crimson"], max: 8),
             "must be able to restore the fixture's CRIMSON theme"
         )
-        remote.press(.select)
+        let crimson = relaunched.buttons["Crimson"]
+        try pressVerified(relaunched, "43_crimson_restore", when: { crimson.exists && crimson.hasFocus })
         pause(3)
         shot(relaunched, "43e_restored_crimson")
 
         // Third theme change of the run, and the pane still holds.
         XCTAssertTrue(relaunched.buttons["Emerald"].waitForExistence(timeout: 6), "still on the Appearance pane")
+        XCTAssertTrue(relaunched.descendants(matching: .any)["settings_pane_appearance"].exists, "the path still holds the Appearance pane after the restore")
         XCTAssertTrue(relaunched.state == .runningForeground)
     }
 
@@ -4057,14 +4770,8 @@ final class NuvioTVUITests: XCTestCase {
     /// enabled" count changes), not the header's own collapse action.
     func test45CatalogsGroupFocusReachesExpandedRows() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let homeScreen = app.buttons["Home Screen"]
-        _ = moveToSidebarRow(app, .down, named: "Home Screen", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        let homeScreenSidebarX = homeScreen.frame.maxX
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        let homeScreenSidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
 
         // Step 1: loud prerequisite failure, not a silent pass — the fixture must have at least
         // one add-on with catalogs installed, or "Catalogs" never renders at all.
@@ -4108,7 +4815,8 @@ final class NuvioTVUITests: XCTestCase {
 
         // Step 3: expand. Focus is already parked on the Catalogs row (walkToRowByTreeIndex's
         // postcondition) — same "press Select right after the walk" idiom `ensureToggleRow` uses.
-        remote.press(.select)
+        // ui-legs: the post-condition is read here: Select only on the Catalogs header.
+        try pressVerified(app, "45_catalogs_header", when: { focusedButton(app)?.label.hasPrefix("Catalogs") == true })
         pause(1.5)
         shot(app, "45b_catalogs_expanded")
 
@@ -4153,16 +4861,40 @@ final class NuvioTVUITests: XCTestCase {
         // press whenever the inline path didn't get to it; focus hasn't moved on any of those
         // paths, so a second Select at the same position flips the same row back.
         var needsRestore = false
+        // ui-legs: the catalog row (value Enabled/Disabled) holding focus, by the deepest focused
+        // element's subtree in one snapshot; the toggle and both restore presses go only to the
+        // row read here.
+        func focusedCatalogRow() -> String? {
+            guard let root = try? app.snapshot() else { return nil }
+            var focused: [XCUIElementSnapshot] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.hasFocus { focused.append(node) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            func search(_ node: XCUIElementSnapshot) -> String? {
+                if let value = node.value as? String, value == "Enabled" || value == "Disabled" { return node.label }
+                for child in node.children { if let hit = search(child) { return hit } }
+                return nil
+            }
+            return focused.last.flatMap(search)
+        }
+        var toggledRow: String?
         addTeardownBlock { [self] in
             if needsRestore {
-                remote.press(.select)
-                pause(1.5)
+                if let row = toggledRow, focusedCatalogRow() == row {
+                    remote.press(.select)
+                    pause(1.5)
+                } else {
+                    XCTFail("restore NOT pressed: focus is not on the toggled catalog row '\(toggledRow ?? "?")' (focused: \(focusedLabelList(app))) — the fixture's catalog may be left toggled")
+                }
             }
         }
 
         remote.press(.down)
         pause(1)
-        remote.press(.select)
+        toggledRow = focusedCatalogRow()
+        try pressVerified(app, "45_first_catalog_row", when: { toggledRow != nil })
         needsRestore = true
         pause(1.5)
         shot(app, "45c_after_toggle_press")
@@ -4188,7 +4920,7 @@ final class NuvioTVUITests: XCTestCase {
 
         // Step 5: restore. Select again at the same focus position flips the same catalog row
         // back, leaving the signed-in fixture unchanged.
-        remote.press(.select)
+        try pressVerified(app, "45_restore_catalog_row", when: { toggledRow != nil && focusedCatalogRow() == toggledRow })
         needsRestore = false
         pause(1.5)
         shot(app, "45d_restored")
@@ -4218,250 +4950,140 @@ final class NuvioTVUITests: XCTestCase {
     /// reliance (the tvOS 27.0 runtime never reports it), loud prerequisite `XCTSkip`/`XCTFail`
     /// rather than a silent vacuous pass.
     func test46StillModeRiseIsZero() throws {
-        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
+        // harness-w4 (2026-10-23): the measurement reads the ARTWORK's own pixels, never an edge.
+        // The edge finder this replaced compared the focused card's strongest top-edge step with an
+        // unfocused neighbour's; in still mode the focused card's strongest step is the
+        // `stillHighlight` ring drawn around the artwork, not the artwork (first full run: the
+        // ring's outer edge at 526.5 against the neighbour's artwork top at 535.5, a phantom 9 pt
+        // "rise", with the accent ring off). The method now:
+        //  1. `-debug.cardGeometryProbe YES` publishes every card's INSET artwork box
+        //     (`poster_artwork`): the picture itself, inside the ring band, in layout coordinates.
+        //  2. The SAME card is captured focused, then unfocused (one Left hands focus to its left
+        //     neighbour); it is found again by its label in the same row, and both captures' boxes
+        //     must sit at the same height (|ΔminY| < 2 pt), so the row did not move vertically.
+        //  3. Only pixels INSIDE that card's artwork box are read: the middle 60 % of its width, a
+        //     window from 8 pt under the box top over 45 % of its height (clear of the ring band,
+        //     the shadow, the row title and the backdrop). The focused capture's row-luma profile
+        //     is matched against the unfocused one at every vertical shift within ±24 pt
+        //     (normalised correlation); the best shift is how far the picture moved on focus.
+        //  4. Still mode must not move the picture: rise = that shift, asserted 0 ± 2 pt. A system
+        //     lift or a manual scale (≈ 20 pt at the top edge) moves the content and fails.
+        // `-accent_focus_ring NO` pins the ring-less still mode (a device-local key; the argument
+        // domain shadows it for this launch only).
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES", "-accent_focus_ring", "NO",
+                                                "-debug.cardGeometryProbe", "YES"], forceFreshLaunch: true)
         openTab(app, named: "Home")
         press(.down, times: 3)
         press(.left, times: 6, gap: 0.3)
-        // 2026-08-30 failure (rise = -39.5pt, physically impossible in still mode): the edge
-        // scan caught the PINNED ROW TITLE's white glyphs instead of an artwork top. The title is
-        // overlaid at the shelf's top-LEADING corner and is wide enough to cover the first card or
-        // two, and it renders INSIDE the card's accessibility frame — the reach band the pinned
-        // rows put above every card's artwork is exactly where the title lives — so no scan window
-        // anchored on `frame.minY` can exclude it by geometry alone. Worse, title pollution and a
-        // real system lift both raise a reading, so they cannot be told apart after the fact.
-        //
-        // The fix is to stop measuring under the title at all: two rights off the leading edge puts
-        // the focused card (and its right-hand neighbour, the first rest candidate) clear of the
-        // title's horizontal band. `press(.left, times: 6)` alone parked focus on card #1, directly
-        // beneath it. test44 uses the same leading-edge walk and carries the same exposure — it has
-        // simply not been unlucky yet; worth the same change next time it is touched.
+        // Two Rights off the leading edge: the focused card AND its left neighbour (where focus goes
+        // for the unfocused capture) both sit clear of the pinned row title's band.
         press(.right, times: 2, gap: 0.3)
         pause(2)
-        guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
+
+        /// Every button's label, frame and focus flag, from one snapshot.
+        func cards() -> [(label: String, frame: CGRect, focused: Bool)] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [(label: String, frame: CGRect, focused: Bool)] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.elementType == .button { out.append((node.label, node.frame, node.hasFocus)) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+        func artwork(in card: CGRect) -> CGRect? {
+            artworkFrames(app).first { card.contains(CGPoint(x: $0.midX, y: $0.midY)) }
+        }
+
+        guard let focusedCard = cards().last(where: { $0.focused && $0.frame.width > 80 && $0.frame.height > $0.frame.width }) else {
             throw XCTSkip("no focused poster card reported (the 27.0 runtime never reports hasFocus)")
         }
-        let f = card.frame
-        let shot = XCUIScreen.main.screenshot()
-        let attachment = XCTAttachment(screenshot: shot)
-        attachment.name = "46a_still_mode"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-
-        let artH = f.width * 1.5
-
-        // 2026-08-30 device rerun #2: rise read 4.0pt EXACTLY, not a real lift. In still mode
-        // EVERY card's artwork is inset by the reserved ring band (BUG-64 / 2026-08-30 no-zoom
-        // investigation — see `ringInset` in PosterCard.swift), but only the FOCUSED card actually
-        // draws the neutral `stillHighlight` ring (`Color.white.opacity(0.85)`) into that band —
-        // an unfocused neighbour's band stays transparent, so its detected top-edge step is its
-        // ARTWORK's own top (outer+ringWidth). The focused card's STRONGEST step is instead the
-        // bright ring itself, right at the card's OUTER bounds (outer+0) — so a raw edge-to-edge
-        // comparison reads a phantom `ringWidth`pt "rise" that has nothing to do with lift.
-        // `ringWidth` itself lives in PosterCard.swift, which this UI test target cannot see (no
-        // `@testable import` — it drives the app as a black box) — duplicated here as a literal,
-        // matching PosterCard.swift's own `let ringWidth: CGFloat = 4`. Shared by both the rise
-        // measurement below and the left-edge check further down, which has the identical
-        // ring-vs-artwork ambiguity.
-        let ringWidthPt: CGFloat = 4
-        // Composited near-white (`Color.white.opacity(0.85)` over whatever's behind the card, i.e.
-        // the row/page background) reads far brighter than ordinary poster artwork at this
-        // resolution — a generous-but-honest cut, not tuned to any one poster.
-        let ringBrightness = 0.6
-
-        /// Mean of `profile` immediately AFTER `edgeIndex`, over a `ringWidthPt`-wide band
-        /// (converted to pixels via `ptPerPx`) — used to tell whether a detected step is the
-        /// bright still-mode ring or an ordinary (possibly dark) artwork edge. Generic over rows
-        /// or columns, same as `topEdgeIndex` itself.
-        func bandLumaAfter(_ profile: [Double], edgeIndex: Int, ptPerPx: CGFloat) -> Double {
-            let bandPixels = max(1, Int((ringWidthPt / ptPerPx).rounded()))
-            let start = edgeIndex + 1
-            let end = min(profile.count, start + bandPixels)
-            guard start < end else { return 0 }
-            let slice = profile[start..<end]
-            return slice.reduce(0, +) / Double(slice.count)
+        guard let focusedArt = artwork(in: focusedCard.frame) else {
+            XCTFail("no `poster_artwork` box inside the focused card \(focusedCard.frame) — `-debug.cardGeometryProbe YES` did not arm `DebugAXIdentifier`, or this is a Release build")
+            return
         }
+        let focusedShot = XCUIScreen.main.screenshot()
+        let focusedAttachment = XCTAttachment(screenshot: focusedShot)
+        focusedAttachment.name = "46a_still_mode_focused"
+        focusedAttachment.lifetime = .keepAlways
+        add(focusedAttachment)
 
-        /// Top edge at a single column centred on `centreX`, within a card whose own top sits at
-        /// `topY` (not always `f.minY` — a rest candidate can be a different card in the row).
-        /// Same strip geometry as test44's local `topEdge`, kept as its own copy here rather than
-        /// shared because test44's closes over that test's own `f`/`artH`/`shot`/`app`. Also
-        /// reports the brightness of the band right after the step (`bandLumaAfter` above), so
-        /// callers can tell a bright ring edge from an ordinary artwork edge.
-        func topEdge(centreX: CGFloat, topY: CGFloat) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            // 2026-08-30: the window used to open `artH * 0.25` (≈101pt at Large) ABOVE the card's
-            // own accessibility frame, which reaches into whatever the PREVIOUS row is drawing.
-            // Anchor it just above the card instead — 12pt is enough headroom for
-            // `topEdgeIndex`'s 3-row gradient window plus a little AX/render slack, and the
-            // remaining `artH * 0.5` of height still comfortably contains the artwork's top edge
-            // at every Poster Size (Large: window ends ~189pt below the frame top, artwork top is
-            // ~88pt below it in pinned mode, 0pt in classic).
-            let scanTop = topY - 12
-            let strip = CGRect(
-                x: centreX - f.width * 0.2, y: scanTop,
-                width: f.width * 0.4, height: artH * 0.5
-            )
-            guard strip.minX > 0, strip.maxX < app.frame.maxX, strip.minY > 0 else { return nil }
-            guard let (rows, ptPerPx) = try? rowLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size) else { return nil }
-            guard let edge = topEdgeIndex(rows) else { return nil }
-            let band = bandLumaAfter(rows, edgeIndex: edge.index, ptPerPx: ptPerPx)
-            return (strip.minY + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        press(.left, times: 1)
+        pause(1.5)
+        let unfocusedShot = XCUIScreen.main.screenshot()
+        let unfocusedAttachment = XCTAttachment(screenshot: unfocusedShot)
+        unfocusedAttachment.name = "46b_still_mode_unfocused"
+        unfocusedAttachment.lifetime = .keepAlways
+        add(unfocusedAttachment)
+        let after = cards()
+        guard let sameCard = after.first(where: {
+            $0.label == focusedCard.label && !$0.focused && abs($0.frame.minY - focusedCard.frame.minY) < 15
+        }), let unfocusedArt = artwork(in: sameCard.frame) else {
+            throw XCTSkip("the card '\(focusedCard.label)' was not found unfocused in its row after one Left (focused now: \(after.filter(\.focused).map(\.label))) — rerun")
         }
+        // Layout: the box itself must not move with focus (a layout lift would show here).
+        XCTAssertEqual(unfocusedArt.minY, focusedArt.minY, accuracy: 2,
+                       "the artwork box moved with focus (focused \(focusedArt), unfocused \(unfocusedArt)) — still mode must not lift the card's layout")
+        XCTAssertEqual(unfocusedArt.height, focusedArt.height, accuracy: 2,
+                       "the artwork box changed size with focus (focused \(focusedArt), unfocused \(unfocusedArt))")
 
-        /// 2026-08-30 device rerun: the fixture skipped with "focused 0.808, rest 0.026" — the
-        /// single centred column on the REST card landed on near-black artwork (The Hunting
-        /// Party's poster has a black top) and read as no edge at all, even though the card's
-        /// true top edge was perfectly detectable a few points either side. Sample several evenly
-        /// spaced columns across `frame`'s own width (relative fractions of `frame.width`, so this
-        /// keeps working at any Poster Size — Large, Medium, whatever the fixture is running) and
-        /// keep the strongest, the same "take the best step" idea `topEdgeIndex` already applies
-        /// within one column's row profile, one dimension out.
-        func bestTopEdge(in frame: CGRect) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            let sampleCount = 6
-            var best: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
-            for i in 0..<sampleCount {
-                // Middle 70% of the card's width — the outer margins are where a strip can clip
-                // the card's own rounded corner, a weaker step than the flat top just inboard.
-                let t = (CGFloat(i) + 0.5) / CGFloat(sampleCount)
-                let centreX = frame.minX + frame.width * (0.15 + 0.7 * t)
-                guard let candidate = topEdge(centreX: centreX, topY: frame.minY) else { continue }
-                if best == nil || candidate.strength > best!.strength { best = candidate }
+        // Pixels: the picture's row profile, focused vs unfocused, best vertical alignment.
+        let margin: CGFloat = 24
+        let windowTop = max(focusedArt.minY, unfocusedArt.minY) + 8
+        let windowHeight = min(focusedArt.height, unfocusedArt.height) * 0.45
+        func profile(_ image: UIImage, art: CGRect) throws -> (rows: [Double], ptPerPx: CGFloat) {
+            let strip = CGRect(x: art.minX + art.width * 0.2, y: windowTop - margin,
+                               width: art.width * 0.6, height: windowHeight + 2 * margin)
+            return try rowLuma(in: image, pointRect: strip, windowSize: app.frame.size)
+        }
+        let focusedProfile = try profile(focusedShot.image, art: focusedArt)
+        let unfocusedProfile = try profile(unfocusedShot.image, art: unfocusedArt)
+        let ptPerPx = focusedProfile.ptPerPx
+        let count = min(focusedProfile.rows.count, unfocusedProfile.rows.count)
+        let marginPx = Int((margin / ptPerPx).rounded())
+        let windowPx = count - 2 * marginPx
+        guard windowPx > 20 else { throw XCTSkip("artwork window too small to compare (\(windowPx) px)") }
+        /// Normalised correlation of two equal-length samples; nil when either is flat.
+        func correlation(_ a: ArraySlice<Double>, _ b: ArraySlice<Double>) -> Double? {
+            let n = Double(a.count)
+            let meanA = a.reduce(0, +) / n, meanB = b.reduce(0, +) / n
+            var cov = 0.0, varA = 0.0, varB = 0.0
+            for (x, y) in zip(a, b) {
+                cov += (x - meanA) * (y - meanB)
+                varA += (x - meanA) * (x - meanA)
+                varB += (y - meanB) * (y - meanB)
             }
-            return best
+            guard varA > 1e-6, varB > 1e-6 else { return nil }
+            return cov / (varA * varB).squareRoot()
         }
-
-        guard let focusedTopRaw = bestTopEdge(in: f) else {
-            throw XCTSkip("no usable top edge anywhere on the focused card — cannot measure still-mode rise")
+        let focusedWindow = focusedProfile.rows[marginPx..<(marginPx + windowPx)]
+        let windowMean = focusedWindow.reduce(0, +) / Double(windowPx)
+        let windowSpread = (focusedWindow.map { ($0 - windowMean) * ($0 - windowMean) }.reduce(0, +) / Double(windowPx)).squareRoot()
+        guard windowSpread > 0.01 else {
+            throw XCTSkip("the focused card's artwork is flat in the compared window (luma spread \(windowSpread)) — no structure to align; rerun on another card")
         }
-        guard focusedTopRaw.strength > 0.05 else {
-            throw XCTSkip("top-edge step too weak on the focused card itself (\(focusedTopRaw.strength)) — dark artwork, rerun")
+        // focused(y) == unfocused(y + s) when the focused picture sits s px HIGHER (a positive rise).
+        var best: (shift: Int, score: Double)?
+        for shift in -marginPx...marginPx {
+            let start = marginPx + shift
+            guard start >= 0, start + windowPx <= count,
+                  let score = correlation(focusedWindow, unfocusedProfile.rows[start..<(start + windowPx)]) else { continue }
+            if best == nil || score > best!.score { best = (shift, score) }
         }
-        // The ring-aware adjustment: if the strongest step found on the focused card is the bright
-        // still-mode ring rather than the artwork itself, the artwork's true top is `ringWidthPt`
-        // further down — the same band `ringInset` reserved for it. Honest either way: a card with
-        // NO ring drawn here (e.g. a zoom-ON regression where this setting silently stopped
-        // applying) has an ordinary, non-bright band and is compared RAW/unadjusted, so a real
-        // system lift (~20pt+) still fails loudly instead of being "corrected" away.
-        let focusedIsRingEdge = focusedTopRaw.bandLumaAfter > ringBrightness
-        let focusedArtworkY = focusedIsRingEdge ? focusedTopRaw.y + ringWidthPt : focusedTopRaw.y
-
-        // Rest baseline: try the immediate neighbour first (cheap, matches test44's own idiom),
-        // then fall back to every OTHER unfocused poster-shaped button visible on screen — read
-        // from the accessibility tree the same way `focusedButton`/`buttonSnapshots` already find
-        // cards elsewhere in this suite, nearest to the focused card first. Only a card that never
-        // yields a usable edge anywhere skips; a single dark column on one candidate no longer
-        // does.
-        let gapGuess = f.width * 0.18
-        var restCandidates: [(label: String, frame: CGRect)] = [
-            ("immediate neighbour (guessed)", CGRect(x: f.maxX + gapGuess, y: f.minY, width: f.width, height: f.height))
-        ]
-        let otherCards = buttonSnapshots(app)
-            .filter { !$0.hasFocus && $0.frame.width > 80 && $0.frame.height > $0.frame.width }
-            // Same row only — an accessibility frame's TOP is a layout property, unaffected by any
-            // paint-time focus transform, so every poster in this row shares `f.minY` regardless
-            // of which one is focused.
-            .filter { abs($0.frame.minY - f.minY) < 15 }
-            .filter { $0.frame != f }
-            .sorted { abs($0.frame.midX - f.midX) < abs($1.frame.midX - f.midX) }
-        for (i, snap) in otherCards.enumerated() {
-            restCandidates.append(("AX-tree card #\(i) at x=\(Int(snap.frame.minX))", snap.frame))
-        }
-
-        // Backstop for the same 2026-08-30 pollution class on the REST side, where it IS
-        // separable: an unfocused card's artwork can never sit ABOVE the focused card's in still
-        // mode (that is the definition of zero rise), so a rest edge measurably higher than the
-        // focused one is not a rest edge at all — it is the row title, or some other artefact
-        // above the artwork. One-sided ON PURPOSE: rejecting only edges that read HIGHER than the
-        // focused card can never mask the regression this test exists to catch, which shows up as
-        // the focused card reading higher (a POSITIVE rise). Rejected candidates fall through to
-        // the next card along, which is further from the title's leading-edge band.
-        let implausibleRiseCutoff: CGFloat = -12
-        var restTop: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
-        var triedStrengths: [String] = []
-        for candidate in restCandidates {
-            guard let edge = bestTopEdge(in: candidate.frame) else {
-                triedStrengths.append("\(candidate.label)=none")
-                continue
-            }
-            let candidateRise = edge.y - focusedArtworkY
-            if candidateRise < implausibleRiseCutoff {
-                triedStrengths.append(
-                    "\(candidate.label)=REJECTED(rise=\(String(format: "%.1f", candidateRise))pt above the focused card — row-title glyphs, not an artwork edge)")
-                continue
-            }
-            triedStrengths.append("\(candidate.label)=\(String(format: "%.3f", edge.strength))")
-            if edge.strength > 0.05 {
-                restTop = edge
-                break
-            }
-        }
-        guard let restTop else {
-            throw XCTSkip("no rest card yielded a usable top edge after trying \(restCandidates.count) candidate(s): \(triedStrengths.joined(separator: ", ")) — dark artwork, or every candidate sat under the row title (see the REJECTED notes); rerun")
-        }
-        // A rest candidate is UNFOCUSED (filtered by `hasFocus` above), so it never draws the
-        // still ring — its detected step is already its artwork's own top, no adjustment needed.
-        // Comparing it against `focusedArtworkY` (not the raw, possibly-ring `focusedTopRaw.y`) is
-        // what removes the phantom `ringWidthPt` reading.
-        let rise = restTop.y - focusedArtworkY
-        let report = XCTAttachment(string: "still mode focusedRaw=\(focusedTopRaw) focusedIsRingEdge=\(focusedIsRingEdge) focusedArtworkY=\(focusedArtworkY) restTop=\(restTop) rise=\(rise)pt artH=\(artH) frame=\(f) candidates=[\(triedStrengths.joined(separator: ", "))]")
-        report.name = "46b_edges"
+        guard let best else { throw XCTSkip("no usable alignment between the two captures") }
+        let rise = CGFloat(best.shift) * ptPerPx
+        let report = XCTAttachment(string: "still mode: card '\(focusedCard.label)' focusedArt=\(focusedArt) unfocusedArt=\(unfocusedArt) window y=\(windowTop)…\(windowTop + windowHeight) best shift=\(best.shift) px (\(rise) pt) correlation=\(String(format: "%.3f", best.score)) spread=\(String(format: "%.3f", windowSpread))")
+        report.name = "46c_artwork_alignment"
         report.lifetime = .keepAlways
         add(report)
-        NSLog("[BUG64] still mode rise=%.2fpt artH=%.1f ringEdge=%d strengths=%.3f/%.3f", rise, artH, focusedIsRingEdge ? 1 : 0, focusedTopRaw.strength, restTop.strength)
-
-        // The core assertion: still mode must not raise the focused card at all. Any measurable
-        // rise here means the button style (or something else) reintroduced a scale/lift — exactly
-        // what the beta report described ("posters continue to zoom in" with the setting on).
-        XCTAssertEqual(
-            rise, 0, accuracy: 2,
-            "still mode raised the focused card by \(rise)pt — 'No Zoom on Focus' must produce zero rise"
-        )
-
-        // Cheap layout-regression guard, same screenshot: the still ring's reserved band (BUG-64 /
-        // 2026-08-30 no-zoom investigation — see `ringInset` in PosterCard.swift) must not have
-        // shifted the artwork's LEFT edge by more than the band itself plus a point of slack. Not
-        // an equality check — the point is to catch a broken inset (e.g. a sign error, or the
-        // shrink applied at several times the intended width) breaking layout, not to pin the
-        // exact geometry. `columnLuma`/`topEdgeIndex` are the horizontal cousins of the vertical
-        // scan above (`topEdgeIndex` is a generic step-finder — it doesn't care whether the 1-D
-        // profile it's given came from rows or columns). Same ring-vs-artwork ambiguity as the
-        // rise measurement above applies here too: the focused card's strongest LEFT step can be
-        // the bright ring at the true outer edge rather than the inset artwork, so this is
-        // adjusted with the same `bandLumaAfter` technique (to the right of the step, not below).
-        func leftEdge(nearX: CGFloat) throws -> (x: CGFloat, strength: Double, bandLumaAfter: Double)? {
-            let strip = CGRect(
-                x: nearX - artH * 0.15, y: f.midY - f.width * 0.1,
-                width: artH * 0.3, height: f.width * 0.2
-            )
-            guard strip.minX > 0, strip.maxY < app.frame.maxY, let cgWidth = shot.image.cgImage?.width, cgWidth > 0 else { return nil }
-            let cols = try columnLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size)
-            guard let edge = topEdgeIndex(cols) else { return nil }
-            let ptPerPx = app.frame.width / CGFloat(cgWidth)
-            let band = bandLumaAfter(cols, edgeIndex: edge.index, ptPerPx: ptPerPx)
-            return (strip.minX + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        NSLog("[BUG64] still mode rise=%.2fpt (artwork alignment, corr %.3f) card=%@", rise, best.score, focusedCard.label)
+        guard best.score > 0.8 else {
+            throw XCTSkip("the focused and unfocused captures of '\(focusedCard.label)' do not align (best correlation \(best.score)): the artwork changed between them (a late image load?) — rerun")
         }
-        if let left = try leftEdge(nearX: f.minX), left.strength > 0.05 {
-            let leftIsRingEdge = left.bandLumaAfter > ringBrightness
-            let artworkX = leftIsRingEdge ? left.x + ringWidthPt : left.x
-            let shift = artworkX - f.minX
-            NSLog("[BUG64] still mode left-edge shift=%.2fpt (measured=%.2f ringEdge=%d frameMinX=%.2f)", shift, left.x, leftIsRingEdge ? 1 : 0, f.minX)
-            // 2026-09-04: DROPPED as an assertion, kept as a logged diagnostic only. The BUTTON's
-            // accessibility frame (`f`) is wider than the card box it wraps, because the focus
-            // treatments' drop shadow (radius 22 — test50's own finding) is part of the button's
-            // painted bounds, about 10.5pt per side in still mode. That makes `f.minX` the wrong
-            // reference for the artwork's true left edge: it reads a false ~14.8pt "shift" that
-            // has nothing to do with the ring inset this sub-check exists to catch. The correct
-            // reference is `poster_card` under `-debug.cardGeometryProbe YES` (see test49/test50),
-            // which this test does not launch with; the rise assertion above stays this test's
-            // real gate.
-            let diag = XCTAttachment(string: "still mode left-edge shift=\(shift)pt (diagnostic only, not asserted — see the 2026-09-04 comment above) measured=\(left.x) ringEdge=\(leftIsRingEdge) frameMinX=\(f.minX)")
-            diag.name = "46c_left_edge_diagnostic"
-            diag.lifetime = .keepAlways
-            add(diag)
-        }
-        // No `else`/skip here on purpose: a weak or unlocatable left-edge step is common (a bright
-        // poster edge next to a bright neighbour, or an off-screen strip near the row's leading
-        // edge) and this sub-check is explicitly the cheap, best-effort one — the rise assertion
-        // above is this test's real gate.
+
+        // The core assertion: still mode must not move the focused card's picture at all.
+        XCTAssertEqual(rise, 0, accuracy: 2,
+                       "still mode moved the focused card's artwork up by \(rise) pt — 'No Zoom on Focus' must produce zero rise")
     }
 
     // MARK: - BUG-93 (beta.17): ring mode's rise, and the platter that should not be there
@@ -4792,8 +5414,12 @@ final class NuvioTVUITests: XCTestCase {
 
         /// The whole measurement for one launch configuration.
         func measure(_ arguments: [String], leg: String, shotName: String) throws -> (card: CGRect, rail: CGRect, artwork: CGRect) {
+            // Card Depth revival review P3-4 (2026-10-23): Card Depth is forced on for this launch
+            // (`-debug.cardDepthOn YES`: master + every surface, DEBUG, never written or synced), so
+            // the leg measures the rail on every fixture instead of skipping when the synced setting
+            // is off; on a RoundedRectangle card that rail is `CardDepthBitmapLayers`.
             let app = launchToHome(
-                extraArguments: ["-debug.cardGeometryProbe", "YES"] + arguments,
+                extraArguments: ["-debug.cardGeometryProbe", "YES", "-debug.cardDepthOn", "YES"] + arguments,
                 forceFreshLaunch: true
             )
             openTab(app, named: "Home")
@@ -4930,12 +5556,16 @@ final class NuvioTVUITests: XCTestCase {
     /// Prerequisites fail LOUDLY (suite convention): a missing probe is an `XCTFail`, a fixture in
     /// the wrong Poster Size or hero mode is a self-describing `XCTSkip`.
     func test47LargePinnedRowTitleClearsArtwork() throws {
-        let app = launchToHome(forceFreshLaunch: true) // a prior still-mode process (test46) must not be reused: the settle probe reads its geometry
+        // A prior still-mode process (test46) must not be reused: the settle probe reads its
+        // geometry. Home Stage & Strip (W3): Poster Size is synced profile state and FA87 is
+        // Medium, so the DEBUG `-debug.posterSizeOverride large` knob (`PosterStyleDebugOverride`,
+        // app-wide) supplies the Large premise this leg used to skip on.
+        let app = launchToHome(extraArguments: ["-debug.posterSizeOverride", "large"], forceFreshLaunch: true)
         openTab(app, named: "Home")
         pause(1.5)
 
-        // Poster Size gate. The fixture is currently at Large, but this must not DEPEND on that
-        // silently: `debug_env` already publishes the live `PosterStyle.width`, so read it.
+        // Poster Size gate. The override above should make this Large, but it must not DEPEND on
+        // that silently: `debug_env` already publishes the live `PosterStyle.width`, so read it.
         // Artwork height is width x 1.5 (Theme.Size's own table): Small 183pt wide, Medium 220,
         // Large ~269 — so >= 260 is Large.
         let env = app.staticTexts["debug_env"]
@@ -5289,23 +5919,9 @@ final class NuvioTVUITests: XCTestCase {
             Self.probeValue(line, key: "intrLifted") ?? Self.probeValue(line, key: "intr")
         }
 
-        /// Reads the settle line the app is currently reporting, with a screenshot and an
-        /// attachment for the record.
-        func settleLine(_ app: XCUIApplication, _ shotName: String) -> String? {
-            shot(app, shotName)
-            let probe = app.staticTexts["debug_pinned"]
-            guard probe.waitForExistence(timeout: 10) else {
-                XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
-                return nil
-            }
-            let line = probe.label
-            let report = XCTAttachment(string: line)
-            report.name = "\(shotName)_settle_line"
-            report.lifetime = .keepAlways
-            add(report)
-            NSLog("[WAVE9] %@ %@", shotName, line)
-            return line
-        }
+        // `settleLine` was hoisted to the class-level `readSettleLine(_:_:)` (below, next to
+        // `walkToLastRow`) so `test58LastRowFrameFloor` can share it; every call site in this test
+        // now reads `readSettleLine` directly.
 
         /// Settle window. Wave 9b made the expected path much shorter: on an unfixable rest the
         /// corrector's `standDown` now fires the belt immediately, so the fade lands at roughly
@@ -5320,12 +5936,17 @@ final class NuvioTVUITests: XCTestCase {
         // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
         let app = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES",
+                             // The reach hold became default ON 2026-09-30; this gate's premise is OFF.
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO",
                              // Restores the pre-Wave-10 shortfall (vh 524 → ~455) so a deep park
                              // clips again, and turns the corrector off so it stays clipped. See
                              // the header for why both are needed.
                              "-debug.pinnedHeroCompressionOff", "YES",
                              "-debug.pinnedSettleDisarm", "YES",
-                             "-debug.homeScrollProbe", "YES"],
+                             "-debug.homeScrollProbe", "YES",
+                             // Home Stage & Strip (W3): the Large premise below, on the Medium FA87
+                             // fixture (DEBUG `PosterStyleDebugOverride`).
+                             "-debug.posterSizeOverride", "large"],
             forceFreshLaunch: true
         )
         openTab(app, named: "Home")
@@ -5366,7 +5987,7 @@ final class NuvioTVUITests: XCTestCase {
             pause(1.0)
             press(.up, times: 1, gap: 0.9)     // …then back up into it: bottom-anchored reveal
             pause(settleWindow)
-            guard let line = settleLine(app, "48a\(cycle)_deep_rest") else { return }
+            guard let line = readSettleLine(app, "48a\(cycle)_deep_rest") else { return }
             tried.append(line)
             guard let net = Self.probeValue(line, key: "net"), let intr = intrusion(line) else { continue }
             if net < 0, intr > intrusionArm { deepRest = line; break }
@@ -5425,14 +6046,17 @@ final class NuvioTVUITests: XCTestCase {
         // knobs recreate history; this one has to prove the belt stays out of the way in the
         // present.
         let healthyApp = launchToHome(
-            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES",
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO",
+                             // Same Large premise as leg A (W3: DEBUG override on the Medium FA87).
+                             "-debug.posterSizeOverride", "large"],
             forceFreshLaunch: true
         )
         openTab(healthyApp, named: "Home")
         pause(1.5)
         press(.down, times: 3, gap: 0.9)
         pause(settleWindow)
-        guard let healthyLine = settleLine(healthyApp, "48b_healthy_rest") else { return }
+        guard let healthyLine = readSettleLine(healthyApp, "48b_healthy_rest") else { return }
         guard let healthyMargin = Self.probeValue(healthyLine, key: "margin"),
               let healthyIntr = intrusion(healthyLine) else {
             throw XCTSkip("no focused pinned settle on the healthy leg ('\(healthyLine)') — rerun")
@@ -5454,8 +6078,119 @@ final class NuvioTVUITests: XCTestCase {
         // sitting above it indefinitely — "Services de Streaming" drawn doubled under "Genres"
         // in the tester's video. Walk down off the healthy rest above until the settle line
         // reports `last=1`, then prove the previous row is genuinely hidden and the last row's
-        // own title still clears its own artwork.
+        // own title still clears its own artwork. The rc11 shaping contract itself (BUG-87/89) is
+        // proven unconditionally by `test58LastRowFrameFloor`, which sets up a regime that FITS on
+        // purpose (Large + Hide Titles ON) — here it is only checked opportunistically, since this
+        // leg's own premise needs captions ON for Leg A above and the two premises cannot share a
+        // launch.
+        guard let walk = try walkToLastRow(
+            healthyApp, baselineLine: healthyLine, shotPrefix: "48c", settleLine: readSettleLine
+        ) else { return }
+        let lastRowLine = walk.line
+        let previousPull = walk.previousPull
+
+        guard let lastPrevHidden = Self.probeValue(lastRowLine, key: "prevHidden"),
+              let lastInBand = Self.probeValue(lastRowLine, key: "inBand"),
+              let lastBeltFaded = Self.probeValue(lastRowLine, key: "beltFaded") else {
+            XCTFail("last-row settle line is missing prevHidden=/inBand=/beltFaded= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+            return
+        }
+        // BUG-89 fixture note: this only exercises the defect for real when the last row is
+        // SHORT (a hidden-title square-tile collection) — a tall catalog last row has enough
+        // height on its own to clear the previous row's sliver regardless of the fix. BUG-87/89
+        // (rc11): the row is now frame-shaped to the regime's own link frame, so it is ~548pt tall
+        // at Large rather than the pre-rc11 ~146 — `rowH=` on the settle line says which shape
+        // this fixture actually walked into; check the attached line if this gate ever needs to
+        // explain a vacuous pass.
+        XCTAssertEqual(
+            lastPrevHidden, 1,
+            "the last row settled with the previous row's sliver still visible above it (prevHidden=\(lastPrevHidden)) — BUG-89: a short last row does not get enough trailing scroll range to hide its predecessor. Full settle line: \(lastRowLine)"
+        )
+        XCTAssertEqual(
+            lastInBand, 1,
+            "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
+        )
+        // BUG-87/89 (rc11): with the frame shaped (`rowCardLinkFrameFloor`), the focus engine's own
+        // reveal constraint should already confine this row to the band — the corrector's
+        // `settlePlan` exemption (`lastRowShaped=1`) means it must never fire on this row, and the
+        // engine must never pull a fired correction back. That shaping only applies in a FITTING
+        // regime (`fits=1`, `lastRowShaped=1`), which on this fixture needs Large + Hide Titles ON
+        // (`c0`) — but Leg A's deep-park premise above needs captions ON, so the two premises cannot
+        // share one launch. The trio below is therefore asserted only when this walk's own regime
+        // happens to land on `lastRowShaped=1`; the rc11 contract is proven unconditionally by
+        // `test58LastRowFrameFloor` instead, and only opportunistically here.
         //
+        // Finding 2 (P3): this leg samples the settle line after a fixed `settleWindow`/2.5s pause,
+        // so a correction fired earlier in that window can already have LANDED and settled by the
+        // time this line is read — `nudge=0` on its own cannot tell "never fired" apart from
+        // "fired, corrected, and is now quiet". `corrN=` (`correctionsInWindow(m.rowKey)`, the
+        // per-ROW corrections-in-window counter on the settle line) is the field that actually
+        // answers "did anything fire on THIS row", so it is asserted alongside `nudge` rather than
+        // instead of it.
+        guard let lastRowNudge = Self.probeValue(lastRowLine, key: "nudge"),
+              let lastRowCorrN = Self.probeValue(lastRowLine, key: "corrN"),
+              let lastRowPull = Self.probeValue(lastRowLine, key: "pull") else {
+            XCTFail("last-row settle line is missing nudge=/corrN=/pull= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+            return
+        }
+        if Self.probeValue(lastRowLine, key: "lastRowShaped") == 1 {
+            XCTAssertEqual(
+                lastRowNudge, 0,
+                "the corrector fired on the last row — with the frame shaped (rowCardLinkFrameFloor) the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowCorrN, 0,
+                "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
+            )
+            // `pull=` is a SESSION-WIDE counter, not this row's — comparing it to the baseline
+            // taken just before the walk entered the last row (rather than asserting `== 0`
+            // outright) is what keeps an EARLIER row's pullback, elsewhere in the same walk, from
+            // failing this check.
+            XCTAssertEqual(
+                lastRowPull, previousPull ?? lastRowPull,
+                "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
+            )
+        } else {
+            // The regime this walk landed on does not fit (`lastRowShaped=0`) — the rc11 shaping
+            // never reached this row, so the corrector is legitimately allowed to fire here. Not a
+            // failure of this leg; record it and defer to test58LastRowFrameFloor for the contract.
+            let unshaped = XCTAttachment(string: lastRowLine)
+            unshaped.name = "48_last_row_unshaped"
+            unshaped.lifetime = .keepAlways
+            add(unshaped)
+            NSLog("[WAVE9] 48 last row unshaped (regime does not fit) — rc11 contract not asserted here, see test58: %@", lastRowLine)
+        }
+        XCTAssertEqual(
+            lastBeltFaded, 0,
+            "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
+        )
+    }
+
+    /// Reads the settle line the app is currently reporting, with a screenshot and an attachment
+    /// for the record. Hoisted out of `test48BeltHidesUncorrectableTitle` so `walkToLastRow` and
+    /// `test58LastRowFrameFloor` can share it.
+    private func readSettleLine(_ app: XCUIApplication, _ shotName: String) -> String? {
+        shot(app, shotName)
+        let probe = app.staticTexts["debug_pinned"]
+        guard probe.waitForExistence(timeout: 10) else {
+            XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return nil
+        }
+        let line = probe.label
+        let report = XCTAttachment(string: line)
+        report.name = "\(shotName)_settle_line"
+        report.lifetime = .keepAlways
+        add(report)
+        NSLog("[WAVE9] %@ %@", shotName, line)
+        return line
+    }
+
+    /// Walks Down from a healthy rest until the settle line reports `last=1`. Returns the last
+    /// row's settle line and the `pull=` baseline from the last sample taken before the walk
+    /// entered the last row (see the Finding 2 note). Throws XCTSkip when the walk stalls before
+    /// `last=1`; fails when the budget runs out without a stall.
+    private func walkToLastRow(_ app: XCUIApplication, baselineLine: String, shotPrefix: String,
+                               settleLine: (XCUIApplication, String) -> String?) throws -> (line: String, previousPull: Int?, walked: [String])? {
         // 2026-09-04 (fixture + gate agent, Large poster size pass): the original budget of 14
         // was too small for the FA87 fixture's real Home catalog — a run through the full
         // Poster Size = Large gate batch walked 14 DISTINCT rows (movie:recs_movies_for_you
@@ -5470,12 +6205,21 @@ final class NuvioTVUITests: XCTestCase {
         // same as the stall-detection break — this only changes the walk's OUTER ceiling).
         let maxLastRowWalk = 40
         var lastRowLine: String?
+        var walked: [String] = []
         var previousDownRow: String?
+        // Finding 2 (P3, test48 leg B): `pull=` on the settle line counts pullbacks for the WHOLE
+        // session, not this row — an earlier row's pullback would otherwise fail the last-row
+        // check spuriously. Seed the baseline from the last settle line read BEFORE this walk even
+        // starts (leg B's own healthy-rest read above), then advance it to each non-terminal line
+        // as the walk proceeds, so by the time `last=1` shows, this holds the count from the LAST
+        // sample taken before the walk entered the last row — the last row's own line must show no
+        // NEW pullback against that baseline, not merely `pull == 0`.
+        var previousPull = Self.probeValue(baselineLine, key: "pull")
         var downWalkStalled = false
         for step in 0..<maxLastRowWalk {
             press(.down, times: 1, gap: 0.9)
             pause(2.5)
-            guard let line = settleLine(healthyApp, "48c\(step)_down_toward_last_row") else { return }
+            guard let line = settleLine(app, "\(shotPrefix)\(step)_down_toward_last_row") else { return nil }
             let rowKey = Self.probeToken(line, key: "row")
             if let rowKey, rowKey == previousDownRow {
                 // Focus stopped advancing between two consecutive Down presses — there is
@@ -5484,11 +6228,13 @@ final class NuvioTVUITests: XCTestCase {
                 downWalkStalled = true
                 break
             }
-            previousDownRow = rowKey
             if Self.probeValue(line, key: "last") == 1 {
                 lastRowLine = line
                 break
             }
+            walked.append(line)
+            previousDownRow = rowKey
+            previousPull = Self.probeValue(line, key: "pull")
         }
 
         guard let lastRowLine else {
@@ -5496,32 +6242,1175 @@ final class NuvioTVUITests: XCTestCase {
                 throw XCTSkip("FIXTURE ASSUMPTION UNMET — the down walk stopped advancing (stuck on row '\(previousDownRow ?? "?")') before `last=1` was ever reported, i.e. this fixture has fewer Home rows than the \(maxLastRowWalk)-row walk budget. BUG-89 needs a real last row to reproduce against; add more Home rows (or shorten the walk) and rerun.")
             }
             XCTFail("`last=1` never appeared across a \(maxLastRowWalk)-row down walk, and focus never visibly stalled either — the walk needs re-tuning for this fixture's row order/count.")
-            return
+            return nil
         }
 
-        guard let lastPrevHidden = Self.probeValue(lastRowLine, key: "prevHidden"),
+        return (line: lastRowLine, previousPull: previousPull, walked: walked)
+    }
+
+    /// BUG-87/89 (rc11): the last row's card labels take a `minHeight` floor equal to the regime's
+    /// link frame (`rowCardLinkFrameFloor`, `PinnedRowGeometry.lastRowLinkFrameFloor`), so the focus
+    /// engine's own reveal constraint confines the last row to the band and the corrector never
+    /// fires (`settlePlan`'s `lastRowShaped=1` exemption). `test48`'s own last-row leg can only
+    /// check this opportunistically — its Leg A premise needs captions ON, which does not fit —
+    /// so this test sets up the fitting premise on purpose: Large + Hide Titles ON on FA87 with
+    /// zoom on (regime `L403c0p0r0z0t37`, `fits=1`) — the tester's own regime, the one the rc10
+    /// pane was decoded from. Set it with `FixtureSetupTests.testSetHideLabelsOn` then
+    /// `testSetPosterSizeLarge`; restore with `testSetHideLabelsOff` + `testSetPosterSizeMedium`.
+    ///
+    /// `-no_zoom_on_focus NO` is passed explicitly (the fixture's persisted Appearance value is No
+    /// Zoom). Two runs on 2026-09-11 (zoom on, then No Zoom) both confirmed the same thing: the
+    /// FA87 simulator's focus engine parks EVERY row out of band, not just the last one — a
+    /// simulator-only gap, not a BUG-87/89 regression (the tester's own rc10 Row Settle pane shows
+    /// middle rows `inBand=1` on hardware in this exact regime).
+    ///
+    /// Zoom on, regime `L403c0p0r0z0t37` (the tester's own regime): every middle row's natural
+    /// rest reads `margin=-12 inBand=0 intrLifted=8`; the corrector nudges 12 in
+    /// (`UNEXPECTED-WITH-FIT`), the engine pulls two of those back (`pullback=1` ×2 →
+    /// `pbDisarm=1`) and every later title fades. The shaped last row rests at `margin=-13
+    /// lastRowShaped=1 prevHidden=1 corrN=0 nudge=0 pull=2 pbDisarm=1 beltFaded=1` — within a pt
+    /// or two of the middle-row rest, i.e. parity, not the in-band contract.
+    ///
+    /// No Zoom, regime `L403c0p0r0z1t37`: the same shape at `margin=-22` on the middle rows and
+    /// `margin=-18` on the shaped last row (`corrN=1`, `pullback=1` ×2 → `pbDisarm=1`, every
+    /// later title faded, last row `disarmed=1`).
+    ///
+    /// So on the simulator this test can only prove PARITY — the shaped last row rests where the
+    /// middle rows rest — plus the shaping itself (`lastRowShaped=1`) and `prevHidden=1`. It
+    /// cannot prove the in-band contract (`inBand=1`, no `nudge`/`corrN`, no belt fade), because
+    /// the simulator's engine never puts the middle rows in band to begin with; those assertions
+    /// below run only when this run's middle-row rest actually is in band, and are skipped with
+    /// an attached note otherwise — the in-band/no-nudge half stays a device check against the
+    /// tester's own Row Settle pane.
+    func test58LastRowFrameFloor() throws {
+        let app = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        guard let healthyLine = readSettleLine(app, "58a_healthy_rest") else { return }
+        if Self.probeValue(healthyLine, key: "last") == 1 {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the three-Down entry already landed on the LAST row (\(healthyLine)); this fixture has too few Home rows for a parity walk (test58 needs at least one middle row between the entry rest and the last row).")
+        }
+        guard Self.probeValue(healthyLine, key: "margin") != nil,
+              Self.probeValue(healthyLine, key: "intr") != nil else {
+            throw XCTSkip("no focused pinned settle was reported ('\(healthyLine)') — the settle re-reveal and its belt are armed only in Home's PINNED (Nuvio-style) hero container, so this fixture is running the classic in-scroll hero. Turn Settings > Home Screen > Nuvio-style hero on and rerun.")
+        }
+
+        // Regime gate: the last-row frame floor is 0 by design outside a fitting regime — it is
+        // the FIT that lets the focus engine's own reveal constraint do the confining, so this
+        // test's premise depends on it directly rather than on Poster Size/Hide Titles as a proxy.
+        let regimeToken = Self.probeToken(healthyLine, key: "regime") ?? "-"
+        guard let fits = Self.probeValue(healthyLine, key: "fits"), fits == 1 else {
+            let fitsValue = Self.probeValue(healthyLine, key: "fits")
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the pinned regime does not fit (\(regimeToken) fits=\(fitsValue.map(String.init) ?? "-")); the last-row frame floor is 0 by design outside a fitting regime. On FA87 this needs Large + Hide Titles ON: run FixtureSetupTests/testSetHideLabelsOn then testSetPosterSizeLarge and rerun. Full settle line: \(healthyLine)")
+        }
+
+        guard let walk = try walkToLastRow(
+            app, baselineLine: healthyLine, shotPrefix: "58b", settleLine: readSettleLine
+        ) else { return }
+        let lastRowLine = walk.line
+        let previousPull = walk.previousPull
+
+        guard let lastRowShaped = Self.probeValue(lastRowLine, key: "lastRowShaped"),
+              let lastPrevHidden = Self.probeValue(lastRowLine, key: "prevHidden"),
               let lastInBand = Self.probeValue(lastRowLine, key: "inBand"),
-              let lastBeltFaded = Self.probeValue(lastRowLine, key: "beltFaded") else {
-            XCTFail("last-row settle line is missing prevHidden=/inBand=/beltFaded= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+              let lastRowNudge = Self.probeValue(lastRowLine, key: "nudge"),
+              let lastRowCorrN = Self.probeValue(lastRowLine, key: "corrN"),
+              let lastRowPull = Self.probeValue(lastRowLine, key: "pull"),
+              let lastBeltFaded = Self.probeValue(lastRowLine, key: "beltFaded"),
+              let lastMargin = Self.probeValue(lastRowLine, key: "margin"),
+              let lastPbDisarm = Self.probeValue(lastRowLine, key: "pbDisarm") else {
+            XCTFail("last-row settle line is missing one of lastRowShaped=/prevHidden=/inBand=/nudge=/corrN=/pull=/beltFaded=/margin=/pbDisarm= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
             return
         }
-        // BUG-89 fixture note: this only exercises the defect for real when the last row is
-        // SHORT (a hidden-title square-tile collection, ~146pt tall at Large) — a tall catalog
-        // last row has enough height on its own to clear the previous row's sliver regardless
-        // of the fix. `rowH=` on the settle line says which shape this fixture actually walked
-        // into; check the attached line if this gate ever needs to explain a vacuous pass.
+        let bandLo = Self.probeValue(lastRowLine, key: "bandLo") ?? -4
+
+        // ── Parity data: the middle-row margins read on the way down to the last row, plus the
+        //    healthy rest read before the walk started ───────────────────────────────────────
+        guard !walk.walked.isEmpty else {
+            XCTFail("no middle row was observed between the entry rest and the last row — parity needs at least one middle-row sample. Full settle line: \(lastRowLine)")
+            return
+        }
+        let lastRowKey = Self.probeToken(lastRowLine, key: "row")
+        var middleMargins = walk.walked
+            .filter { Self.probeToken($0, key: "row") != lastRowKey }
+            .compactMap { Self.probeValue($0, key: "margin") }
+        if let healthyMargin = Self.probeValue(healthyLine, key: "margin") {
+            middleMargins.append(healthyMargin)
+        }
+        guard !middleMargins.isEmpty else {
+            XCTFail("no middle-row margins were collected on the walk to the last row — cannot compute the parity median. Full settle line: \(lastRowLine)")
+            return
+        }
+        let sortedMiddleMargins = middleMargins.sorted()
+        let medianMiddle: Double
+        if sortedMiddleMargins.count % 2 == 0 {
+            let upperIndex = sortedMiddleMargins.count / 2
+            medianMiddle = Double(sortedMiddleMargins[upperIndex - 1] + sortedMiddleMargins[upperIndex]) / 2.0
+        } else {
+            medianMiddle = Double(sortedMiddleMargins[sortedMiddleMargins.count / 2])
+        }
+        let middleMarginsReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(String(format: "%.1f", medianMiddle)) bandLo=\(bandLo)")
+        middleMarginsReport.name = "58_middle_margins"
+        middleMarginsReport.lifetime = .keepAlways
+        add(middleMarginsReport)
+
+        // ── Hard assertions: shaping + parity — provable on the simulator regardless of which
+        //    fitting regime the engine actually parks rows in ─────────────────────────────────
+        XCTAssertEqual(
+            lastRowShaped, 1,
+            "the last-row frame floor did not reach this row (lastRowShaped=\(lastRowShaped)) — `HomeView` publishes `rowCardLinkFrameFloor` on `model.rows.last` only, so either this settled row is not the one the floor was published to, or the regime changed mid-walk (regime=\(regimeToken) at the healthy rest). Full settle line: \(lastRowLine)"
+        )
         XCTAssertEqual(
             lastPrevHidden, 1,
             "the last row settled with the previous row's sliver still visible above it (prevHidden=\(lastPrevHidden)) — BUG-89: a short last row does not get enough trailing scroll range to hide its predecessor. Full settle line: \(lastRowLine)"
         )
-        XCTAssertEqual(
-            lastInBand, 1,
-            "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
+        XCTAssertTrue(
+            abs(Double(lastMargin) - medianMiddle) <= 8,
+            "the shaped last row must rest where the middle rows rest — the floor gives it the same revealed frame, so the focus engine's own reveal constraint should park it inside the same interval (last margin=\(lastMargin), middle-row median=\(String(format: "%.1f", medianMiddle)), margins=\(middleMargins)). Full settle line: \(lastRowLine)"
         )
-        XCTAssertEqual(
-            lastBeltFaded, 0,
-            "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
+
+        // ── Corrector assertions: only meaningful while the corrector is still armed going into
+        //    the last row — once a pullback has disarmed it (pbDisarm=1/disarmed=1), a fresh
+        //    nudge/corrN/pull reading proves nothing about the last row specifically ───────────
+        let lastDisarmed = Self.probeValue(lastRowLine, key: "disarmed")
+        if lastPbDisarm == 0 && lastDisarmed != 1 {
+            XCTAssertEqual(
+                lastRowNudge, 0,
+                "the corrector fired on the last row (nudge=\(lastRowNudge)) — with the frame shaped (rowCardLinkFrameFloor) and the regime fitting, the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowCorrN, 0,
+                "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowPull, previousPull ?? lastRowPull,
+                "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
+            )
+        } else {
+            let corrDisarmedReport = XCTAttachment(string: lastRowLine)
+            corrDisarmedReport.name = "58_corrector_disarmed"
+            corrDisarmedReport.lifetime = .keepAlways
+            add(corrDisarmedReport)
+            NSLog("[WAVE9] 58 corrector disarmed before the last row (pbDisarm/disarmed) — nudge/corrN/pull not asserted: %@", lastRowLine)
+        }
+
+        // ── In-band assertions: only meaningful when this run's engine actually parks the
+        //    middle rows in band — on the FA87 simulator it does not (see the doc comment
+        //    above); the in-band/belt contract is otherwise a device-only check ────────────────
+        if medianMiddle >= Double(bandLo) {
+            XCTAssertEqual(
+                lastInBand, 1,
+                "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastBeltFaded, 0,
+                "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertTrue(
+                ((bandLo - 1)...49).contains(lastMargin),
+                "the shaped last row must rest inside the band [\(bandLo), 48] (margin=\(lastMargin)). Full settle line: \(lastRowLine)"
+            )
+        } else {
+            let outOfBandReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(String(format: "%.1f", medianMiddle)) bandLo=\(bandLo)")
+            outOfBandReport.name = "58_sim_engine_parks_out_of_band"
+            outOfBandReport.lifetime = .keepAlways
+            add(outOfBandReport)
+            NSLog("[WAVE9] 58 simulator engine parks the middle rows out of band (median=%@) — in-band/belt contract is a DEVICE check (tester's Row Settle pane); parity asserted only", String(format: "%.1f", medianMiddle))
+        }
+
+        shot(app, "58c_last_row")
+    }
+
+    // MARK: - BUG-111: the detail-page studio/network chip joins the plain-label ring architecture
+
+    /// One title's outcome from `openDetailPageAndWalkToLogosRow`, kept so a final skip/return can
+    /// report what happened on EVERY title tried, not just the last one.
+    private struct DetailPageAttemptOutcome {
+        let identifier: String
+        let detail: String
+    }
+
+    /// BUG-111 review finding (fixture instability): the down×4 walk from Home lands on whatever
+    /// title happens to sit in that row slot on THIS run — the fixture's Home rows reorder between
+    /// runs — and occasionally that title has no company-logo art, or its `debug_ux6` probe is
+    /// still mid-load past the fixed press budget; both used to read identically as "anchor never
+    /// reached logos", with no way to tell a fixture limitation from a real load stall. This tries
+    /// up to `maxTitles` titles in the SAME row — `.menu` backs out to Home, `.right` moves to the
+    /// next poster, `.select` re-opens — before giving up, so one bad title doesn't sink the run.
+    ///
+    /// Pre-walk gate, fixed after a prior round wedged every title: the ONLY thing worth waiting
+    /// on before the Down walk starts is that the `debug_ux6` probe itself exists (already gated
+    /// above by a 15s `waitForExistence`), plus a short settle for layout. `DetailView.anchorNote`
+    /// legitimately reads `"-"` the whole time focus sits in the page header — `anchorPass` only
+    /// writes a row id once focus moves INTO an anchored row, which only happens after the first
+    /// Down press in the walk loop below. A gate that waited for `anchor=` to leave `"-"` before
+    /// the walk could ever begin was unsatisfiable and skipped every title. During the walk itself,
+    /// an `anchor=-` (or empty) read just means "not on an anchored row yet" and presses more
+    /// Downs; only a genuine 12-press exhaustion without ever reading `"logos"` is a failure, and
+    /// that failure message quotes whatever `lastAnchor` last read, `"-"` included.
+    ///
+    /// Precondition: focus already rests on the FIRST candidate poster (the caller does the
+    /// down×N walk to the row before calling this) and no page is open yet — the first attempt
+    /// does not press `.menu`/`.right`, only `.select`.
+    private func openDetailPageAndWalkToLogosRow(
+        _ app: XCUIApplication,
+        maxTitles: Int = 4
+    ) -> (success: Bool, lastAnchor: String, outcomes: [DetailPageAttemptOutcome]) {
+        var outcomes: [DetailPageAttemptOutcome] = []
+        var previousAttemptOpenedPage = false
+        for attempt in 1...maxTitles {
+            if attempt > 1 {
+                if previousAttemptOpenedPage {
+                    // Only back out with Menu when the previous attempt actually opened a page —
+                    // pressing Menu while focus is still on Home would act on Home's own root
+                    // instead of closing anything, and the caller's next Right + Select would then
+                    // land inside whatever is still open.
+                    remote.press(.menu)
+                    pause(2)
+                    if app.staticTexts["Press Back to exit the trailer"].exists {
+                        // A trailer cover eats one Menu press dismissing itself; the detail page
+                        // underneath is still open and needs a second press to close.
+                        remote.press(.menu)
+                        pause(2)
+                    }
+                    XCTAssertTrue(
+                        app.staticTexts["debug_ux6"].waitForNonExistence(timeout: 5),
+                        "detail page should have closed after Menu before trying the next title (attempt \(attempt))"
+                    )
+                }
+            }
+            // ui-legs (2026-10-22): one title per attempt through the shared, focus-verified Search
+            // route instead of a blind Select on the next Home card (on the fixture's Home that
+            // could be a Continue Watching card, i.e. the player, or a folder).
+            let targets = DetailEntryRoute.defaultTargets
+                + [.init(query: "Breaking Bad", type: "series"), .init(query: "The 100", type: "series")]
+            guard attempt <= targets.count,
+                  DetailEntryRoute(test: self, app: app).openDetail(targets: [targets[attempt - 1]]) else {
+                previousAttemptOpenedPage = false
+                outcomes.append(.init(identifier: "attempt \(attempt)",
+                                      detail: "the verified Search route opened no Detail page"))
+                continue
+            }
+            pause(2)
+            // Bumped from the old fixed 6s: a still-loading page (not just an absent one) is
+            // exactly the failure mode this retry exists to tell apart from "no page opened".
+            guard app.staticTexts["debug_ux6"].waitForExistence(timeout: 15) else {
+                previousAttemptOpenedPage = false
+                outcomes.append(.init(identifier: "attempt \(attempt)",
+                                       detail: "no detail page opened (debug_ux6 probe absent within 15s)"))
+                continue
+            }
+            previousAttemptOpenedPage = true
+            // FEAT-32: the page can still auto-enter the full-screen trailer cover a few seconds
+            // in — `-debug.trailerForceNoTrailer` stops the auto-play TIMER, not necessarily the
+            // cover's own entry check on every build. Back out once and settle before walking,
+            // same guard DetailRowAnchorTests uses.
+            pause(6)
+            if app.staticTexts["Press Back to exit the trailer"].exists {
+                remote.press(.menu)
+                pause(3)
+                // Re-confirm the detail page's own probe is back on screen before the Down walk
+                // starts — `trailer=1` on these pages means an auto-play cover may still be
+                // presented, and pressing Down into a still-playing cover (instead of the page
+                // underneath) would just be lost input, not a row move.
+                _ = app.staticTexts["debug_ux6"].waitForExistence(timeout: 5)
+            }
+            let identifier = pageIdentifier(app)
+            // No anchor pre-wait here: `anchor=` on `debug_ux6` legitimately stays `"-"` while
+            // focus is still in the page header, and only seeds once the walk below moves focus
+            // into a row — waiting for it to change before the walk starts can never be satisfied.
+            // The pre-walk gate is just "the probe exists" (already true by this point) plus a
+            // short settle for the page to finish laying out.
+            pause(1.5)
+            var reachedLogosRow = false
+            var lastAnchor = ""
+            for _ in 1...12 {
+                let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
+                lastAnchor = Self.probeToken(probeLabel, key: "anchor") ?? ""
+                if lastAnchor == "logos" {
+                    reachedLogosRow = true
+                    break
+                }
+                press(.down, times: 1, gap: 1.2)
+            }
+            if reachedLogosRow {
+                return (true, lastAnchor, outcomes)
+            }
+            outcomes.append(.init(identifier: identifier,
+                                   detail: "never reached the logos row within 12 Downs (last anchor read \"\(lastAnchor)\")"))
+        }
+        return (false, "", outcomes)
+    }
+
+    /// Best-effort identifying text for a skip/failure message. The detail header's `Text(title)`
+    /// (`DetailView.header`) only renders when the title has no logo art — a title WITH logo art
+    /// shows a `CachedAsyncImage` there instead, no title `staticText` at all, and neither branch
+    /// carries a `DebugAXIdentifier`/accessibility identifier this can key off — so a plain "first
+    /// non-probe staticText anywhere" scan is not stable: it can return a generic line (genres,
+    /// overview, …) that two different titles share, and on a "no page opened" attempt it walks
+    /// Home's own tree and reports one of Home's labels instead of signaling nothing opened.
+    /// Instead this anchors on the `debug_ux6` probe node itself — present only while a detail
+    /// page is up — and pairs its own text with the first `staticText` that follows it in tree
+    /// order, which is page-specific content (not shared across titles) and only exists when a
+    /// page is actually open.
+    private func pageIdentifier(_ app: XCUIApplication) -> String {
+        guard let root = try? app.snapshot() else { return "unknown" }
+        var flattened: [XCUIElementSnapshot] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            flattened.append(node)
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        guard let probeIndex = flattened.firstIndex(where: {
+            $0.elementType == .staticText && $0.label.hasPrefix("debug_ux6")
+        }) else {
+            // No page opened this attempt — nothing page-specific to report.
+            return "unknown"
+        }
+        let probeLabel = flattened[probeIndex].label
+        for node in flattened[(probeIndex + 1)...] {
+            guard node.elementType == .staticText else { continue }
+            let label = node.label
+            if !label.isEmpty, !label.hasPrefix("debug_") {
+                return "\(probeLabel) | \(label)"
+            }
+        }
+        return probeLabel
+    }
+
+    /// BUG-111 (rc12, u/mrStevenx3: focusing a STUDIO tile "zooms in on the poster instead of the
+    /// description" — the cast row was fixed in rc10/BUG-108 and he confirmed it, but
+    /// `CompanyChip` was the one card-like site left on a bare `.buttonStyle(.borderless)`).
+    ///
+    /// What the SIMULATOR can prove — same framing as test56's BUG-108 gate: not the hardware
+    /// compositor bug itself (the FEAT-14 graveyard in `PosterCard.swift` says the sim never
+    /// reproduces that), but the GEOMETRIC claim underneath the fix, that the ring and the chip's
+    /// artwork are one scaled SwiftUI layer and the rise costs the row no reflow.
+    ///
+    /// Oracle shape differs from test56's on purpose: every studio chip shares the same capsule
+    /// aspect ratio (no square/landscape/poster mix to group by), so instead of comparing a
+    /// lifted rect against a resting SIBLING in one snapshot, this compares the SAME chip index
+    /// across two snapshots — focused, then not (`Right` moves focus off it) — which needs no
+    /// aspect-ratio grouping at all.
+    func test59StudioChipRingWithZoomOn() throws {
+        let app = launchToHome(extraArguments: [
+            "-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES", "-debug.cardGeometryProbe", "YES",
+            "-home_upcoming_row_enabled", "NO", "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES", "-debug.detailScrollProbe", "YES",
+        ], forceFreshLaunch: true)
+        // test56's rule: restore the default settings on EVERY exit, the skips included — a
+        // skipped run otherwise leaves the app running with the forced ring-on/zoom-on overrides,
+        // and a later `launchToHome()` without arguments can attach to that process and inherit
+        // them (order-dependent results in the rest of the suite).
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        // DetailRowAnchorTests' route to a real DetailView: a movies catalog row (portrait cards
+        // → NavigationLink); `-home_upcoming_row_enabled NO` keeps the down×4 walk deterministic.
+        press(.down, times: 4)
+        pause(0.5)
+        let opened = openDetailPageAndWalkToLogosRow(app)
+        guard opened.success else {
+            let details = opened.outcomes.map { "\($0.identifier): \($0.detail)" }.joined(separator: "; ")
+            throw XCTSkip("tried \(opened.outcomes.count) title(s) across the row, none reached the studio/network logo row (companyLogosRow, DetailRowAnchor.logos) — \(details)")
+        }
+
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // BUG-111 review finding 1: `companyLogosRow` renders a bare, non-focusable chip for any
+        // studio/network without a TMDB id (`DetailView.swift`'s `companyLogosRow`, ~1750's
+        // `else { companyChip(entry.company) }` branch has no `NavigationLink`) — its
+        // `company_card`/`company_artwork` probes still land in the AX tree unconditionally
+        // (`DebugAXIdentifier`), so counting RENDERED rects over-counts what the remote can
+        // actually reach: a row with one focusable chip and one bare chip renders two artwork
+        // rects, and with the sole focusable one already focused, a Right press changes nothing
+        // — a false regression on healthy code. This walks the snapshot once for `button`-typed
+        // nodes (the AX role a focusable `NavigationLink` renders on tvOS — same convention as
+        // `buttonSnapshots` above) and keeps only the `company_card`/`company_artwork` rect found
+        // inside each button's own subtree, i.e. exactly the chips a Right press can reach.
+        func focusableChipProbes() -> [(card: CGRect?, artwork: CGRect?)] {
+            guard let root = try? app.snapshot() else { return [] }
+            var results: [(card: CGRect?, artwork: CGRect?)] = []
+            func firstProbes(under node: XCUIElementSnapshot) -> (card: CGRect?, artwork: CGRect?) {
+                var card: CGRect?
+                var artwork: CGRect?
+                func inner(_ n: XCUIElementSnapshot) {
+                    if card != nil && artwork != nil { return }
+                    if card == nil, n.identifier == "company_card" { card = n.frame }
+                    if artwork == nil, n.identifier == "company_artwork" { artwork = n.frame }
+                    for child in n.children { inner(child) }
+                }
+                inner(node)
+                return (card, artwork)
+            }
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.elementType == .button {
+                    let probes = firstProbes(under: node)
+                    if probes.card != nil || probes.artwork != nil {
+                        results.append(probes)
+                    }
+                }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return results
+        }
+
+        // `companyLogosRow` is the FIRST anchored row below the top block (`DetailRowAnchor.Row
+        // .logos`), so a handful of Down presses should reach it on any fixture that has one —
+        // but not every title carries TMDB logo art, so this is a bounded search with a skip, not
+        // a fixed press count. That walk (and its retry across up to 4 titles when a fixture's
+        // pick has no logo art or is still loading) already ran inside
+        // `openDetailPageAndWalkToLogosRow` above — `opened.success` guarantees focus already
+        // rests on the logos row (`anchor=logos`, the only signal the FOCUSED row is actually the
+        // logos row — `anchorPass` sets `dimModel.anchorNote` to
+        // `"\(String(describing: row)) top=… y=… note"` in `DetailView.swift`, and
+        // `DetailRowID.logos`'s `String(describing:)` is the literal "logos" in
+        // `DetailRowAnchor.swift`'s `enum DetailRowID { case logos, … }`). A prior version of this
+        // walk also accepted `namedFrames("company_artwork").count >= 2` as an early-out — that
+        // turned out to be true BEFORE the very first Down press (`DebugAXIdentifier` probes sit
+        // in the AX tree whether or not their row is on screen or focused), so `anchor=logos`
+        // stays the only exit condition.
+
+        // BUG-111 review finding 1 (continued): require at least two FOCUSABLE chips before a
+        // "nothing changed" reading counts as a regression — with a single focusable chip
+        // already focused (the row anchored on `logos` above), a Right press has nowhere to move
+        // focus TO, so the old rendered-rect count could not tell that apart from a real lift
+        // failure.
+        var focusableChips = focusableChipProbes()
+        guard !focusableChips.isEmpty else {
+            throw XCTSkip("no focusable studio/network chip on the logos row — every company_card/company_artwork probe belongs to a bare, non-tmdbId chip (companyLogosRow's non-NavigationLink branch); nothing to measure")
+        }
+
+        if focusableChips.count == 1 {
+            // Only one focusable chip on this fixture: there is no second chip for Right to move
+            // focus onto, so the two-snapshot delta below can never observe a change by design —
+            // assert the lift directly against this chip's own layout box instead. The `logos`
+            // anchor reached above already implies remote focus rests on this sole focusable
+            // chip.
+            // BUG-111 review finding (measurement baseline): capture this chip's rectangles
+            // AFTER the settling pause, not before — the pre-pause snapshot (taken the instant
+            // `anchor=logos` landed) can still be mid-settle, same reasoning as the multi-chip
+            // branch's confirmation press below.
+            pause(1)
+            let settledSoloChip = focusableChipProbes().first
+            guard let artwork = settledSoloChip?.artwork, let card = settledSoloChip?.card else {
+                throw XCTSkip("the sole focusable chip is missing a company_card or company_artwork probe rect — cannot measure its lift")
+            }
+            shot(app, "59a_studio_chip_single_focusable")
+            // Hand-mirrored from `CompanyChipMetrics.focusRise`, same figure the multi-chip path
+            // below uses — KEEP IN SYNC (see that path's comment).
+            let chipRisePt: CGFloat = 3.12
+            let expectedGrowth = 2 * chipRisePt
+            XCTAssertEqual(artwork.height - card.height, expectedGrowth, accuracy: 1.5,
+                           "the sole focusable studio chip's artwork should read ~\(expectedGrowth)pt taller than its own layout box while focused (2x the \(chipRisePt)pt rise); artwork=\(artwork) card=\(card)")
+        } else {
+            // BUG-111 review finding (walk defect): `anchor=logos` only proves the ROW is
+            // anchored, not that D-pad focus has already landed on one of ITS chips rather than
+            // still settling. The just-landed chip should already read taller than its
+            // neighbours (the resting-height baseline every assertion below depends on); if the
+            // probe instead catches every chip at the same height, spend one Right press to
+            // force focus onto a specific chip and require exactly one of them to grow —
+            // anything else means focus never reached a chip at all.
+            let confirmHeights = focusableChips.compactMap(\.artwork?.height)
+            guard confirmHeights.count == focusableChips.count else {
+                throw XCTSkip("a focusable chip is missing its company_artwork probe rect — cannot confirm focus landed on a chip")
+            }
+            if let maxHeight = confirmHeights.max(), let minHeight = confirmHeights.min(), maxHeight - minHeight < 1 {
+                press(.right, times: 1, gap: 0.6)
+                pause(1.0)
+                let afterConfirmProbes = focusableChipProbes()
+                let afterConfirmHeights = afterConfirmProbes.compactMap(\.artwork?.height)
+                let grown = confirmHeights.count == afterConfirmHeights.count
+                    ? zip(confirmHeights, afterConfirmHeights).filter { $1 - $0 >= 1 }.count
+                    : -1
+                guard grown == 1 else {
+                    XCTFail("could not confirm D-pad focus landed on a chip: every focusable company_artwork rect read the same resting height on the logos row, and a confirmation Right press grew \(grown) of them (expected exactly 1) — before=\(confirmHeights) after=\(afterConfirmHeights)")
+                    return
+                }
+                // BUG-111 review finding (measurement baseline): the confirmation Right press
+                // just moved focus, so the baseline for the two-snapshot delta below must reflect
+                // where focus rests NOW — reusing the pre-confirmation snapshot as `firstProbes`
+                // (initial heights all equal, e.g. [52,52,52]) would compare against a baseline
+                // where nothing is focused rather than the confirmed one (e.g. [52,58.24,52]); the
+                // very next Right below would then read as pure growth ([52,52,58.24]) with
+                // nothing shrinking and incorrectly skip instead of measuring real data.
+                focusableChips = afterConfirmProbes
+            }
+
+            pause(1)
+            shot(app, "59a_studio_chip_first")
+
+            let firstProbes = focusableChips
+            let firstArtwork = firstProbes.compactMap(\.artwork)
+            let firstCards = firstProbes.compactMap(\.card)
+            guard firstArtwork.count == firstProbes.count, firstCards.count == firstProbes.count else {
+                throw XCTSkip("a focusable chip is missing a company_artwork or company_card probe rect — cannot pair rects by index")
+            }
+
+            press(.right, times: 1, gap: 0.6)
+            pause(1)
+            shot(app, "59b_studio_chip_second")
+            let secondProbes = focusableChipProbes()
+            let secondArtwork = secondProbes.compactMap(\.artwork)
+            let secondCards = secondProbes.compactMap(\.card)
+            guard secondArtwork.count == firstArtwork.count, secondCards.count == firstCards.count else {
+                throw XCTSkip("focusable chip count changed after Right (\(firstArtwork.count) → \(secondArtwork.count)) — the row's chip count is not stable enough to pair rects by index")
+            }
+
+            // BUG-111 review finding 2: a stable focusable-chip COUNT (checked above) only
+            // proves the same number of focusable chips render in both snapshots — it says
+            // nothing about whether focus actually moved between two of them. tvOS 27.0's sim
+            // runtime never reports `hasFocus` on these buttons (see the
+            // tvos-ui-sim-verification memory), so the frame delta itself is the only signal
+            // available: with the lift working, the chip that HAD focus in the first snapshot
+            // SHRINKS back to rest, and the chip that gains it GROWS — exactly one of each. The
+            // chip that was focused in the FIRST snapshot and lost focus in the SECOND is the
+            // one whose height shrank — i.e. the index whose height differs the most.
+            let deltas = firstArtwork.indices.map { secondArtwork[$0].height - firstArtwork[$0].height }
+            let grownIndices = deltas.indices.filter { deltas[$0] >= 1 }
+            let shrunkIndices = deltas.indices.filter { deltas[$0] <= -1 }
+            guard !grownIndices.isEmpty || !shrunkIndices.isEmpty else {
+                // Both snapshots already agree on ≥2 focusable chips (checked above), and a
+                // Right press produced NO height change anywhere — that is the BUG-111
+                // regression itself (the focus lift never reached this row), not a fixture
+                // limitation, so this fails loudly instead of skipping quietly.
+                XCTFail("BUG-111 regression: \(firstArtwork.count) focusable company_artwork chips rendered before and after Right, but none changed height — the focus lift is not reaching the studio chip row. first=\(firstArtwork) second=\(secondArtwork)")
+                return
+            }
+            guard let index = shrunkIndices.first else {
+                // A chip grew but none shrank: Right did not move focus OFF the first chip — an
+                // honest fixture limitation (already ruled out for count > 1 above, but kept as a
+                // defensive skip rather than assumed impossible), not a regression.
+                throw XCTSkip("a company_artwork rect grew (indices \(grownIndices)) but none shrank between the two snapshots on this fixture's page")
+            }
+            let focused = firstArtwork[index]
+            let rest = secondArtwork[index]
+
+            // Hand-mirrored from `CompanyChipMetrics.focusRise` (`PlainLabelRingTests` asserts
+            // the real value against this same figure) — KEEP IN SYNC: if
+            // `PlainLabelRing.smallLabelRise` or `CompanyChipMetrics.capsuleHeight` ever change,
+            // update this constant to match.
+            let chipRisePt: CGFloat = 3.12
+
+            let rise = rest.minY - focused.minY
+            XCTAssertEqual(rise, chipRisePt, accuracy: 1,
+                           "focused studio chip rose \(rise)pt, expected ~\(chipRisePt)pt; focused=\(focused) rest=\(rest)")
+            XCTAssertEqual(focused.maxY - rest.maxY, rise, accuracy: 1,
+                           "growth must be symmetric — the chip lifts about its own centre, same as every other PlainLabelRing card")
+            XCTAssertEqual((focused.width - rest.width) / 2,
+                           rise * (rest.width / rest.height), accuracy: 1.5,
+                           "width growth must be the same uniform scale as the height growth")
+
+            // The tile's LAYOUT box must not move — `.scaleEffect` is render-only, so this is the
+            // negative control proving the rise costs the row no reflow (test56's `folder_card`
+            // check, mirrored for `company_card`).
+            if firstCards.count == secondCards.count, index < firstCards.count {
+                XCTAssertEqual(firstCards[index].minY, secondCards[index].minY, accuracy: 1,
+                               "the chip's LAYOUT box moved — the lift is not render-only")
+            }
+        }
+
+        // Optional leg B: still mode (No Zoom on, accent ring off) must draw no lift at all —
+        // BUG-111's second half of the report ("No Zoom does not reach it either").
+        let stillApp = launchToHome(extraArguments: [
+            "-no_zoom_on_focus", "YES", "-accent_focus_ring", "NO", "-debug.cardGeometryProbe", "YES",
+            "-home_upcoming_row_enabled", "NO", "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES", "-debug.detailScrollProbe", "YES",
+        ], forceFreshLaunch: true)
+        press(.down, times: 4)
+        pause(0.5)
+        // Same multi-title retry as the ring-mode leg above (same fixture-reorder risk, same
+        // "still loading vs. no logo art" ambiguity) — leg B stays OPTIONAL, so a failure across
+        // all titles is a silent `return`, not a skip.
+        let stillOpened = openDetailPageAndWalkToLogosRow(stillApp)
+        guard stillOpened.success else { return }
+        func stillNamedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? stillApp.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+        let stillBefore = stillNamedFrames("company_artwork")
+        press(.right, times: 1, gap: 0.6)
+        pause(1)
+        let stillAfter = stillNamedFrames("company_artwork")
+        if stillBefore.count == stillAfter.count {
+            let grew = zip(stillBefore, stillAfter).contains { abs($0.height - $1.height) >= 1 }
+            XCTAssertFalse(grew, "a company_artwork rect grew in still mode (No Zoom on, accent ring off) — BUG-111's second half: the chip must draw no lift at all here")
+        }
+        shot(stillApp, "59c_studio_chip_no_zoom_indicator")
+    }
+
+    // MARK: - BUG-110 (rc12): Card Depth strength presets read as visibly different
+
+    /// Tester report (rc11): "the three strength levels look identical on my TV." `CardDepthStyle`'s
+    /// `railWidth`/`railTopAlpha` now give Subtle/Balanced/Bold their own rail width AND top-stop
+    /// alpha at EVERY coverage (Full included, for the first time since BUG-31) — see
+    /// `CardDepthRailStyleTests` for the pure-function coverage of the actual formulas. This test
+    /// walks the RENDERED rail through all three presets and checks the two numbers the `debug_env`
+    /// probe now reports (`railW=`, the rail's line width; `railA=`, its top-stop alpha ×100) increase
+    /// strictly across the triptych, alongside a screenshot of each for the manual/device read.
+    ///
+    /// `-debug.cardDepthOn YES` (DEBUG-only, `CardDepthStyle.applyingDebugOverrides()`) forces the
+    /// master toggle AND all five per-surface flags on, so this doesn't depend on the synced fixture
+    /// profile having Card Depth (or the Posters surface specifically) enabled — the same fixture
+    /// assumption `test50DepthRailHugsArtworkInStillMode` has to skip on when it isn't met.
+    func test60DepthEdgeLevelsAreDistinguishable() throws {
+        func namedFrames(_ app: XCUIApplication, _ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // (name, edge strength, expected railW, expected railA) — the BUG-110 preset table.
+        let presets: [(name: String, edge: Int, expectedWidth: Int, expectedAlpha: Int)] = [
+            ("subtle", 28, 1, 35),
+            ("balanced", 42, 2, 60),
+            ("bold", 56, 3, 80),   // rc14: Bold's top stop dropped 0.90 → 0.80 (CardDepthStyle); the test lagged it
+        ]
+
+        // test56's rule: restore the untouched default configuration on every exit (including a
+        // skip), so a later `launchToHome()` never inherits a debug-forced Card Depth override.
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        var railWidths: [Int] = []
+        for preset in presets {
+            let app = launchToHome(
+                extraArguments: ["-debug.cardDepthOn", "YES",
+                                 "-debug.cardDepthEdge", "\(preset.edge)",
+                                 "-debug.cardGeometryProbe", "YES"],
+                forceFreshLaunch: true
+            )
+            openTab(app, named: "Home")
+            press(.down, times: 4, gap: 0.4)
+            pause(1.5)
+
+            let env = app.staticTexts["debug_env"]
+            guard env.waitForExistence(timeout: 15) else {
+                XCTFail("[\(preset.name)] debug_env probe missing — it is DEBUG-only (HomeView.swift); is this a Release build, or did Home never mount?")
+                throw XCTSkip("[\(preset.name)] no debug_env")
+            }
+            let label = env.label
+            guard let depth = Self.probeValue(label, key: "depth"),
+                  let edge = Self.probeValue(label, key: "edge"),
+                  let railW = Self.probeValue(label, key: "railW"),
+                  let railA = Self.probeValue(label, key: "railA") else {
+                XCTFail("[\(preset.name)] could not parse depth=/edge=/railW=/railA= out of debug_env ('\(label)') — the probe's spelling changed; it is append-only by contract")
+                throw XCTSkip("[\(preset.name)] unparseable debug_env")
+            }
+            XCTAssertEqual(depth, 1, "[\(preset.name)] -debug.cardDepthOn YES did not force Card Depth on (\(label))")
+            XCTAssertEqual(edge, preset.edge, "[\(preset.name)] -debug.cardDepthEdge \(preset.edge) did not land (\(label))")
+            XCTAssertEqual(railW, preset.expectedWidth, "[\(preset.name)] railW mismatch (\(label))")
+            XCTAssertLessThanOrEqual(
+                abs(railA - preset.expectedAlpha), 2,
+                "[\(preset.name)] railA mismatch — expected \(preset.expectedAlpha)±2, got \(railA) (\(label))"
+            )
+
+            let rails = namedFrames(app, "card_depth_rail")
+            XCTAssertFalse(
+                rails.isEmpty,
+                "[\(preset.name)] no `card_depth_rail` element in the tree — `-debug.cardGeometryProbe YES` did not arm `DebugAXIdentifier` (it is read once from NSArgumentDomain at first use), or this is a Release build."
+            )
+
+            shot(app, "60x_depth_edge_\(preset.name)")
+            railWidths.append(railW)
+        }
+
+        XCTAssertTrue(
+            railWidths.count == 3 && railWidths[0] < railWidths[1] && railWidths[1] < railWidths[2],
+            "railW did not increase strictly across Subtle/Balanced/Bold (\(railWidths)) — BUG-110's whole point is that the three presets differ"
         )
+    }
+
+    // MARK: - BUG-87 rc12 follow-up: the No Zoom reach-hold A/B
+
+    /// BUG-87 follow-up (rc12): today's sim walks in No Zoom (`L403c0p0r0z1t37`) park every row at
+    /// `margin=-22` against `bandLo=-4` — 2pt outside the belt's arm — the corrector nudges, two
+    /// pullbacks disarm it, and titles fade (see `walkToLastRow`'s doc comment above for the exact
+    /// numbers in both zoom modes). `PinnedRowTitle.FocusModeFlags.reachHoldsLift`
+    /// (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, default ON since 2026-09-30; the test still passes `YES` explicitly) spends the SAME 86
+    /// floor zoom-on already uses, which should put that same `-22` margin INSIDE a widened band
+    /// (`bandLo` `-24` instead of `-4`) — see `PinnedRowGeometryTests.testTheReachHoldWidensTheBandInsteadOfChargingLift`
+    /// for the arithmetic this test is the device-adjacent half of.
+    ///
+    /// `-no_zoom_on_focus` is deliberately NOT passed as a launch argument here, unlike
+    /// `-debug.pinnedNoZoomReachHoldsLift`: the argument-domain String form flips the two
+    /// `@AppStorage` readers (`HomeView`, `PinnedRowTitleTracking`) but not
+    /// `FocusModeFlags.current`'s bare `UserDefaults.standard.bool(forKey:)` default read, so a run
+    /// that relied on the argument to also mean "No Zoom" would measure an incoherent mix of the
+    /// two readers. The fixture already persists No Zoom (Settings › Appearance), so this asserts
+    /// `z1` in the regime key instead of re-asserting the setting itself.
+    ///
+    /// Fixture precondition, same model as `test58LastRowFrameFloor` (not set up by this test):
+    /// Poster Size Large + Hide Titles ON + No Zoom on Focus ON
+    /// (`FixtureSetupTests.testSetHideLabelsOn` then `testSetPosterSizeLarge`; restore with the
+    /// mirror pair after). Skips by name, naming the knob, if that precondition or the reach-hold
+    /// argument itself did not take.
+    func test61NoZoomReachHold() throws {
+        let app = launchToHome(
+            extraArguments: ["-debug.pinnedNoZoomReachHoldsLift", "YES", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        guard let firstLine = readSettleLine(app, "61a_first_rest") else { return }
+
+        let regimeToken = Self.probeToken(firstLine, key: "regime") ?? "-"
+        guard regimeToken.contains("z1"), regimeToken.contains("h1") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — regime='\(regimeToken)' does not show No Zoom with the reach-hold A/B active (want a key containing 'z1' and ending 'h1'). Either the fixture is not persisted as No Zoom + Large + Hide Titles ON (FixtureSetupTests.testSetHideLabelsOn then testSetPosterSizeLarge), or -debug.pinnedNoZoomReachHoldsLift did not reach PinnedRowTitle.reachHoldsLiftKnob. Full settle line: \(firstLine)")
+        }
+
+        // ── The plan line itself: the floor moved (66 → 85/86), not just the band it feeds ──────
+        let env = app.staticTexts["debug_env"]
+        guard env.waitForExistence(timeout: 15) else {
+            XCTFail("debug_env probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let envLabel = env.label
+        guard let topR = Self.probeValue(envLabel, key: "topR"),
+              let slack = Self.probeValue(envLabel, key: "slack") else {
+            XCTFail("could not parse topR=/slack= out of debug_env ('\(envLabel)') — the probe's spelling changed; it is append-only by contract")
+            return
+        }
+        XCTAssertTrue(
+            [85, 86].contains(topR),
+            "topR=\(topR) — the reach-hold should take the same 85/86 floor zoom-on uses (\(envLabel))"
+        )
+        XCTAssertLessThanOrEqual(
+            abs(slack - 4), 2,
+            "slack (rest range)=\(slack) — expected ≈4: the held plan targets 4 pt of spare room (heroPinnedRowsRestTarget, 2026-09-30) (\(envLabel))"
+        )
+
+        // ── Middle-row walk: the band/clearance math has to hold on every row visited, not just
+        //    the entry rest ───────────────────────────────────────────────────────────────────
+        var lines = [firstLine]
+        for step in 0..<4 {
+            press(.down, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "61b\(step)_walk") else { break }
+            if Self.probeValue(line, key: "last") == 1 { break }
+            lines.append(line)
+        }
+
+        var unexpectedWithFitSeen = false
+        for line in lines {
+            guard let bandLo = Self.probeValue(line, key: "bandLo"),
+                  let clearanceLift = Self.probeValue(line, key: "clearanceLift"),
+                  let clearanceLiftRaw = Self.probeValue(line, key: "clearanceLiftRaw") else {
+                XCTFail("settle line missing bandLo=/clearanceLift=/clearanceLiftRaw= — the settle line is append-only by contract. Full settle line: \(line)")
+                continue
+            }
+            XCTAssertTrue(
+                bandLo >= -25 && bandLo <= -23,
+                "bandLo=\(bandLo) — the hold should widen the band to ≈-24 (it reads -4 with the flag off). Full settle line: \(line)"
+            )
+            XCTAssertEqual(clearanceLift, 24, "clearanceLift=\(clearanceLift) — expected 24 at the held floor. Full settle line: \(line)")
+            XCTAssertEqual(clearanceLiftRaw, 24, "clearanceLiftRaw=\(clearanceLiftRaw) — expected 24, unclamped and equal to clearanceLift here. Full settle line: \(line)")
+            if line.contains("UNEXPECTED-WITH-FIT") { unexpectedWithFitSeen = true }
+        }
+        XCTAssertFalse(
+            unexpectedWithFitSeen,
+            "at least one middle-row line reported UNEXPECTED-WITH-FIT — a fitting regime still needed a correction, exactly what the reach-hold is meant to prevent"
+        )
+
+        // ── Gated on the sim engine actually parking these rows in band (test58's precedent: FA87
+        //    parks the middle rows out of band today regardless of mode, so this is attached
+        //    evidence rather than a hard assertion unless a future engine change puts them inside)
+        let allInBand = !lines.isEmpty && lines.allSatisfy { line in
+            guard let margin = Self.probeValue(line, key: "margin"),
+                  let bandLo = Self.probeValue(line, key: "bandLo") else { return false }
+            return margin >= bandLo
+        }
+        if allInBand {
+            for line in lines {
+                XCTAssertEqual(Self.probeValue(line, key: "inBand"), 1, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "corrN"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "pull"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "pbDisarm"), 0, "Full settle line: \(line)")
+                XCTAssertEqual(Self.probeValue(line, key: "beltFaded"), 0, "Full settle line: \(line)")
+            }
+        } else {
+            let report = XCTAttachment(string: lines.joined(separator: "\n"))
+            report.name = "61_sim_engine_parks_out_of_band"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[WAVE9] 61 simulator engine still parks at least one row out of band with the hold on — the in-band/no-nudge/no-fade contract is a DEVICE check (the tester's Row Settle pane); band width and clearance are asserted unconditionally above regardless")
+        }
+
+        // ── Optional control leg: relaunch WITHOUT the reach-hold argument (still No Zoom, via the
+        //    persisted fixture) and attach one settle line for comparison — informational only,
+        //    not asserted, since the flag's OFF numbers are already covered by
+        //    testTheReachHoldWidensTheBandInsteadOfChargingLift's unit-level twin ───────────────
+        let controlApp = launchToHome(extraArguments: ["-debug.homeScrollProbe", "YES"], forceFreshLaunch: true)
+        openTab(controlApp, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        if let controlLine = readSettleLine(controlApp, "61c_control_leg_off") {
+            let report = XCTAttachment(string: controlLine)
+            report.name = "61_control_leg_off"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[WAVE9] 61 control leg (reach-hold OFF, bandLo expected ≈-4): %@", controlLine)
+        }
+    }
+
+    // MARK: - BUG-112: Up does nothing after a down-then-up walk strands row 1 above the fold
+
+    /// One parsed `debug_pinned` settle line, kept per row for the BUG-112 down-vs-up comparison
+    /// (`runBug112UpWalk`). Every field but `row`/`raw` is optional because the `settlePlan`
+    /// terminal-outcome branches append different tails to the same base line — see
+    /// `BrowseComponents.swift`'s own `key=value` field-list doc comment — so a caller has to
+    /// decide row by row whether a missing key is fatal, the same discipline `test58`/`test61`
+    /// already use with bare `Self.probeValue` calls.
+    private struct Bug112Sample {
+        let row: String
+        let margin: Int?
+        let y: Int?
+        let rowH: Int?
+        let lastRowShaped: Int?
+        let seq: Int?
+        let nudge: Int?
+        let pull: Int?
+        let pbDisarm: Int?
+        let disarmed: Int?
+        let inBand: Int?
+        let raw: String
+    }
+
+    private static func parseBug112Sample(_ line: String) -> Bug112Sample {
+        Bug112Sample(
+            row: probeToken(line, key: "row") ?? "-",
+            margin: probeValue(line, key: "margin"),
+            y: probeValue(line, key: "y"),
+            rowH: probeValue(line, key: "rowH"),
+            lastRowShaped: probeValue(line, key: "lastRowShaped"),
+            seq: probeValue(line, key: "seq"),
+            nudge: probeValue(line, key: "nudge"),
+            pull: probeValue(line, key: "pull"),
+            pbDisarm: probeValue(line, key: "pbDisarm"),
+            disarmed: probeValue(line, key: "disarmed"),
+            inBand: probeValue(line, key: "inBand"),
+            raw: line
+        )
+    }
+
+    /// Shared body for `test63Bug112FirstRowReachableAfterUpWalk` / `test64Bug112UpWalkWithCompressionOff`
+    /// — the two tests differ only in `app`'s launch arguments and this helper's gate parameters.
+    ///
+    /// BUG-112 (reported on Apple TV hardware, beta.18-rc11, Medium+ poster size with Hide Titles
+    /// ON — regime key prefix `P351c0`, carousel hero, zoom on): walk Down to Home's last row,
+    /// walk back Up to row 2, then press Up again — nothing happens. Row 1 (a collection folder
+    /// row) sits scrolled entirely above the rows viewport, clipped, and tvOS will not focus a
+    /// clipped item. The tester's Row Settle probe shows rows 2–4 parking at `margin=-102…-108`
+    /// on the way up versus roughly `-8` on the way down.
+    ///
+    /// H1 (what the down-vs-up table is evidence for): rc11's `rowCardLinkFrameFloor`
+    /// (`PinnedRowGeometry.lastRowLinkFrameFloor` = max(linkFrame, viewport − 24)) grows the last
+    /// row's label/shelf, so the down-walk ends at a deeper content offset than before rc11, and
+    /// the up-walk only reveals the MINIMUM needed per row rather than unwinding that surplus —
+    /// so it never gets back to where row 1 is reachable. H2 (not directly probed here): a fixed
+    /// ~96pt device park slack rc11 merely stopped correcting. H4 (the per-row assertion below):
+    /// the floor leaking onto a row that isn't actually the last one (`lastRowShaped=1` reported
+    /// on a middle row).
+    ///
+    /// No band assertions — `test58LastRowFrameFloor`'s own notes establish the FA87 simulator's
+    /// focus engine parks every row out of band regardless of mode, so `inBand=`/`margin=` are
+    /// recorded for the human pass, not asserted. `test48`'s Leg A/B needs captions ON and
+    /// `test58` needs zoom on with Large; this test's own premise (Medium+, Hide Titles ON) is
+    /// disjoint from both, so it sets it up directly rather than reusing either fixture path.
+    private func runBug112UpWalk(app: XCUIApplication, prefix: String, expectFits: Int, requireRegimePrefix: String?) throws {
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(4.0)
+        guard let firstLine = readSettleLine(app, "\(prefix)a_row1") else { return }
+        guard let firstRowToken = Self.probeToken(firstLine, key: "row"), firstRowToken != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-); the PINNED (Nuvio-style) settle probe only reports rows in Home's pinned-hero carousel container, so this fixture is likely running the classic in-scroll hero BUG-112 does not reproduce under. Full settle line: \(firstLine)")
+        }
+        let firstRowKey = firstRowToken
+        let regimeToken = Self.probeToken(firstLine, key: "regime") ?? "-"
+
+        if let requireRegimePrefix {
+            guard regimeToken.hasPrefix(requireRegimePrefix),
+                  let fits = Self.probeValue(firstLine, key: "fits"), fits == expectFits else {
+                let fitsValue = Self.probeValue(firstLine, key: "fits")
+                throw XCTSkip("FIXTURE ASSUMPTION UNMET — regime='\(regimeToken)' fits=\(fitsValue.map(String.init) ?? "-") does not show the tester's BUG-112 regime (want a key with prefix '\(requireRegimePrefix)' and fits=\(expectFits)); run FixtureSetupTests/testSetHideLabelsOn then testSetPosterSizeMediumPlus and rerun. Full settle line: \(firstLine)")
+            }
+        } else {
+            guard let fits = Self.probeValue(firstLine, key: "fits") else {
+                XCTFail("settle line missing fits= — the settle line is append-only by contract. Full settle line: \(firstLine)")
+                return
+            }
+            guard fits == expectFits else {
+                throw XCTSkip("FIXTURE ASSUMPTION UNMET — fits=\(fits) (regime='\(regimeToken)'), expected \(expectFits) — the -debug.pinnedHeroCompressionOff knob did not take (the settle plan still fits). Full settle line: \(firstLine)")
+            }
+        }
+
+        // ── Down walk: dedup to the FIRST sample seen per row key, in row order ────────────────
+        var downSamples: [String: Bug112Sample] = [firstRowKey: Self.parseBug112Sample(firstLine)]
+        var orderedKeys = [firstRowKey]
+
+        guard let walk = try walkToLastRow(
+            app, baselineLine: firstLine, shotPrefix: "\(prefix)b", settleLine: readSettleLine
+        ) else { return }
+
+        for line in walk.walked + [walk.line] {
+            let sample = Self.parseBug112Sample(line)
+            if downSamples[sample.row] == nil {
+                downSamples[sample.row] = sample
+                orderedKeys.append(sample.row)
+            }
+        }
+
+        guard orderedKeys.count >= 3 else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the down walk only visited \(orderedKeys.count) distinct row(s) (\(orderedKeys)); BUG-112 needs at least 3 (row 1, row 2, and a last row) to reproduce the up-walk. Add more Home rows and rerun.")
+        }
+        let secondRowKey = orderedKeys[1]
+
+        // ── Up walk: press Up until focus reports back on row 2, dedup to the FIRST sample per
+        //    row key on the way up (mirrors the down walk above) ──────────────────────────────
+        var upSamples: [String: Bug112Sample] = [:]
+        var reachedRow2 = false
+        var lastThreeRaw: [String] = []
+        let upBudget = orderedKeys.count + 6
+        for step in 0..<upBudget {
+            press(.up, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "\(prefix)c\(step)_up_toward_row2") else { return }
+            lastThreeRaw.append(line)
+            if lastThreeRaw.count > 3 { lastThreeRaw.removeFirst() }
+            let sample = Self.parseBug112Sample(line)
+            if upSamples[sample.row] == nil {
+                upSamples[sample.row] = sample
+            }
+            if sample.row == secondRowKey {
+                reachedRow2 = true
+                break
+            }
+        }
+
+        guard reachedRow2 else {
+            let report = XCTAttachment(string: lastThreeRaw.joined(separator: "\n"))
+            report.name = "\(prefix)x_never_reached_row2"
+            report.lifetime = .keepAlways
+            add(report)
+            shot(app, "\(prefix)x_never_reached_row2")
+            XCTFail("BUG-112: the up walk never got back to row 2 ('\(secondRowKey)') within \(upBudget) presses. Last three settle lines: \(lastThreeRaw.joined(separator: " || "))")
+            return
+        }
+
+        shot(app, "\(prefix)c_row2_before_final_up")
+
+        // ── Final presses: the reported repro is Up doing nothing once row 2 has focus and row 1
+        //    (scrolled off the top) is unreachable ────────────────────────────────────────────
+        let row2Seq = upSamples[secondRowKey]?.seq
+        var finalSamples: [Bug112Sample] = []
+        for step in 0..<3 {
+            press(.up, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = readSettleLine(app, "\(prefix)d\(step)_final_up") else { return }
+            finalSamples.append(Self.parseBug112Sample(line))
+        }
+        let landedOnRow1 = finalSamples.contains { $0.row == firstRowKey }
+        let seqAnalysis = finalSamples.map { sample -> String in
+            guard let seq = sample.seq else { return "\(sample.row) seq=?" }
+            guard let row2Seq else { return "\(sample.row) seq=\(seq) (no row2 baseline)" }
+            return "\(sample.row) seq=\(seq) (\(seq == row2Seq ? "FROZEN — no settle fired" : "advanced") vs row2 seq=\(row2Seq))"
+        }.joined(separator: "; ")
+
+        // ── Attachments ─────────────────────────────────────────────────────────────────────
+        let keysReport = XCTAttachment(string: orderedKeys.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n"))
+        keysReport.name = "\(prefix)_row_keys"
+        keysReport.lifetime = .keepAlways
+        add(keysReport)
+
+        func fmt(_ v: Int?) -> String { v.map(String.init) ?? "-" }
+        var deltas: [Int] = []
+        var tableLines = ["row | margin_down | margin_up | delta | y_down | y_up | delta_y | rowH_down | lastRowShaped_down | lastRowShaped_up | inBand_up | nudge_up | pull_up | pbDisarm_up"]
+        for key in orderedKeys {
+            let down = downSamples[key]
+            let up = upSamples[key]
+            var delta: Int?
+            if let md = down?.margin, let mu = up?.margin { delta = md - mu }
+            if let delta { deltas.append(delta) }
+            var deltaY: Int?
+            if let yd = down?.y, let yu = up?.y { deltaY = yd - yu }
+            tableLines.append("\(key) | \(fmt(down?.margin)) | \(fmt(up?.margin)) | \(fmt(delta)) | \(fmt(down?.y)) | \(fmt(up?.y)) | \(fmt(deltaY)) | \(fmt(down?.rowH)) | \(fmt(down?.lastRowShaped)) | \(fmt(up?.lastRowShaped)) | \(fmt(up?.inBand)) | \(fmt(up?.nudge)) | \(fmt(up?.pull)) | \(fmt(up?.pbDisarm))")
+        }
+        if !deltas.isEmpty {
+            let sorted = deltas.sorted()
+            let median: Double = sorted.count % 2 == 0
+                ? Double(sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2.0
+                : Double(sorted[sorted.count / 2])
+            let lastKey = orderedKeys[orderedKeys.count - 1]
+            tableLines.append("")
+            tableLines.append("median(margin_down-margin_up)=\(String(format: "%.1f", median)) max=\(sorted.last ?? 0) over \(deltas.count) row(s) with both samples; last row '\(lastKey)' rowH_down=\(fmt(downSamples[lastKey]?.rowH)) lastRowShaped_down=\(fmt(downSamples[lastKey]?.lastRowShaped))")
+        }
+        let tableReport = XCTAttachment(string: tableLines.joined(separator: "\n"))
+        tableReport.name = "\(prefix)_down_vs_up"
+        tableReport.lifetime = .keepAlways
+        add(tableReport)
+
+        let finalReport = XCTAttachment(string: finalSamples.map(\.raw).joined(separator: "\n") + "\n\nseq analysis: \(seqAnalysis)")
+        finalReport.name = "\(prefix)_final_presses"
+        finalReport.lifetime = .keepAlways
+        add(finalReport)
+
+        // ── Assertions ──────────────────────────────────────────────────────────────────────
+        XCTAssertTrue(
+            landedOnRow1,
+            "BUG-112: Up from row 2 never reached row 1 ('\(firstRowKey)') in three presses — matches the reported repro (row 1 scrolled entirely above the rows viewport, clipped, unreachable by Up). Final settle lines: \(finalSamples.map(\.raw).joined(separator: " || "))"
+        )
+        let lastKey = orderedKeys[orderedKeys.count - 1]
+        for key in orderedKeys where key != lastKey {
+            if let shaped = downSamples[key]?.lastRowShaped {
+                XCTAssertNotEqual(shaped, 1, "H4: the last-row frame floor leaked to a non-last row ('\(key)') on the way down. Full settle line: \(downSamples[key]?.raw ?? "-")")
+            }
+            if let shaped = upSamples[key]?.lastRowShaped {
+                XCTAssertNotEqual(shaped, 1, "H4: the last-row frame floor leaked to a non-last row ('\(key)') on the way up. Full settle line: \(upSamples[key]?.raw ?? "-")")
+            }
+        }
+
+        shot(app, "\(prefix)d_after_up_from_row2")
+    }
+
+    /// BUG-112 at the tester's own regime (Medium+, Hide Titles ON, zoom on — see
+    /// `runBug112UpWalk`'s header comment for the full repro and hypotheses). Set the fixture
+    /// with `FixtureSetupTests.testSetHideLabelsOn` then `testSetPosterSizeMediumPlus`.
+    func test63Bug112FirstRowReachableAfterUpWalk() throws {
+        let app = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        try runBug112UpWalk(app: app, prefix: "63", expectFits: 1, requireRegimePrefix: "P351c0")
+    }
+
+    /// Same BUG-112 repro as `test63Bug112FirstRowReachableAfterUpWalk`, with rc11's suspected
+    /// cause (H1, the last-row frame floor) switched off via `-debug.pinnedHeroCompressionOff` —
+    /// the knob works by making the settle plan NOT fit (`fits=0`), which is why the gate checks
+    /// `fits` rather than the regime key here. If Up from row 2 reaches row 1 in THIS test but not
+    /// in test63, H1 is confirmed; if it fails here too, H1 is not the whole story and H2/H4 need
+    /// a harder look.
+    func test64Bug112UpWalkWithCompressionOff() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES",
+                "-debug.pinnedHeroCompressionOff", "YES"
+            ],
+            forceFreshLaunch: true
+        )
+        try runBug112UpWalk(app: app, prefix: "64", expectFits: 0, requireRegimePrefix: nil)
+    }
+
+    /// BUG-112 (Item A): the Up fallback. The SHIPPED trigger — an Up press the focus engine did
+    /// not consume — cannot be reproduced here: the FA87 simulator's engine resolves Up from row 2
+    /// into a fully off-screen row 1 every time (that is exactly what test63/test64 record). So
+    /// this gate arms `-debug.homeUpFallbackForce YES`, which binds the IDENTICAL fallback body to
+    /// Play/Pause, and proves the action ladder end to end: the request reaches the previous row,
+    /// that row takes focus, and the settle line's `row=` becomes the previous row's key.
+    ///
+    /// What it deliberately does NOT prove: that `onMoveCommand(.up)` is delivered on hardware when
+    /// the engine gives up. That is the device pass — Steven's Row Settle pane will show the
+    /// `upFallback row=… prev=… action=…` line the same fallback writes.
+    ///
+    /// The proxy trigger's one PREMISE: Play/Pause must be free on Home's rows. It is not free
+    /// whenever a trailer is playing for the FOCUSED card — `CatalogRowView`'s card binds
+    /// `.onPlayPauseCommand` to the mute toggle exactly then (`muteToggle`), and a handler on the
+    /// focused view wins over this screen's, so the press never reaches the trigger and the probe
+    /// stays at `-`. That is not hypothetical: it is what killed this gate on rc13, once the
+    /// bundled-TMDB-key port let this fixture's Home resolve hero trailers it had never resolved
+    /// before. `inline_trailers_enabled` is device-local `@AppStorage`, so the premise is PINNED
+    /// here in the argument domain rather than left to whatever the synced profile happens to
+    /// carry — which also takes Trailer Location out of the picture, hero or poster.
+    func test65Bug112UpFallbackFocusesThePreviousRow() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES",
+                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpFallbackForce", "YES",
+                "-inline_trailers_enabled", "NO"
+            ],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let firstLine = readSettleLine(app, "65a_row1") else { return }
+        guard let rowOneKey = Self.probeToken(firstLine, key: "row"), rowOneKey != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-): this fixture is not in the PINNED (Nuvio-style) hero mode BUG-112 lives in. Full settle line: \(firstLine)")
+        }
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let secondLine = readSettleLine(app, "65b_row2") else { return }
+        guard let rowTwoKey = Self.probeToken(secondLine, key: "row"), rowTwoKey != rowOneKey else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the second Down did not reach a second row (row='\(Self.probeToken(secondLine, key: "row") ?? "-")'); BUG-112's fallback needs a row WITH a predecessor. Full settle line: \(secondLine)")
+        }
+
+        remote.press(.playPause)
+        pause(3.0)
+
+        let fallback = app.staticTexts["debug_upfallback"]
+        guard fallback.waitForExistence(timeout: 10) else {
+            XCTFail("debug_upfallback probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let fallbackLine = fallback.label
+        let fallbackReport = XCTAttachment(string: fallbackLine)
+        fallbackReport.name = "65c_upfallback_line"
+        fallbackReport.lifetime = .keepAlways
+        add(fallbackReport)
+        shot(app, "65c_after_fallback")
+
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "row"), rowTwoKey,
+                       "the fallback fired for the wrong row — it must act for the row that HAD focus. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "prev"), rowOneKey,
+                       "the fallback targeted the wrong predecessor. Full line: \(fallbackLine)")
+        XCTAssertNotEqual(Self.probeToken(fallbackLine, key: "action"), "giveup",
+                          "every rung of the hand-off ladder missed. Full line: \(fallbackLine)")
+
+        guard let landedLine = readSettleLine(app, "65d_landed") else { return }
+        XCTAssertEqual(Self.probeToken(landedLine, key: "row"), rowOneKey,
+                       "BUG-112 Item A: the fallback did not land focus on the previous row ('\(rowOneKey)'). Fallback line: \(fallbackLine) || settle line: \(landedLine)")
+
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "dir"),
+                        "the settle line lost `dir=` — it is append-only by contract. Full line: \(landedLine)")
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "rearm"),
+                        "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
     }
 
     // MARK: - FEAT-32: description → full-screen trailer bridge
@@ -5540,16 +7429,10 @@ final class NuvioTVUITests: XCTestCase {
                              "-debug.trailerDiagnostics", "YES", "-debug.trailerProbe", "YES"],
             forceFreshLaunch: true
         )
-        // Detail-page entry via the hero CTA ("Go to Movie"/"Go to Show"): test22's focus
-        // normalization. The four-downs walk test21 uses lands on a collection folder page on the
-        // current fixture Home, not a detail page.
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(1.5)
-        let cta = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Go to'")).firstMatch
-        XCTAssertTrue(cta.waitForExistence(timeout: 8), "hero CTA not on screen; cannot reach a detail page")
-        remote.press(.select)
-        pause(2.5)
+        // ui-legs (2026-10-22): Detail-page entry by the shared, focus-verified Search route; the
+        // hero-CTA Select here was blind (the CTA's existence was checked, never its focus). No
+        // settle wait: the bridge must still read idle before the 4 s auto-play fires.
+        guard DetailEntryRoute(test: self, app: app).openDetail(settle: false) else { return }
         shot(app, "51a_detail")
 
         // Watch Trailer only renders once the hero trailer resolved, which is auto-play's
@@ -5590,107 +7473,13 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
-    // MARK: - FEAT-30: floating sidebar overlay
-
-    /// FEAT-30's device-local opt-in (`-sidebar_style sidebar`) swaps the system tab bar for
-    /// `SidebarOverlay`'s floating panel (`DesignSystem/SidebarOverlay.swift`): collapsed at rest
-    /// to just the current tab's own row, expands to all six the instant focus lands on it, and
-    /// stepping focus back out (Right, toward content) collapses it again. This is the harness's
-    /// only coverage of that mode — every other test in this file runs in tabs mode, which is why
-    /// the fixture restore at the end matters as much as the assertions above it.
-    ///
-    /// Deliberately never presses Menu while a sidebar row could hold focus: `SidebarOverlay`
-    /// installs no exit handler of its own, so Menu there falls through to the system's
-    /// suspend-the-app default (see its doc comment, and `openTab`'s sidebar branch above, which
-    /// this test's navigation mirrors).
-    func test52SidebarOverlay() throws {
-        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
-        pause(1.5)
-
-        let debugSidebar = app.staticTexts["debug_sidebar"]
-        XCTAssertTrue(debugSidebar.waitForExistence(timeout: 6), "debug_sidebar probe missing (DEBUG build?)")
-        XCTAssertTrue(debugSidebar.label.contains("mode=1"), "sidebar mode did not turn on: \(debugSidebar.label)")
-
-        // Collapsed at rest: only the current tab's (Home's) own row exists — and at rest the pill
-        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu or
-        // Up-with-no-target reveal arms it), so match any element type here.
-        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
-        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
-
-        // The system tab bar must be gone outright. `app.buttons["Home"]` cannot say so — XCUI
-        // matches identifier OR label, and the sidebar's own Home row is labelled "Home" — but
-        // while the panel is collapsed NOTHING labelled "Search" may exist: the tab bar's Search
-        // button is hidden with the bar, and the sidebar's Search row only exists once expanded.
-        XCTAssertFalse(app.buttons["Search"].exists, "a 'Search' button exists while collapsed — the system tab bar is still present in sidebar mode")
-        shot(app, "52a_collapsed")
-
-        // Climb up from the hero until the collapsed row itself takes focus — that focus is
-        // exactly what expands the panel to all six rows (`SidebarOverlay.isExpanded`).
-        let homeRow = app.buttons["sidebar_item_Home"]
-        var expanded = false
-        for step in 0..<6 {
-            if homeRow.exists && homeRow.hasFocus { expanded = true; break }
-            // Diagnostic (2026-09-05): where does each Up actually land? Prints the focused
-            // element's identifier/label/frame and the sidebar's own state line so a failed
-            // climb is attributable (hidden tab bar still focusable? move command swallowed?).
-            let f = focusedButton(app)
-            let state = app.staticTexts["sidebar_state"].exists ? app.staticTexts["sidebar_state"].label : "(no sidebar_state)"
-            print("[test52] up#\(step) focused=\(f.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") \(state)")
-            remote.press(.up)
-            pause(0.6)
-        }
-        print("[test52] after climb focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
-        XCTAssertTrue(expanded, "could not focus sidebar_item_Home by climbing up from the hero")
-        pause(0.5)
-        let stateProbe = app.staticTexts["sidebar_state"]
-        XCTAssertTrue(stateProbe.waitForExistence(timeout: 4), "sidebar_state probe missing while the panel is shown")
-        XCTAssertTrue(stateProbe.label.contains("expanded=1"), "panel did not report expanded once focus landed on a row: \(stateProbe.label)")
-        XCTAssertTrue(app.buttons["sidebar_item_Search"].exists, "sidebar_item_Search must exist once the panel is expanded")
-        shot(app, "52b_expanded")
-
-        // Down to Search, Select to enter it. NOT Menu — see the header comment.
-        let searchRow = app.buttons["sidebar_item_Search"]
-        XCTAssertTrue(moveFocus(.down, until: searchRow, max: 4), "could not focus sidebar_item_Search from sidebar_item_Home")
-        remote.press(.select)
-        pause(2.5)
-        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
-        shot(app, "52c_search")
-
-        // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
-        // our pages start below the panel, so the reference's keep-focus behaviour left no way
-        // out but Down past the last row), so the panel must now be collapsed with no further
-        // press — AND something in content must actually hold focus (internal review r3 P2-9:
-        // `expanded=0` alone also describes the BUG-47 dead end where focus landed nowhere).
-        pause(1.5)
-        // `focusedButton` unions cells/buttons/toggles/switches; Search's first focusable is its
-        // TextField, so include text fields (and any focused static container) in the landing read.
-        let landed = focusedButton(app)
-            ?? app.textFields.allElementsBoundByIndex.first(where: { $0.hasFocus })
-            ?? app.otherElements.allElementsBoundByIndex.first(where: { $0.hasFocus })
-        print("[test52] landed=\(landed.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
-        XCTAssertNotNil(landed, "after selecting Search nothing holds focus — the hand-off landed nowhere (BUG-47 class)")
-        if let landed {
-            XCTAssertFalse(landed.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(landed.identifier)|\(landed.label)")
-        }
-        if stateProbe.exists {
-            XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
-        } else {
-            // Also acceptable: the whole panel (and its probe) can disappear once collapsed AND
-            // scrolled — `SidebarOverlay.shouldShow` folds the reveal/scroll resting rule together.
-            // Either shape means "no longer expanded showing every row".
-            XCTAssertFalse(
-                app.buttons["sidebar_item_Home"].exists && app.buttons["sidebar_item_Search"].exists,
-                "both sidebar_item_Home and sidebar_item_Search still exist — the panel never collapsed"
-            )
-        }
-
-        // Restore: fresh tabs-mode launch, exactly like test43's fixture restore.
-        let restored = launchToHome(forceFreshLaunch: true)
-        let restoredProbe = restored.staticTexts["debug_sidebar"]
-        XCTAssertTrue(restoredProbe.waitForExistence(timeout: 6), "debug_sidebar probe missing after restore")
-        XCTAssertTrue(restoredProbe.label.contains("mode=0"), "fixture did not restore to tabs mode: \(restoredProbe.label)")
-        XCTAssertTrue(restored.state == .runningForeground)
-    }
+    // MARK: - FEAT-30 sidebar overlay → H9 navigation rail
+    //
+    // test52SidebarOverlay was deleted with Sidebar mode itself (Home Stage & Strip W2-D retired
+    // `SidebarOverlay.swift`; a stored `sidebar_style "sidebar"` now migrates to "rail"). Its cases
+    // live on in `NavigationRailUITests`: testRail01 (the rail opens on a Left from a row's first
+    // card, never on Up), testRail04 (Menu at a tab root opens it), testRail06 (Select switches tab
+    // and hands focus to the new tab's content) and testRail09 (the "sidebar" value reads as Rail).
 
     // MARK: - FEAT-31: Open Sans typeface
 
@@ -5706,19 +7495,18 @@ final class NuvioTVUITests: XCTestCase {
     /// label-based walk (`walkToRowByTreeIndex`) cannot find it, and a lazy List will not have
     /// materialised a row this far down without focus actually having stepped through it. Counted
     /// directly off `AppearanceSettingsPane.body`'s literal order: swatches -> Accent Focus Ring
-    /// (1) -> No Zoom on Focus (2) -> Settings Style (3) -> Navigation (4) -> Typeface (5).
+    /// (1) -> No Zoom on Focus (2) -> OLED True Black (3, rc13 FEAT-38) -> Settings Style (4) ->
+    /// Navigation (5) -> Typeface (6) — the same order `FixtureSetupTests` counts Size at 7 from.
+    /// (The conditional "Ring Takes Poster Color" / "Depth Takes Poster Color" rows are absent at
+    /// the fixture baseline: ring, No Zoom and Card Depth all OFF.)
     func test53TypefaceOpenSans() throws {
         let app = launchToHome(extraArguments: ["-ui_font", "openSans"], forceFreshLaunch: true)
         pause(1.5)
         shot(app, "53a_home_open_sans")
 
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1) // lands on the swatch row, test43's proven anchor
-        pause(1)
-        press(.down, times: 5, gap: 0.6)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
+        // (revamp: the push already lands on the pane's first row, the swatches — no Right step)
+        press(.down, times: 6, gap: 0.6)
         pause(0.8)
 
         let typefaceRowExists = app.buttons["appearance_row_typeface"].waitForExistence(timeout: 4)
@@ -5744,11 +7532,19 @@ final class NuvioTVUITests: XCTestCase {
     /// the same `fitem=` `nuvio-folder://` oracle `test31HeroCommitsOnce`'s Leg C uses off the
     /// `debug_hero` probe, since this fixture's Home may or may not have a collection row at all —
     /// so `CollectionRowView`'s `onChange(of: focusedFolderId)` has something to arm the sampler
-    /// with, then reads `collection_frame_blob` back from the About pane. The `frames=`/`dropped=`/
+    /// with, then reads `collection_frame_blob` back from the Developer pane (About until the revamp). The `frames=`/`dropped=`/
     /// `p95=` numbers themselves are a device harvest for a human to read off the attachment/shot,
     /// not something this test judges pass/fail on.
     func test54CollectionFrameProbeDriver() throws {
-        let app = launchToHome(extraArguments: ["-debug.collectionFrameProbe", "YES"], forceFreshLaunch: true)
+        // Home Stage & Strip (W3): seeded, so the FA87 guest fixture (no collections of its own,
+        // the Wave 0 baseline skip) has a folder tile to drive the sampler with. Classic, as every
+        // leg in this class (`launchToHome`). The `defer` re-seeds `"[]"` on every exit.
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson,
+                                                    extraArguments: ["-debug.collectionFrameProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
         pause(1.5)
 
         func liveHeroProbe() -> String {
@@ -5782,16 +7578,14 @@ final class NuvioTVUITests: XCTestCase {
         press(.right, times: 1, gap: 0.5)
         pause(0.8)
 
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "About", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1) // lands on "Hero Paint Diagnostics", the pane's first focusable row
+        // Revamp: the probe readouts moved from About into the Developer pane; the push lands on
+        // "Hero Paint Diagnostics", the pane's first focusable row.
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
         pause(1)
 
         // Walk down until the readout itself is on screen, rather than a fixed count: the toggle
-        // that gates it (`Collection Frame Probe`) sits several focusable rows into the "About"
-        // section, behind a few non-focusable `SettingsValueRow`s that don't consume a D-pad stop
+        // that gates it (`Collection Frame Probe`) sits several focusable rows into the Developer
+        // pane's "Diagnostics" section, behind a few non-focusable `SettingsValueRow`s that don't consume a D-pad stop
         // — see `AppearanceSettingsPane`'s Down-count comment above for why a fixed count is used
         // there but not here (here, the STOP CONDITION is the target itself existing, so an
         // over-shoot is simply a few harmless extra presses at the bottom of the pane, not a wrong
@@ -5811,7 +7605,7 @@ final class NuvioTVUITests: XCTestCase {
             shot(app, "54x_about_no_blob")
             let f = focusedButton(app)
             print("[test54] no blob; focused=\(f.map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") toggles=\(app.switches.count + app.descendants(matching: .toggle).count) cells=\(app.cells.count)")
-            throw XCTSkip("collection_frame_blob never appeared on the About pane — cannot read the frame-timing harvest")
+            throw XCTSkip("collection_frame_blob never appeared on the Developer pane — cannot read the frame-timing harvest")
         }
         let attachment = XCTAttachment(string: text)
         attachment.name = "54a_frame_probe_text"
@@ -5820,8 +7614,3130 @@ final class NuvioTVUITests: XCTestCase {
         print("[FEAT33] \(text)")
         shot(app, "54b_frame_probe")
         XCTAssertTrue(text.contains("focus n="), "collection_frame_blob has no 'focus n=' line — the sampler never measured a focus step: \(text)")
+    }
 
-        let restored = launchToHome(forceFreshLaunch: true)
-        XCTAssertTrue(restored.state == .runningForeground)
+    /// BUG-102 (rc9, 2026-09-10): with No Zoom on Focus OFF and the accent ring ON, a focused
+    /// collection folder tile draws the accent ring (it drew nothing before rc9 — `FolderTile`
+    /// only knew the no-zoom still ring). Evidence leg, not a measurement: the walk is test54's
+    /// (Down until the hero probe's `fitem` names a `nuvio-folder://` item — the collection row
+    /// can be ~40 rows deep on this profile), then one screenshot of the focused tile for the
+    /// record. Asserts only that a folder tile was reached and that a screenshot was attached;
+    /// whether the ring survives the native lift on hardware is the device pass's question.
+    func test56CollectionFolderRingWithZoomOn() throws {
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES",
+                                                 "-debug.cardGeometryProbe", "YES"],
+                               forceFreshLaunch: true)
+        // Codex r1 P2: restore the default settings on EVERY exit, the skip below included — a
+        // skipped run otherwise leaves the app running with the forced ring-on/zoom-on overrides,
+        // and a later `launchToHome()` without arguments can attach to that process and inherit
+        // them (order-dependent results in the rest of the suite).
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // Group rects by aspect ratio (width / height, tolerance ±0.03 against the group's first
+        // member) so a mixed-shape row (poster 2:3, square, landscape 16:9) never compares a
+        // tile's height against a differently-shaped sibling's.
+        func aspectGroups(_ rects: [CGRect]) -> [[CGRect]] {
+            var groups: [[CGRect]] = []
+            for rect in rects {
+                guard rect.height > 0 else { continue }
+                let ratio = rect.width / rect.height
+                if let idx = groups.firstIndex(where: { group in
+                    guard let rep = group.first, rep.height > 0 else { return false }
+                    return abs(rep.width / rep.height - ratio) <= 0.03
+                }) {
+                    groups[idx].append(rect)
+                } else {
+                    groups.append([rect])
+                }
+            }
+            return groups
+        }
+        // The modal (most common, within 1pt) height in a group of same-shape rects — i.e. the
+        // group's "rest" height. Ties are broken toward the smaller height: a lift only ever
+        // grows a tile, so on a tie the smaller value is the more plausible rest state.
+        func modalHeight(_ rects: [CGRect]) -> CGFloat? {
+            let heights = rects.map { $0.height }.sorted()
+            guard !heights.isEmpty else { return nil }
+            var bestHeight: CGFloat?
+            var bestCount = 0
+            for h in heights {
+                let count = heights.filter { abs($0 - h) < 1 }.count
+                if count > bestCount {
+                    bestCount = count
+                    bestHeight = h
+                }
+            }
+            return bestHeight
+        }
+        // Rects in `group` that stand at least `margin`pt taller than the group's own rest height.
+        func liftedRects(in group: [CGRect], margin: CGFloat) -> [CGRect] {
+            guard let rest = modalHeight(group) else { return [] }
+            return group.filter { $0.height - rest >= margin }
+        }
+
+        // P2 fix (was an unconditional XCTSkip below): before this runtime is trusted to say "I
+        // cannot report transformed frames," prove that claim against an INDEPENDENT control this
+        // same walk already passes through — the poster catalog rows, which `test49RingModeRiseMatchesAllowance`
+        // shows this harness CAN measure a 20pt rise on (`poster_card`). The walk crosses several
+        // catalog rows before it ever reaches the folder row, and the first Down press can just as
+        // easily land on the Continue Watching row (`LandscapeCard`, no `poster_artwork` lift) as on
+        // a poster row — so the control is sampled on EVERY Down press, not only the first, and
+        // `framesReportTransforms` latches true the first time a press shows exactly one
+        // `poster_artwork` rect standing ≥10pt above its shape group's rest height. `controlObserved`
+        // (any press saw ≥2 poster rects at all) is tracked separately so a folder-row skip can say
+        // whether the control was simply unavailable, as opposed to having demonstrated untransformed
+        // frames.
+        var framesReportTransforms = false
+        var controlObserved = false
+        var folderFound = false
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let posterArtworkRects = namedFrames("poster_artwork")
+            if posterArtworkRects.count >= 2 {
+                controlObserved = true
+            }
+            if !framesReportTransforms {
+                let lifted = aspectGroups(posterArtworkRects).flatMap { liftedRects(in: $0, margin: 10) }
+                if lifted.count == 1 {
+                    framesReportTransforms = true
+                }
+            }
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderFound = true; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard folderFound else {
+            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+        }
+        pause(1)
+        shot(app, "56a_folder_ring_zoom_on")
+
+        // BUG-108 gate. What the SIMULATOR can prove is not the hardware compositor bug (it does not
+        // reproduce it — see the FEAT-14 graveyard in PosterCard.swift): it is the GEOMETRIC claim
+        // underneath the fix, that the ring and the artwork are one scaled layer and the rise costs
+        // the row no reflow.
+        let artworkRects = namedFrames("folder_artwork")
+        let cardRects = namedFrames("folder_card")
+        guard artworkRects.count >= 2, cardRects.count >= 2 else {
+            XCTFail("`-debug.cardGeometryProbe YES` published \(artworkRects.count) folder_artwork / \(cardRects.count) folder_card rects — the probe is not armed (DEBUG + NSArgumentDomain) or no folder row is on screen")
+            return
+        }
+        // P3 fix: the collection row is mixed-shape (poster 2:3, square, landscape 16:9), so a
+        // single tallest-rect-wins heuristic across ALL shapes can pick a resting POSTER over a
+        // correctly lifted SQUARE (at Medium a lifted square is ~260pt tall, a resting poster
+        // ~330pt). Group by aspect ratio first and judge "lifted" against each group's own rest
+        // height, then require exactly one lifted rect across every group.
+        let artworkGroups = aspectGroups(artworkRects)
+        let allLifted = artworkGroups.flatMap { liftedRects(in: $0, margin: 10) }
+        guard allLifted.count == 1 else {
+            if framesReportTransforms {
+                let perGroupHeights = artworkGroups.map { $0.map { $0.height } }
+                XCTFail("expected exactly one lifted folder tile across all shape groups, found \(allLifted.count) (per-group heights: \(perGroupHeights))")
+                return
+            }
+            throw XCTSkip("control never saw a lifted poster (observed=\(controlObserved))")
+        }
+        let focusedArt = allLifted[0]
+        guard let group = artworkGroups.first(where: { $0.contains(focusedArt) }) else {
+            XCTFail("internal: lifted rect \(focusedArt) not found in its own aspect group")
+            return
+        }
+        guard group.count >= 2 else {
+            throw XCTSkip("the only lifted folder tile is in a shape group with no resting sibling to compare against (singleton group, height \(focusedArt.height))")
+        }
+        guard let restHeight = modalHeight(group),
+              let restArt = group.filter({ $0 != focusedArt })
+                  .min(by: { abs($0.height - restHeight) < abs($1.height - restHeight) }) else {
+            throw XCTSkip("no resting folder tile of the same shape on screen to compare against")
+        }
+        let rise = restArt.minY - focusedArt.minY
+        XCTAssertEqual(rise, 20, accuracy: 2.5, "focused folder artwork rose \(rise)pt; focused=\(focusedArt) rest=\(restArt)")
+        XCTAssertEqual(focusedArt.maxY - restArt.maxY, rise, accuracy: 2.5)
+        XCTAssertEqual((focusedArt.width - restArt.width) / 2,
+                       rise * (restArt.width / restArt.height), accuracy: 3.0,
+                       "width growth must be the same uniform scale as the height growth")
+        let focusedCard = cardRects.min(by: { abs($0.midX - focusedArt.midX) < abs($1.midX - focusedArt.midX) })!
+        let restCard = cardRects.min(by: { abs($0.midX - restArt.midX) < abs($1.midX - restArt.midX) })!
+        XCTAssertEqual(focusedCard.minY, restCard.minY, accuracy: 2.0,
+                       "the tile's LAYOUT box moved — the lift is not render-only")
+
+        press(.right, times: 1, gap: 0.5)
+        pause(1)
+        shot(app, "56b_folder_ring_zoom_on_second_tile")
+    }
+
+    /// BUG-109 (rc9, u/mrStevenx3): entering a collection folder page and pressing Menu must put
+    /// Home focus back on the folder tile the user left from, not on the catalog row above it.
+    /// Evidence + gate: the hero probe's `fitem` names the focused item; the same
+    /// `nuvio-folder://` id must be reported after the pop. `-debug.pinnedRowSettleProbe YES` is
+    /// on so a `covered=1 skipped=1` line lands in the Row Settle pane when the corrector tried to
+    /// scroll the covered Home (diagnostics only; the assertion is the landing).
+    func test57FolderExitRestoresFocus() throws {
+        // Home Stage & Strip (W3): Classic (the folder page is today's grid there; the Stage
+        // analogue is test106), and seeded so the FA87 guest fixture has a folder tile to leave
+        // from. The `defer` re-seeds `"[]"`.
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson,
+                                                    extraArguments: ["-debug.pinnedRowSettleProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+        var folderItem: String?
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderItem = focused; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard let folderItem else {
+            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+        }
+        shot(app, "57a_folder_focused_before_push")
+        remote.press(.select)
+        pause(3)
+        shot(app, "57b_folder_page")
+        remote.press(.menu)
+        pause(2.5)
+        shot(app, "57c_after_pop")
+        let after = probeField(liveHeroProbe(), "fitem") ?? ""
+        XCTAssertEqual(after, folderItem, "focus after popping the folder page landed on \(after), expected the folder tile \(folderItem)")
+    }
+
+    // MARK: - rc13: BUG-114 (hero Up reaches the tab bar) and BUG-112's swipe half
+
+    /// BUG-114 (GitHub issue #3): from a scrolled-down Home, walking back UP resolves into the
+    /// pinned hero CTA natively — the rc12 ladder never sees that move because the engine DID
+    /// consume it — and then the next Up dies in the carousel's paging closure while the rows shelf
+    /// still holds its deep offset. The tvOS 26 tab bar expands off that offset, so it stays
+    /// minimized and unreachable: the reporter's "hero regains focus, shelf keeps its offset, tab
+    /// bar stranded".
+    ///
+    /// rc13's fix is `HomeView.handleHeroUp` — an unresolved Up PRESS or SWIPE from the CTA scrolls
+    /// the shelf to `home_top`, which is what lets the bar expand on its own. The oracle is the
+    /// `sd=` field appended to `debug_hero` (`isScrolledDown`, the shelf's own not-at-the-top
+    /// hysteresis) going 1 → 0 across one Up, with focus still on the hero.
+    ///
+    /// Three honest skips, because this runtime's focus engine is not the tester's:
+    ///  - the walk never reaches the hero (`foc=1`) — the fixture is not in pinned hero mode;
+    ///  - the shelf is already at the top (`sd=0`) — there is no wedge to reproduce;
+    ///  - the engine resolves Up from the CTA straight into the tab bar — the bar was reachable all
+    ///    along here, so there is nothing for the fix to do and nothing this test can prove. That is
+    ///    the likeliest sim outcome and it is a SKIP, never a pass: BUG-114 is a device report and
+    ///    the device pass owns the verdict.
+    func test66Bug114UpFromHeroReachesTheTabBar() throws {
+        let app = launchToHome(
+            extraArguments: ["-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        func aTabIsFocused() -> Bool {
+            tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+        }
+        func hero(_ name: String) -> String { heroSrcProbe(app, name) }
+
+        let entry = hero("66a_entry")
+        guard entry.contains("pin=1") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — `pin=0`: this profile renders the CLASSIC in-scroll hero, and BUG-114 is about the PINNED header's CTA. Full probe: \(entry)")
+        }
+
+        // Down far enough that the shelf is genuinely scrolled and the bar has minimized.
+        press(.down, times: 3, gap: 0.9)
+        pause(2.0)
+        shot(app, "66b_deep")
+
+        // Walk back up until the hero CTA reports focus. Six is generous for three Downs; more
+        // than that means something else is eating the moves and the premise is gone.
+        var atHero = false
+        for step in 0..<6 {
+            press(.up, times: 1, gap: 0.9)
+            pause(1.2)
+            if hero("66c_up_\(step)").contains("foc=1") { atHero = true; break }
+        }
+        guard atHero else {
+            throw XCTSkip("the Up walk never landed on the hero CTA (`foc=1`) in six presses — BUG-114 starts FROM the CTA, so there is no premise to test here. Last probe: \(hero("66c_final"))")
+        }
+
+        let atCta = hero("66d_at_cta")
+        guard Self.probeToken(atCta, key: "sd") == "1" else {
+            throw XCTSkip("the shelf is already at the top (`sd=\(Self.probeToken(atCta, key: "sd") ?? "-")`) with focus on the CTA, so the tab bar is not stranded and there is no wedge to reproduce. Full probe: \(atCta)")
+        }
+
+        // The press under test: an Up the engine cannot place from the CTA.
+        press(.up, times: 1, gap: 0.9)
+        pause(0.6)
+        if aTabIsFocused() {
+            shot(app, "66e_engine_resolved_to_bar")
+            throw XCTSkip("this runtime's focus engine resolved Up from the CTA straight into the tab bar, so BUG-114's wedge does not reproduce here and `handleHeroUp` was never reached. The fix is device-verified, not sim-verified (see the rc13 device pass).")
+        }
+
+        // The shelf must animate back to the top. 0.45s animation plus the hysteresis' own
+        // publish, polled rather than slept so a fast landing is not charged two seconds.
+        var landed = false
+        for step in 0..<8 {
+            pause(0.25)
+            if Self.probeToken(hero("66f_poll_\(step)"), key: "sd") == "0" { landed = true; break }
+        }
+        shot(app, "66g_after_up")
+        let afterUp = hero("66g_after_up_probe")
+        XCTAssertTrue(landed,
+            "BUG-114: an Up the engine could not place from the hero CTA must scroll the rows shelf back to `home_top` (`sd=1` → `sd=0`), which is the only thing that lets the tvOS 26 tab bar expand again. Probe after the press: \(afterUp)")
+        XCTAssertTrue(afterUp.contains("foc=1"),
+            "the fix must not move focus — it scrolls the shelf and leaves the CTA focused so the user's NEXT Up reaches the re-expanded bar (the rounds 5-6 regression class is exactly the opposite). Probe: \(afterUp)")
+
+        // And with the shelf back at the top, the bar is reachable again.
+        var reachedBar = false
+        for _ in 0..<3 {
+            press(.up, times: 1, gap: 0.9)
+            pause(0.8)
+            if aTabIsFocused() { reachedBar = true; break }
+        }
+        shot(app, "66h_bar")
+        XCTAssertTrue(reachedBar,
+            "with the shelf scrolled back to the top the system tab bar must be reachable from the hero CTA within three Up presses — that is the whole point of the scroll. Probe: \(hero("66h_bar_probe"))")
+    }
+
+    /// BUG-112, the half rc12 left open: the fallback lands on a button press and never on a
+    /// touchpad SWIPE (Steven, 09-13). `onMoveCommand` is fed by directional-button presses only,
+    /// so a Siri Remote flick the focus engine could not resolve reached nothing at all;
+    /// `HomeUpSwipeCatcher` (a window-level `UISwipeGestureRecognizer` on indirect touches) is the
+    /// missing event source.
+    ///
+    /// The SHIPPED trigger is doubly unreachable here — the simulator has no touch surface to flick
+    /// and `XCUIRemote` exposes button presses only, and its focus engine resolves every Up anyway
+    /// (test63/test64 record exactly that). So this arms `-debug.homeUpSwipeForce YES`, which binds
+    /// Play/Pause to `HomeUpSwipeCatcher.simulateSwipeUp()` — the catcher's OWN entry point, not
+    /// the ladder's. Everything the swipe path adds therefore runs for real: the 0.15 s settle
+    /// window, the did-focus-move check (Play/Pause moves no focus, so it passes honestly), the
+    /// five situational guards, and the rows-vs-hero routing.
+    ///
+    /// Oracle: `src=swipe` on the `debug_upfallback` line. That token is on EVERY line of one
+    /// attempt (see `HomeView.activeUpFallbackSource`), so this does not race the landing the way
+    /// a rung-1-only token would — whichever line the probe is showing by the time the harness
+    /// reads it, the token is there. The rest mirrors test65: the right origin row, the right
+    /// predecessor, not a `giveup`, and the settle line's `row=` becoming the previous row's key.
+    ///
+    /// `-inline_trailers_enabled NO` for the reason test65 states at length: the proxy trigger is
+    /// Play/Pause, and a focused card whose trailer is playing binds that press to its own mute
+    /// toggle, so the trigger never fires. Pinned here in the argument domain so neither gate
+    /// depends on what the synced profile carries.
+    func test67Bug112UpSwipeFallbackFocusesThePreviousRow() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES",
+                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpSwipeForce", "YES",
+                "-inline_trailers_enabled", "NO"
+            ],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let firstLine = readSettleLine(app, "67a_row1") else { return }
+        guard let rowOneKey = Self.probeToken(firstLine, key: "row"), rowOneKey != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-): this fixture is not in the PINNED (Nuvio-style) hero mode BUG-112 lives in. Full settle line: \(firstLine)")
+        }
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let secondLine = readSettleLine(app, "67b_row2") else { return }
+        guard let rowTwoKey = Self.probeToken(secondLine, key: "row"), rowTwoKey != rowOneKey else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the second Down did not reach a second row (row='\(Self.probeToken(secondLine, key: "row") ?? "-")'); the fallback needs a row WITH a predecessor. Full settle line: \(secondLine)")
+        }
+
+        remote.press(.playPause)
+        // 0.15 s settle window + the ladder's first rung + the hand-off, with room to spare.
+        pause(3.0)
+
+        let fallback = app.staticTexts["debug_upfallback"]
+        guard fallback.waitForExistence(timeout: 10) else {
+            XCTFail("debug_upfallback probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let fallbackLine = fallback.label
+        let fallbackReport = XCTAttachment(string: fallbackLine)
+        fallbackReport.name = "67c_upfallback_line"
+        fallbackReport.lifetime = .keepAlways
+        add(fallbackReport)
+        shot(app, "67c_after_fallback")
+
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "src"), "swipe",
+                       "the attempt must be attributed to the SWIPE path — if this reads `press` the proxy trigger went through `handleRowsMove` instead of `HomeUpSwipeCatcher.simulateSwipeUp()`, and none of the swipe path's own checks were exercised. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "row"), rowTwoKey,
+                       "the fallback fired for the wrong row — it must act for the row that HAD focus. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "prev"), rowOneKey,
+                       "the fallback targeted the wrong predecessor. Full line: \(fallbackLine)")
+        XCTAssertNotEqual(Self.probeToken(fallbackLine, key: "action"), "giveup",
+                          "every rung of the hand-off ladder missed. Full line: \(fallbackLine)")
+
+        guard let landedLine = readSettleLine(app, "67d_landed") else { return }
+        XCTAssertEqual(Self.probeToken(landedLine, key: "row"), rowOneKey,
+                       "the swipe fallback did not land focus on the previous row ('\(rowOneKey)'). Fallback line: \(fallbackLine) || settle line: \(landedLine)")
+
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "dir"),
+                        "the settle line lost `dir=` — it is append-only by contract. Full line: \(landedLine)")
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "rearm"),
+                        "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
+    }
+
+    /// beta.19-rc1 verdict (C, BUG-135): the folder page title RISES AND STAYS. As the grid scrolls,
+    /// the title logo moves from its rest slot (top 32, 150 tall) to a compact one (top 12, 64 tall)
+    /// over the first 106 pt, the tab chips and the opaque band behind them pin under it, and the
+    /// grid fades in once its first posters are warm (≤ 0.45 s) instead of flashing shimmers
+    /// (`FolderHeaderGeometry`, `FolderDetailView` in `CollectionsUI.swift`).
+    ///
+    /// Seeded, so it runs on the FA87 guest fixture (whose Home has no collection row of its own):
+    /// `launchToHomeWithSeededCollections` imports one pinned collection with one folder of two
+    /// Cinemeta catalogs plus the All tab (three chips), and the `defer` re-seeds `[]`. The seed is
+    /// refused at the source on a signed-in cloud account (`HomeViewModel.collectionsSeedRefusal`),
+    /// in which case the walk finds no folder and the test skips with that reason.
+    ///
+    /// XCUITest frames ignore `.offset`/`.scaleEffect` (the header's `.visualEffect`), so the rise
+    /// is read from `folder_header_state` (`scrolled= phase= chip= reveal=`) and from screenshot
+    /// pixels; the `folder_header` AX frame is compared only at rest, where it equals what is drawn.
+    func test69FolderHeaderRisesAndStays() throws {
+        let folderTitle = "ZZFolderProbeFolder"
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson)
+        defer {
+            // The import REPLACED this profile's collections; put back the fixture's (none).
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+
+        func namedSnapshot(_ identifier: String) -> XCUIElementSnapshot? {
+            guard let root = try? app.snapshot() else { return nil }
+            var out: XCUIElementSnapshot?
+            func walk(_ node: XCUIElementSnapshot) {
+                guard out == nil else { return }
+                if node.identifier == identifier {
+                    out = node
+                    return
+                }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        func namedFrame(_ identifier: String) -> CGRect? {
+            namedSnapshot(identifier)?.frame
+        }
+
+        func headerState() -> String {
+            let state = app.staticTexts["folder_header_state"]
+            return state.exists ? state.label : ""
+        }
+
+        func stateToken(_ key: String) -> String? {
+            Self.probeToken(headerState(), key: key)
+        }
+
+        // 1. Walk Down to the seeded folder tile.
+        var folderFound = false
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderFound = true; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard folderFound else {
+            let rowShown = app.staticTexts["ZZFolderProbe"].exists
+            throw XCTSkip(rowShown
+                ? "the seeded collection row is on Home but its folder tile never reported focus through debug_hero fitem= within 45 Down presses"
+                : "seeded collection not on Home — seed refused (signed-in cloud account?) or not imported; see the [CollectionsSeed] log line")
+        }
+
+        // 2. Open it.
+        remote.press(.select)
+
+        // 3. The grid is held back only until its first posters are warm. Its items come from the
+        // network first (the gate starts when they land), so wait for the first tile to exist,
+        // then expect `reveal=1` within 1.5 s.
+        let firstTile = app.descendants(matching: .any)["folder_grid_first_tile"]
+        guard firstTile.waitForExistence(timeout: 30) else {
+            guard !app.staticTexts["Nothing here yet."].exists else {
+                throw XCTSkip("the seeded folder resolved no items (Cinemeta catalogs unavailable?) — nothing to scroll")
+            }
+            XCTFail("folder_grid_first_tile never appeared within 30 s of opening the seeded folder")
+            return
+        }
+        var revealed = false
+        let revealStart = Date()
+        repeat {
+            if stateToken("reveal") == "1" { revealed = true; break }
+            pause(0.1)
+        } while Date().timeIntervalSince(revealStart) < 1.5
+        if !revealed { revealed = stateToken("reveal") == "1" }
+        XCTAssertTrue(revealed, "the grid's reveal gate did not open within 1.5 s of the first tile existing (state: \(headerState()))")
+        pause(0.5)
+        shot(app, "69a_folder_page_phase0")
+        XCTAssertEqual(stateToken("scrolled"), "0", "page opened scrolled (state: \(headerState()))")
+        XCTAssertEqual(stateToken("phase"), "0", "page opened with the header already rising (state: \(headerState()))")
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the folder's title ('\(folderTitle)') is not on the page")
+
+        guard let headerBefore = namedFrame("folder_header") else {
+            XCTFail("no folder_header element on screen — the header container carries this identifier")
+            return
+        }
+        XCTAssertEqual(headerBefore.midX, 960, accuracy: 40, "header is not centred on the screen")
+
+        // Where the header is DRAWN. XCUITest frames ignore the `.visualEffect` that moves the
+        // title and pins the chips, and the `folder_header` container reports the union of its
+        // children, which includes the band's 600 pt overhang above the page (Gate 2 rerun:
+        // `(80, -443, 1760, 933)`), so neither gives screen positions once the grid scrolls. The
+        // title's own AX frame does, AT REST (s = 0, no effect applied): it is top-aligned in its
+        // slot, `restTop` below the page top. Everything else follows from
+        // `FolderHeaderGeometry`'s numbers (restated here; the UI test target cannot import the
+        // app): compact title slot [12, 76], band gap [78, 90], pinned chips from 92.
+        let restTop: CGFloat = 32, compactTop: CGFloat = 12, compactLogoSlot: CGFloat = 64, logoSlot: CGFloat = 150
+        let titleElement = app.staticTexts[folderTitle]
+        guard titleElement.exists else {
+            XCTFail("the title ('\(folderTitle)') is not on the page; pixel checks place the page top from it")
+            return
+        }
+        let titleRestFrame = titleElement.frame
+        let pageTop = titleRestFrame.minY - restTop
+        let window = app.windows.firstMatch.frame.size
+        guard pageTop >= 0, pageTop <= 400 else {
+            XCTFail("could not place the page top from the title's rest frame (\(titleRestFrame)); pixel checks need it")
+            return
+        }
+        let restImage = XCUIScreen.main.screenshot().image
+        let background = try pixelRGB(in: restImage, at: CGPoint(x: 40, y: pageTop + 40), windowSize: window)
+        /// The first 2 pt slice (from the top of the title lane) with title ink: the drawn title's
+        /// top edge. The lane is the union of the rest and compact slots, centre ±400 pt; the
+        /// chips only enter it once pinned, below the compact title.
+        func inkTop(_ image: UIImage) throws -> CGFloat? {
+            var y = pageTop + compactTop - 4
+            while y < pageTop + restTop + logoSlot {
+                let ink = try fractionDiffering(in: image, pointRect: CGRect(x: 560, y: y, width: 800, height: 2),
+                                                windowSize: window, from: background, threshold: 40)
+                if ink >= 0.01 { return y }
+                y += 2
+            }
+            return nil
+        }
+        let restInkTop = try inkTop(restImage)
+        XCTAssertNotNil(restInkTop, "no title ink in the title lane at rest — the page-top estimate (\(pageTop)) or the header layout is off")
+        if let restInkTop {
+            XCTAssertTrue((pageTop + restTop - 4)...(pageTop + restTop + 40) ~= restInkTop,
+                          "at rest the title's ink starts at \(restInkTop), expected just under its slot top \(pageTop + restTop)")
+        }
+
+        // 4. The first tile clears the header's bottom fade. Three chips mean the first focus lands
+        // on a chip (`chip=` in the probe; `hasFocus` does not report on every runtime), so one
+        // Down moves it to the first grid row, where the focus lift applies.
+        if stateToken("chip") != "-" {
+            press(.down, times: 1)
+            pause(0.6)
+        }
+        guard let firstTileBefore = namedFrame("folder_grid_first_tile") else {
+            XCTFail("folder_grid_first_tile disappeared after moving focus into the grid")
+            return
+        }
+        // The header frame ends `gap` (16) below its band's fade; the grid adds lift (20) + `sm`
+        // (12) above the first row. So the AX gap is 32 without the focus transform and 12 with
+        // it; anything below 12 means a focused first-row card reaches into the fade.
+        let gap = firstTileBefore.minY - headerBefore.maxY
+        XCTAssertGreaterThanOrEqual(gap, 12,
+                                    "first tile must clear the header's bottom fade with its focus lift (measured gap \(gap); expected 32, or 12 if AX frames carry the lift)")
+        let gapAttachment = XCTAttachment(string: "folder_header \(headerBefore) folder_grid_first_tile \(firstTileBefore) gap=\(gap) state=\(headerState())")
+        gapAttachment.name = "69_rest_geometry"
+        gapAttachment.lifetime = .keepAlways
+        add(gapAttachment)
+
+        // 5. Scroll the grid: six Downs, one at a time, catching a mid-rise screenshot if a press
+        // leaves the header part way. After every press the drawn title must still be in its lane
+        // and must only ever move UP (no jump down, no cut, no gap where it vanishes): the
+        // regression this replaces removed the header from the tree on the first press.
+        var midShot = false
+        var inkTops: [CGFloat] = restInkTop.map { [$0] } ?? []
+        var stepLog: [String] = ["rest inkTop=\(String(describing: restInkTop))"]
+        for step in 1...6 {
+            press(.down, times: 1, gap: 0.7)
+            let phase = stateToken("phase")
+            if !midShot, let p = phase.flatMap({ Int($0) }), (1...3).contains(p) {
+                shot(app, "69b_folder_page_phase\(p)")
+                midShot = true
+            }
+            let top = try inkTop(XCUIScreen.main.screenshot().image)
+            stepLog.append("down\(step) phase=\(phase ?? "-") inkTop=\(String(describing: top))")
+            guard let top else {
+                XCTFail("after Down \(step) the title has no ink anywhere in its lane — it vanished instead of rising (phase \(phase ?? "-"))")
+                continue
+            }
+            if let previous = inkTops.last {
+                XCTAssertLessThanOrEqual(top, previous + 3, "after Down \(step) the title jumped DOWN (\(previous) → \(top)); it may only rise")
+            }
+            inkTops.append(top)
+        }
+        pause(1)
+        shot(app, "69c_folder_page_phase4")
+        let steps = XCTAttachment(string: "pageTop=\(pageTop)\n" + stepLog.joined(separator: "\n"))
+        steps.name = "69_title_track"
+        steps.lifetime = .keepAlways
+        add(steps)
+
+        // Premise: the grid must actually have scrolled. A folder too short to scroll never leaves
+        // offset 0 on six Downs.
+        let firstTileAfter = namedFrame("folder_grid_first_tile")
+        let gridMoved = firstTileAfter.map { $0.minY < firstTileBefore.minY - 50 } ?? true
+        let premise = XCTAttachment(string: "first tile before minY=\(firstTileBefore.minY) after=\(String(describing: firstTileAfter?.minY)) state=\(headerState())")
+        premise.name = "69_scroll_premise"
+        premise.lifetime = .keepAlways
+        add(premise)
+        try XCTSkipUnless(gridMoved, "the seeded folder is too short to scroll on six Downs (first tile minY unchanged)")
+        XCTAssertEqual(stateToken("scrolled"), "1", "folder_header_state must read scrolled=1 after scrolling the grid (state: \(headerState()))")
+        XCTAssertEqual(stateToken("phase"), "4", "the header must be fully compact after scrolling the grid (state: \(headerState()))")
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the title left the view tree on scroll — it must rise and stay")
+
+        // 6. Pixels, compact state, at the drawn positions `FolderHeaderGeometry` gives (page
+        // top from the title's rest frame above): the compact title at y ∈ [12, 76], the gap
+        // between it and the chips at y ∈ [78, 90] (opaque band — grid cards pass UNDER it), the
+        // pinned chips from y = 92.
+        let image = XCUIScreen.main.screenshot().image
+        let compactInkTop = try inkTop(image)
+        XCTAssertNotNil(compactInkTop, "no title ink in the title lane once compact")
+        if let compactInkTop {
+            XCTAssertTrue((pageTop + compactTop - 4)...(pageTop + compactTop + 30) ~= compactInkTop,
+                          "the compact title's ink starts at \(compactInkTop), expected just under the compact slot top \(pageTop + compactTop)")
+        }
+        let titleInk = try fractionDiffering(in: image,
+                                             pointRect: CGRect(x: 660, y: pageTop + compactTop, width: 600, height: compactLogoSlot),
+                                             windowSize: window, from: background, threshold: 40)
+        let bandLeak = try fractionDiffering(in: image,
+                                             pointRect: CGRect(x: 100, y: pageTop + 78, width: 1720, height: 12),
+                                             windowSize: window, from: background, threshold: 40)
+        let chipInk = try fractionDiffering(in: image,
+                                            pointRect: CGRect(x: 140, y: pageTop + 100, width: 960, height: 32),
+                                            windowSize: window, from: background, threshold: 40)
+        let pixels = XCTAttachment(string: "background=\(background) titleInk=\(titleInk) bandLeak=\(bandLeak) chipInk=\(chipInk) pageTop=\(pageTop) compactInkTop=\(String(describing: compactInkTop))")
+        pixels.name = "69_compact_pixels"
+        pixels.lifetime = .keepAlways
+        add(pixels)
+        XCTAssertGreaterThanOrEqual(titleInk, 0.01, "no title in the compact slot (y 12–76 pt, centre ±300) after scrolling — the title must rise and stay (ink fraction \(titleInk))")
+        XCTAssertLessThan(bandLeak, 0.01, "grid content shows through the opaque band between the compact title and the chips (fraction \(bandLeak))")
+        XCTAssertGreaterThanOrEqual(chipInk, 0.01, "no chip capsules in the pinned chip band (y 100–132 pt) after scrolling (ink fraction \(chipInk))")
+
+        // 7. Back up: Up until a chip holds focus (one grid row per press).
+        var upPresses = 0
+        while stateToken("chip") == "-" && upPresses < 14 {
+            press(.up, times: 1, gap: 0.7)
+            pause(0.3)
+            upPresses += 1
+        }
+        XCTAssertNotEqual(stateToken("chip"), "-", "Up from the grid never reached the tab chips within 14 presses (state: \(headerState()))")
+
+        // 8. Revealing a chip scrolls back to the top on its own (its layout frame sits at the top
+        // of the content); no further Up, which could leave the page for the tab bar.
+        var atTop = false
+        for _ in 0..<20 {
+            if stateToken("scrolled") == "0", stateToken("phase") == "0" { atTop = true; break }
+            pause(0.1)
+        }
+        XCTAssertTrue(atTop, "focusing a chip did not bring the page back to the top (state: \(headerState()))")
+        pause(0.5)
+        shot(app, "69d_folder_page_back_at_top")
+        if let headerReturned = namedFrame("folder_header") {
+            XCTAssertEqual(headerReturned.minY, headerBefore.minY, accuracy: 2, "header top did not return after scrolling back up")
+            XCTAssertEqual(headerReturned.maxY, headerBefore.maxY, accuracy: 2, "header bottom did not return after scrolling back up")
+            XCTAssertEqual(headerReturned.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally")
+        } else {
+            XCTFail("folder_header is missing after scrolling back to the top")
+        }
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the title is missing after scrolling back to the top")
+    }
+
+    // MARK: - BUG-117: Up from the last season poster must reach the top block
+
+    /// The Detail page's top block (`topBlock` in `DetailView.swift`) used to size itself to its
+    /// widest child (~1100 pt: the overview `Text`'s cap and `infoSection`'s own width), while the
+    /// season-poster shelf a few rows below can span the full ~1800 pt content width. A poster
+    /// past ~1100 pt (Season 6/7+ on a long-running series) sat outside the top block's
+    /// `.focusSection()` horizontally, so D-pad Up from those posters found no candidate above them
+    /// at all.
+    ///
+    /// rc13: the row-walk this test used to find a 6+ season series (borrowed from test33) was
+    /// unreliable — whatever the first five Home rows happen to contain on a given fixture profile
+    /// may have nothing with that many seasons, which is exactly why it skipped. The Detail page's
+    /// own `DeepLink` entry point (`ContentView.swift`'s `-debug.openDeepLink` DEBUG hook, the same
+    /// `handleDeepLink(_:)` a real Top Shelf `nuviotv://title?…` launch uses) opens The 100
+    /// (`tt2661044`) directly, which has 7 seasons — guaranteed past the old ~1100 pt band with a
+    /// margin to spare, and independent of what this profile's Home rows contain.
+    func test68Bug117UpFromLastSeasonPosterReachesTopBlock() throws {
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES",
+            "-debug.detailScrollProbe", "YES"
+        ], forceFreshLaunch: true)
+
+        let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
+        // FEAT-35 (Cinematic hero, D9): the top block is the hero now. Its focus targets are the
+        // icon-only secondaries (which keep these accessibility labels), Start Over (only with
+        // saved progress), the Play/Resume/Up Next button (label prefix) and, when the synopsis is
+        // truncated, the teaser button.
+        let topBlockLabels = ["Mark Watched", "Watched", "Add to Library", "In Library", "Start Over"]
+        let topBlockPrefixes = ["Play", "Resume", "Up Next"]
+        func topBlockHasFocus() -> Bool {
+            focusedNodes(app).contains { node in
+                topBlockLabels.contains(node.label)
+                    || topBlockPrefixes.contains(where: { node.label.hasPrefix($0) })
+                    || node.identifier == "detail_synopsis_teaser"
+                    || node.identifier == "detail_start_over"
+            }
+        }
+
+        // The debug hook fires ~1 s after the profile gate is passed and `launchToHome` already
+        // waits out Home's own catalog fan-out, but the deep-linked Detail page still has its own
+        // network fetch (MetaDetailsRepository) before either an action-row button or the season
+        // shelf exists — poll up to 45 s rather than assume a fixed settle.
+        //
+        // Root-caused (rc13, this test's own hook diagnostic session): the hook itself was NEVER
+        // the bottleneck — an `os_log` trace confirmed `.task(id: entered)` fires within ~1 s of
+        // `entered` going true, `DeepLink.parse` resolves the URL correctly (`title(preview:
+        // name="The 100" …)`), and `handleDeepLink` assigns `deepLink` (main+entered branch)
+        // immediately after. The real bottleneck was `DetailViewModel.resolveTrailerIfNeeded`
+        // ignoring `-debug.trailerForceNoTrailer` (only `InlineTrailerCard.swift` honored it) —
+        // this test passes that flag precisely so a trailer never engages, but Detail resolved one
+        // anyway, and `scheduleAutoPlayTrailerIfNeeded()` auto-presented it full-screen ~4 s after
+        // landing with no user interaction, burying the season shelf/action row under a 1-2 minute
+        // video for far longer than any poll budget. Fixed at the source in DetailViewModel.swift;
+        // 45 s (up from 30 s) stays as a modest safety margin for the page's own network fetch, and
+        // this loop still fails fast via the single-Up-press check below if focus itself regresses.
+        var detailReached = false
+        for _ in 0..<90 {
+            if anyPoster.firstMatch.exists || topBlockLabels.contains(where: { app.buttons[$0].exists })
+                || app.descendants(matching: .any)["detail_hero"].exists {
+                detailReached = true
+                break
+            }
+            pause(0.5)
+        }
+        guard detailReached else {
+            throw XCTSkip("the -debug.openDeepLink hook never produced a detail page for The 100 within 45 s — network or fixture issue, not the BUG-117 focus bug")
+        }
+        shot(app, "68a_the100_detail_via_deeplink")
+
+        // Same settle the old row-walk used before reading the shelf: give the season-poster row
+        // a moment to lay out and land focus on the selector one Up from the episode row below it.
+        press(.down, times: 3, gap: 1.0)
+        pause(1.5)
+        guard anyPoster.count >= 6 else {
+            throw XCTSkip("The 100's detail page did not show a 6+ season poster shelf (found \(anyPoster.count)) — fixture data may not match tt2661044's real season count")
+        }
+        if !moveFocus(.up, until: anyPoster.firstMatch, max: 3) { _ = moveFocus(.down, until: anyPoster.firstMatch, max: 3) }
+        pause(1)
+        let posterCount = anyPoster.count
+        let lastPoster = anyPoster.element(boundBy: posterCount - 1)
+        guard moveFocus(.right, until: lastPoster, max: posterCount + 2) else {
+            throw XCTSkip("could not walk focus to the last season poster in the shelf")
+        }
+        shot(app, "68b_last_season_poster_focused")
+
+        // A single Up press, then poll briefly (not a repeated-press moveFocus walk) — pre-fix,
+        // the focus engine found no candidate at all and Up was a no-op, so retrying the press
+        // would not distinguish "fixed" from "broken, but eventually landed somewhere else".
+        remote.press(.up)
+        var landedInTopBlock = false
+        for _ in 0..<4 {
+            pause(0.25)
+            if topBlockHasFocus() {
+                landedInTopBlock = true
+                break
+            }
+        }
+        shot(app, "68c_after_up_from_last_poster")
+        XCTAssertTrue(landedInTopBlock, "Up from the last season poster should reach the top block (the Cinematic hero: Play/Resume, Start Over, Mark Watched, Add to Library or the synopsis teaser) within 1 s, not stay on the shelf or go nowhere")
+
+        // FEAT-35: landing in the hero from any row restores the page top (DetailRowAnchor
+        // `heroReturn`): the scroll dim returns to 0, or the probe notes the hero-return pass.
+        if landedInTopBlock {
+            var heroRestored = false
+            var lastProbe = ""
+            for _ in 0..<8 {
+                pause(0.25)
+                let probe = app.staticTexts["debug_ux6"]
+                lastProbe = probe.exists ? probe.label : ""
+                if lastProbe.contains("dark=0 ") || lastProbe.contains("hero-return") { heroRestored = true; break }
+            }
+            XCTAssertTrue(heroRestored, "Up into the hero must restore the top (debug_ux6 dark=0 or anchor=hero-return within 2 s), got: \(lastProbe)")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-118 → FEAT-54: the row edge fade setting
+
+    /// rc13 (W2-A) began this as an evidence spike for the BUG-118 Developer A/B; the screenshots
+    /// showed the three SYSTEM styles render byte-identical on the simulator. beta.19-rc1 verdict
+    /// (F, FEAT-54): the A/B is now the Appearance setting `row_edge_fade` (soft / system / off,
+    /// Off by default since the 2026-10-04 F.5 gate), and Soft is an eased mask that ramps over 250 pt from the bezel inward
+    /// (`EdgeFadeCurve`, `RowEdgeFade.rampLength`). Per leg (`-row_edge_fade <leg>`) this checks
+    /// that the setting reaches the row's own `@AppStorage` (the hidden `row_edge_fade_probe`
+    /// reads `mode=<leg>`), then compares Soft against Off pixel by pixel on the SAME row in the
+    /// SAME state:
+    ///
+    /// - at rest, trailing edge: 310 pt from the bezel Soft equals Off; 180 pt from it Soft
+    ///   differs (alpha ≈ 0.86); the 4 pt column is reported only (the Home hero's art can sit
+    ///   behind the row at the right edge, so "≈ background" has no fixed colour there);
+    /// - after 12 Rights, leading edge: the card artwork within 24 pt of the bezel is (almost)
+    ///   fully faded (its fade alpha, estimated from the artwork's own pixels, ≤ 0.35); 140 pt in is
+    ///   partly faded (alpha ≈ 0.61, darker than Off); 280 pt in equals Off;
+    /// - both states: the row band from 260 pt to 1660 pt equals Off, and (when this runtime
+    ///   reports focus) the focused card's crop equals Off apart from its outer 20 pt.
+    ///
+    /// Same state (Gate 2 fix): a first run compared the Soft leg focused on card 0 against an Off
+    /// leg whose two Downs had landed mid-row on another card, with another hero. Nothing persists
+    /// focus or row offsets between launches; the landing card depends on the x the focus engine
+    /// carries down from the row above, and on which rows have loaded by the time of each press.
+    /// So every leg now presses Left to card 0 of whatever row it reached, and the legs after the
+    /// first walk Down/Up until card 0 is the SAME title the first leg found (`debug_hero` `fitem=`),
+    /// then press Right exactly 12 times from there. The focused title is recorded for both phases
+    /// of every leg, and a leg in a different state fails loudly instead of comparing different
+    /// posters. Comparisons stay inside the compared row's own band (its probe top to the next
+    /// row's), so neither the hero nor the neighbouring rows enter them.
+    func test70RowEdgeFadeSpike() throws {
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        struct LegCapture {
+            let rest: UIImage
+            let scrolled: UIImage
+            let probeTops: [CGFloat]
+            let window: CGSize
+            let restItem: String
+            let scrolledItem: String
+            /// The focused card's frame after the 12 Rights, when this runtime reports focus.
+            let scrolledFocusFrame: CGRect?
+            /// Gate 2 rerun: the cards' artwork boxes (`poster_artwork` / `landscape_card` under
+            /// `-debug.cardGeometryProbe YES`) and the focused card, in each state.
+            let restArt: [CGRect]
+            let restFocusFrame: CGRect?
+            let scrolledArt: [CGRect]
+        }
+        var captures: [String: LegCapture] = [:]
+        /// Card 0 of the compared row, fixed by the first leg.
+        var targetFirstItem: String?
+
+        // Gate 3 (main session): the FIRST launch after a cold start rests the pinned rows ~14 pt
+        // lower than every later launch, whatever the fade (Off-first then Soft-second rest shots
+        // are pixel-identical, shift 0). A throwaway "off" leg absorbs that; its capture is
+        // overwritten by the measured "off" leg at the end, and it still fixes the target row.
+        for leg in ["off", "soft", "system", "off"] {
+            let app = launchToHome(
+                extraArguments: ["-row_edge_fade", leg,
+                                 "-home_upcoming_row_enabled", "NO",
+                                 "-inline_trailers_enabled", "NO",
+                                 "-hero_trailer_autoplay", "NO",
+                                 // Publishes every card's artwork box (DEBUG, launch-latched; no
+                                 // visual change): the comparisons only read pixels inside them.
+                                 "-debug.cardGeometryProbe", "YES"],
+                forceFreshLaunch: true
+            )
+            openTab(app, named: "Home")
+            pause(2) // the rows' catalogs settle before any walk
+
+            func focusedItem() -> String {
+                let probe = app.staticTexts["debug_hero"]
+                return probe.exists ? (probeField(probe.label, "fitem") ?? "-") : "-"
+            }
+            /// Card 0 of the focused row: the row is at offset 0 again and the first card holds focus.
+            func toCardZero() {
+                press(.left, times: 15, gap: 0.3)
+                pause(1)
+            }
+
+            // Row 2 (one Down from the hero) — the "skip the hero row" convention other legs use so
+            // the hero's own focus/reveal behavior never confuses what is being screenshotted.
+            press(.down, times: 2, gap: 0.6)
+            pause(1)
+            toCardZero()
+
+            if let target = targetFirstItem {
+                // Rows load asynchronously, so two Downs can land on a different row than in the
+                // first leg. Walk Down (Down from card 0 lands on the next row's card 0), then Up,
+                // until card 0 is the first leg's title. Stop going Up when focus leaves the rows
+                // (`fitem=-`): Left in the hero would page its carousel.
+                var found = focusedItem() == target
+                if !found {
+                    for _ in 0..<6 where !found {
+                        press(.down, times: 1, gap: 0.8)
+                        toCardZero()
+                        found = focusedItem() == target
+                    }
+                }
+                if !found {
+                    for _ in 0..<12 where !found {
+                        press(.up, times: 1, gap: 0.8)
+                        if focusedItem() == "-" { break }
+                        toCardZero()
+                        found = focusedItem() == target
+                    }
+                }
+                guard found else {
+                    shot(app, "bug118-\(leg)-lost")
+                    XCTFail("[\(leg)] could not reach the compared row's card 0 (\(target)); focus is on \(focusedItem())")
+                    return
+                }
+            } else {
+                let first = focusedItem()
+                guard first != "-", !first.hasPrefix("nuvio-folder://") else {
+                    throw XCTSkip("two Downs from the hero did not land on a catalog row (fitem=\(first)); cannot pick a row to compare")
+                }
+                targetFirstItem = first
+            }
+            pause(2) // the hero follows the focused title; let its art and text land
+
+            // `.firstMatch` for the label (every row mounts its own copy of this identifier, and
+            // reading `.label` off an ambiguous query fails the snapshot resolution outright).
+            let probes = app.staticTexts.matching(identifier: "row_edge_fade_probe")
+            let probe = probes.firstMatch
+            XCTAssertTrue(probe.waitForExistence(timeout: 10), "[\(leg)] row_edge_fade_probe missing — RowEdgeEffectStyleModifier did not mount on this row")
+            XCTAssertEqual(Self.probeToken(probe.label, key: "mode"), leg, "[\(leg)] -row_edge_fade \(leg) did not reach the row's @AppStorage (\(probe.label))")
+            XCTAssertGreaterThan(Self.probeValue(probe.label, key: "ramp") ?? 0, 0, "[\(leg)] probe carries no ramp length (\(probe.label))")
+            let restItem = focusedItem()
+            let rest = XCUIScreen.main.screenshot().image
+            shot(app, "bug118-\(leg)-0")
+            let restArt = artworkFrames(app)
+            let restFocusFrame = focusedCardFrame(app)
+
+            press(.right, times: 12, gap: 0.4)
+            pause(2.5)
+            let scrolledItem = focusedItem()
+            let scrolled = XCUIScreen.main.screenshot().image
+            shot(app, "bug118-\(leg)-12")
+            let scrolledArt = artworkFrames(app)
+
+            let probeTops = probes.allElementsBoundByIndex.map { $0.frame.minY }
+            captures[leg] = LegCapture(rest: rest, scrolled: scrolled, probeTops: probeTops,
+                                       window: app.windows.firstMatch.frame.size,
+                                       restItem: restItem, scrolledItem: scrolledItem,
+                                       scrolledFocusFrame: focusedCardFrame(app),
+                                       restArt: restArt, restFocusFrame: restFocusFrame,
+                                       scrolledArt: scrolledArt)
+        }
+
+        guard let soft = captures["soft"], let off = captures["off"] else {
+            XCTFail("a leg did not capture")
+            return
+        }
+        let window = soft.window
+        let states = XCTAttachment(string: captures.keys.sorted().map { leg in
+            "\(leg): rest=\(captures[leg]!.restItem) scrolled=\(captures[leg]!.scrolledItem) focusFrame=\(String(describing: captures[leg]!.scrolledFocusFrame))"
+        }.joined(separator: "\n"))
+        states.name = "bug118-leg-states"
+        states.lifetime = .keepAlways
+        add(states)
+        // The legs must be in the same state, or the pixels compare different posters.
+        guard soft.restItem == off.restItem, soft.scrolledItem == off.scrolledItem else {
+            XCTFail("Soft and Off did not reach the same state (rest \(soft.restItem) vs \(off.restItem), scrolled \(soft.scrolledItem) vs \(off.scrolledItem)); pixel comparison skipped")
+            return
+        }
+
+        /// The band of the row whose probe sits at `top`: from just under its probe to just above
+        /// the next row's probe (at most 388 pt), so neither the hero above nor the next row enter.
+        func bandRect(top: CGFloat, x: CGFloat, width: CGFloat, probeTops: [CGFloat]) -> CGRect {
+            let next = probeTops.filter { $0 > top + 50 }.min()
+            let bottom = min(top + 400, (next ?? .greatestFiniteMagnitude) - 4)
+            return CGRect(x: x, y: top + 12, width: width, height: max(8, bottom - (top + 12)))
+        }
+
+        // Which row was compared. Preferred: the row holding the focused card (its probe is the
+        // lowest one at or above the card's top). Fallback when this runtime reports no focus: the
+        // usable band that changed most between rest and 12 Rights, measured on its LEFT part only
+        // (x 140–600), where the Nuvio-style hero art never sits.
+        var chosenTop: CGFloat?
+        var method = "focus"
+        if let card = soft.scrolledFocusFrame {
+            chosenTop = soft.probeTops.filter { $0 <= card.minY + 4 && $0 >= card.minY - 200 }.max()
+        }
+        if chosenTop == nil {
+            method = "change"
+            var bestChange = 0.0
+            for candidate in soft.probeTops where candidate >= 160 && candidate <= window.height - 300 {
+                let band = bandRect(top: candidate, x: 140, width: 460, probeTops: soft.probeTops)
+                let change = try meanAbsDiff(soft.rest, soft.scrolled, pointRect: band, windowSize: window)
+                if change > bestChange { bestChange = change; chosenTop = candidate }
+            }
+            if bestChange <= 1.0 / 255 { chosenTop = nil }
+        }
+        let rowChoice = XCTAttachment(string: "method=\(method) soft probe tops=\(soft.probeTops) off probe tops=\(off.probeTops) chosen=\(String(describing: chosenTop))")
+        rowChoice.name = "bug118-row-choice"
+        rowChoice.lifetime = .keepAlways
+        add(rowChoice)
+        guard let top = chosenTop else {
+            throw XCTSkip("could not tell which row was scrolled; cannot compare legs")
+        }
+        try XCTSkipUnless(off.probeTops.contains { abs($0 - top) <= 2 },
+                          "Off has no row at the Soft row's height (\(top)); the legs laid out differently and cannot be compared pixel by pixel")
+
+        let rowBand = bandRect(top: top, x: 0, width: window.width, probeTops: soft.probeTops)
+        /// A 40 pt strip of the row band centred on `x`: wider than the 28 pt gap between cards, so
+        /// it always overlaps some artwork.
+        func strip(_ x: CGFloat) -> CGRect {
+            CGRect(x: x - 20, y: rowBand.minY, width: 40, height: rowBand.height)
+        }
+        /// Brightest channel along one column of the row band (the bezel columns).
+        func bandColumnMax(_ image: UIImage, x: CGFloat) throws -> Int {
+            var peak = 0
+            var y = rowBand.minY
+            while y < rowBand.maxY {
+                let rgb = try pixelRGB(in: image, at: CGPoint(x: x, y: y), windowSize: window)
+                peak = max(peak, rgb.max() ?? 0)
+                y += 8
+            }
+            return peak
+        }
+
+        let tolerance = 3.0 / 255
+        let w = window.width
+        let screen = CGRect(origin: .zero, size: window)
+
+        // Gate 2 rerun: the first comparison over whole bands failed at REST (middle 0.094, d310
+        // 0.025) while the two rest shots looked identical: the pinned hero's backdrop shows
+        // faintly behind and between the cards, and its state differs in time between launches.
+        // So every equality / difference check below reads only pixels INSIDE the compared row's
+        // card artwork (its `poster_artwork` boxes), inset 4 pt for the ring band and 24 pt on the
+        // focused card for its lift and ring. A fade that dims the middle of the row still changes
+        // those pixels, so the checks can still fail.
+        func rowArt(_ frames: [CGRect], focus: CGRect?) -> [CGRect] {
+            frames
+                .filter { $0.midY >= rowBand.minY && $0.midY <= rowBand.maxY }
+                .map { frame -> CGRect in
+                    let focused = focus.map { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) } ?? false
+                    return frame.insetBy(dx: focused ? 24 : 4, dy: focused ? 24 : 4)
+                }
+                .map { $0.intersection(screen) }
+                .filter { !$0.isNull && $0.width >= 2 && $0.height >= 2 }
+        }
+        let restArt = rowArt(soft.restArt, focus: soft.restFocusFrame)
+        let scrolledArt = rowArt(soft.scrolledArt, focus: soft.scrolledFocusFrame)
+        guard !restArt.isEmpty, !scrolledArt.isEmpty else {
+            throw XCTSkip("no card artwork boxes in the compared row (rest \(restArt.count), scrolled \(scrolledArt.count)) — `-debug.cardGeometryProbe YES` did not arm (Release build?)")
+        }
+        /// Mean absolute difference (0…1 per channel) over the artwork pixels inside `region`,
+        /// weighted by area; nil when no artwork falls inside it.
+        func artDiff(_ a: UIImage, _ b: UIImage, region: CGRect, art: [CGRect]) throws -> Double? {
+            var sum = 0.0
+            var area = 0.0
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let weight = Double(r.width * r.height)
+                sum += try meanAbsDiff(a, b, pointRect: r, windowSize: window, downsample: 2) * weight
+                area += weight
+            }
+            return area > 0 ? sum / area : nil
+        }
+        /// Mean luma (0…1) over the artwork pixels inside `region`; nil when there are none.
+        func artLuma(_ image: UIImage, region: CGRect, art: [CGRect]) throws -> Double? {
+            var sum = 0.0
+            var count = 0
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let px = try rgbaPixels(image, pointRect: r, windowSize: window, downsample: 2)
+                var i = 0
+                while i + 2 < px.count {
+                    sum += (0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])) / 255
+                    count += 1
+                    i += 4
+                }
+            }
+            return count > 0 ? sum / Double(count) : nil
+        }
+        /// The artwork-only diff of the strip centred on `x` (40 pt, widened to 80 pt when a card
+        /// gap swallows the narrow one).
+        func stripArtDiff(_ a: UIImage, _ b: UIImage, x: CGFloat, art: [CGRect]) throws -> Double? {
+            if let d = try artDiff(a, b, region: strip(x), art: art) { return d }
+            return try artDiff(a, b, region: CGRect(x: x - 40, y: rowBand.minY, width: 80, height: rowBand.height), art: art)
+        }
+
+        // At rest, trailing edge (d = distance from the right bezel).
+        let restD310 = try stripArtDiff(soft.rest, off.rest, x: w - 310, art: restArt)
+        let restD180 = try stripArtDiff(soft.rest, off.rest, x: w - 180, art: restArt)
+        let restD4Soft = try bandColumnMax(soft.rest, x: w - 4)
+        let restD4Off = try bandColumnMax(off.rest, x: w - 4)
+        // After 12 Rights, leading edge.
+        // harness-w4 (2026-10-23): the bezel check reads the CARD ARTWORK, not the row band's x = 4
+        // column. That column is mostly the Home backdrop behind the row band (first full run: the
+        // blue foliage of the hero art, max channel 62 > 28, while the card itself faded). Inside an
+        // artwork box, Soft = a·Art + (1 − a)·B, where Art is the card's picture (Off's pixel there)
+        // and B whatever the faded card reveals (the backdrop: another picture, unrelated to this
+        // card). So the per-pixel regression slope of Soft's luma on Off's, cov(Soft, Off) / var(Off),
+        // estimates the fade alpha `a` without knowing B. The fade reaches the bezel when the
+        // artwork within 24 pt of it reads a ≤ 0.35 (the ramp's eased alpha there is ≈ 0); the same
+        // estimate at d140 / d280 is reported as a calibration (≈ 0.6 / ≈ 1).
+        /// Fade alpha over the artwork inside `region` (slope of Soft luma on Off luma, per pixel),
+        /// with the pixel count and Off's luma variance; nil when no artwork falls inside `region`
+        /// or Off's art there is too flat to regress on.
+        func fadeAlpha(region: CGRect, art: [CGRect]) throws -> (alpha: Double, pixels: Int, varOff: Double)? {
+            var softLuma: [Double] = []
+            var offLuma: [Double] = []
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let a = try rgbaPixels(soft.scrolled, pointRect: r, windowSize: window)
+                let b = try rgbaPixels(off.scrolled, pointRect: r, windowSize: window)
+                guard a.count == b.count else { continue }
+                var i = 0
+                while i + 2 < a.count {
+                    softLuma.append((0.2126 * Double(a[i]) + 0.7152 * Double(a[i + 1]) + 0.0722 * Double(a[i + 2])) / 255)
+                    offLuma.append((0.2126 * Double(b[i]) + 0.7152 * Double(b[i + 1]) + 0.0722 * Double(b[i + 2])) / 255)
+                    i += 4
+                }
+            }
+            guard offLuma.count >= 50 else { return nil }
+            let n = Double(offLuma.count)
+            let meanSoft = softLuma.reduce(0, +) / n, meanOff = offLuma.reduce(0, +) / n
+            var cov = 0.0, varOff = 0.0
+            for (x, y) in zip(offLuma, softLuma) {
+                cov += (x - meanOff) * (y - meanSoft)
+                varOff += (x - meanOff) * (x - meanOff)
+            }
+            varOff /= n
+            guard varOff > 1e-3 else { return nil }
+            return (cov / n / varOff, offLuma.count, varOff)
+        }
+        let bezelRegion = CGRect(x: 0, y: rowBand.minY, width: 24, height: rowBand.height)
+        let bezelArtGap = scrolledArt.map(\.minX).min() ?? .greatestFiniteMagnitude
+        let scrolledD4Alpha = try fadeAlpha(region: bezelRegion, art: scrolledArt)
+        let scrolledD140Alpha = try fadeAlpha(region: strip(140), art: scrolledArt)
+        let scrolledD280Alpha = try fadeAlpha(region: strip(280), art: scrolledArt)
+        let scrolledD4Soft = try bandColumnMax(soft.scrolled, x: 4)
+        let scrolledD140 = try stripArtDiff(soft.scrolled, off.scrolled, x: 140, art: scrolledArt)
+        let scrolledD140SoftLuma = try artLuma(soft.scrolled, region: strip(140), art: scrolledArt)
+        let scrolledD140OffLuma = try artLuma(off.scrolled, region: strip(140), art: scrolledArt)
+        let scrolledD280 = try stripArtDiff(soft.scrolled, off.scrolled, x: 280, art: scrolledArt)
+        // The middle of the row (d ≥ 260 from both bezels) in both states.
+        let middle = CGRect(x: 260, y: rowBand.minY, width: w - 520, height: rowBand.height)
+        let restMiddle = try artDiff(soft.rest, off.rest, region: middle, art: restArt)
+        let scrolledMiddle = try artDiff(soft.scrolled, off.scrolled, region: middle, art: scrolledArt)
+        // The focused card apart from its outer 20 pt, when the runtime reports focus.
+        var focusedCard: Double?
+        if let card = soft.scrolledFocusFrame {
+            let inner = card.insetBy(dx: 20, dy: 20).intersection(screen)
+            if !inner.isNull, inner.width > 20, inner.height > 20 {
+                focusedCard = try meanAbsDiff(soft.scrolled, off.scrolled, pointRect: inner, windowSize: window, downsample: 2)
+            }
+        }
+
+        func fmt(_ value: Double?) -> String { value.map { String(format: "%.5f", $0) } ?? "nil" }
+        let report = XCTAttachment(string: """
+            row top=\(top) band=\(rowBand) method=\(method) art boxes rest=\(restArt.count) scrolled=\(scrolledArt.count)
+            rest trailing: d310 diff=\(fmt(restD310)) d180 diff=\(fmt(restD180)) d4 max soft=\(restD4Soft) off=\(restD4Off)
+            scrolled leading: d4 band max soft=\(scrolledD4Soft) (backdrop, reported only) bezel art alpha=\(fmt(scrolledD4Alpha?.alpha)) px=\(scrolledD4Alpha?.pixels ?? 0) varOff=\(fmt(scrolledD4Alpha?.varOff)) nearest art minX=\(bezelArtGap) | alpha d140=\(fmt(scrolledD140Alpha?.alpha)) d280=\(fmt(scrolledD280Alpha?.alpha))
+            scrolled leading: d140 diff=\(fmt(scrolledD140)) luma soft=\(fmt(scrolledD140SoftLuma)) off=\(fmt(scrolledD140OffLuma)) d280 diff=\(fmt(scrolledD280))
+            middle diff rest=\(fmt(restMiddle)) scrolled=\(fmt(scrolledMiddle)) focusedCard=\(fmt(focusedCard))
+            """)
+        report.name = "bug118-soft-vs-off"
+        report.lifetime = .keepAlways
+        add(report)
+
+        /// A check whose region held no card artwork cannot judge anything: fail loudly rather than
+        /// pass vacuously.
+        func value(_ v: Double?, _ what: String) -> Double? {
+            if v == nil { XCTFail("[soft] no card artwork under \(what); the check could not run") }
+            return v
+        }
+        if let v = value(restD310, "d310 at rest") {
+            XCTAssertLessThanOrEqual(v, tolerance, "[soft] 310 pt from the trailing bezel must equal Off (the ramp ends at 250); diff \(v)")
+        }
+        if let v = value(restD180, "d180 at rest") {
+            XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 180 pt from the trailing bezel must be faded (alpha ≈ 0.86), so differ from Off; diff \(v)")
+        }
+        // The bezel: judged on the card artwork there (see `fadeAlpha`). With no artwork within 24 pt
+        // of the bezel (a card gap), or a flat poster there, the check cannot run: it is skipped at
+        // the END of the leg (every other check still runs), never passed.
+        var bezelSkip: String?
+        if let bezel = scrolledD4Alpha {
+            XCTAssertLessThanOrEqual(bezel.alpha, 0.35, "[soft] the card artwork within 24 pt of the leading bezel is still drawn after scrolling (fade alpha ≈ \(bezel.alpha) over \(bezel.pixels) px); the fade does not reach the bezel")
+        } else {
+            bezelSkip = "no card artwork with structure within 24 pt of the leading bezel after 12 Rights (nearest artwork minX \(bezelArtGap)) — the bezel fade could not be judged; every other check ran"
+        }
+        if let v = value(scrolledD140, "d140 after scrolling") {
+            XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 140 pt from the leading bezel must be partly faded (alpha ≈ 0.61), so differ from Off; diff \(v)")
+        }
+        if let softLuma = value(scrolledD140SoftLuma, "d140 luma (soft)"), let offLuma = value(scrolledD140OffLuma, "d140 luma (off)") {
+            XCTAssertLessThan(softLuma, offLuma, "[soft] 140 pt from the leading bezel must be darker than Off (luma \(softLuma) vs \(offLuma))")
+        }
+        if let v = value(scrolledD280, "d280 after scrolling") {
+            XCTAssertLessThanOrEqual(v, tolerance, "[soft] 280 pt from the leading bezel must equal Off; diff \(v)")
+        }
+        if let v = value(restMiddle, "the middle of the row at rest") {
+            XCTAssertLessThan(v, tolerance, "[soft] the cards between 260 pt from each bezel must equal Off at rest; diff \(v)")
+        }
+        if let v = value(scrolledMiddle, "the middle of the row after scrolling") {
+            XCTAssertLessThan(v, tolerance, "[soft] the cards between 260 pt from each bezel must equal Off after scrolling; diff \(v)")
+        }
+        if let focusedCard {
+            XCTAssertLessThan(focusedCard, tolerance, "[soft] the focused card (apart from its outer 20 pt) must equal Off; diff \(focusedCard)")
+        }
+        if let bezelSkip { throw XCTSkip(bezelSkip) }
+    }
+
+    /// beta.19-rc1 verdict (F, Gate 2 rerun): every card artwork box on screen, published by
+    /// `DebugAXIdentifier` under `-debug.cardGeometryProbe YES` (`poster_artwork` is the inset
+    /// picture of a portrait card, `landscape_card` the box of a 16:9 one). Empty when the probe
+    /// is not armed.
+    private func artworkFrames(_ app: XCUIApplication) -> [CGRect] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [CGRect] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier == "poster_artwork" || node.identifier == "landscape_card" {
+                out.append(node.frame)
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// beta.19-rc1 verdict (F): the frame of the focused CARD (a focused element sized like a
+    /// poster or landscape card), or nil when this runtime does not report focus — the tvOS 27.0
+    /// simulator runtime never sets `hasFocus`, so callers need a fallback.
+    private func focusedCardFrame(_ app: XCUIApplication) -> CGRect? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: CGRect?
+        func walk(_ node: XCUIElementSnapshot) {
+            guard found == nil else { return }
+            let f = node.frame
+            if node.hasFocus, f.width >= 150, f.width <= 760, f.height >= 150, f.height <= 760 {
+                found = f
+                return
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    /// RGB (0-255) of one point (window point space) in a full-screen screenshot.
+    private func pixelRGB(in image: UIImage, at point: CGPoint, windowSize: CGSize) throws -> [Int] {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let rect = CGRect(x: point.x * scale, y: point.y * scale, width: 1, height: 1)
+        guard let px = cg.cropping(to: rect.integral) else { throw XCTSkip("pixel \(point) off-screen") }
+        var buf = [UInt8](repeating: 0, count: 4)
+        guard let ctx = CGContext(data: &buf, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(px, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return [Int(buf[0]), Int(buf[1]), Int(buf[2])]
+    }
+
+    /// beta.19-rc1 verdict (F/C): RGBA bytes of one window-point rect of a full-screen screenshot,
+    /// drawn at 1/`downsample` of its pixel size (CoreGraphics averages while it scales).
+    private func rgbaPixels(_ image: UIImage, pointRect: CGRect, windowSize: CGSize,
+                            downsample: Int = 1) throws -> [UInt8] {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("rect \(pointRect) is off-screen")
+        }
+        let factor = max(1, downsample)
+        let w = max(1, cropped.width / factor)
+        let h = max(1, cropped.height / factor)
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn: Bool = buffer.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(
+                data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { throw XCTSkip("could not build a bitmap context") }
+        return buffer
+    }
+
+    /// beta.19-rc1 verdict (F): mean absolute per-channel difference (0…1) between two full-screen
+    /// screenshots over one window-point rect. Large rects are compared at 1/4 size by default.
+    private func meanAbsDiff(_ a: UIImage, _ b: UIImage, pointRect: CGRect, windowSize: CGSize,
+                             downsample: Int = 4) throws -> Double {
+        let pa = try rgbaPixels(a, pointRect: pointRect, windowSize: windowSize, downsample: downsample)
+        let pb = try rgbaPixels(b, pointRect: pointRect, windowSize: windowSize, downsample: downsample)
+        guard pa.count == pb.count, !pa.isEmpty else {
+            throw XCTSkip("the two screenshots crop to different sizes; cannot compare")
+        }
+        var sum = 0
+        var channels = 0
+        var i = 0
+        while i + 2 < pa.count {
+            sum += abs(Int(pa[i]) - Int(pb[i])) + abs(Int(pa[i + 1]) - Int(pb[i + 1])) + abs(Int(pa[i + 2]) - Int(pb[i + 2]))
+            channels += 3
+            i += 4
+        }
+        return channels == 0 ? 0 : Double(sum) / Double(channels) / 255
+    }
+
+    /// beta.19-rc1 verdict (C): the fraction of pixels in one window-point rect whose largest
+    /// channel difference from `reference` (RGB 0-255) is above `threshold`.
+    private func fractionDiffering(in image: UIImage, pointRect: CGRect, windowSize: CGSize,
+                                   from reference: [Int], threshold: Int) throws -> Double {
+        guard reference.count >= 3 else { throw XCTSkip("reference colour needs three channels") }
+        let px = try rgbaPixels(image, pointRect: pointRect, windowSize: windowSize)
+        var hits = 0
+        var total = 0
+        var i = 0
+        while i + 2 < px.count {
+            let d = max(abs(Int(px[i]) - reference[0]), abs(Int(px[i + 1]) - reference[1]), abs(Int(px[i + 2]) - reference[2]))
+            if d > threshold { hits += 1 }
+            total += 1
+            i += 4
+        }
+        return total == 0 ? 0 : Double(hits) / Double(total)
+    }
+
+    // MARK: - Orivio batch (2026-10-01): hold menus, first-play auto mode, external-player return
+
+    /// Any element whose accessibility label contains `text` — a tvOS context menu's rows are not
+    /// reliably `buttons`, so look across the whole tree.
+    private func anyElement(containing text: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", text))
+            .firstMatch
+    }
+
+    /// True when any element's label contains one of `fragments` (one tree walk for several wordings).
+    private func anyLabelExists(_ fragments: [String], in app: XCUIApplication) -> Bool {
+        let predicates = fragments.map { NSPredicate(format: "label CONTAINS[c] %@", $0) }
+        return app.descendants(matching: .any)
+            .matching(NSCompoundPredicate(orPredicateWithSubpredicates: predicates))
+            .firstMatch.exists
+    }
+
+    /// The full-screen "Finding the best source…" / "Trying another source (n of m)…" cover that
+    /// `FirstPlayAutoPlayOverlay` draws over the stream picker while auto mode works.
+    private func autoPlayOverlayVisible(_ app: XCUIApplication) -> Bool {
+        anyLabelExists(["the best source", "Trying another source"], in: app)
+    }
+
+    /// The stream picker's own list: an add-on group header ("<add-on> 12 streams"), the
+    /// "Finding streams…" loading line, or the empty state's "Play test stream" row. None of these
+    /// exist on Detail, Home or in a player.
+    private func streamPickerListVisible(_ app: XCUIApplication) -> Bool {
+        let list = NSPredicate(
+            format: "label MATCHES '.*[0-9]+ streams?.*' OR label CONTAINS[c] 'Finding streams' OR label CONTAINS[c] 'Play test stream'")
+        return app.descendants(matching: .any).matching(list).firstMatch.exists
+    }
+
+    /// Deep-links into The 100's Detail page with Auto-Play Best Source on for this launch only
+    /// (harness-w4: `-debug.streamAutoPlayModeOverride FIRST_STREAM`, the DEBUG seam the shared
+    /// `PlayerSettingsRepository` reads before the persisted `stream_auto_play_mode`; it is held in
+    /// memory, never written and never in the sync export), waits for the action row,
+    /// and leaves focus on Play. Detail's initial focus is not deterministic on this runtime and
+    /// `hasFocus` never reports, so walk Left three times: Play is the leftmost action button.
+    /// An earlier probe run can leave the fixture's The 100 marked Watched; restore it first.
+    private func launchTheHundredOnPlay(shotPrefix: String) throws -> XCUIApplication {
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
+            "-debug.streamAutoPlayModeOverride", "FIRST_STREAM",
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        let actionRowLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+        var detailReached = false
+        for _ in 0..<90 {
+            if actionRowLabels.contains(where: { app.buttons[$0].exists }) { detailReached = true; break }
+            pause(0.5)
+        }
+        guard detailReached else {
+            throw XCTSkip("the deep-linked Detail page never appeared within 45 s — fixture/network, not the feature")
+        }
+        pause(2)
+        press(.left, times: 3, gap: 0.8)
+        pause(1)
+        let playButton = app.buttons.matching(NSPredicate(
+            format: "label BEGINSWITH 'Play' OR label BEGINSWITH 'Resume' OR label BEGINSWITH 'Up Next'")).firstMatch
+        if playButton.exists, app.buttons["Watched"].exists {
+            shot(app, "\(shotPrefix)_fixture_marked_watched")
+            // FEAT-35 (Cinematic, D9): the row is Play/Resume, Start Over (only with saved
+            // progress), Watch Trailer (absent here: trailers are forced off), then Watched. The
+            // secondaries are icon-only but keep their accessibility labels.
+            press(.right, times: app.buttons["Start Over"].exists ? 2 : 1, gap: 1.0)
+            guard app.buttons["Watched"].hasFocus else {
+                throw XCTSkip("focus not on Watched after the Right walk — not un-marking blind (the Select would hit another action)")
+            }
+            remote.press(.select)
+            _ = app.buttons["Mark Watched"].waitForExistence(timeout: 5)
+            // Back to Play/Resume: Left ×3 reaches the leftmost button from any secondary.
+            press(.left, times: 3, gap: 0.8)
+            guard playButton.exists, playButton.hasFocus else {
+                throw XCTSkip("focus did not return to Play/Resume after un-marking Watched")
+            }
+        }
+        shot(app, "\(shotPrefix)_detail_on_play")
+        return app
+    }
+
+    /// Hold menu on posters: a 2 s Select on a catalog poster opens the hold menu with the Library + Watched
+    /// actions. A Continue Watching card also ships a hold menu (its own list, "Remove from
+    /// Continue Watching" among them), so stepping Down from the top keeps going past one until a
+    /// catalog poster answers (max 6 steps); a CW-only result still counts. Focus cannot be read on
+    /// this runtime, so the screenshots are the record of which row each press landed on. The Detail
+    /// page's own "Add to Library" button exists too, hence the "Mark as …" pairing: only the hold
+    /// menu says "Mark as Watched/Unwatched" (Detail says "Mark Watched").
+    func test71HoldMenuOnCatalogPoster() throws {
+        let app = launchToHome(extraArguments: [
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        pause(3)
+        var catalogLabel = ""
+        var sawContinueWatchingMenu = false
+        for step in 0..<6 {
+            if step > 0 { press(.down); pause(1.2) }
+            shot(app, "71_step\(step)_before_hold")
+            // ui-legs: hold only on a focused Home card, read here; a step whose focus is on the
+            // hero CTA, a tab or nothing readable passes with no press.
+            guard let card = focusedHomeCardLabel(app) else {
+                NSLog("[HoldMenu] step \(step): focus not on a Home card (\(focusedLabelList(app))) — no hold")
+                continue
+            }
+            NSLog("[HoldMenu] step \(step): hold on '\(card)'")
+            remote.press(.select, forDuration: 2.0)
+            pause(1.5)
+            shot(app, "71_step\(step)_after_hold")
+            let hasWatchedRow = anyElement(containing: "Mark as ", in: app).waitForExistence(timeout: 3)
+            if hasWatchedRow {
+                if anyElement(containing: "Remove from Library", in: app).exists {
+                    catalogLabel = "Remove from Library"
+                } else if anyElement(containing: "Add to Library", in: app).exists {
+                    catalogLabel = "Add to Library"
+                }
+            }
+            if !catalogLabel.isEmpty {
+                // Menu closes the hold menu and nothing else.
+                remote.press(.menu)
+                pause(1)
+                shot(app, "71_menu_closed")
+                XCTAssertFalse(anyElement(containing: "Mark as ", in: app).exists, "Menu did not close the hold menu")
+                break
+            }
+            if anyElement(containing: "Remove from Continue Watching", in: app).exists {
+                sawContinueWatchingMenu = true
+                remote.press(.menu)
+                pause(1)
+                continue
+            }
+            // No menu: the press may have fired the link on release (Detail pushed) — pop it.
+            if ["Add to Library", "In Library", "Mark Watched", "Watched"].contains(where: { app.buttons[$0].exists }) {
+                remote.press(.menu)
+                pause(1.5)
+            }
+        }
+        NSLog("[HoldMenu] catalog label=\(catalogLabel.isEmpty ? "none" : catalogLabel) cwMenuSeen=\(sawContinueWatchingMenu)")
+        XCTAssertTrue(!catalogLabel.isEmpty || sawContinueWatchingMenu,
+                      "no hold menu (catalog Add/Remove from Library, or a Continue Watching menu) opened in 6 steps")
+    }
+
+    /// First-play auto mode and hold-Play: with Auto-Play Best Source on, a plain Select on Play shows the "Finding the best
+    /// source…" overlay and then either starts a player or lands on the list with the "No source
+    /// could start" toast (both fine, the outcome is recorded). Then a fresh launch: a 2 s hold on
+    /// Play offers "Choose Source…", which opens the picker's list with no overlay at all. Both
+    /// halves close their screen with Menu right away so the fixture profile's Continue Watching
+    /// does not pick up progress. The mode is a launch-argument override, so there is no toggle to
+    /// turn back off.
+    func test72AutoPlayFirstPlayAndHoldPlay() throws {
+        // harness-w4 (2026-10-23): the mode comes from the DEBUG seam now
+        // (`-debug.streamAutoPlayModeOverride`, see `launchTheHundredOnPlay`), never from the synced
+        // `stream_auto_play_mode_<profile>` key, so the ui-legs opt-in gate is gone.
+        var app = try launchTheHundredOnPlay(shotPrefix: "72a")
+        if app.buttons["Playback unavailable"].exists {
+            throw XCTSkip("Play is disabled (no source can serve The 100 on this fixture)")
+        }
+        try pressVerified(app, "72a_play", when: { app.buttons["detail_action_play"].hasFocus })
+        XCTAssertTrue(anyElement(containing: "Finding the best source", in: app).waitForExistence(timeout: 10),
+                      "plain Select on Play with auto mode on did not show the \"Finding the best source…\" overlay")
+        shot(app, "72a_overlay")
+
+        var outcome = "timeout"
+        var listTicks = 0
+        var quietTicks = 0
+        for _ in 0..<120 {
+            if anyElement(containing: "No source could start", in: app).exists { outcome = "list+toast"; break }
+            if autoPlayOverlayVisible(app) {
+                listTicks = 0; quietTicks = 0
+            } else if streamPickerListVisible(app) {
+                listTicks += 1; quietTicks = 0
+                if listTicks >= 2 { outcome = "list"; break }
+            } else {
+                quietTicks += 1; listTicks = 0
+                if quietTicks >= 3 { outcome = "player"; break }
+            }
+            pause(0.5)
+        }
+        NSLog("[AutoPlayLeg] first-play outcome=\(outcome)")
+        shot(app, "72a_outcome_\(outcome)")
+        XCTAssertNotEqual(outcome, "timeout", "auto mode neither started a player nor returned the list within 60 s")
+        // Close right away: Menu once for the list (or the cancelled overlay), twice for a player.
+        remote.press(.menu)
+        pause(1.5)
+        if outcome == "player" { remote.press(.menu); pause(1.5) }
+
+        app = try launchTheHundredOnPlay(shotPrefix: "72b")
+        try pressVerified(app, "72b_hold_play", holdFor: 2.0, when: { app.buttons["detail_action_play"].hasFocus })
+        pause(1.5)
+        shot(app, "72b_after_hold")
+        let chooseSource = anyElement(containing: "Choose Source", in: app)
+        XCTAssertTrue(chooseSource.waitForExistence(timeout: 4), "a 2 s Select on Play did not offer \"Choose Source…\"")
+        guard chooseSource.exists else {
+            remote.press(.menu) // the hold fell through to a plain press: leave the picker before it plays
+            return
+        }
+        try pressVerified(app, "72b_choose_source", when: { hasFocusByFrame(app, chooseSource) })
+        var sawOverlay = false
+        var listSeen = false
+        var settledTicks = 0
+        for _ in 0..<60 {
+            if autoPlayOverlayVisible(app) { sawOverlay = true; break }
+            if streamPickerListVisible(app) { listSeen = true; settledTicks += 1 }
+            if settledTicks >= 5 { break }
+            pause(0.5)
+        }
+        shot(app, "72b_picker_list")
+        XCTAssertFalse(sawOverlay, "\"Choose Source…\" must open the list without the auto-play overlay")
+        XCTAssertTrue(listSeen, "\"Choose Source…\" did not open the stream picker's list within 30 s")
+        remote.press(.menu)
+        pause(1.5)
+    }
+
+    /// External-player return: an external-player (Infuse) x-callback for a session this install never prepared
+    /// must be swallowed — no cover opens and nothing already open closes. The scheme is the dev
+    /// build's own callback scheme on the simulator (Info.plist registers the bundle id, which the
+    /// simulator build keeps at the release value). `ContentView.handleDeepLink` consumes the URL
+    /// ~1 s after the profile gate, well inside `launchToHome`'s own 10 s Home settle.
+    func test73ExternalCallbackDeepLink() throws {
+        let callback = "com.nuvio.media.NuvioTV://external-player/infuse/00000000-0000-0000-0000-000000000000/success"
+            + "?lastPlayedUrl=https%3A%2F%2Fexample.com%2Fx.mkv&position=600"
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", callback,
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        pause(4)
+        shot(app, "73a_after_callback")
+
+        // H9: in Rail mode there is no tab bar; the rail's always-mounted probe stands in for it.
+        let navRailMode = railMode(app)
+        XCTAssertTrue(app.state == .runningForeground)
+        XCTAssertTrue(app.buttons["Home"].exists || navRailMode, "Home's tab bar / navigation rail is gone — a cover opened over Home")
+        for label in ["Mark Watched", "Watched", "Add to Library", "In Library", "Play"] {
+            XCTAssertFalse(app.buttons[label].exists, "a Detail/picker screen opened (found \"\(label)\"): the unknown-session callback was not ignored")
+        }
+        XCTAssertFalse(autoPlayOverlayVisible(app) || streamPickerListVisible(app), "a stream picker opened for the unknown-session callback")
+
+        // Home still takes input afterwards (nothing wedged behind the ignored URL).
+        press(.down)
+        pause(1)
+        shot(app, "73b_home_after_down")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - Detail + Settings revamp (FEAT-35 Cinematic Detail, FEAT-50 Settings) — W3-C legs
+
+    /// Deep-links straight into one title's Detail page (the `-debug.openDeepLink` DEBUG hook test68
+    /// proved out) with trailers forced off, so no auto-play trailer cover buries the page, and
+    /// waits up to 45 s for the page: the Cinematic hero (`detail_hero`), or, for Classic, the
+    /// action row. Throws `XCTSkip` when the page never appears (network / fixture, not the layout).
+    private func launchDetail(id: String, type: String, name: String, layout: String = "cinematic",
+                              extra: [String] = []) throws -> XCUIApplication {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=\(id)&type=\(type)&name=\(encoded)",
+            "-detail_layout", layout,
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES",
+        ] + extra, forceFreshLaunch: true)
+        let actionLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+        for _ in 0..<90 {
+            if app.descendants(matching: .any)["detail_hero"].exists
+                || actionLabels.contains(where: { app.buttons[$0].exists }) {
+                return app
+            }
+            pause(0.5)
+        }
+        throw XCTSkip("the -debug.openDeepLink hook never produced a Detail page for \(name) within 45 s — network or fixture issue, not the layout")
+    }
+
+    /// The Detail page's hidden `debug_detail_hero` probe (Cinematic, DEBUG builds):
+    /// `debug_detail_hero h=… logo=180 syn=… trunc=0|1 ratings=… reserved=…`.
+    private func detailHeroProbe(_ app: XCUIApplication) -> String {
+        let probe = app.staticTexts["debug_detail_hero"]
+        if probe.exists { return probe.label }
+        return probeBlobLabel(app, identifier: "debug_detail_hero") ?? ""
+    }
+
+    private func ux6Label(_ app: XCUIApplication) -> String {
+        let probe = app.staticTexts["debug_ux6"]
+        return probe.exists ? probe.label : ""
+    }
+
+    /// Whether the focused element is the Play / Resume / Up Next button (the primary action keeps
+    /// its label in Cinematic, D9).
+    private func playHasFocus(_ app: XCUIApplication) -> Bool {
+        focusedNodes(app).contains { node in
+            ["Play", "Resume", "Up Next"].contains(where: { node.label.hasPrefix($0) })
+        }
+    }
+
+    /// Visible section-title-sized static texts BELOW the Cinematic hero (the hero's own subtree is
+    /// skipped, as are the invisible debug probes): what "the first row peeks" is measured on.
+    private func belowHeroTitleFrames(_ app: XCUIApplication) -> [(label: String, frame: CGRect)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(String, CGRect)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier == "detail_hero" { return }
+            if node.elementType == .staticText, !node.label.isEmpty,
+               !node.label.hasPrefix("debug_"), !node.identifier.hasPrefix("debug_") {
+                let f = node.frame
+                if f.height >= 24, f.height <= 80, f.width >= 60 { out.append((node.label, f)) }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// FEAT-35 Cinematic landing (P1 §L test77): focus lands on Play; the logo slot is a fixed
+    /// 180 pt (± 1) and does not move between 2 s and 8 s (the meta line, ratings strip and
+    /// synopsis settle without changing anything above the bottom-anchored stack, corrections F3);
+    /// the probe reports `logo=180`; and the first section row peeks above the bottom edge.
+    func test77CinematicLanding() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune")
+        let logoSlot = app.descendants(matching: .any)["detail_logo_slot"]
+        XCTAssertTrue(logoSlot.waitForExistence(timeout: 6), "detail_logo_slot missing — is the Cinematic layout on?")
+        pause(2)
+        let logoAt2s = logoSlot.frame
+        shot(app, "77a_landing_2s")
+        pause(6)
+        let logoAt8s = logoSlot.frame
+        shot(app, "77b_landing_8s")
+        let probe = detailHeroProbe(app)
+        let attachment = XCTAttachment(string: "logo@2s=\(logoAt2s) logo@8s=\(logoAt8s) probe=\(probe)")
+        attachment.name = "77_logo_and_probe"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertEqual(logoAt2s.height, 180, accuracy: 1, "logo slot must be 180 pt at 2 s, got \(logoAt2s)")
+        XCTAssertEqual(logoAt8s.height, 180, accuracy: 1, "logo slot must be 180 pt at 8 s, got \(logoAt8s)")
+        XCTAssertEqual(logoAt2s.minY, logoAt8s.minY, accuracy: 1, "the logo slot moved between 2 s and 8 s (\(logoAt2s.minY) → \(logoAt8s.minY)) — something above it changed height after first paint")
+        XCTAssertTrue(probe.contains("logo=180"), "debug_detail_hero must report logo=180, got: '\(probe)'")
+
+        // First row peeks: a section-title-sized text below the hero sits in the bottom 200 pt.
+        let peeking = belowHeroTitleFrames(app).filter { $0.frame.minY > 1080 - 200 && $0.frame.minY < 1080 }
+        XCTAssertFalse(peeking.isEmpty, "no section title peeks into the bottom 200 pt under the hero — saw \(belowHeroTitleFrames(app).map { "\($0.label)@\(Int($0.frame.minY))" }.prefix(12))")
+
+        // Default focus on Play (corrections F18: `.defaultFocus` on the outermost ZStack). A
+        // disabled Play button cannot take focus, so that part is skipped, not failed, on a fixture
+        // with no stream source for this title.
+        if app.buttons["Playback unavailable"].exists {
+            throw XCTSkip("Play is disabled (\"Playback unavailable\": no add-on or plugin can serve Dune on this guest fixture) — cannot check that default focus lands on Play; the logo/peek checks above ran")
+        }
+        XCTAssertTrue(playHasFocus(app), "default focus must land on Play in Cinematic — focused: \(focusedNodes(app).map { "\($0.identifier)|\($0.label)" })")
+    }
+
+    /// FEAT-35 synopsis sheet (P1 §L test78): on a title whose synopsis overflows four lines, Up
+    /// from the action row focuses the teaser, Select opens `detail_synopsis_sheet`, and Menu closes
+    /// it with Detail still up.
+    func test78SynopsisSheetOpenClose() throws {
+        let app = try launchDetail(id: "tt0903747", type: "series", name: "Breaking Bad")
+        pause(4) // meta + measurement settle
+        let probe = detailHeroProbe(app)
+        if probe.contains("trunc=0") {
+            throw XCTSkip("Breaking Bad's synopsis fits four lines here (debug_detail_hero: \(probe)) — the teaser is plain text, no sheet to open")
+        }
+        XCTAssertTrue(probe.contains("trunc=1"), "debug_detail_hero must report trunc=0 or trunc=1, got: '\(probe)'")
+        func teaserFocused() -> Bool { focusedNodes(app).contains { $0.identifier == "detail_synopsis_teaser" } }
+        for _ in 0..<3 where !teaserFocused() {
+            remote.press(.up)
+            pause(0.8)
+        }
+        shot(app, "78a_teaser_focused")
+        XCTAssertTrue(teaserFocused(), "Up from the action row must focus the synopsis teaser — focused: \(focusedNodes(app).map { "\($0.identifier)|\($0.label)" })")
+        try pressVerified(app, "78_teaser", when: teaserFocused)
+        let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 4), "Select on the teaser must open detail_synopsis_sheet")
+        pause(1)
+        shot(app, "78b_sheet_open")
+        remote.press(.menu)
+        pause(2)
+        shot(app, "78c_after_menu")
+        XCTAssertFalse(sheet.exists, "Menu must close the synopsis sheet")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_hero"].exists, "Detail must still be up after the sheet closes (one Menu press = one level)")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// FEAT-35 hero exit / return (P1 §L test79, corrections F6/F7/F10): Down from the hero to the
+    /// first row anchors it in one blended motion (`anchor=… hero-exit`); Up back into the hero
+    /// restores the page top (`hero-return`, dim 0) and the logo slot is back where it landed.
+    func test79UpFromFirstRowRestoresTop() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune",
+                                   extra: ["-debug.detailScrollProbe", "YES"])
+        let logoSlot = app.descendants(matching: .any)["detail_logo_slot"]
+        XCTAssertTrue(logoSlot.waitForExistence(timeout: 6), "detail_logo_slot missing — is the Cinematic layout on?")
+        pause(4)
+        let landingMinY = logoSlot.frame.minY
+        shot(app, "79a_landing")
+        // A truncated synopsis teaser sits ABOVE the action row; Down from it stays in the hero.
+        if focusedNodes(app).contains(where: { $0.identifier == "detail_synopsis_teaser" }) {
+            press(.down, times: 1)
+        }
+
+        remote.press(.down)
+        var exitProbe = ""
+        for _ in 0..<12 {
+            pause(0.25)
+            exitProbe = ux6Label(app)
+            if exitProbe.contains("hero-exit") { break }
+        }
+        shot(app, "79b_first_row")
+        XCTAssertTrue(exitProbe.contains("hero-exit"), "Down from the hero must anchor the first row with a hero-exit pass — debug_ux6: '\(exitProbe)'")
+
+        remote.press(.up)
+        var returnProbe = ""
+        var restored = false
+        for _ in 0..<12 {
+            pause(0.25)
+            returnProbe = ux6Label(app)
+            if returnProbe.contains("hero-return") && returnProbe.contains("dark=0 ") { restored = true; break }
+        }
+        pause(0.8) // let the hero-return motion finish before reading the logo frame
+        shot(app, "79c_back_to_hero")
+        XCTAssertTrue(restored, "Up from the first row must restore the top (anchor=hero-return … and dark=0) — debug_ux6: '\(returnProbe)'")
+        XCTAssertEqual(logoSlot.frame.minY, landingMinY, accuracy: 8, "the logo slot did not return to its landing position (\(landingMinY) → \(logoSlot.frame.minY))")
+    }
+
+    /// FEAT-35 Classic invariant (P1 §L test80, §J): `-detail_layout classic` keeps today's page —
+    /// the beta.18 synopsis panel — and none of the Cinematic-only pieces (teaser, About section,
+    /// Start Over).
+    func test80ClassicStillShowsSynopsisPanel() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune", layout: "classic")
+        pause(4)
+        shot(app, "80a_classic")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 8),
+                      "Classic must still show detail_synopsis_panel")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_hero"].exists, "the Cinematic hero (detail_hero) must not render in Classic")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_synopsis_teaser"].exists, "the Cinematic teaser must not render in Classic")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_about"].exists, "the Cinematic About section must not render in Classic")
+        XCTAssertFalse(app.buttons["Start Over"].exists || app.descendants(matching: .any)["detail_start_over"].exists,
+                       "Start Over is Cinematic-only and must not render in Classic")
+    }
+
+    /// FEAT-50 root push / pop (P2 §I new test 1): for Services, Detail Page and Developer, Select
+    /// on the root row pushes `settings_pane_<raw>` and Menu pops back to the root with focus on the
+    /// same category.
+    func test81SettingsRootPushPopReturnsFocus() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        for (title, raw) in [("Services", "services"), ("Detail Page", "detailPage"), ("Developer", "developer")] {
+            XCTAssertTrue(openSettingsCategory(app, named: title), "Select on \(title) must push settings_pane_\(raw)")
+            shot(app, "81_\(raw)_pane")
+            XCTAssertFalse(app.descendants(matching: .any)["settings_root_list"].exists, "the root list must leave the screen while \(title) is pushed")
+            remote.press(.menu)
+            pause(1.5)
+            XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                          "Menu from \(title) must pop to the root list")
+            XCTAssertFalse(app.descendants(matching: .any)["settings_pane_\(raw)"].exists, "settings_pane_\(raw) must be gone after the pop")
+            XCTAssertEqual(focusedSettingsRootTitle(app), title, "the pop must return focus to the \(title) row")
+            shot(app, "81_\(raw)_popped")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// FEAT-50 explainer follows focus (P2 §I new test 2): at the root the explainer title tracks the
+    /// focused category; inside Home Screen it describes the focused row, not the category summary;
+    /// and the Minimal settings style has no explainer at all.
+    func test82SettingsExplainerFollowsFocus() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        XCTAssertTrue(enterSettingsRoot(app), "the Settings root never appeared")
+        let explainerTitle = app.staticTexts["settings_explainer_title"]
+        let explainerBody = app.staticTexts["settings_explainer_body"]
+        func titleBecomes(_ expected: [String]) -> String {
+            var last = ""
+            for _ in 0..<12 {
+                last = explainerTitle.exists ? explainerTitle.label : ""
+                if expected.contains(last) { break }
+                pause(0.25)
+            }
+            return last
+        }
+
+        // Root: Services, then one Down to Appearance.
+        focusSettingsRootRow(app, named: "Services")
+        XCTAssertEqual(titleBecomes(["Services"]), "Services", "the root explainer must name the focused category")
+        shot(app, "82a_root_services")
+        press(.down, times: 1)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Down from Services must land on Appearance")
+        XCTAssertEqual(titleBecomes(["Appearance"]), "Appearance", "the root explainer must follow focus to Appearance")
+
+        // Home Screen pane: the first row's own description replaces the category summary.
+        focusSettingsRootRow(app, named: "Home Screen")
+        _ = titleBecomes(["Home Screen"])
+        let summary = explainerBody.exists ? explainerBody.label : ""
+        try pressVerified(app, "82_home_screen_row", when: { focusedSettingsRootTitle(app) == "Home Screen" })
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4), "Home Screen pane did not push")
+        // Home Stage & Strip (P2 §3.2, §4.4): the pane's first row is now the Home Layout picker
+        // (the new Layout section), in both layouts. This run is Classic (`launchToHome`): Home
+        // Layout → Upcoming Episodes → Show Hero (or Refresh Add-ons with no catalogs).
+        XCTAssertEqual(titleBecomes(["Home Layout"]), "Home Layout", "on the pane's first row the explainer must describe Home Layout")
+        let rowBody = explainerBody.exists ? explainerBody.label : ""
+        XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Home Layout row")
+        XCTAssertNotEqual(rowBody, summary, "the explainer body still shows the Home Screen summary on a focused row")
+        shot(app, "82b_home_layout")
+        // ui-legs (2026-10-22): Batch F put Collections Layout directly under Home Layout in both
+        // layouts (HomeScreenSettingsPane.layoutSection), one row above Upcoming Episodes.
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Collections Layout"]), "Collections Layout", "Classic: Down from Home Layout must move the explainer to Collections Layout (Ambient Background is Stage only)")
+        press(.down, times: 1)
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "Classic: Down from Collections Layout must move the explainer to Upcoming Episodes")
+        shot(app, "82b2_home_upcoming")
+        press(.down, times: 1)
+        let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
+        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Classic: Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
+        shot(app, "82c_home_next_row")
+
+        // Stage run: Home Layout, then Ambient Background (Stage only, directly below it).
+        let stage = launchToHome(forceFreshLaunch: true, homeLayout: "stage")
+        XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
+        let stageTitle = stage.staticTexts["settings_explainer_title"]
+        func stageTitleBecomes(_ expected: String) -> String {
+            var last = ""
+            for _ in 0..<12 {
+                last = stageTitle.exists ? stageTitle.label : ""
+                if last == expected { break }
+                pause(0.25)
+            }
+            return last
+        }
+        XCTAssertEqual(stageTitleBecomes("Home Layout"), "Home Layout", "Stage: the pane's first row must be Home Layout")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Collections Layout"), "Collections Layout", "Stage: Down from Home Layout must reach Collections Layout (Batch F)")
+        press(.down, times: 1)
+        XCTAssertEqual(stageTitleBecomes("Ambient Background"), "Ambient Background", "Stage: Down from Collections Layout must reach Ambient Background")
+        shot(stage, "82c2_stage_ambient")
+
+        // Minimal style: no explainer column at the root.
+        let minimal = launchToHome(extraArguments: ["-settings_style", "minimal"], forceFreshLaunch: true)
+        XCTAssertTrue(enterSettingsRoot(minimal), "the Settings root never appeared (Minimal)")
+        pause(1)
+        shot(minimal, "82d_minimal_root")
+        XCTAssertFalse(minimal.staticTexts["settings_explainer_title"].exists, "Minimal settings style must not show the explainer")
+        // Leave the next test a default-style app (the style was only a launch argument).
+        _ = launchToHome(forceFreshLaunch: true)
+    }
+
+    /// FEAT-50 Developer readouts (P2 §I new test 3): with the release-safe `-debug.*` probes on,
+    /// the readouts that moved from About into Developer are still reachable — the hero probe blob
+    /// and the collection frame probe block.
+    func test83DeveloperReadoutsReachable() throws {
+        let app = launchToHome(extraArguments: ["-debug.collectionFrameProbe", "YES", "-debug.homeHeroProbe", "YES"],
+                               forceFreshLaunch: true)
+        pause(6) // let the hero probe log the launch
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
+        pause(1)
+        func heroReadout() -> Bool {
+            probeBlobLabel(app, identifier: "hero_probe_blob").map { !$0.isEmpty } == true
+                || app.descendants(matching: .any)["hero_probe_lines"].exists
+        }
+        let heroSeen = heroReadout()
+        shot(app, "83a_developer_top")
+        var collectionSeen = app.descendants(matching: .any)["collection_frame_probe_lines"].exists
+        for _ in 0..<30 where !collectionSeen {
+            remote.press(.down)
+            pause(0.5)
+            collectionSeen = app.descendants(matching: .any)["collection_frame_probe_lines"].exists
+        }
+        shot(app, "83b_developer_collection_probe")
+        XCTAssertTrue(heroSeen, "hero_probe_blob / hero_probe_lines missing at the top of the Developer pane with -debug.homeHeroProbe YES")
+        XCTAssertTrue(collectionSeen, "collection_frame_probe_lines never appeared in the Developer pane with -debug.collectionFrameProbe YES")
+        _ = launchToHome(forceFreshLaunch: true)
+    }
+
+    /// FEAT-50 Rail mode (corrections F11, carried from FEAT-30's sidebar to the H9 rail, P4 §7.3):
+    /// with `-sidebar_style rail`, Menu inside a pane pops back to the Settings root
+    /// (`settings_root_list`) with focus on the category it left, and does NOT open the rail (the
+    /// pop wins; `rail_state expanded=0`). Settings is reached through the rail itself: a Left from
+    /// Stage Home's first card opens it (`openTab`'s rail branch), never a Menu.
+    func test84RailModePaneMenuPopsToRoot() throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"], forceFreshLaunch: true, homeLayout: "stage")
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
+            return
+        }
+        openTab(app, named: "Settings")
+        var rootUp = false
+        for _ in 0..<8 where !rootUp { rootUp = settingsRootPresent(app); if !rootUp { pause(0.5) } }
+        XCTAssertTrue(rootUp, "the Settings root did not appear after selecting rail_item_Settings — \(railState(app))")
+        XCTAssertEqual(railToken(app, "tab"), "4", "the rail must report the Settings tab — \(railState(app))")
+        focusSettingsRootRow(app, named: "Appearance")
+        try pressVerified(app, "84_appearance_row", when: { focusedSettingsRootTitle(app) == "Appearance" })
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4),
+                      "Settings › Appearance pane did not open in Rail mode")
+        pause(1)
+        shot(app, "84a_rail_mode_pane")
+        XCTAssertEqual(railToken(app, "expanded"), "0", "precondition: the rail must be collapsed inside the pane — \(railState(app))")
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "84b_after_menu")
+        XCTAssertTrue(app.state == .runningForeground, "Menu inside a pane must not leave the app in Rail mode")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                      "Menu inside a pane must pop to the Settings root in Rail mode")
+        XCTAssertEqual(railToken(app, "expanded"), "0",
+                       "Menu inside a pane must not open the rail (the pop wins) — \(railState(app))")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "the pop must return focus to the Appearance row")
+    }
+}
+
+// MARK: - S1 W1 (2026-10-04): Search on the system search field
+
+extension NuvioTVUITests {
+    /// S1 acceptance (`docs/search-s1-native-search-plan-2026-10-04.md`): results while typing with
+    /// no submit, no keyboard or search field over Detail, the query kept on Back, and the query
+    /// saved to Recent Searches because a result was opened from it.
+    ///
+    /// Wave 0 facts this relies on: the field is `app.searchFields` (never `textFields`);
+    /// `openTab("Search")` ends with a Down that lands in the inline keyboard; `app.typeText` types
+    /// into it; FA87 runs the LINEAR keyboard, so Down leaves the keyboard for the results (Grid
+    /// needs Right instead); an empty field's `value` is the prompt plus a keyboard hint.
+    func test92SearchLiveResults() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Search")
+        pause(2)
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "Search must show the system search field")
+        XCTAssertEqual(app.textFields.count, 0, "today's TextField must be gone")
+        // The saved-on-open check must not pass vacuously: Recent is most-recent-first and a
+        // re-recorded query moves to the front, so pick a query that is NOT the first chip now
+        // and require it to BE the first chip afterwards. That never runs out, unlike requiring a
+        // query that isn't saved at all (every run saves one; the r6 gate skipped on that).
+        let candidates = ["severance", "shogun", "andor", "the bear", "slow horses", "fallout"]
+        let firstChipBefore = recentSearchLabels(app).first?.lowercased()
+        guard let query = candidates.first(where: { firstChipBefore?.contains($0) != true }) else {
+            throw XCTSkip("unreachable: candidates are distinct")
+        }
+
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system field")
+        // No submit: rows must arrive while the keyboard is still up.
+        // Search & Discover: a suggestion chip carries the query in its label too, so the results
+        // signal is a result container (the Top result card or a grouped / per-add-on row).
+        let result = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == 'search.topResult' OR identifier BEGINSWITH 'search.group.'")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 15), "results must appear while typing, without a submit")
+        shot(app, "test92-typed")
+
+        // Search & Discover (B3 d): the helper steps past the suggestion chips (selecting chip 0
+        // would only record the query, never open a result).
+        enterSearchResults(app)
+        try pressVerified(app, "92_search_result", when: { focusedSearchResultLabel(app) != nil })
+        pause(5)
+        shot(app, "test92-detail")
+        XCTAssertEqual(app.keyboards.count, 0, "no keyboard over Detail (the old .searchable ban's bug)")
+        XCTAssertEqual(app.searchFields.count, 0, "no search field over Detail")
+
+        remote.press(.menu)
+        pause(3)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(searchFieldText(app), query, "the query must survive Back")
+        shot(app, "test92-back")
+
+        // Back to the keyboard and clear the field: the Recent chip must be there now.
+        returnToSearchKeyboard(app)
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
+        pause(2)
+        XCTAssertEqual(searchFieldText(app), "", "the field must clear")
+        shot(app, "test92-cleared")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, recentSearchLabels(app).first?.lowercased().contains(query) != true { pause(0.5) }
+        XCTAssertTrue(
+            recentSearchLabels(app).first?.lowercased().contains(query) == true,
+            "opening a result must save the query to Recent Searches as the most recent (chips: \(recentSearchLabels(app)))"
+        )
+    }
+
+    // MARK: Search & Discover W3 (2026-10-06): grouped rows, empty states, the rail while typing
+
+    /// Polls `condition` every 0.25 s for up to `timeout` seconds.
+    private func searchPoll(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            pause(0.25)
+        }
+        return condition()
+    }
+
+    private func searchNote(_ name: String, _ text: String) {
+        let attachment = XCTAttachment(string: text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[SearchW3] \(name): \(text)")
+    }
+
+    /// `search_state q= rid= mode= rows= people= hold= empty=`, "" when absent (DEBUG only).
+    private func searchState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["search_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    /// Opens Search, puts focus on the inline keyboard and types `query` (asserting it landed).
+    private func typeSearch(_ app: XCUIApplication, _ query: String) {
+        openTab(app, named: "Search")
+        pause(2)
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 10), "Search must show the system search field")
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system field")
+    }
+
+    /// B3 (grouped results, the default Search Results mode): "dune" on Cinemeta gives a Top result
+    /// card (`search.topResult`) and a Movies row (`search.group.type:movie`), with the suggestion
+    /// chips (`search.suggestions`) first under the keyboard. Down×2 (chips, then the Top result)
+    /// puts "Found in …" on screen; one more Down reaches the Movies row, whose focused card carries
+    /// the same caption (`cardFootnote`). People (`search.people`) appears only when TMDB is on for
+    /// the profile — the FA87 guest fixture's TMDB state is not pinned, so that half is recorded,
+    /// never asserted.
+    func test94SearchGroupedRows() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        typeSearch(app, "dune")
+        let top = app.descendants(matching: .any)["search.topResult"].firstMatch
+        let movies = app.descendants(matching: .any)["search.group.type:movie"].firstMatch
+        XCTAssertTrue(top.waitForExistence(timeout: 15), "grouped mode must show a Top result for 'dune' — \(searchState(app))")
+        XCTAssertTrue(movies.waitForExistence(timeout: 8), "grouped mode must show a Movies row (search.group.type:movie) — \(searchState(app))")
+        XCTAssertTrue(searchSuggestionsShown(app), "the suggestion chips must sit under the keyboard")
+        pause(1.5)
+        shot(app, "search-typing-dune")
+        let state = searchState(app)
+        searchNote("94_state", state)
+        XCTAssertEqual(Self.probeToken(state, key: "mode"), "grouped", "the default Search Results mode is grouped: \(state)")
+        let groups = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'search.group.'"))
+        searchNote("94_groups", groups.allElementsBoundByIndex.map(\.identifier).joined(separator: ", "))
+
+        // ui-legs (2026-10-22): since FEAT-72 (Batch B wave 1) the Top result card carries title,
+        // year and type only ("Dune, Movie · 2021" on FA87) and the ROWS keep "Found in …"
+        // (SearchView: `cardFootnote`), so the caption is asserted on the Movies row, one Down on.
+        press(.down, times: 2, gap: 1.0)
+        pause(1.0)
+        let foundIn = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).firstMatch
+        searchNote("94_found_in_top", foundIn.exists ? foundIn.label : "<none>")
+        shot(app, "search-topresult-foundin")
+
+        press(.down, times: 1, gap: 1.2)
+        let focusedLabels = focusedNodes(app).map(\.label)
+        let footnote = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Found in")).count
+        searchNote("94_movies_row", "focused=\(focusedLabels) foundInLabels=\(footnote)")
+        shot(app, "94_movies_row_footnote")
+        XCTAssertTrue(foundIn.waitForExistence(timeout: 4), "Down×3 (chips → Top result → Movies row) must put a 'Found in …' caption on screen")
+
+        let people = app.descendants(matching: .any)["search.people"].firstMatch
+        if people.exists {
+            searchNote("94_people", "search.people present (TMDB on): \(people.label)")
+        } else {
+            searchNote("94_people", "search.people absent — TMDB is off for the fixture profile (people=\(Self.probeToken(searchState(app), key: "people") ?? "?")); not asserted")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// B3 g: two of the four empty states. (1) A query nothing matches → "No results for ‘…’"
+    /// (`empty=no_results`). (2) Every search-capable catalog switched off (Cinemeta's two `top`
+    /// catalogs, the fixture's only search sources, through `-search_disabled_catalog_keys` in the
+    /// argument domain — `SearchSourceSettings` reads the array with `stringArray(forKey:)`) →
+    /// "All search sources are off" with a Settings button that opens Settings › Sources.
+    func test95SearchEmptyStates() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        typeSearch(app, "zxqvjkwplmq")
+        let noResults = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "No results for")).firstMatch
+        XCTAssertTrue(noResults.waitForExistence(timeout: 15), "a nonsense query must settle on 'No results for …' — \(searchState(app))")
+        pause(1)
+        searchNote("95_no_results", "\(noResults.label) | \(searchState(app))")
+        shot(app, "search-empty-noresults")
+
+        let disabled = "(\"com.linvo.cinemeta:movie:top\",\"com.linvo.cinemeta:series:top\")"
+        let off = launchToHome(extraArguments: ["-search_disabled_catalog_keys", disabled], forceFreshLaunch: true)
+        typeSearch(off, "dune")
+        let allOff = off.staticTexts["All search sources are off"]
+        XCTAssertTrue(allOff.waitForExistence(timeout: 10), "every search source off must read 'All search sources are off' — \(searchState(off))")
+        searchNote("95_all_off", searchState(off))
+        shot(off, "search-empty-allsourcesoff")
+
+        let settingsButton = off.descendants(matching: .any)["search.emptyState.settings"].firstMatch
+        guard settingsButton.waitForExistence(timeout: 4) else {
+            XCTFail("the all-sources-off state must offer a Settings button (search.emptyState.settings)")
+            return
+        }
+        guard moveFocus(off, .down, untilFrameOf: settingsButton, max: 4) else {
+            XCTFail("focus never reached search.emptyState.settings — focused: \(focusedNodes(off).map(\.label)); not pressing Select blind")
+            return
+        }
+        remote.press(.select)
+        let sources = off.descendants(matching: .any)["settings_pane_sources"].firstMatch
+        XCTAssertTrue(sources.waitForExistence(timeout: 6), "Select on the Settings button must land on Settings › Sources")
+        pause(1)
+        shot(off, "95_settings_sources")
+        // Evidence: walk the pane down to the "Search Results" picker (settings.searchRowsMode),
+        // never pressing Select.
+        let rowsMode = off.descendants(matching: .any)["settings.searchRowsMode"].firstMatch
+        for _ in 0..<24 where !hasFocusByFrame(off, rowsMode) {
+            remote.press(.down)
+            pause(0.5)
+        }
+        searchNote("95_search_results_row", rowsMode.exists ? "\(rowsMode.label) value=\(rowsMode.value ?? "-") focused=\(hasFocusByFrame(off, rowsMode))" : "absent")
+        shot(off, "settings-sources-searchresults")
+        XCTAssertTrue(off.state == .runningForeground)
+    }
+
+    /// B4: with the rail Always Visible, keyboard focus on Search hides the rail's pill
+    /// (`rail_state … shown=0 kb=1`), a Down into the results shows it again (`shown=1 kb=0`), and Up
+    /// back to the keyboard hides it again. Read from `rail_state` only; the keyboard's frame is
+    /// recorded for the inset A/B (`test96b`).
+    func test96RailHidesWhileTyping() throws {
+        try railHidesWhileTyping(extra: [], tag: "96")
+    }
+
+    /// B4 A/B: the same walk with `-debug.railSearchInsetHold YES` (the shell keeps its reserved
+    /// width; only the pill hides). Same token oracle.
+    func test96bRailHidesWhileTypingInsetHold() throws {
+        try railHidesWhileTyping(extra: ["-debug.railSearchInsetHold", "YES"], tag: "96b")
+    }
+
+    private func railHidesWhileTyping(extra: [String], tag: String) throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail", "-rail_visibility", "always"] + extra,
+                               forceFreshLaunch: true, homeLayout: "stage")
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
+            return
+        }
+        typeSearch(app, "dune")
+        let top = app.descendants(matching: .any)["search.topResult"].firstMatch
+        _ = top.waitForExistence(timeout: 15)
+        pause(1.0)
+        func rs() -> String { railState(app) }
+        let typing = searchPoll(4) { railToken(app, "kb") == "1" && railToken(app, "shown") == "0" }
+        let kbFrame1 = app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "-"
+        searchNote("\(tag)_keyboard", "\(rs()) keyboardFrame=\(kbFrame1)")
+        shot(app, tag == "96" ? "rail-hidden-keyboard" : "\(tag)_rail_hidden_keyboard")
+        XCTAssertTrue(typing, "keyboard focus must hide the rail: expected shown=0 kb=1 — \(rs())")
+
+        remote.press(.down)
+        let results = searchPoll(4) { railToken(app, "kb") == "0" && railToken(app, "shown") == "1" }
+        searchNote("\(tag)_results", "\(rs()) focused=\(focusedNodes(app).map(\.label))")
+        shot(app, "\(tag)_rail_shown_results")
+        XCTAssertTrue(results, "a Down out of the keyboard must show the rail: expected shown=1 kb=0 — \(rs())")
+
+        remote.press(.up)
+        let back = searchPoll(4) { railToken(app, "kb") == "1" && railToken(app, "shown") == "0" }
+        let kbFrame2 = app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "-"
+        searchNote("\(tag)_keyboard_again", "\(rs()) keyboardFrame=\(kbFrame2)")
+        XCTAssertTrue(back, "Up back to the keyboard must hide the rail again: expected shown=0 kb=1 — \(rs())")
+        XCTAssertEqual(railToken(app, "expanded"), "0", "the rail must never expand on its own here — \(rs())")
+    }
+
+    /// The Recent Searches chips, most recent first: the buttons in the row just under the
+    /// "Recent Searches" header, left to right. Empty when there is no history.
+    private func recentSearchLabels(_ app: XCUIApplication) -> [String] {
+        let header = app.staticTexts["Recent Searches"]
+        guard header.exists else { return [] }
+        let top = header.frame.maxY, bottom = header.frame.maxY + 140
+        return app.buttons.allElementsBoundByIndex
+            .filter { $0.frame.minY >= top && $0.frame.maxY <= bottom }
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .map(\.label)
+    }
+}
+
+// MARK: - S1 W2 (2026-10-04), carried into the H9 rail: Menu from the Search keyboard
+
+extension NuvioTVUITests {
+    /// S1 W2 (`docs/search-s1-native-search-plan-2026-10-04.md`), carried from FEAT-30's sidebar into
+    /// the H9 navigation rail (P4 §3, §7.3; W2-D's canary). In Rail mode (`-sidebar_style rail`) the
+    /// Search tab's system search field keeps the system tab bar alive but HIDDEN. Menu from the
+    /// inline keyboard moves focus into that hidden bar, and `HiddenTabBarFocusBlocker`'s redirect
+    /// opens the RAIL with an item focused instead (`rail_state … reason=hiddenBarRedirect
+    /// expanded=1`). A Right press from the rail hands focus back into Search, the typed query and
+    /// the inline keyboard untouched; a second Menu soon after redirects again.
+    ///
+    /// Never presses Menu while a rail item holds focus: a rail opened by the redirect (like one
+    /// opened by Menu) takes no Menu of its own, so the system suspends the app (P4 R4). Each
+    /// redirect is closed with Right.
+    ///
+    /// Keyboard keys never report `hasFocus` reliably on 27.0 (see `typeOnKeyboard`), so "focus is
+    /// back in Search" is the rail having LOST focus plus the keyboard and the query being intact,
+    /// and on 26.5 a real key-focus read and a typed character. Reaches Search through the rail by
+    /// a Left from Stage Home's first card (`openTab`'s rail branch), never by Menu.
+    func test93RailMenuFromSearchKeyboard() throws {
+        try railMenuFromSearchKeyboard(extra: [])
+    }
+
+    /// W3 re-run A/B: test93's walk with the shell's reserved width (Always Visible's UIKit safe
+    /// area on the tab controller) switched off by the DEBUG `-debug.railShellInsetOff YES` knob.
+    func test93bRailMenuFromSearchKeyboardShellInsetOff() throws {
+        try railMenuFromSearchKeyboard(extra: ["-debug.railShellInsetOff", "YES"])
+    }
+
+    private func railMenuFromSearchKeyboard(extra: [String]) throws {
+        let query = "du"
+
+        let app = launchToHome(extraArguments: ["-sidebar_style", "rail"] + extra, forceFreshLaunch: true, homeLayout: "stage")
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+        guard railMode(app) else {
+            XCTFail("rail_state probe missing with -sidebar_style rail — the rail is not on (DEBUG build?)")
+            return
+        }
+
+        func railFocused() -> Bool { railFocusedItem(app) >= 0 }
+        // Polls `condition` every 0.25 s for up to `timeout` seconds.
+        func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return true }
+                pause(0.25)
+            }
+            return condition()
+        }
+
+        openTab(app, named: "Search")
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 6), "Search content did not appear after selecting rail_item_Search — \(railState(app))")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 4), "the inline keyboard must be on screen when Search opens from the rail")
+        XCTAssertEqual(railToken(app, "tab"), "1", "the rail must report the Search tab — \(railState(app))")
+        XCTAssertTrue(focusSearchKeyboard(app), "focus must reach the inline search keyboard before typing")
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query, "typing must reach the system search field before the Menu press")
+        shot(app, "93a_search_open")
+
+        // Menu ONCE: the hidden-tab-bar redirect must open the rail with an item focused.
+        remote.press(.menu)
+        pause(1.0)
+        XCTAssertEqual(app.state, .runningForeground, "Menu from the search keyboard must not suspend the app (the hidden system tab bar swallowed focus and a second Menu left the app)")
+        guard app.state == .runningForeground else { return }
+        let railOpened = waitUntil(3) { railFocused() }
+        shot(app, "93b_after_menu")
+        let opened = railState(app)
+        guard railOpened else {
+            XCTFail("Menu from the search keyboard must open the rail (S1 hidden-tab-bar redirect): no rail item holds focus after one Menu press — \(opened)")
+            return
+        }
+        XCTAssertTrue(opened.contains("reason=hiddenBarRedirect"), "the rail must say the hidden-bar redirect opened it — \(opened)")
+        XCTAssertTrue(opened.contains("expanded=1"), "the redirect must expand the rail — \(opened)")
+
+        // Right ONCE: focus must leave the rail back into Search, query and keyboard intact.
+        remote.press(.right)
+        pause(1.0)
+        let leftRail = waitUntil(3) { !railFocused() && railToken(app, "expanded") == "0" }
+        shot(app, "93c_after_right")
+        XCTAssertTrue(leftRail, "Right from the rail must hand focus back into Search: the rail still holds focus 3 s after the press — \(railState(app))")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "the inline keyboard must be back on screen after Right out of the rail")
+        XCTAssertEqual(searchFieldText(app), query, "the typed query must survive the Menu / Right round trip")
+        XCTAssertEqual(app.state, .runningForeground, "the app must still be in the foreground after the Menu / Right round trip")
+        // "No rail item focused" alone would also pass with focus nowhere, and the hand-off's
+        // fallback can re-arm the rail after the first sample: settle past its last check (2.5 s on
+        // Search, `SidebarHandOffLadder`), then read real key focus (26.5) and type.
+        pause(3.0)
+        XCTAssertFalse(railFocused(), "the rail must not take focus back after the hand-off settles — \(railState(app))")
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 {
+            XCTAssertTrue(searchKeyboardHasFocus(app), "Right must land focus on a key of the search keyboard")
+        }
+        app.typeText("n")
+        pause(1)
+        XCTAssertEqual(searchFieldText(app), query + "n", "Right must land focus back in the search keyboard: typing after it must reach the field")
+
+        // A SECOND Menu: the redirect must fire again (a successful redirect never suppresses the
+        // next; `StrandedRescueGuardTests` pins the timing).
+        pause(0.5)
+        remote.press(.menu)
+        pause(1.0)
+        XCTAssertEqual(app.state, .runningForeground, "a second Menu from the search keyboard must not suspend the app")
+        guard app.state == .runningForeground else { return }
+        XCTAssertTrue(waitUntil(3) { railFocused() }, "a second Menu from the search keyboard must open the rail again — \(railState(app))")
+        XCTAssertTrue(railState(app).contains("reason=hiddenBarRedirect"), "the second opening must be the redirect too — \(railState(app))")
+        shot(app, "93d_second_menu")
+        remote.press(.right)
+        pause(1.5)
+    }
+}
+
+// MARK: - Home Stage & Strip W3 (2026-10-05): P2 legs — Home Screen settings, ambient wash, folder Rows page
+
+/// Spec P2 §4.3 (`docs/research/home-stage-strip-spec-P2-ambient-collections-settings.md`), the
+/// test100–test108 block. Every Stage leg passes `-home_layout stage` explicitly (through
+/// `launchToHome(homeLayout:)`) so a value an interrupted picker flip stored cannot leak in; the
+/// only exception is test101, which flips the picker itself and must not shadow it.
+///
+/// Oracles are the DEBUG readouts, never frames of moving things (XCUITest frames ignore SwiftUI
+/// offsets, scale and opacity):
+///   - `debug_stage` / `debug_stage_folder`: `phase= shown= pending= swaps= maxLive= stageH= stripH=
+///     P= fits= rest= row= fitem= disp=` (Home's stage / the folder page's own stage);
+///   - `folder_rows_state`: `mode=rows rows= removed= row= tab= docked= disp= state=`;
+///   - `debug_wash` / `debug_wash_folder`: `on= oled= id= gen= shown= late= lum= ms=`;
+///   - the Tab Bar Geometry blob (`tab_bar_state_probe_blob`, Settings › Developer).
+///
+/// `maxLive` is a process-wide high-water mark of live stage text blocks: Home's stage alone reads
+/// 1, and a folder page pushed over Home adds its own block, so the folder page's "never two titles"
+/// bound is 2 (one per stage), never 3.
+extension NuvioTVUITests {
+
+    // MARK: Helpers
+
+    private static let folderRowsFolderId = "nuvio-folder://zzfolderrows-collection/zzfolderrows-folder"
+    private static let folderRowsFolderIdentity = "nuvio.folder:nuvio-folder://zzfolderrows-collection/zzfolderrows-folder"
+    private static let folderRowsFolderTitle = "ZZFolderRowsFolder"
+
+    private func tok(_ line: String, _ key: String) -> String? {
+        Self.probeToken(line, key: key)
+    }
+
+    /// A DEBUG readout's label by identifier, "" when it is not in the tree. Matched across every
+    /// element type, as the Stage evidence harnesses do.
+    private func stageProbeLabel(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        return element.exists ? element.label : ""
+    }
+
+    /// Polls `condition` every `step` seconds for up to `timeout` seconds.
+    private func pollUntil(_ timeout: TimeInterval, step: TimeInterval = 0.25, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            pause(step)
+        }
+        return condition()
+    }
+
+    /// A system tab bar button holds focus (Tabs mode).
+    private func tabBarHasFocus(_ app: XCUIApplication) -> Bool {
+        ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"].contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+    }
+
+    /// Stage Home in Tabs mode lands focus on the tab bar after the profile pick (Gate 1 finding 1);
+    /// the first Down enters the strip.
+    @discardableResult
+    private func enterStageStrip(_ app: XCUIApplication) -> Bool {
+        for _ in 0..<3 where tabBarHasFocus(app) {
+            remote.press(.down)
+            pause(1.5)
+        }
+        return !tabBarHasFocus(app)
+    }
+
+    /// A Detail page is up: the Cinematic hero, or the Classic action row.
+    private func detailPageUp(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["detail_hero"].exists
+            || ["Mark Watched", "Watched", "Add to Library", "In Library"].contains { app.buttons[$0].exists }
+    }
+
+    /// Stage Home seeded with the P2 folder fixture (`folderRowsSeedJson`). Trailers off and no
+    /// Upcoming row keep the walk deterministic; `-folder_layout_grid ""` shadows any stored Grid
+    /// choice (`shadowGridChoice: false` is kept for a leg that wants the stored choices live).
+    private func launchStageWithFolderRows(extraArguments: [String] = [], shadowGridChoice: Bool = true) -> XCUIApplication {
+        var arguments = ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
+                         "-home_upcoming_row_enabled", "NO",
+                         "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES"]
+        if shadowGridChoice { arguments += ["-folder_layout_grid", ""] }
+        // BUG-221 guard (2026-10-23): the folder legs run with Card Depth ON (master + every
+        // surface, DEBUG launch override, never written or synced). The W3-13 raster-cache overlay
+        // crashed these legs 8 / 8 when an earlier leg had left the synced setting on.
+        arguments += ["-debug.cardDepthOn", "YES"]
+        return launchToHomeWithSeededCollections(Self.folderRowsSeedJson, extraArguments: arguments + extraArguments,
+                                                 homeLayout: "stage")
+    }
+
+    /// From Stage Home's tab bar, Down until the strip reports the seeded folder tile
+    /// (`debug_stage fitem=nuvio-folder://zzfolderrows…`). The fixture pins its collection to the
+    /// top, so the folder tile is the strip's first card.
+    private func focusSeededFolderTile(_ app: XCUIApplication) -> Bool {
+        func fitem() -> String { tok(stageProbeLabel(app, "debug_stage"), "fitem") ?? "" }
+        if fitem() == Self.folderRowsFolderId, !tabBarHasFocus(app) { return true }
+        for _ in 0..<4 {
+            remote.press(.down)
+            if pollUntil(2.0, { fitem() == Self.folderRowsFolderId }) { return true }
+        }
+        return false
+    }
+
+    /// Select on the focused folder tile, then wait for the Rows page to settle on row 0
+    /// (`folder_rows_state … state=rows row=0`, the initial focus, P2 §2.3). Returns the readout
+    /// (settled or not), or nil when the page never appeared.
+    private func openSeededFolderRowsPage(_ app: XCUIApplication) -> String? {
+        // ui-legs: Select only while the strip reports the seeded folder tile focused (read here).
+        guard pressIfVerified(app, "seeded_folder_tile", when: {
+            tok(stageProbeLabel(app, "debug_stage"), "fitem") == Self.folderRowsFolderId && !tabBarHasFocus(app)
+        }) else { return nil }
+        _ = pollUntil(15, step: 0.5) {
+            let line = stageProbeLabel(app, "folder_rows_state")
+            return tok(line, "state") == "rows" && tok(line, "row") == "0"
+        }
+        let line = stageProbeLabel(app, "folder_rows_state")
+        return line.isEmpty ? nil : line
+    }
+
+    /// The label of a row heading at the top of the strip: a section-title-sized staticText whose
+    /// top sits within 60 pt below `stripTop` (the stage height). nil when none is found.
+    private func stripHeadingLabel(_ app: XCUIApplication, stripTop: CGFloat) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: String?
+        func walk(_ node: XCUIElementSnapshot) {
+            guard found == nil else { return }
+            let frame = node.frame
+            if node.elementType == .staticText, !node.label.isEmpty,
+               !node.identifier.hasPrefix("debug_"), !node.label.hasPrefix("debug_"),
+               frame.height >= 24, frame.height <= 80, frame.width >= 40,
+               frame.minY >= stripTop - 10, frame.minY <= stripTop + 60 {
+                found = node.label
+                return
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    /// Selects `option` in the system Menu that a Select on the focused row opens (a
+    /// `SettingsPickerRow`, or the folder Edit menu, whose Layout `Picker` can surface its options
+    /// inline or behind a nested `submenu` row). Throws `XCTSkip` when the runtime never publishes
+    /// the option as a focusable button — a known soft spot (PinnedRowSettleRegimeTests' Poster
+    /// Size leg) — after closing the menu with Menu, so nothing was changed.
+    /// `rowFocused` (harness-w4) replaces the default row read for a caller whose row title is the
+    /// prefix of another row's ("Edge" / "Edge Coverage"), where a prefix match cannot tell them apart.
+    private func chooseMenuOption(_ app: XCUIApplication, _ option: String, submenu: String? = nil, what: String,
+                                  onRow rowTitle: String, rowFocused: (() -> Bool)? = nil) throws {
+        // ui-legs: the menu opens only from the row it belongs to, read focused here (its Cell's
+        // composed label, or the explainer, which names the focused row).
+        try pressVerified(app, "menu_row_\(rowTitle)", when: {
+            if let rowFocused { return rowFocused() }
+            let explainer = app.staticTexts["settings_explainer_title"]
+            return focusedNodes(app).contains { $0.label.hasPrefix(rowTitle) }
+                || (explainer.exists && explainer.label == rowTitle)
+        })
+        pause(1.2)
+        // A tvOS `Menu`'s options surface as buttons on some runtimes and as menu items or cells on
+        // others: take the first type that has the label.
+        func menuElement(_ label: String) -> XCUIElement {
+            let candidates = [app.collectionViews.otherElements[label], app.buttons[label],
+                              app.menuItems[label], app.cells[label]]
+            for candidate in candidates where candidate.exists {
+                return candidate
+            }
+            return app.collectionViews.otherElements[label]
+        }
+        func waitForMenuElement(_ label: String, timeout: TimeInterval) -> XCUIElement? {
+            let deadline = Date().addingTimeInterval(timeout)
+            repeat {
+                let element = menuElement(label)
+                if element.exists { return element }
+                pause(0.25)
+            } while Date() < deadline
+            return nil
+        }
+        var target = waitForMenuElement(option, timeout: 3)
+        if target == nil, let submenu, let nested = waitForMenuElement(submenu, timeout: 2) {
+            if !moveFocus(app, .down, untilFrameOf: nested, max: 5) { _ = moveFocus(app, .up, untilFrameOf: nested, max: 5) }
+            if hasFocusByFrame(app, nested) {
+                remote.press(.select)
+                pause(1.0)
+            }
+            target = waitForMenuElement(option, timeout: 3)
+        }
+        guard let target else {
+            // What the open menu looks like on this runtime, for the next fix.
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "menu-tree-\(option)"
+            tree.lifetime = .keepAlways
+            add(tree)
+            remote.press(.menu)
+            pause(1.0)
+            throw XCTSkip("\(what): the menu never exposed a '\(option)' option as a button, menu item or cell on this runtime — nothing was changed")
+        }
+        if !hasFocusByFrame(app, target), !moveFocus(app, .down, untilFrameOf: target, max: 5) {
+            _ = moveFocus(app, .up, untilFrameOf: target, max: 5)
+        }
+        guard hasFocusByFrame(app, target) else {
+            remote.press(.menu)
+            pause(1.0)
+            throw XCTSkip("\(what): the menu's '\(option)' option would not take focus — nothing was changed")
+        }
+        remote.press(.select)
+        pause(2.0)
+    }
+
+    /// Whether the Settings picker row `title` shows `value`: the row's Menu keeps `LabeledContent`
+    /// (title + value), so the value surfaces as the element's `.value`, in a Cell's composed
+    /// "Title, …, Value" label, or as its own staticText.
+    private func pickerRowShows(_ app: XCUIApplication, title: String, value: String) -> Bool {
+        let rows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", title))
+            .allElementsBoundByIndex
+        for row in rows {
+            if (row.value as? String) == value { return true }
+            if row.label.hasSuffix(", \(value)") || row.label.contains(", \(value),") { return true }
+        }
+        return app.staticTexts[value].exists
+    }
+
+    /// Walks the Home Screen pane from its first row with Down, collecting each row title the
+    /// explainer names (the focused row's own title, FEAT-50), until "Catalogs" or 20 presses.
+    /// `checks` are (row, value) pairs read while that row holds focus. Precondition: the pane was
+    /// just pushed (focus on its first row).
+    private func walkHomeScreenRows(_ app: XCUIApplication, checks: [(title: String, value: String)]) -> (titles: [String], valueSeen: [String: Bool]) {
+        let explainer = app.staticTexts["settings_explainer_title"]
+        func current() -> String { explainer.exists ? explainer.label : "" }
+        var title = current()
+        for _ in 0..<12 where title.isEmpty || title == "Home Screen" {
+            pause(0.25)
+            title = current()
+        }
+        var titles: [String] = []
+        var valueSeen: [String: Bool] = [:]
+        for _ in 0..<20 {
+            title = current()
+            if !title.isEmpty, titles.last != title {
+                titles.append(title)
+                for check in checks where check.title == title {
+                    valueSeen[title] = pickerRowShows(app, title: check.title, value: check.value)
+                }
+            }
+            if title == "Catalogs" { break }
+            remote.press(.down)
+            var next = current()
+            for _ in 0..<8 where next == title {
+                pause(0.2)
+                next = current()
+            }
+        }
+        return (titles, valueSeen)
+    }
+
+    /// Settings › Developer's Tab Bar Geometry blob (`tab_bar_state_probe_blob`, the persisted
+    /// chronological buffer), walked to with Down. Empty when it never rendered.
+    private func readTabBarProbeLines(_ app: XCUIApplication, tag: String) -> [String] {
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
+        pause(1.0)
+        var blob = probeBlobLabel(app, identifier: "tab_bar_state_probe_blob") ?? ""
+        for _ in 0..<30 where blob.isEmpty {
+            remote.press(.down)
+            pause(0.5)
+            blob = probeBlobLabel(app, identifier: "tab_bar_state_probe_blob") ?? ""
+        }
+        let attachment = XCTAttachment(string: blob)
+        attachment.name = "\(tag)_tab_bar_probe_lines"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return blob.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    /// The "never half shown at rest" rule over Tab Bar Geometry lines (T1/BUG-66's `st=` field,
+    /// sampled at every crossing and on a 2 s tick that drops repeats). A `st=part` line is a
+    /// mid-glide sample only if a non-`part` line follows it within 2.6 s: a bar that RESTED half
+    /// shown logs one `part` line and then nothing until the next press (the tick drops repeats).
+    /// Returns the offending lines.
+    private func tabBarRestsHalfShown(_ lines: [String]) -> [String] {
+        func stamp(_ line: String) -> Int? {
+            guard let range = line.range(of: "ms ") else { return nil }
+            return Int(line[line.startIndex..<range.lowerBound])
+        }
+        let samples = lines.filter { stamp($0) != nil && !$0.contains("NOT-FOUND") }
+        var offenders: [String] = []
+        for (index, line) in samples.enumerated() where tok(line, "st") == "part" {
+            guard let at = stamp(line) else { continue }
+            let settled = samples[(index + 1)...].contains { later in
+                guard let t = stamp(later) else { return false }
+                return t - at <= 2600 && tok(later, "st") != "part"
+            }
+            if !settled { offenders.append(line) }
+        }
+        return offenders
+    }
+
+    // MARK: test100–test103: Home Screen settings and the ambient wash
+
+    /// P2 §4.3 test100: in Stage the Home Screen pane opens on Home Layout (value Stage), offers
+    /// Ambient Background, labels Trailer Location Background / In Row, and hides the four
+    /// Classic-hero rows and the Classic fallback captions; in Classic it shows Show Hero, drops
+    /// Ambient Background and reads Trailer Location as Hero.
+    func test100StageHomeScreenSettingsRows() throws {
+        let trailerArguments = ["-inline_trailers_enabled", "YES", "-trailer_playback_location", "hero"]
+        let stage = launchToHome(extraArguments: trailerArguments, forceFreshLaunch: true, homeLayout: "stage")
+        XCTAssertTrue(openSettingsCategory(stage, named: "Home Screen"), "Settings › Home Screen pane did not open (Stage)")
+        let stageWalk = walkHomeScreenRows(stage, checks: [("Home Layout", "Stage"), ("Trailer Location", "Background")])
+        shot(stage, "100a_stage_pane_end")
+        let stageTitles = stageWalk.titles
+        add(XCTAttachment(string: "Stage rows: \(stageTitles)"))
+        XCTAssertEqual(stageTitles.first, "Home Layout", "Stage: the pane's first row must be Home Layout — rows: \(stageTitles)")
+        XCTAssertEqual(stageWalk.valueSeen["Home Layout"], true, "Stage: Home Layout must read Stage")
+        for expected in ["Ambient Background", "Upcoming Episodes", "Trailers on Focus", "Trailer Location",
+                         "Trailer Start Delay", "Show Catalog Type in Titles", "Catalogs"] {
+            XCTAssertTrue(stageTitles.contains(expected), "Stage: the walk never reached '\(expected)' — rows: \(stageTitles)")
+        }
+        XCTAssertEqual(stageWalk.valueSeen["Trailer Location"], true, "Stage: Trailer Location must read Background for the stored \"hero\"")
+        for hidden in ["Show Hero", "Nuvio-Style Hero", "Hero Sources", "Autoplay Hero Trailer"] {
+            XCTAssertFalse(stageTitles.contains(hidden), "Stage: '\(hidden)' configures Classic's banner and must be hidden — rows: \(stageTitles)")
+        }
+        XCTAssertFalse(stage.staticTexts["In the classic hero layout, trailers play in the poster."].exists,
+                       "Stage: the Classic fallback caption must not render")
+        XCTAssertFalse(stage.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Hero needs a hero source")).firstMatch.exists,
+                       "Stage: the Classic hero-source caption must not render")
+
+        let classic = launchToHome(extraArguments: trailerArguments, forceFreshLaunch: true, homeLayout: "classic")
+        XCTAssertTrue(openSettingsCategory(classic, named: "Home Screen"), "Settings › Home Screen pane did not open (Classic)")
+        let classicWalk = walkHomeScreenRows(classic, checks: [("Home Layout", "Classic"), ("Trailer Location", "Hero")])
+        shot(classic, "100b_classic_pane_end")
+        let classicTitles = classicWalk.titles
+        add(XCTAttachment(string: "Classic rows: \(classicTitles)"))
+        XCTAssertEqual(classicTitles.first, "Home Layout", "Classic: the pane's first row must be Home Layout — rows: \(classicTitles)")
+        XCTAssertEqual(classicWalk.valueSeen["Home Layout"], true, "Classic: Home Layout must read Classic")
+        XCTAssertTrue(classicTitles.contains("Show Hero"), "Classic: Show Hero must be offered — rows: \(classicTitles)")
+        XCTAssertFalse(classicTitles.contains("Ambient Background"), "Classic: Ambient Background is Stage only — rows: \(classicTitles)")
+        XCTAssertEqual(classicWalk.valueSeen["Trailer Location"], true, "Classic: Trailer Location must keep its Hero wording")
+    }
+
+    /// P2 §4.3 test101: the Home Layout picker is live. No `-home_layout`, so the picker's write is
+    /// not shadowed by the argument domain. Classic → Home shows the Classic hero and no stage;
+    /// Stage → the stage is back. The persisted choice is put back to Stage on every exit.
+    func test101HomeLayoutPickerIsLive() throws {
+        let app = launchToHome(forceFreshLaunch: true, homeLayout: nil)
+        var stageRestored = false
+        defer {
+            if !stageRestored, openSettingsCategory(app, named: "Home Screen") {
+                _ = try? chooseMenuOption(app, "Stage", what: "test101 restore", onRow: "Home Layout")
+            }
+        }
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        let explainer = app.staticTexts["settings_explainer_title"]
+        XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
+                      "the pane must open on the Home Layout row")
+        try chooseMenuOption(app, "Classic", what: "Home Layout picker", onRow: "Home Layout")
+        shot(app, "101a_picked_classic")
+        XCTAssertTrue(pollUntil(3) { explainer.exists && explainer.label == "Home Layout" },
+                      "after the pick focus must still be on Home Layout — explainer: \(explainer.exists ? explainer.label : "-")")
+        XCTAssertTrue(pickerRowShows(app, title: "Home Layout", value: "Classic"), "Home Layout must read Classic after the pick")
+        XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Ambient Background")).firstMatch.exists,
+                       "Ambient Background is Stage only and must leave the pane once Classic is picked")
+
+        openTab(app, named: "Home")
+        pause(3)
+        XCTAssertTrue(app.staticTexts["debug_hero"].waitForExistence(timeout: 8), "Home did not come up after picking Classic")
+        XCTAssertTrue(pollUntil(5) { !self.stageHomeMounted(app) }, "Classic picked: Home must not mount the stage (debug_stage)")
+        shot(app, "101b_home_classic")
+
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not reopen")
+        try chooseMenuOption(app, "Stage", what: "Home Layout picker", onRow: "Home Layout")
+        stageRestored = true
+        openTab(app, named: "Home")
+        pause(3)
+        XCTAssertTrue(pollUntil(8) { self.stageHomeMounted(app) }, "Stage picked: Home must mount the stage again")
+        shot(app, "101c_home_stage")
+    }
+
+    /// P2 §4.3 test102: the ambient wash fills the left gutter with the focused title's colours,
+    /// and switched off (`-home_ambient_background NO`) the gutter is the theme background. The
+    /// wash's own readout must agree with the stage (`debug_wash id=` = `debug_stage disp=`).
+    func test102AmbientWashOnOff() throws {
+        let base = ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO", "-home_upcoming_row_enabled", "NO"]
+        let gutter = CGRect(x: 4, y: 600, width: 26, height: 400)
+
+        let on = launchToHome(extraArguments: base, forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(on)
+        remote.press(.down)
+        pause(2.5)
+        let onWash = stageProbeLabel(on, "debug_wash")
+        let onStage = stageProbeLabel(on, "debug_stage")
+        shot(on, "102a_wash_on")
+        let onImage = XCUIScreen.main.screenshot().image
+        let onRGB = try meanRGB(in: onImage, pointRect: gutter, windowSize: on.frame.size)
+        XCTAssertEqual(tok(onWash, "on"), "1", "the wash must be on by default: \(onWash)")
+        XCTAssertEqual(tok(onWash, "shown"), "1", "the wash must be showing after a rest: \(onWash)")
+        XCTAssertEqual(tok(onWash, "id"), tok(onStage, "disp"), "the wash must show the title the stage displays — wash: \(onWash) | stage: \(onStage)")
+
+        let off = launchToHome(extraArguments: base + ["-home_ambient_background", "NO"], forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(off)
+        remote.press(.down)
+        pause(2.5)
+        let offWash = stageProbeLabel(off, "debug_wash")
+        shot(off, "102b_wash_off")
+        let offImage = XCUIScreen.main.screenshot().image
+        let offRGB = try meanRGB(in: offImage, pointRect: gutter, windowSize: off.frame.size)
+        XCTAssertEqual(tok(offWash, "on"), "0", "-home_ambient_background NO must switch the wash off: \(offWash)")
+        XCTAssertEqual(tok(offWash, "shown"), "0", "a switched-off wash shows nothing: \(offWash)")
+        add(XCTAttachment(string: "gutter mean RGB on=\(onRGB) off=\(offRGB) washOn=\(onWash) washOff=\(offWash)"))
+
+        // The theme background: 0x0D0D0D, or pure black with OLED True Black (the readout says).
+        let background = tok(offWash, "oled") == "1" ? 0.0 : 13.0 / 255.0
+        let tolerance = 3.0 / 255.0
+        XCTAssertEqual(offRGB.0, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (red)")
+        XCTAssertEqual(offRGB.1, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (green)")
+        XCTAssertEqual(offRGB.2, background, accuracy: tolerance, "wash off: the left gutter must be the theme background (blue)")
+        if let luma = Double(tok(onWash, "lum") ?? ""), luma < 0.03 {
+            throw XCTSkip("the focused title's wash is near black (lum=\(luma)) — no visible difference to measure against the plain background")
+        }
+        let delta = max(abs(onRGB.0 - offRGB.0), abs(onRGB.1 - offRGB.1), abs(onRGB.2 - offRGB.2))
+        XCTAssertGreaterThanOrEqual(delta, 8.0 / 255.0, "wash on: the left gutter must differ from the plain background by ≥ 8/255 in a channel (on=\(onRGB) off=\(offRGB))")
+    }
+
+    /// P2 §4.3 test103: the wash follows the stage swap and never runs ahead of it. Two Rights in
+    /// quick succession make one swap (the first title never shows); the wash's generation rises by
+    /// exactly one, and in no sample does the wash show the new title before the stage does.
+    func test103AmbientWashFollowsSwap() throws {
+        let app = launchToHome(extraArguments: ["-debug.homeScrollProbe", "YES", "-inline_trailers_enabled", "NO",
+                                                "-home_upcoming_row_enabled", "NO"],
+                               forceFreshLaunch: true, homeLayout: "stage")
+        enterStageStrip(app)
+        remote.press(.down)
+        pause(3.0)
+        let startWash = stageProbeLabel(app, "debug_wash")
+        let startStage = stageProbeLabel(app, "debug_stage")
+        guard tok(startWash, "on") == "1", let gen0 = Int(tok(startWash, "gen") ?? "") else {
+            XCTFail("debug_wash missing or off at the start: '\(startWash)'")
+            return
+        }
+        let startDisp = tok(startStage, "disp") ?? "-"
+        remote.press(.right)
+        remote.press(.right)
+        // One snapshot per sample, so the wash and the stage describe the same instant.
+        var samples: [(wash: String, disp: String)] = []
+        let deadline = Date().addingTimeInterval(2.5)
+        while Date() < deadline {
+            if let root = try? app.snapshot() {
+                var wash = "", stage = ""
+                func walk(_ node: XCUIElementSnapshot) {
+                    if node.identifier == "debug_wash" { wash = node.label }
+                    if node.identifier == "debug_stage" { stage = node.label }
+                    node.children.forEach(walk)
+                }
+                walk(root)
+                samples.append((wash: tok(wash, "id") ?? "-", disp: tok(stage, "disp") ?? "-"))
+            }
+            pause(0.05)
+        }
+        pause(1.0)
+        let endWash = stageProbeLabel(app, "debug_wash")
+        let endStage = stageProbeLabel(app, "debug_stage")
+        let target = tok(endStage, "disp") ?? "-"
+        add(XCTAttachment(string: "start disp=\(startDisp) end disp=\(target) samples(wash|disp)=\(samples.map { "\($0.wash)|\($0.disp)" })"))
+        guard target != startDisp else {
+            throw XCTSkip("the two Rights did not change the stage's title (end disp \(target)) — the row has fewer than three titles here")
+        }
+        XCTAssertEqual(Int(tok(endWash, "gen") ?? ""), gen0 + 1, "two quick Rights are one swap: the wash generation must rise by exactly one (\(startWash) → \(endWash))")
+        let firstWash = samples.firstIndex { $0.wash == target }
+        let firstDisp = samples.firstIndex { $0.disp == target }
+        if let firstWash {
+            XCTAssertNotNil(firstDisp, "the wash showed \(target) while the stage never displayed it in the window")
+            if let firstDisp {
+                XCTAssertGreaterThanOrEqual(firstWash, firstDisp, "the wash showed the new title before the stage did (sample \(firstWash) vs \(firstDisp))")
+            }
+        }
+        XCTAssertEqual(tok(endWash, "id"), target, "end state: the wash must show the stage's title — \(endWash)")
+        if let fitem = tok(endStage, "fitem"), fitem != "-" {
+            XCTAssertTrue(target.hasSuffix(":" + fitem), "end state: the stage must show the focused title (disp \(target), fitem \(fitem))")
+        }
+    }
+
+    // MARK: test104–test108: the folder Rows page
+
+    /// P2 §4.3 test104: a folder opened from Stage Home is a stage-and-strip page — one row per
+    /// source (All omitted), the failed source removed, the folder on the stage and its title docked
+    /// until the first move, then the stage follows focus for good and the title never re-docks
+    /// (Q1). Also: one page per Down, and Up returns to the card a row was left on (per-row memory).
+    func test104FolderRowsPage() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home (debug_stage: \(stageProbeLabel(app, "debug_stage"))) — the collections seed is refused on a signed-in account")
+        }
+        let homeStage = stageProbeLabel(app, "debug_stage")
+        XCTAssertLessThanOrEqual(Int(tok(homeStage, "maxLive") ?? "") ?? 99, 1, "Home's stage must never hold two titles: \(homeStage)")
+        guard let opened = openSeededFolderRowsPage(app) else {
+            XCTFail("the folder Rows page never appeared (folder_rows_state missing) after Select on the folder tile")
+            return
+        }
+        shot(app, "104a_folder_open")
+        let openStage = stageProbeLabel(app, "debug_stage_folder")
+        add(XCTAttachment(string: "open: \(opened) | \(openStage)"))
+        XCTAssertEqual(tok(opened, "mode"), "rows", "Stage opens a folder as the Rows page: \(opened)")
+        XCTAssertEqual(tok(opened, "state"), "rows", "\(opened)")
+        XCTAssertEqual(tok(opened, "rows"), "3", "three loaded sources make three rows (All omitted): \(opened)")
+        XCTAssertEqual(tok(opened, "removed"), "1", "the missing add-on's failed row is removed while nothing below it was visited: \(opened)")
+        XCTAssertEqual(tok(opened, "row"), "0", "the page opens on its first row: \(opened)")
+        XCTAssertEqual(tok(opened, "tab"), "1", "row 0 is the first source tab (tab 0 is All, omitted): \(opened)")
+        XCTAssertEqual(tok(opened, "docked"), "1", "the folder title is docked in the stage until the first move (Q1): \(opened)")
+        // FEAT-70 (rc4 verdict): the initial landing seeds the stage with row 0's first item (the
+        // folder intro shows only until then) while the folder title stays docked.
+        XCTAssertNotEqual(tok(openStage, "fitem"), "-", "the initial landing must seed the stage with row 0's first item (FEAT-70): \(openStage)")
+        XCTAssertTrue(pollUntil(4, step: 0.25) {
+            self.tok(self.stageProbeLabel(app, "folder_rows_state"), "disp") != Self.folderRowsFolderIdentity
+        }, "the stage must leave the folder intro for row 0's first item once the row lands (FEAT-70): \(stageProbeLabel(app, "folder_rows_state"))")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "docked"), "1", "the folder title stays docked until the first move (FEAT-70)")
+        let logo = app.descendants(matching: .any)["folder_stage_logo"].firstMatch
+        XCTAssertTrue(logo.waitForExistence(timeout: 4), "folder_stage_logo is missing")
+        XCTAssertTrue(logo.staticTexts[Self.folderRowsFolderTitle].exists, "the folder's title must be a staticText inside folder_stage_logo")
+        XCTAssertFalse(app.staticTexts["All"].exists, "the Rows page omits the All tab")
+
+        // The first move: Down pages to row 1 and the title rises at once.
+        remote.press(.down)
+        var downLine = ""
+        let paged = pollUntil(1.0, step: 0.05) {
+            downLine = stageProbeLabel(app, "folder_rows_state")
+            return tok(downLine, "row") == "1" && tok(downLine, "docked") == "0"
+        }
+        XCTAssertTrue(paged, "one Down must reach row 1 and undock the folder title within ~0.6 s (Q1): \(downLine)")
+        var followStage = ""
+        let followed = pollUntil(2.0, step: 0.1) {
+            followStage = stageProbeLabel(app, "debug_stage_folder")
+            guard let fitem = tok(followStage, "fitem"), fitem != "-", let disp = tok(followStage, "disp") else { return false }
+            return disp.hasSuffix(":" + fitem)
+        }
+        XCTAssertTrue(followed, "after the first move the stage must show the focused card within 1.5 s: \(followStage)")
+        pause(1.2)
+        let rested = stageProbeLabel(app, "folder_rows_state")
+        XCTAssertEqual(tok(rested, "row"), "1", "one Down must page exactly one row: \(rested)")
+        XCTAssertTrue(logo.staticTexts[Self.folderRowsFolderTitle].exists, "the folder title must stay in the tree once it has risen (title always visible)")
+        shot(app, "104b_row1")
+
+        // Up: the stage follows row 0's card and the title stays compact (no re-dock, Q1).
+        remote.press(.up)
+        var samples: [String] = []
+        let upDeadline = Date().addingTimeInterval(2.0)
+        while Date() < upDeadline {
+            samples.append(stageProbeLabel(app, "folder_rows_state"))
+            pause(0.05)
+        }
+        add(XCTAttachment(string: "after Up: \(samples)"))
+        XCTAssertTrue(samples.allSatisfy { tok($0, "docked") == "0" }, "the folder title must never re-dock once it has risen (Q1): \(samples)")
+        XCTAssertFalse(samples.contains { tok($0, "disp") == Self.folderRowsFolderIdentity }, "back at row 0 the stage must follow the focused card, never return to the folder: \(samples)")
+        let upLine = samples.last ?? ""
+        XCTAssertEqual(tok(upLine, "row"), "0", "Up must return to row 0: \(upLine)")
+        let upStage = stageProbeLabel(app, "debug_stage_folder")
+        if let fitem = tok(upStage, "fitem"), fitem != "-", let disp = tok(upStage, "disp") {
+            XCTAssertTrue(disp.hasSuffix(":" + fitem), "at row 0 the stage must show row 0's focused card: \(upStage)")
+        }
+        // One stage per page: Home's and this page's text blocks, never a third.
+        XCTAssertLessThanOrEqual(Int(tok(upStage, "maxLive") ?? "") ?? 99, 2, "two titles in one stage at once: \(upStage)")
+        let wash = stageProbeLabel(app, "debug_wash_folder")
+        if tok(wash, "on") == "1" {
+            XCTAssertEqual(tok(wash, "shown"), "1", "the folder page's wash must be showing: \(wash)")
+        }
+
+        // Per-row memory: leave row 0 on its third card, page Down, Up → the same card.
+        remote.press(.right)
+        pause(1.0)
+        remote.press(.right)
+        pause(2.0)
+        let remembered = tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") ?? "-"
+        remote.press(.down)
+        pause(2.5)
+        remote.press(.up)
+        pause(2.5)
+        let back = stageProbeLabel(app, "debug_stage_folder")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "0", "Up must return to row 0")
+        XCTAssertEqual(tok(back, "fitem"), remembered, "Up must land on the card row 0 was left on (per-row memory): \(back)")
+        shot(app, "104c_memory")
+    }
+
+    /// FEAT-71 (Batch B, B7): the Layout picker left the folder page's band for Settings › Home
+    /// Screen › Collections Layout (device-local `folder_layout_default`). The setting is driven
+    /// through its launch argument (the argument domain shadows the stored value, as the other
+    /// device-local keys do in these legs): Grid opens the seeded folder as today's grid with its
+    /// chips, Rows (the default) opens the strip, and the band no longer offers a Layout entry.
+    func test105FolderRowsDefaultLayoutSetting() throws {
+        func gridShowing(_ app: XCUIApplication) -> Bool { app.descendants(matching: .any)["folder_header_state"].exists }
+        func rowsShowing(_ app: XCUIApplication) -> Bool { !stageProbeLabel(app, "folder_rows_state").isEmpty }
+
+        let grid = launchStageWithFolderRows(extraArguments: ["-folder_layout_default", "grid"])
+        guard focusSeededFolderTile(grid) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        remote.press(.select)
+        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing(grid) || rowsShowing(grid) }, "the folder page never appeared")
+        pause(2.0)
+        shot(grid, "105a_default_grid")
+        XCTAssertTrue(gridShowing(grid), "Collections Layout = Grid must open the folder as the grid (folder_header_state)")
+        XCTAssertTrue(grid.buttons["All"].exists, "the grid's chips must be there, All included")
+        XCTAssertFalse(rowsShowing(grid), "folder_rows_state must not be mounted on the grid")
+        XCTAssertFalse(grid.descendants(matching: .any)["Layout"].exists, "the band must not offer a Layout entry any more")
+
+        let rows = launchStageWithFolderRows(extraArguments: ["-folder_layout_default", "rows"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(rows) else {
+            throw XCTSkip("the seeded folder tile never took focus on the second launch")
+        }
+        remote.press(.select)
+        XCTAssertTrue(pollUntil(15, step: 0.5) { gridShowing(rows) || rowsShowing(rows) }, "the folder page never reappeared")
+        pause(2.0)
+        shot(rows, "105b_default_rows")
+        XCTAssertTrue(rowsShowing(rows), "Collections Layout = Rows must open the strip")
+        XCTAssertEqual(tok(stageProbeLabel(rows, "folder_rows_state"), "mode"), "rows")
+        XCTAssertFalse(gridShowing(rows), "the grid must not be mounted on the Rows page")
+    }
+
+    /// FEAT-71 + review r1 P1-2 (Batch B): the band is invisible at rest but still the page's top
+    /// focus section. Up from row 0's first card must land on its pill (`folder.editMenu` with
+    /// filter-editable sources, `folder.goBack` without), which then shows; Down returns to row 0.
+    /// The 10-16 device pass found an opacity-0 pill unfocusable on hardware (`moveFail heading=up`),
+    /// which is why the band rests at `FolderEditMenuBand.hiddenOpacity`, never 0.
+    func test107FolderBandReachableFromRow0() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        // ui-legs: no Select here — `openSeededFolderRowsPage` presses it (verified); this extra one
+        // landed on whatever the folder page had focused.
+        guard let opened = openSeededFolderRowsPage(app) else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        XCTAssertEqual(tok(opened, "row"), "0", "the page must settle on row 0 first: \(opened)")
+        pause(1.0)
+        let pill = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR identifier == %@",
+                                                                        "folder.editMenu", "folder.goBack")).firstMatch
+        XCTAssertTrue(pill.exists, "the band's pill must be mounted (Edit menu or Go Back)")
+        XCTAssertTrue(moveFocus(app, .up, untilFrameOf: pill, max: 3),
+                      "Up from row 0 must reach the band's pill (it is invisible at rest, never unfocusable)")
+        shot(app, "107a_band_focused")
+        remote.press(.down)
+        pause(1.5)
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "0",
+                       "Down from the band must return to row 0: \(stageProbeLabel(app, "folder_rows_state"))")
+    }
+
+    /// P2 §4.3 test106 (the Stage analogue of test57): the folder stage takes row 0's first item on
+    /// the initial landing with the title still docked (FEAT-70; was `fitem=-` until the first move);
+    /// back from a Detail opened on row 1 the page is on the same
+    /// row and card; leaving the folder returns Home focus to its tile.
+    func test106FolderRowsExitRestoresFocus() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(1.0)
+        // FEAT-70: the initial landing seeds the stage (fitem = row 0's first card), docked.
+        XCTAssertNotEqual(tok(stageProbeLabel(app, "debug_stage_folder"), "fitem"), "-",
+                          "the folder stage must take row 0's first item on the initial landing (FEAT-70)")
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "docked"), "1",
+                       "the folder title stays docked until the first move")
+        remote.press(.down)
+        pause(2.5)
+        XCTAssertEqual(tok(stageProbeLabel(app, "folder_rows_state"), "row"), "1", "Down must page to row 1")
+        remote.press(.right)
+        pause(2.0)
+        let chosen = tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") ?? "-"
+        XCTAssertNotEqual(chosen, "-", "after the first move the folder stage must report the focused card")
+        try pressVerified(app, "106_folder_card", when: {
+            chosen != "-" && tok(stageProbeLabel(app, "debug_stage_folder"), "fitem") == chosen
+        })
+        guard pollUntil(20, step: 0.5, { self.detailPageUp(app) }) else {
+            XCTFail("Select on a folder card did not open its Detail page")
+            return
+        }
+        pause(2.0)
+        shot(app, "106a_detail")
+        remote.press(.menu)
+        XCTAssertTrue(pollUntil(10, step: 0.5) { !self.stageProbeLabel(app, "folder_rows_state").isEmpty }, "Menu from Detail must return to the folder page")
+        pause(2.0)
+        let back = stageProbeLabel(app, "folder_rows_state")
+        let backStage = stageProbeLabel(app, "debug_stage_folder")
+        shot(app, "106b_back_on_folder")
+        XCTAssertEqual(tok(back, "row"), "1", "back from Detail the strip must be on the row it left: \(back)")
+        XCTAssertEqual(tok(backStage, "fitem"), chosen, "back from Detail focus must be on the card it left: \(backStage)")
+        remote.press(.menu)
+        pause(3.0)
+        let home = stageProbeLabel(app, "debug_stage")
+        shot(app, "106c_back_home")
+        XCTAssertEqual(tok(home, "fitem"), Self.folderRowsFolderId, "leaving the folder must return Home focus to the folder tile: \(home)")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// P2 §4.3 test107: See All at the end of a folder row pushes that source's catalog grid, titled
+    /// with the row's heading; Menu returns to the folder page on row 0.
+    func test107FolderRowsSeeAll() throws {
+        let app = launchStageWithFolderRows()
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(1.0)
+        let stripTop = CGFloat(Double(tok(stageProbeLabel(app, "debug_stage_folder"), "stageH") ?? "") ?? 520)
+        let heading = stripHeadingLabel(app, stripTop: stripTop)
+        add(XCTAttachment(string: "row 0 heading: \(heading ?? "<not found>") stripTop=\(stripTop)"))
+        let seeAll = seeAllCard(app)
+        guard walkRightUntilExists(seeAll, max: 22) else {
+            throw XCTSkip("row 0 has no See All tile (its source returned no more than the 18-item preview)")
+        }
+        for _ in 0..<4 where !seeAll.hasFocus {
+            remote.press(.right)
+            pause(0.6)
+        }
+        XCTAssertTrue(seeAll.hasFocus, "could not focus row 0's See All tile")
+        try pressVerified(app, "107_see_all", when: { seeAll.hasFocus })
+        pause(3.0)
+        shot(app, "107a_see_all")
+        if let heading {
+            // The grid's own title sits at the top of the pushed page; the folder row's heading
+            // with the same text sits at the stage's height, so only a top-of-screen match counts.
+            let titled = pollUntil(6) {
+                app.staticTexts.matching(NSPredicate(format: "label == %@", heading)).allElementsBoundByIndex
+                    .contains { $0.frame.minY >= 0 && $0.frame.minY < 260 }
+            }
+            XCTAssertTrue(titled, "See All must push a grid titled '\(heading)' (row 0's heading)")
+        }
+        remote.press(.menu)
+        let returned = pollUntil(8, step: 0.5) { self.tok(self.stageProbeLabel(app, "folder_rows_state"), "row") == "0" }
+        XCTAssertTrue(returned, "Menu from the grid must return to the folder page on row 0: \(stageProbeLabel(app, "folder_rows_state"))")
+    }
+
+    /// P2 §4.3 test108 (#9): on the folder page in Tabs mode the system tab bar, linked to the
+    /// page's strip, is never left half shown at a rest. Two Downs and two Ups with 4 s rests (two
+    /// probe ticks each), back to Home, then the Tab Bar Geometry blob from Settings › Developer.
+    func test108FolderRowsTabBarNeverHalfShown() throws {
+        let app = launchStageWithFolderRows(extraArguments: ["-debug.tabBarStateProbe", "YES"])
+        defer {
+            let restored = launchToHomeWithSeededCollections("[]")
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        guard focusSeededFolderTile(app) else {
+            throw XCTSkip("the seeded folder tile never took focus on Stage Home — the collections seed is refused on a signed-in account")
+        }
+        guard openSeededFolderRowsPage(app) != nil else {
+            XCTFail("the folder Rows page never appeared")
+            return
+        }
+        pause(2.0)
+        remote.press(.down)
+        pause(4.0)
+        remote.press(.down)
+        pause(4.0)
+        shot(app, "108a_row2")
+        remote.press(.up)
+        pause(1.2)
+        remote.press(.up)
+        pause(4.0)
+        shot(app, "108b_row0")
+        remote.press(.menu)
+        pause(3.0)
+        let lines = readTabBarProbeLines(app, tag: "108")
+        guard !lines.isEmpty else {
+            XCTFail("tab_bar_state_probe_blob produced no lines — the probe is not armed (-debug.tabBarStateProbe YES) or the Developer readout did not render")
+            return
+        }
+        // The walk ends where the harness switched to Settings (`r=tab sel=4`).
+        let settingsSwitch = lines.firstIndex { tok($0, "r") == "tab" && tok($0, "sel") == "4" } ?? lines.count
+        let walk = Array(lines[..<settingsSwitch])
+        let halfShown = tabBarRestsHalfShown(Array(lines))
+        XCTAssertTrue(halfShown.isEmpty, "the tab bar rested half shown (st=part with no settled sample within 2.6 s): \(halfShown)")
+        XCTAssertTrue(walk.contains { tok($0, "st") == "min" }, "the bar never hid while the folder strip was below row 0: \(walk)")
+        let lastState = walk.last { tok($0, "st") != nil && !$0.contains("NOT-FOUND") }.flatMap { tok($0, "st") }
+        XCTAssertEqual(lastState, "exp", "back at row 0 (and on Home) the bar must rest fully shown: \(walk)")
     }
 }

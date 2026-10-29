@@ -10,6 +10,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>nuviotv</string>
+				<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			</array>
 		</dict>
 	</array>
@@ -20,6 +21,8 @@
 		<string>outplayer</string>
 		<string>open-vidhub</string>
 		<string>vidhub</string>
+		<string>senplayer</string>
+		<string>nativeplayer</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

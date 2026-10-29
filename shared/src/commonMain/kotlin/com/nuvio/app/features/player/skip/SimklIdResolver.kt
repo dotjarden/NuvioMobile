@@ -3,13 +3,19 @@ package com.nuvio.app.features.player.skip
 import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.simkl.buildSimklApiUrl
 import com.nuvio.app.features.simkl.SimklConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 
 internal object SimklIdResolver {
 
@@ -34,6 +40,8 @@ internal object SimklIdResolver {
     private val idsCache = HashMap<String, ResolvedIds?>()
     private val detailsCache = HashMap<Long, ResolvedIds>()
     private val episodeCache = HashMap<Long, List<EpisodeMapping>>()
+    /// Parent Simkl id → its `mapped_tvdb_seasons` siblings (upstream aa748fa8).
+    private val animeSeasonCache = HashMap<Long, List<AnimeSeasonEntry>>()
 
     // Codex r3: upstream hand-rolled "client_id=…&app-name=…&app-version=1.0"; the fork's existing
     // buildSimklApiUrl URL-encodes every parameter and supplies the real app version instead.
@@ -43,8 +51,22 @@ internal object SimklIdResolver {
     /// Anime-Skip with season 1's MAL/AniList ids — the same season-awareness the removed ARM path had
     /// (`entries[season - 1]`). When [season] is given and more than one entry matches, prefer the
     /// entry whose Simkl `season` equals it; otherwise fall back to the first result as upstream does.
-    suspend fun resolveIds(source: String, id: String, season: Int? = null): ResolvedIds? {
-        val cacheKey = "$source:$id:${season ?: ""}"
+    ///
+    /// Upstream 317bf2dc adds [contentTypeHint] (the caller's content type: movie/series/anime…):
+    /// `/search/id` can answer one external id with entries of several types, and upstream's
+    /// `results[0]` could be the wrong one. The hint narrows the candidates by Simkl `type` first
+    /// (see [selectCandidatesForTypeHint]); the fork's season scan then runs over that narrowed list.
+    /// Kept as a fourth parameter so the fork's `season` call sites stay as they are.
+    suspend fun resolveIds(
+        source: String,
+        id: String,
+        season: Int? = null,
+        contentTypeHint: String? = null,
+    ): ResolvedIds? {
+        // Review r1: key on the Simkl types the hint resolves to, so "series"/"tv"/"show" share one
+        // entry and an unknown hint shares the no-hint entry (same candidates either way).
+        val expectedTypes = expectedSimklTypes(contentTypeHint)
+        val cacheKey = "$source:$id:${season ?: ""}:${expectedTypes?.sorted()?.joinToString(",") ?: ""}"
         idsCache[cacheKey]?.let { return it }
         if (SimklConfig.CLIENT_ID.isBlank()) return null
 
@@ -52,23 +74,50 @@ internal object SimklIdResolver {
             val searchText = httpGetText(buildSimklApiUrl("/search/id", mapOf(source to id)))
             val results = json.parseToJsonElement(searchText).jsonArray
             if (results.isEmpty()) return null
-            val candidates = results.mapNotNull { it as? JsonObject }
+            val candidates = selectCandidatesForTypeHint(results.mapNotNull { it as? JsonObject }, contentTypeHint)
             val scanForSeason = season != null && candidates.size > 1
             // Codex r4: one candidate's details call failing must not sink the whole lookup —
             // resolve per candidate, keep the first that succeeds as the fallback, and keep scanning.
             var first: ResolvedIds? = null
             var chosen: ResolvedIds? = null
             for (candidate in candidates) {
-                val resolved = runCatching { resolveDetails(candidate) }.getOrNull() ?: continue
+                val resolved = try {
+                    resolveDetails(candidate)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                } ?: continue
                 if (first == null) first = resolved
                 if (!scanForSeason) break
                 if (resolved.tvdbSeason == season) { chosen = resolved; break }
             }
             (chosen ?: first)?.also { idsCache[cacheKey] = it }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
     }
+
+    /// Pure (upstream 317bf2dc): with a usable [contentTypeHint], only the search entries whose Simkl
+    /// `type` matches it; when nothing matches, or the hint is absent/unknown, the full list stands so
+    /// the first result still wins as before.
+    internal fun selectCandidatesForTypeHint(candidates: List<JsonObject>, contentTypeHint: String?): List<JsonObject> {
+        val expected = expectedSimklTypes(contentTypeHint) ?: return candidates
+        val matches = candidates.filter { (it["type"] as? JsonPrimitive)?.contentOrNull in expected }
+        return matches.ifEmpty { candidates }
+    }
+
+    /// Pure: caller content type → the Simkl search `type` values it may resolve to; null when the
+    /// hint carries no usable information (upstream's `else -> emptySet()` branch, same outcome).
+    internal fun expectedSimklTypes(contentTypeHint: String?): Set<String>? =
+        when (contentTypeHint?.trim()?.lowercase()) {
+            "movie", "film" -> setOf("movie")
+            "series", "tv", "show", "tvshow" -> setOf("show", "tv")
+            "anime" -> setOf("anime")
+            else -> null
+        }
 
     /// Search-result entry → full ids via `/{type}/{simklId}?extended=full`; cached per Simkl id so a
     /// multi-season scan (see [resolveIds]) fetches each candidate at most once per process.
@@ -77,11 +126,23 @@ internal object SimklIdResolver {
         detailsCache[simklId]?.let { return it }
 
         val type = result["type"]?.jsonPrimitive?.content ?: "anime"
+        // Review r1 (fork deviation): upstream maps only "show" to /tv/, so a "tv"-typed search entry
+        // (which the series hint accepts) would be fetched from /anime/ and labelled anime.
         val mediaType = when (type) {
             "movie" -> "movies"
-            "show" -> "tv"
+            "show", "tv" -> "tv"
             else -> "anime"
         }
+
+        return resolveDetails(simklId, mediaType)
+    }
+
+    /// Simkl id + API media type ("anime"/"tv"/"movies") → full ids. Shares [detailsCache] with the
+    /// search-result overload, so a sibling season found via [resolveIdsForImdbEpisode] that was
+    /// already fetched as a `/search/id` candidate costs no extra request. Upstream aa748fa8's
+    /// `resolveIdsBySimklId` is folded in here instead of adding `"simkl:$id"` keys to [idsCache].
+    private suspend fun resolveDetails(simklId: Long, mediaType: String): ResolvedIds {
+        detailsCache[simklId]?.let { return it }
 
         val detailsText = httpGetText(buildSimklApiUrl("/$mediaType/$simklId", mapOf("extended" to "full")))
         val details = json.parseToJsonElement(detailsText).jsonObject
@@ -117,6 +178,8 @@ internal object SimklIdResolver {
                 }
             }
             mapping.also { episodeCache[simklId] = it }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             emptyList()
         }
@@ -128,9 +191,148 @@ internal object SimklIdResolver {
         return entry?.let { it.tvdbSeason to it.tvdbEpisode }
     }
 
+    /**
+     * Upstream aa748fa8: given an IMDB id and a TVDB-space season/episode, resolve the anime ids
+     * (MAL/AniList/Kitsu) of the Simkl entry that owns THAT season.
+     *
+     * First pass is the fork's season-aware [resolveIds] (scans `/search/id` candidates for a
+     * `season` match). Simkl's IMDB search commonly returns only the one canonical entry, though,
+     * so when the chosen anime entry still maps to a different TVDB season this asks the entry for
+     * `extended=full_anime_seasons` and follows `mapped_tvdb_seasons` to the sibling entry. Any
+     * failure, or no sibling for [season], falls back to the first-pass result.
+     *
+     * Fork deviation: a TVDB season split across several anime entries (split-cour) yields more
+     * than one sibling for [season]; each candidate's (cached) episode mapping is consulted and the
+     * one containing ([season], [episode]) wins, else the first sibling. The final episode remap
+     * still happens in [SkipIntroRepository] via [getEpisodeMapping] / [animeEpisodeFor].
+     */
+    suspend fun resolveIdsForImdbEpisode(
+        imdbId: String,
+        season: Int?,
+        episode: Int,
+    ): ResolvedIds? {
+        val base = resolveIds("imdb", imdbId, season) ?: return null
+        if (season == null || base.type != "anime") return base
+        if (base.tvdbSeason == season &&
+            !shouldLookForSibling(base.type, base.tvdbSeason, season, getEpisodeMapping(base.simklId, base.type), episode)
+        ) return base
+
+        // Same-season base (possibly the wrong split-cour half): switch only on a positive mapping hit.
+        // Season-mismatch base is known wrong: the first sibling for the season is the best guess.
+        val keepSimklId = base.simklId.takeIf { base.tvdbSeason == season }
+        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season, episode, keepSimklId)
+        if (siblingSimklId == null || siblingSimklId == base.simklId) return base
+        return try {
+            resolveDetails(siblingSimklId, base.type)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            base
+        }
+    }
+
+    private suspend fun resolveSeasonSimklId(
+        parentSimklId: Long,
+        type: String,
+        tvdbSeason: Int,
+        episode: Int,
+        keepSimklId: Long?,
+    ): Long? {
+        animeSeasonCache[parentSimklId]?.let { return pickSibling(it, type, tvdbSeason, episode, keepSimklId) }
+        if (SimklConfig.CLIENT_ID.isBlank()) return null
+
+        return try {
+            val text = httpGetText(
+                buildSimklApiUrl("/$type/$parentSimklId", mapOf("extended" to "full_anime_seasons"))
+            )
+            val details = json.parseToJsonElement(text) as? JsonObject ?: return null
+            val seasons = parseAnimeSeasonEntries(details)
+            animeSeasonCache[parentSimklId] = seasons
+            pickSibling(seasons, type, tvdbSeason, episode, keepSimklId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /// Single candidate: no extra request. Several (split-cour): fetch each candidate's episode
+    /// mapping (cached) and let [selectSiblingByEpisode] choose.
+    private suspend fun pickSibling(
+        seasons: List<AnimeSeasonEntry>,
+        type: String,
+        tvdbSeason: Int,
+        episode: Int,
+        keepSimklId: Long?,
+    ): Long? {
+        val candidates = seasons.filter { it.tvdbSeason == tvdbSeason }
+        if (keepSimklId == null && candidates.size <= 1) return candidates.firstOrNull()?.simklId
+        val withMappings = candidates.map { it to getEpisodeMapping(it.simklId, type) }
+        return selectSiblingByEpisode(withMappings, tvdbSeason, episode, keepSimklId)
+    }
+
+    /// Pure: among sibling candidates for one TVDB season, the first whose episode mapping contains
+    /// ([tvdbSeason], [episode]). With no hit: [keepSimklId] when given (the first-pass entry already
+    /// has the right season, so never swap it without positive evidence), else the first candidate;
+    /// null when there are none and nothing to keep.
+    internal fun selectSiblingByEpisode(
+        candidates: List<Pair<AnimeSeasonEntry, List<EpisodeMapping>>>,
+        tvdbSeason: Int,
+        episode: Int,
+        keepSimklId: Long? = null,
+    ): Long? {
+        val hit = candidates.firstOrNull { (_, mapping) ->
+            mapping.any { it.tvdbSeason == tvdbSeason && it.tvdbEpisode == episode }
+        }
+        if (hit != null) return hit.first.simklId
+        return keepSimklId ?: candidates.firstOrNull()?.first?.simklId
+    }
+
+    internal data class AnimeSeasonEntry(val simklId: Long, val tvdbSeason: Int)
+
+    /// Pure: `mapped_tvdb_seasons` of a `full_anime_seasons` details response → (simklId, tvdbSeason)
+    /// pairs. Malformed entries are skipped individually rather than failing the whole list.
+    internal fun parseAnimeSeasonEntries(details: JsonObject): List<AnimeSeasonEntry> {
+        val seasonsArray = details["mapped_tvdb_seasons"] as? JsonArray ?: return emptyList()
+        return seasonsArray.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val simklId = (obj["simkl_id"] as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 }
+                ?: return@mapNotNull null
+            val mappedSeason = (obj["tvdb_season"] as? JsonPrimitive)?.intOrNull?.takeIf { it > 0 }
+                ?: return@mapNotNull null
+            AnimeSeasonEntry(simklId, mappedSeason)
+        }
+    }
+
+    /// Pure: whether the first-pass entry may be the wrong split-cour half. Only anime entries whose
+    /// TVDB season matches the request AND whose non-empty episode mapping lacks ([season], [episode])
+    /// warrant a sibling lookup; an empty/unavailable mapping or non-anime type stays put.
+    internal fun shouldLookForSibling(
+        type: String,
+        baseTvdbSeason: Int?,
+        season: Int,
+        mapping: List<EpisodeMapping>,
+        episode: Int,
+    ): Boolean {
+        if (type != "anime" || baseTvdbSeason != season) return false
+        if (mapping.isEmpty()) return false
+        return mapping.none { it.tvdbSeason == season && it.tvdbEpisode == episode }
+    }
+
+    /// Pure: the sibling entry that owns [tvdbSeason], or null.
+    internal fun selectSiblingSimklId(seasons: List<AnimeSeasonEntry>, tvdbSeason: Int): Long? =
+        seasons.firstOrNull { it.tvdbSeason == tvdbSeason }?.simklId
+
+    /// Pure: TVDB season/episode → the anime entry's own episode number; the TVDB [episode] when
+    /// the entry has no mapping for it (upstream aa748fa8's fallback).
+    internal fun animeEpisodeFor(mapping: List<EpisodeMapping>, season: Int, episode: Int): Int =
+        mapping.firstOrNull { it.tvdbSeason == season && it.tvdbEpisode == episode }?.animeEpisode
+            ?: episode
+
     fun clearCache() {
         idsCache.clear()
         detailsCache.clear()
         episodeCache.clear()
+        animeSeasonCache.clear()
     }
 }

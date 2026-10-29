@@ -1,231 +1,128 @@
+import Combine
 import SharedCore
 import SwiftUI
 
-/// Shared playback settings for both engines. Optional controls reflect actual engine support.
-struct PlayerPlaybackTab: View {
-    let playbackSpeed: Double
-    let audioDelaySec: Double?
-    let onSpeed: (Double) -> Void
-    let onAudioDelay: ((Double) -> Void)?
+/// The mpv player's fourth panel tab ("Playback"): what its old swipe-up settings menu carried
+/// beyond tracks — playback speed, subtitle/audio delay, the diagnostics overlay toggle, an
+/// episode jump list and alternate sources — laid out as three columns inside the top panel.
+/// The speed row and the Episodes / Sources columns live in `PlayerPlaybackColumns.swift`,
+/// shared with the native engine's `NativePlaybackTab` (P4 A8).
+/// Same rules as the other tabs: default tvOS button focus, Theme tokens, no accent.
+struct MPVPlaybackTab: View {
+    /// BUG-180 (Steven rc7): the three values this tab draws, not the whole `MPVPlaybackState`
+    /// (which publishes the position twice a second and re-rendered the open tab on every tick).
+    @StateObject private var values: MPVPlaybackTabValues
     @ObservedObject var engine: NextEpisodeEngine
     /// True when the presenter can swap playback contexts (episode jump / source switching).
     let canSwitchStreams: Bool
     /// Closes the panel after an action that replaces playback (episode jump, source switch).
     let onClose: () -> Void
+    private let state: MPVPlaybackState
 
-    private static let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    init(state: MPVPlaybackState, engine: NextEpisodeEngine, canSwitchStreams: Bool, onClose: @escaping () -> Void) {
+        self.state = state
+        _values = StateObject(wrappedValue: MPVPlaybackTabValues(state: state))
+        _engine = ObservedObject(wrappedValue: engine)
+        self.canSwitchStreams = canSwitchStreams
+        self.onClose = onClose
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.xl) {
             settingsColumn
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
-            if canSwitchStreams, !sortedEpisodes.isEmpty {
-                episodesColumn
+            if canSwitchStreams, !PlayerEpisodesColumn.sortedEpisodes(engine).isEmpty {
+                PlayerEpisodesColumn(engine: engine, onClose: onClose)
                     .frame(width: 440)
                     .focusSection()
             }
             if canSwitchStreams {
-                sourcesColumn
+                PlayerSourcesColumn(engine: engine, onClose: onClose)
                     .frame(width: 560)
                     .focusSection()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: 520, alignment: .topLeading)
     }
 
     // MARK: - Speed · timing · diagnostics
 
     private var settingsColumn: some View {
-        PlayerPanelScroll {
+        ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Menu {
-                    ForEach(Self.speeds, id: \.self) { speed in
-                        Button(String(format: "%g×", speed)) { onSpeed(speed) }
-                    }
-                } label: {
-                    HStack {
-                        Label("Playback speed", systemImage: "speedometer")
-                        Spacer()
-                        Text(String(format: "%g×", playbackSpeed))
-                        Image(systemName: "chevron.down")
-                    }.frame(maxWidth: .infinity)
+                PlayerPanelSectionCaption(text: String(localized: "Playback Speed"))
+                PlayerSpeedRow(current: values.playbackSpeed) { state.setSpeed?($0) }
+                if values.rememberSpeedAvailable {
+                    PlayerRememberSpeedRow(isOn: values.rememberSpeed) { state.setRememberSpeed?(!values.rememberSpeed) }
                 }
-                .accessibilityIdentifier("player.panel.speed")
-                .accessibilityLabel("Playback speed")
-                .accessibilityValue(String(format: "%g×", playbackSpeed))
 
                 // Subtitle delay moved to the Subtitles tab's "Timing" row (beta.15 §B1) — that's
                 // where a viewer actually looks when subs are out of sync, and it now persists
-                // per title/profile. Audio delay stays here (no persistence spec for it yet).
-                if let audioDelaySec, let onAudioDelay {
-                    PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
-                    delayRow(title: String(localized: "Audio Delay"), value: audioDelaySec, step: 0.25, limit: 10, apply: onAudioDelay)
-                }
+                // per title/profile. Audio delay stays here and persists per title/profile, like the subtitle delay.
+                PlayerPanelSectionCaption(text: String(localized: "Timing")).padding(.top, Theme.Spacing.sm)
+                delayRow(title: String(localized: "Audio Delay"), value: values.audioDelaySec, step: 0.25, limit: values.audioDelayLimitSec,
+                         apply: { state.setAudioDelay?($0) }, reset: { state.resetAudioDelay?() })
+                Text("Positive values delay the track; negative values play it earlier.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
 
+                PlayerPanelSectionCaption(text: String(localized: "Diagnostics")).padding(.top, Theme.Spacing.sm)
+                Button { state.showStreamInfo.toggle() } label: {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Image(systemName: values.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
+                        Text(values.showStreamInfo ? String(localized: "Hide Stream Info") : String(localized: "Show Stream Info"))
+                    }
+                    .font(Theme.Font.body)
+                }
+                .accessibilityIdentifier("player.panel.diagnostics")
             }
         }
     }
 
     private func delayRow(title: String, value: Double, step: Double, limit: Double,
-                          apply: @escaping (Double) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                          apply: @escaping (Double) -> Void, reset: @escaping () -> Void) -> some View {
+        HStack(spacing: Theme.Spacing.sm) {
             Text(title)
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary)
-            HStack(spacing: Theme.Spacing.sm) {
-                Button { apply(max(-limit, value - step)) } label: { Image(systemName: "minus") }
-                Text(value == 0 ? "0.00 s" : String(format: "%+.2f s", value))
-                    .font(Theme.Font.body.monospacedDigit())
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .frame(width: 110)
-                Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
-                if value != 0 {
-                    Button(String(localized: "Reset")) { apply(0) }.font(Theme.Font.meta)
-                }
-            }
-        }
-    }
-
-    // MARK: - Episodes (jump to any aired episode)
-
-    private var episodesColumn: some View {
-        let watched = watchedEpisodeKeys
-        return VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-            PlayerPanelSectionCaption(text: String(localized: "Episodes"))
-            PlayerPanelScroll(maximumHeight: 260) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
-                        let isCurrent = isCurrentEpisode(episode)
-                        Button {
-                            guard !isCurrent else { return }
-                            engine.jumpToEpisode(episode)
-                            onClose()
-                        } label: {
-                            HStack(spacing: Theme.Spacing.sm) {
-                                Image(systemName: isCurrent ? "play.fill" : "checkmark")
-                                    .font(Theme.Font.caption.weight(.semibold))
-                                    .opacity(isCurrent || watched.contains(episodeKey(episode)) ? 1 : 0)
-                                    .frame(width: 28)
-                                Text(episodeChipLabel(episode)).font(Theme.Font.meta).frame(width: 90, alignment: .leading)
-                                Text(episode.title).font(Theme.Font.body).lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                    }
-                }
-            }
-            Text("Jumping finds a stream automatically and switches playback.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-        }
-    }
-
-    private var sortedEpisodes: [MetaVideo] {
-        engine.episodes
-            .compactMap { video -> (MetaVideo, Int, Int)? in
-                guard let s = video.season?.value, let e = video.episode?.value else { return nil }
-                return (video, s, e)
-            }
-            .sorted { a, b in a.1 == b.1 ? a.2 < b.2 : a.1 < b.1 }
-            .map { $0.0 }
-    }
-
-    /// "season:episode" keys for episodes to mark watched — explicit Watched marks OR
-    /// effectively-completed progress (same rule as the Detail screen's badges).
-    private var watchedEpisodeKeys: Set<String> {
-        WatchedRepository.shared.ensureLoaded()
-        WatchProgressRepository.shared.ensureLoaded()
-        var keys: Set<String> = []
-        for episode in sortedEpisodes {
-            guard let s = episode.season?.value, let e = episode.episode?.value else { continue }
-            let season = KotlinInt(int: Int32(s)), number = KotlinInt(int: Int32(e))
-            let marked = WatchedRepository.shared.isWatched(
-                id: engine.parentMetaId, type: engine.contentType, season: season, episode: number)
-            let completed = WatchProgressRepository.shared.progressForVideo(
-                videoId: "\(engine.parentMetaId):\(s):\(e)", parentMetaId: engine.parentMetaId,
-                seasonNumber: season, episodeNumber: number)?.isEffectivelyCompleted == true
-            if marked || completed { keys.insert("\(s):\(e)") }
-        }
-        return keys
-    }
-
-    private func episodeKey(_ episode: MetaVideo) -> String {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return episode.id }
-        return "\(s):\(e)"
-    }
-
-    private func isCurrentEpisode(_ episode: MetaVideo) -> Bool {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
-        return s == engine.currentSeason && e == engine.currentEpisode
-    }
-
-    private func episodeChipLabel(_ episode: MetaVideo) -> String {
-        if let s = episode.season?.value, let e = episode.episode?.value { return "S\(s)E\(e)" }
-        return episode.title
-    }
-
-    // MARK: - Sources (switch the current video's stream)
-
-    private var sourcesColumn: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-            HStack(spacing: Theme.Spacing.sm) {
-                PlayerPanelSectionCaption(text: String(localized: "Sources"))
-                if engine.sourcesLoading { ProgressView().scaleEffect(0.6) }
-            }
-            PlayerPanelScroll(maximumHeight: 260) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    if engine.sources.isEmpty && !engine.sourcesLoading {
-                        Text("No alternate sources found yet.")
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                    }
-                    ForEach(Array(engine.sources.prefix(12).enumerated()), id: \.offset) { _, stream in
-                        sourceRow(stream)
-                    }
-                }
-            }
-            Text("Switching resumes from your last saved position.")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-        }
-        .onAppear { engine.loadSources() }
-    }
-
-    private func sourceRow(_ stream: StreamItem) -> some View {
-        let urlString: String? = stream.playableDirectUrl
-        let isCurrent = urlString == engine.currentUrlString
-        return Button {
-            guard !isCurrent else { return }
-            if engine.playSource(stream) { onClose() }
-        } label: {
-            HStack(spacing: Theme.Spacing.sm) {
-                Image(systemName: isCurrent ? "play.fill" : "arrow.triangle.2.circlepath")
-                    .font(Theme.Font.caption.weight(.semibold))
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(stream.streamLabel).font(Theme.Font.body).lineLimit(1)
-                    Text(stream.addonName).font(Theme.Font.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if isCurrent {
-                    Text("Playing").font(Theme.Font.caption).foregroundStyle(.secondary)
-                }
-            }
-            .contentShape(Rectangle())
+                .frame(width: 260, alignment: .leading)
+            Button { apply(max(-limit, value - step)) } label: { Image(systemName: "minus") }
+            Text(value == 0 ? "0.00 s" : String(format: "%+.2f s", value))
+                .font(Theme.Font.body.monospacedDigit())
+                .foregroundStyle(Theme.Palette.textPrimary)
+                .frame(width: 150)
+            Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
+            // Always mounted (see PlayerSubtitlesTab): a Reset that vanished on press dropped focus.
+            Button(String(localized: "Reset")) { reset() }.font(Theme.Font.meta)
         }
     }
 }
 
-struct MPVPlaybackOptions: View {
-    @ObservedObject var state: PlayerPlaybackState
-    @ObservedObject var engine: NextEpisodeEngine
-    let canSwitchStreams: Bool
-    let onClose: () -> Void
-    var body: some View {
-        PlayerPlaybackTab(playbackSpeed: state.playbackSpeed, audioDelaySec: state.audioDelaySec,
-            onSpeed: { state.setSpeed?($0) }, onAudioDelay: { state.setAudioDelay?($0) },
-            engine: engine, canSwitchStreams: canSwitchStreams, onClose: onClose)
+/// BUG-180: mirrors only the `MPVPlaybackState` values the Playback tab draws, each de-duplicated,
+/// so the tab re-renders when one of them changes and not on every position tick.
+@MainActor
+final class MPVPlaybackTabValues: ObservableObject {
+    @Published private(set) var playbackSpeed: Double
+    @Published private(set) var audioDelaySec: Double
+    @Published private(set) var showStreamInfo: Bool
+    @Published private(set) var rememberSpeed: Bool
+    @Published private(set) var audioDelayLimitSec: Double
+    /// Mirrored: the panel can open before FILE_LOADED, and the row appears when it lands.
+    @Published private(set) var rememberSpeedAvailable: Bool
+
+    init(state: MPVPlaybackState) {
+        playbackSpeed = state.playbackSpeed
+        audioDelaySec = state.audioDelaySec
+        showStreamInfo = state.showStreamInfo
+        rememberSpeed = state.rememberSpeed
+        audioDelayLimitSec = state.audioDelayLimitSec
+        rememberSpeedAvailable = state.rememberSpeedAvailable
+        state.$rememberSpeedAvailable.removeDuplicates().assign(to: &$rememberSpeedAvailable)
+        state.$rememberSpeed.removeDuplicates().assign(to: &$rememberSpeed)
+        state.$audioDelayLimitSec.removeDuplicates().assign(to: &$audioDelayLimitSec)
+        state.$playbackSpeed.removeDuplicates().assign(to: &$playbackSpeed)
+        state.$audioDelaySec.removeDuplicates().assign(to: &$audioDelaySec)
+        state.$showStreamInfo.removeDuplicates().assign(to: &$showStreamInfo)
     }
 }

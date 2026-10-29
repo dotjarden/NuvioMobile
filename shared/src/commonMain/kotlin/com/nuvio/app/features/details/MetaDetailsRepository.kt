@@ -9,6 +9,7 @@ import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.addons.fetchAddonResponseText
 import com.nuvio.app.features.home.HomeUnreleasedContentPolicyProvider
 import com.nuvio.app.features.home.filterReleasedItems
+import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.mdblist.MdbListMetadataService
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbMetadataService
@@ -16,6 +17,13 @@ import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktConnectionMode
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
+import com.nuvio.app.features.simkl.SimklAuthRepository
+import com.nuvio.app.features.simkl.SimklRelatedRepository
+import com.nuvio.app.features.simkl.shouldUseSimklMoreLikeThis
+import com.nuvio.app.features.trakt.MoreLikeThisSourcePreference
 import com.nuvio.app.features.trakt.TraktRelatedRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.trakt.shouldUseTraktMoreLikeThis
@@ -237,9 +245,12 @@ object MetaDetailsRepository {
 
         val metaScreenSettingsFingerprint = buildMetaScreenSettingsFingerprint(MdbListSettingsRepository.snapshot())
         val cachedEntry = cachedMetaByRequestKey[requestKey] ?: return null
-        return cachedEntry.metaScreenMeta
+        // Upstream 75296263: run cached meta through the same overlay + release filter as load(),
+        // so returning to a title keeps its custom posters.
+        val cachedMeta = cachedEntry.metaScreenMeta
             ?.takeIf { cachedEntry.metaScreenSettingsFingerprint == metaScreenSettingsFingerprint }
             ?: cachedEntry.baseMeta
+        return cachedMeta.withUnreleasedFilter()
     }
 
     /**
@@ -289,6 +300,18 @@ object MetaDetailsRepository {
             }
         }
     }
+
+    /**
+     * P5 B22: Detail's More Like This for [type]/[id] (same source setting: Simkl, Trakt or TMDB),
+     * without touching [uiState]. Used by the post-play screen.
+     */
+    suspend fun moreLikeThis(type: String, id: String): List<MetaPreview> =
+        resolveFilteredMoreLikeThis(
+            peeked = peek(type, id),
+            fetch = { fetch(type, id) },
+            filter = { it.withUnreleasedFilter() },
+            apply = { meta -> applyMoreLikeThisSource(meta, fallbackItemId = id, fallbackItemType = type) },
+        )
 
     private const val FETCH_TIMEOUT_MS = 5_000L
     private const val METADATA_PROVIDER_READY_TIMEOUT_MS = 10_000L
@@ -496,6 +519,31 @@ object MetaDetailsRepository {
         TmdbSettingsRepository.ensureLoaded()
 
         val traktSettings = TraktSettingsRepository.uiState.value
+
+        // Simkl source (upstream af1298eb + 1b2f7a99). Checked before Trakt; when SIMKL is preferred
+        // but Simkl is not connected the gate is false and the Trakt/TMDB chain below runs as before.
+        if (isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource) &&
+            supportsMoreLikeThis(meta, fallbackItemType)
+        ) {
+            val items = runCatching {
+                // Bound the related-titles call so a slow Simkl response can't stall enrichment.
+                withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                    SimklRelatedRepository.getRelated(
+                        meta = meta,
+                        fallbackItemId = fallbackItemId,
+                        fallbackItemType = fallbackItemType,
+                    )
+                } ?: emptyList()
+            }.onFailure { error ->
+                log.w { "Failed to load Simkl related titles for ${meta.id}: ${error.message}" }
+            }.getOrDefault(emptyList())
+
+            return meta.copy(
+                moreLikeThis = items,
+                moreLikeThisSource = MoreLikeThisSource.SIMKL.takeIf { items.isNotEmpty() },
+            )
+        }
+
         val isTraktAuthenticated = TraktAuthRepository.uiState.value.mode == TraktConnectionMode.CONNECTED
         val shouldUseTrakt = shouldUseTraktMoreLikeThis(
             isAuthenticated = isTraktAuthenticated,
@@ -562,7 +610,8 @@ object MetaDetailsRepository {
         return shouldUseTraktMoreLikeThis(
             isAuthenticated = isTraktAuthenticated,
             source = traktSettings.moreLikeThisSource,
-        ) || !tmdbSettings.enabled || !tmdbSettings.useMoreLikeThis || meta.moreLikeThisSource == null && meta.moreLikeThis.isNotEmpty()
+        ) || isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource) ||
+            !tmdbSettings.enabled || !tmdbSettings.useMoreLikeThis || meta.moreLikeThisSource == null && meta.moreLikeThis.isNotEmpty()
     }
 
     private fun buildMetaScreenSettingsFingerprint(
@@ -577,9 +626,25 @@ object MetaDetailsRepository {
         val tmdbSettings = TmdbSettingsRepository.snapshot()
         return buildString {
             append("${settings.enabled}:${settings.apiKey.trim()}:$providers")
+            // Upstream 3f0d07be: account-backed ratings are keyed by the account scope (only
+            // while no personal key overrides it).
+            append("|mdblist_account=${settings.accountScope.takeUnless { settings.hasApiKey }}")
             append("|more_like=${traktSettings.moreLikeThisSource}:$traktAuthMode")
-            append("|tmdb=${tmdbSettings.enabled}:${tmdbSettings.useMoreLikeThis}:${tmdbSettings.hasApiKey}:${tmdbSettings.language}")
+            val simklActive = isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource)
+            append(":simkl=$simklActive")
+            // Simkl tiles carry ids in the anime-ID preference's scheme, so a preference flip must
+            // invalidate cached meta-screen entries while Simkl More Like This is the active source.
+            if (simklActive) append(":animeId=${traktSettings.simklAnimeIdPreference.name}")
+            append("|tmdb=${tmdbSettings.enabled}:${tmdbSettings.useMoreLikeThis}:${tmdbSettings.language}")
         }
+    }
+
+    private fun isSimklMoreLikeThisActive(source: MoreLikeThisSourcePreference): Boolean {
+        SimklAuthRepository.ensureLoaded()
+        return shouldUseSimklMoreLikeThis(
+            isAuthenticated = SimklAuthRepository.isAuthenticated.value,
+            source = source,
+        )
     }
 
     private fun supportsMoreLikeThis(meta: MetaDetails, fallbackItemType: String): Boolean =
@@ -593,13 +658,18 @@ object MetaDetailsRepository {
         }
 
     private fun MetaDetails.withUnreleasedFilter(): MetaDetails {
-        if (!HomeUnreleasedContentPolicyProvider.policy.hideUnreleasedContent()) return this
+        // Custom poster overlay (DETAILS screen) runs first; it keeps rawPosterUrl, so the
+        // release filter below only ever drops whole items.
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.DETAILS)
+        val base = withCustomPosterUrls(posterPattern)
+        if (!HomeUnreleasedContentPolicyProvider.policy.hideUnreleasedContent()) return base
         val todayIsoDate = CurrentDateProvider.todayIsoDate()
-        val releasedMoreLikeThis = moreLikeThis.filterReleasedItems(todayIsoDate)
-        return copy(
+        val releasedMoreLikeThis = base.moreLikeThis.filterReleasedItems(todayIsoDate)
+        return base.copy(
             moreLikeThis = releasedMoreLikeThis,
-            moreLikeThisSource = moreLikeThisSource.takeIf { releasedMoreLikeThis.isNotEmpty() },
-            collectionItems = collectionItems.filterReleasedItems(todayIsoDate),
+            moreLikeThisSource = base.moreLikeThisSource.takeIf { releasedMoreLikeThis.isNotEmpty() },
+            collectionItems = base.collectionItems.filterReleasedItems(todayIsoDate),
         )
     }
 
@@ -636,3 +706,32 @@ object MetaDetailsRepository {
         return emptyList()
     }
 }
+
+/**
+ * Pure core of [MetaDetailsRepository.moreLikeThis]: a meta that already carries a resolved
+ * source keeps its list; otherwise [apply] (the Detail source chain) decides. No meta, no list.
+ */
+internal suspend fun resolveMoreLikeThis(
+    meta: MetaDetails?,
+    apply: suspend (MetaDetails) -> MetaDetails,
+): List<MetaPreview> {
+    if (meta == null) return emptyList()
+    if (meta.moreLikeThisSource != null) return meta.moreLikeThis
+    return apply(meta).moreLikeThis
+}
+
+/**
+ * [resolveMoreLikeThis] with Detail's unreleased filter / custom-poster overlay ([filter]) on both
+ * entry points: a freshly fetched meta (the peeked one is already filtered) and the source chain's
+ * result. [filter] is idempotent.
+ */
+internal suspend fun resolveFilteredMoreLikeThis(
+    peeked: MetaDetails?,
+    fetch: suspend () -> MetaDetails?,
+    filter: (MetaDetails) -> MetaDetails,
+    apply: suspend (MetaDetails) -> MetaDetails,
+): List<MetaPreview> =
+    resolveMoreLikeThis(
+        meta = peeked ?: fetch()?.let(filter),
+        apply = { meta -> filter(apply(meta)) },
+    )

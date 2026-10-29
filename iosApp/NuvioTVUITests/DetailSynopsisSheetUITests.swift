@@ -1,0 +1,74 @@
+import XCTest
+
+/// Batch P (BUG-193, Steven rc10): the full-synopsis screen draws the page's own backdrop under a
+/// flat dark scrim (no material, no blur), and Menu still closes it with Detail on screen (the F8
+/// regression: a clear presentation background once let one Menu dismiss the cover AND pop Detail).
+/// The backdrop carries the DEBUG identifier `detail_synopsis_backdrop`; it needs the
+/// `backdropURL:` hunk in DetailView.swift to be applied.
+final class DetailSynopsisSheetUITests: XCTestCase {
+
+    let remote = XCUIRemote.shared
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    private func pause(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
+
+    private func shot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testSheetDrawsTheBackdropNotAMaterial() throws {
+        let app = XCUIApplication()
+        // ui-legs (2026-10-22): the fixture's Breaking Bad synopsis fits four lines (debug_detail_hero
+        // trunc=0: Cinemeta's two lines with TMDB off, TMDB's exactly four with it on), so it has no
+        // teaser BUTTON and no sheet. Dune (2021) with TMDB on (DEBUG override, in memory, never
+        // synced) carries a longer overview. `-detail_trailer_autoplay NO` (device-local, never
+        // synced): Detail auto-plays its trailer full screen ~4 s after it resolves otherwise.
+        app.launchArguments += ["-debug.openDeepLink", "nuviotv://title?id=tt1160419&type=movie&name=Dune",
+                                "-detail_layout", "cinematic", "-detail_trailer_autoplay", "NO",
+                                "-debug.tmdbEnabledOverride", "YES"]
+        app.launch()
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
+        if chris.waitForExistence(timeout: 90) {
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
+        }
+        // Review r2 P3-4: the teaser id sits on both the truncated BUTTON and the plain text; only
+        // the button proves the synopsis is truncated (Select on plain text would land on Play).
+        let teaser = app.buttons["detail_synopsis_teaser"]
+        // Review r1 P3-10: no skips. The tvOS 27 simulator never reports `hasFocus`, so the climb is a
+        // fixed four Ups from the hero; the assertions below are on existence, so a wrong landing
+        // (Select on Play, which opens the player instead of the sheet) FAILS instead of skipping.
+        // Breaking Bad's synopsis is long enough to be truncated, so the teaser must exist.
+        XCTAssertTrue(teaser.waitForExistence(timeout: 30), "no synopsis teaser on the Dune (2021) fixture")
+        for _ in 0..<4 {
+            remote.press(.up)
+            pause(0.8)
+        }
+        // ui-legs (2026-10-22): Select only once the teaser BUTTON reads focused (FA87's tvOS 26.5
+        // reports focus); a Select on Play would open the player instead of the sheet.
+        guard teaser.hasFocus else {
+            shot("bug193-teaser-not-focused")
+            XCTFail("the synopsis teaser never read focused after four Ups — not pressing Select")
+            return
+        }
+        remote.press(.select)
+        let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5),
+                      "Select on the teaser must open the synopsis sheet (a miss means focus never reached the teaser)")
+        pause(1.5)
+        shot("bug193-sheet")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_backdrop"].exists,
+                      "the sheet must draw the page's backdrop (DEBUG identifier detail_synopsis_backdrop)")
+        remote.press(.menu)
+        pause(2)
+        XCTAssertFalse(sheet.exists, "Menu must close the synopsis sheet")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_hero"].exists,
+                      "Detail must still be up after one Menu press (F8)")
+    }
+}

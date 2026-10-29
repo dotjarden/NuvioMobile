@@ -69,7 +69,7 @@ struct LiveTVView: View {
                     }.padding(Theme.Spacing.screen)
                 }.scrollClipDisabled()
                 .reportsScrollToTabBar(tab: "Live TV")
-                .sidebarMenuReveal()
+                .railMenuReveal()
             }
         }
         .task { await store.start() }

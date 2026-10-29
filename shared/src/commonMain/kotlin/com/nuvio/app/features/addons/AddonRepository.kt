@@ -301,7 +301,8 @@ object AddonRepository {
                 )
             }
         } catch (error: Throwable) {
-            return AddAddonResult.Error(error.message ?: resourceString("Unable to load manifest", StringKey.addon_load_manifest_failed))
+            // The same rule as the refresh path: a transport error carries the keyed URL (AddonFailureMessages.kt).
+            return AddAddonResult.Error(manifestFailureMessage(error))
         }
 
         _uiState.update { current ->
@@ -430,7 +431,8 @@ object AddonRepository {
                                     onFailure = { error ->
                                         addon.copy(
                                             isRefreshing = false,
-                                            errorMessage = error.message ?: resourceString("Unable to load manifest", StringKey.addon_load_manifest_failed),
+                                            // Transport errors carry the (possibly keyed) manifest URL; see AddonFailureMessages.kt.
+                                            errorMessage = manifestFailureMessage(error),
                                         )
                                     },
                                 )
@@ -549,6 +551,9 @@ object AddonRepository {
         val ctx = AddonProfileProvider.context
         return ctx.activeProfileIndex != null && ctx.activeProfileIndex != 1 && ctx.usesPrimaryAddons
     }
+
+    /** tvOS Add-ons hub: a secondary profile that uses the primary profile's add-ons cannot add, move, enable or remove them; the hub greys its controls. */
+    fun isReadOnly(): Boolean = isUsingPrimaryAddonsFromSecondaryProfile()
 }
 
 private fun ManagedAddon?.toPendingAddon(

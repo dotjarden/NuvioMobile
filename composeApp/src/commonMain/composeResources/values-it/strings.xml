@@ -1947,4 +1947,9 @@
   <string name="entity_browse_about">Informazioni</string>
   <string name="player_external_loading_subtitles">Caricamento sottotitoli dagli addon...</string>
   <string name="player_external_downloading_subtitles">Download dei sottotitoli...</string>
+  <string name="library_status_watching">In visione</string>
+  <string name="library_status_plan_to_watch">Da guardare</string>
+  <string name="library_status_on_hold">In pausa</string>
+  <string name="library_status_completed">Completato</string>
+  <string name="library_status_dropped">Abbandonato</string>
 </resources>

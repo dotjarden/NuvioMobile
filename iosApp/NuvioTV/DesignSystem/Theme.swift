@@ -11,8 +11,10 @@ enum Theme {
     // MARK: - Color
 
     enum Palette {
-        /// App background (deepest layer).
-        static let background = Color(hex: 0x0D0D0D)
+        /// App background (deepest layer). Mutable — FEAT-38 (OLED True Black) swaps it to pure
+        /// black via `applyOled(_:)` when `ThemeSettingsRepository.amoledEnabled` is on.
+        /// `nonisolated(unsafe)`: only mutated on the main actor, same contract as `accent` below.
+        nonisolated(unsafe) static var background = Color(hex: 0x0D0D0D)
         /// Elevated surface (cards, sheets, shimmer base).
         static let surface = Color(hex: 0x1A1A1A)
         /// Higher-elevation surface (chips, controls).
@@ -21,6 +23,9 @@ enum Theme {
         /// re-evaluated when ContentView re-identifies the tree on a theme change, so plain static
         /// access everywhere keeps working. `nonisolated(unsafe)`: only mutated on the main actor.
         nonisolated(unsafe) static var accent = Color(hex: 0xE53935)
+        /// Error tint (stream picker A, P2: a source chip whose add-on failed; Android TV's
+        /// `error` role). Used at low opacity as a fill, never as text on its own.
+        static let error = Color(hex: 0xE5484D)
         /// Focus ring / highlight (brighter accent). Mutable — follows the theme with `accent`.
         nonisolated(unsafe) static var accentFocus = Color(hex: 0xFF5252)
         /// Text/icon color for content drawn ON an `accent`/`accentFocus` fill (selected chips,
@@ -55,18 +60,36 @@ enum Theme {
             accentText = onColor(forFillHex: accentHex)
         }
 
+        /// FEAT-38 (OLED True Black). Swaps `background` between the app's default near-black
+        /// (0x0D0D0D) and pure black (0x000000) — `surface`/`surfaceElevated` are left untouched so
+        /// cards keep contrast against the deeper background. Same shape as `applyTheme(named:)`.
+        static func applyOled(_ enabled: Bool) {
+            background = Color(hex: enabled ? 0x000000 : 0x0D0D0D)
+        }
+
+        /// The luminance above which a colour counts as LIGHT: strictly above it, a fill takes dark
+        /// ink (`onColor(forFillHex:)`) and an accent reads as the resting label colour
+        /// (`DetailActiveGlyph.isLight`). One threshold for both, so a future accent between the old
+        /// 0.75 and 0.8 cannot get dark ink on its fills yet an undimmed inactive label (wave3c
+        /// review r2 P3-3). Same scale as `luminance(fromHexString:)`: Rec. 709 weights over the
+        /// gamma-encoded sRGB components. It sits well above the brightest saturated accent (Amber,
+        /// ~0.6) and well below the near-white one (White, ~0.96), so only White crosses it.
+        /// `nonisolated` so `DetailActiveGlyph` (a nonisolated type) reads it directly.
+        nonisolated static let lightAccentLuminance: Double = 0.75
+
         /// Picks a legible text/icon color for a solid fill, by simple relative-luminance
         /// threshold: dark text for light fills (e.g. the White theme's near-white accent), the
         /// app's light `textPrimary` otherwise. Not full WCAG contrast math — just enough to keep
-        /// text readable against any of the app's accent colors. Threshold sits well above the
-        /// brightest saturated accent (Amber, ~0.6) so every existing theme keeps its current
-        /// light text; only near-white fills (the White theme, ~0.96) cross it.
+        /// text readable against any of the app's accent colors. The threshold
+        /// (`lightAccentLuminance`) sits well above the brightest saturated accent (Amber, ~0.6) so
+        /// every existing theme keeps its current light text; only near-white fills (the White
+        /// theme, ~0.96) cross it.
         static func onColor(forFillHex hex: UInt32) -> Color {
             let r = Double((hex >> 16) & 0xFF) / 255.0
             let g = Double((hex >> 8) & 0xFF) / 255.0
             let b = Double(hex & 0xFF) / 255.0
             let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-            return luminance > 0.75 ? Color(hex: 0x0D0D0D) : textPrimary
+            return luminance > lightAccentLuminance ? Color(hex: 0x0D0D0D) : textPrimary
         }
 
         /// Relative luminance (0–1, Rec. 709 weights) of a `#RGB`/`#RRGGBB`/`#RRGGBBAA` hex
@@ -213,6 +236,13 @@ enum Theme {
         static var body: SwiftUI.Font { resolved(.body) }
         /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
         static var meta: SwiftUI.Font { resolved(.meta) }
+        /// beta.18 verdict (FEAT-44 / FEAT-31): the hero/Detail year + genre line, semibold;
+        /// `meta` (.medium) stays for labels everywhere else.
+        static var metaStrong: SwiftUI.Font { resolved(.metaStrong) }
+        /// rc14: description text on Home's hero and on Detail — see `Token.synopsis`.
+        static var synopsis: SwiftUI.Font { resolved(.synopsis) }
+        /// rc14: regular-weight secondary prose at the `meta` size — see `Token.detail`.
+        static var detail: SwiftUI.Font { resolved(.detail) }
         /// Fine print (was fixed 22pt → caption2, 23pt).
         static var caption: SwiftUI.Font { resolved(.caption) }
 
@@ -226,6 +256,107 @@ enum Theme {
             guard newFamily != family else { return }
             family = newFamily
             cache = buildCache(for: newFamily)
+            bodyLineHeight = measuredBodyLineHeight(for: newFamily)
+            synopsisLineHeight = measuredSynopsisLineHeight(for: newFamily)
+            sectionTitleLineHeight = measuredSectionTitleLineHeight(for: newFamily)
+        }
+
+        /// rc14: the rendered line height of `Theme.Font.synopsis`, measured exactly as
+        /// `bodyLineHeight` is (same face, same size the token resolves to) — Home's hero derives
+        /// its synopsis line limit from this now that the synopsis no longer uses `body`.
+        /// System caption1 ≈ 30pt. Open Sans (scaled by `openSansScale` 0.92, size 23) ≈ 31.32pt
+        /// (was 34.05 unscaled; 25 × 1.3618).
+        static private(set) var synopsisLineHeight: CGFloat = measuredSynopsisLineHeight(for: family)
+
+        private static func measuredSynopsisLineHeight(for family: AppFontFamily) -> CGFloat {
+            let style = Token.synopsis.uiTextStyle
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: style).lineHeight
+            case .openSans:
+                let size = openSansPointSize(for: style)
+                return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: style).lineHeight
+            }
+        }
+
+        /// The rendered line height of `Theme.Font.body`, from `UIFont` metrics of the SAME face
+        /// and size the SwiftUI token resolves to — never a constant. Home's hero derives its
+        /// synopsis line limit from this (BUG "1–2 lines", 2026-09-10): the old
+        /// `heroSynopsisSlotHeightPinned / 2` (36) assumption undercounted Open Sans (≈39.5 pt per
+        /// line at the unscaled size; beta.18 verdict (FEAT-31): ≈36.33 now that `openSansScale`
+        /// 0.92 applies — body 29 × 0.92 = 26.68 × 1.3618 — callout 31 → 28.52 → 38.84,
+        /// caption1 25 → 23 → 31.32;
+        /// line → a 108 pt slot draws 2 lines while the code counted 3) and overcounted nothing;
+        /// with the rc10 Large reach the No-Zoom panel slot is 107.67, which 36 rounds down to 2
+        /// while the real ≈35 pt system line fits 3. Refreshed with the font cache on `apply(_:)`.
+        static private(set) var bodyLineHeight: CGFloat = measuredBodyLineHeight(for: family)
+
+        private static func measuredBodyLineHeight(for family: AppFontFamily) -> CGFloat {
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: .body).lineHeight
+            case .openSans:
+                let size = openSansPointSize(for: .body)
+                return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
+            }
+        }
+
+        /// The rendered line height of `Theme.Font.sectionTitle` — the token every pinned ROW TITLE
+        /// is drawn in — measured from `UIFont` metrics of the same text style the token resolves to,
+        /// never a constant. Same contract and same refresh point as `bodyLineHeight`.
+        ///
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` defaults to it, and that is why it
+        /// exists (BUG-87/89, rc10 Codex P2): the reach floor has to reserve the band the title
+        /// ACTUALLY occupies, and it was reserving a hard-coded 38 — the system font's own number.
+        /// Open Sans at the same text style measured ≈42.2 unscaled (beta.18 verdict (FEAT-31):
+        /// ≈38.84 with `openSansScale` 0.92 applied; its bundled faces carry 1.3618 em of
+        /// vertical metrics against SF's ≈1.21), and the row title's clearance is computed from the
+        /// title's live MEASURED height, so the 4pt gap came straight out of
+        /// `PinnedRowTitle.Clearances.focusedRaw`: with zoom on it went NEGATIVE, which is the
+        /// corrector's `LIFT-DEFICIT` stand-down — permanently, for the session, on a shipping font.
+        ///
+        /// Known limit, stated rather than implied: like `bodyLineHeight` this is refreshed only by
+        /// `apply(_:)`, so a Larger Text change mid-session is not picked up until the next font
+        /// apply or relaunch, and the Open Sans branch measures the DEFAULT content size category
+        /// (`baseSize(for:)`) while the rendered title scales with `relativeTo:`. Both err the same
+        /// way — the metric can read SHORT of what is drawn — and the consequence is bounded and
+        /// already handled: the floor may then leave less than `fadeIntrusionArm`, and at an
+        /// accessibility size it can leave a genuine deficit, which is the documented handoff to the
+        /// visibility belt (see `topReachFloor`).
+        ///
+        /// `nonisolated(unsafe)` — the one difference from `bodyLineHeight`, and it is load-bearing:
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` and `plan(…)` read this as a DEFAULT
+        /// ARGUMENT, and both are `nonisolated`. A nonisolated function's default value expression
+        /// may not touch main-actor state (SE-0411 — a warning in this target's Swift 5 mode, an
+        /// error in Swift 6). Same contract as `family` directly above: written only on the main
+        /// actor, inside `apply(_:)`; read from anywhere.
+        nonisolated(unsafe) static private(set) var sectionTitleLineHeight: CGFloat =
+            measuredSectionTitleLineHeight(for: family)
+
+        /// Measured against `Token.sectionTitle`'s OWN text style rather than a pasted `.callout`, so
+        /// a change to that mapping moves this with it. The Open Sans branch uses the SemiBold face
+        /// because that is the weight the token carries; all three bundled Open Sans faces share
+        /// their vertical metrics, so the Regular fallback measures the same line height rather than
+        /// a different one. The system branch takes no weight for the same reason (SF's semibold has
+        /// the regular's metrics), which is also why the historical 38pt reference still describes
+        /// the system font.
+        ///
+        /// `nonisolated` because it initializes the `nonisolated(unsafe)` property above. Nothing it
+        /// touches is main-actor state: `UIFont`, `UIFontDescriptor` and `UITraitCollection` are not
+        /// actor-isolated in the tvOS SDK, and `Token`/`family` are both declared nonisolated too.
+        nonisolated private static func measuredSectionTitleLineHeight(for family: AppFontFamily) -> CGFloat {
+            let style = Token.sectionTitle.uiTextStyle
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: style).lineHeight
+            case .openSans:
+                let size = openSansPointSize(for: style)
+                return UIFont(name: "OpenSans-SemiBold", size: size)?.lineHeight
+                    ?? UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: style).lineHeight
+            }
         }
 
         private static func buildCache(for family: AppFontFamily) -> [Token: SwiftUI.Font] {
@@ -249,10 +380,16 @@ enum Theme {
                 guard let weight = token.weight else { return base }
                 return base.weight(weight)
             case .openSans:
-                let size = baseSize(for: token.uiTextStyle)
+                // beta.18 verdict (FEAT-31): scaled by `openSansScale` so Open Sans lands near the
+                // system face's rendered size (see `openSansPointSize`).
+                let size = openSansPointSize(for: token.uiTextStyle)
                 let base = SwiftUI.Font.custom("Open Sans", size: size, relativeTo: token.textStyle)
-                guard let weight = token.weight else { return base }
-                return base.weight(weight)
+                // FEAT-44 (Steven, rc12 verdict 2026-09-13): a bare `Font.custom("Open Sans", …)`
+                // with no `.weight()` call left CoreText to choose among the three registered faces
+                // (Regular/SemiBold/Bold) for a token with no explicit weight (`.body`, the synopsis
+                // token, among them) — it was picking a heavier face than intended. Pin the fallback
+                // to `.regular` explicitly instead of leaving `base` unweighted.
+                return base.weight(token.weight ?? .regular)
             }
         }
 
@@ -261,11 +398,27 @@ enum Theme {
         /// fixed point sizes at call sites): `.large` is the system's default content size
         /// category, so this is exactly the un-scaled size `SwiftUI.Font.system(textStyle)` starts
         /// from, and `relativeTo:`/`UIFontMetrics` above still let Larger Text scale it further.
-        static func baseSize(for textStyle: UIFont.TextStyle) -> CGFloat {
+        ///
+        /// `nonisolated`: `measuredSectionTitleLineHeight` initializes a `nonisolated(unsafe)` metric
+        /// and so has to reach this from outside the main actor. Nothing here is main-actor state —
+        /// `UIFontDescriptor` and `UITraitCollection` are not actor-isolated in the tvOS SDK — and the
+        /// MainActor callers (`build`, `uiFont`) are unaffected by the widening.
+        nonisolated static func baseSize(for textStyle: UIFont.TextStyle) -> CGFloat {
             UIFontDescriptor.preferredFontDescriptor(
                 withTextStyle: textStyle,
                 compatibleWith: UITraitCollection(preferredContentSizeCategory: .large)
             ).pointSize
+        }
+
+        /// beta.18 verdict (FEAT-31): Open Sans renders ~14 % larger than the system face at the
+        /// same point size (its bundled faces carry 1.3618 em of vertical metrics against SF's
+        /// ≈1.21, and a larger x-height), so every Open Sans size is scaled by this factor.
+        nonisolated static let openSansScale: CGFloat = 0.92
+
+        /// The Open Sans point size for a text style: the platform size times `openSansScale`.
+        /// `baseSize(for:)` itself stays the unscaled platform metric.
+        nonisolated static func openSansPointSize(for textStyle: UIFont.TextStyle) -> CGFloat {
+            baseSize(for: textStyle) * openSansScale
         }
 
         /// A `UIFont` for the given text style — the system preferred font in system mode, or an
@@ -275,7 +428,7 @@ enum Theme {
         /// `UIFont.preferredFont(forTextStyle:)` directly, so it follows the same family choice.
         static func uiFont(for textStyle: UIFont.TextStyle) -> UIFont {
             guard family == .openSans,
-                  let custom = UIFont(name: "OpenSans-Regular", size: baseSize(for: textStyle)) else {
+                  let custom = UIFont(name: "OpenSans-Regular", size: openSansPointSize(for: textStyle)) else {
                 return UIFont.preferredFont(forTextStyle: textStyle)
             }
             return UIFontMetrics(forTextStyle: textStyle).scaledFont(for: custom)
@@ -295,6 +448,18 @@ enum Theme {
         // actor-isolated (a warning today, an error in Swift 6 mode).
         nonisolated private enum Token: CaseIterable, Hashable {
             case hero, screenTitle, sectionTitle, cardTitle, body, meta, caption
+            /// beta.18 verdict (FEAT-44 / FEAT-31): the hero/Detail year + genre line; `meta`
+            /// (.medium) stays for labels everywhere else.
+            case metaStrong
+            /// rc14 (Steven's rc13 verdict, 2026-09-30): the description text on Home's hero and
+            /// the Detail page. One text style below `body` (caption1, 25pt) so the same slot holds
+            /// one more line and the block reads lighter at ten feet — his Orivio reference. Regular
+            /// weight in both families.
+            case synopsis
+            /// rc14: regular-weight secondary copy at the `meta` size — Settings row descriptions
+            /// and values, Detail info-row values. `meta` keeps a (now medium) weight for the
+            /// labels and the hero/detail meta line; this token is for the prose next to them.
+            case detail
 
             var textStyle: SwiftUI.Font.TextStyle {
                 switch self {
@@ -304,7 +469,10 @@ enum Theme {
                 case .cardTitle: return .caption2
                 case .body: return .body
                 case .meta: return .caption
+                case .metaStrong: return .caption
                 case .caption: return .caption2
+                case .synopsis: return .caption
+                case .detail: return .caption
                 }
             }
 
@@ -320,7 +488,10 @@ enum Theme {
                 case .cardTitle: return .caption2
                 case .body: return .body
                 case .meta: return .caption1
+                case .metaStrong: return .caption1
                 case .caption: return .caption2
+                case .synopsis: return .caption1
+                case .detail: return .caption1
                 }
             }
 
@@ -331,8 +502,20 @@ enum Theme {
                 case .sectionTitle: return .semibold
                 case .cardTitle: return nil
                 case .body: return nil
-                case .meta: return .semibold
+                // rc14: was `.semibold`. Steven's rc13 verdict — "the bold text throughout the
+                // app, descriptions, Home, settings, still feels too heavy" — and this token was
+                // the one FEAT-44 never touched (it only pinned the weightless tokens to regular).
+                // Medium keeps the hero/detail meta line distinct from the synopsis under it
+                // without reading as bold.
+                case .meta: return .medium
+                // beta.18 verdict (FEAT-44 / FEAT-31): semibold year/genre line on hero + Detail.
+                case .metaStrong: return .semibold
                 case .caption: return nil
+                // beta.18 verdict (FEAT-44 / FEAT-31): explicit `.regular` is load-bearing — tvOS's
+                // system text styles default to a Medium-ish weight, so a weightless token renders
+                // like `.medium`.
+                case .synopsis: return .regular
+                case .detail: return .regular
                 }
             }
         }
@@ -340,7 +523,9 @@ enum Theme {
 
     // MARK: - Spacing
 
-    enum Spacing {
+    /// `nonisolated`: plain constants, also read by pure layout math (`StripGeometry`) that unit
+    /// tests and non-view code call off the main actor.
+    nonisolated enum Spacing {
         static let xxs: CGFloat = 4
         static let xs: CGFloat = 8
         static let sm: CGFloat = 12
@@ -353,6 +538,14 @@ enum Theme {
         static let sectionGap: CGFloat = 48
         /// Horizontal gap between cards in a row.
         static let rowGap: CGFloat = 28
+        /// BUG-106 (u/mrStevenx3, rc8 video 2026-09-10): gap for rows of 16:9 cards that wear the
+        /// ring-mode manual lift (`CardArtworkFocusLift.manualScale` — today the Saga row). That
+        /// lift is a uniform scale of `1 + 2 × heroPinnedRowFocusLiftAllowance / height`, so a
+        /// 16:9 card grows `2 × 20 × 16 / 9 ≈ 71 pt` in width WHATEVER its size — ≈35.5 pt per
+        /// side. Under `lg` (24) the raised card landed ≈11.5 pt onto each neighbour; 40 leaves
+        /// ≈4.5 pt clear in ring mode and ≈15 pt under the default system lift (≈1.1×, ≈25 pt per
+        /// side at 500 wide). Portrait cards grow only ≈13 pt per side, so `rowGap` stays.
+        static let landscapeLiftRowGap: CGFloat = 40
     }
 
     // MARK: - Corner radii
@@ -369,7 +562,20 @@ enum Theme {
         static let posterWidth: CGFloat = 220
         static let posterHeight: CGFloat = 330      // 2:3
         static let landscapeWidth: CGFloat = 360
-        static let landscapeHeight: CGFloat = 203   // 16:9
+        nonisolated static let landscapeHeight: CGFloat = 203   // 16:9
+        /// FEAT-34 (2026-09-09, tester ask via u/mrStevenx3 on rc7): the description page's saga
+        /// row read as the same size as the trailer cards; official Nuvio's saga cards read
+        /// noticeably larger. `SagaCard`-only size, distinct from `landscapeWidth`/`landscapeHeight`.
+        ///
+        /// rc9 (2026-09-10): 440×248 was still "too small" on rc8 (u/mrStevenx3). Measured from the
+        /// reference photo (`docs/research/steven-beta18-photos/2026-09-08-official-nuvio-saga-row-
+        /// landscape.jpg`, outer repo): the visible screen spans ~1010 px for 1920 pt, the two
+        /// UNFOCUSED cards span ~271 / ~261 px (≈515 / ≈496 pt, the spread is camera perspective)
+        /// at a 16:9 ratio, and the three cards plus gaps cover ~84% of the screen width — the
+        /// earlier "two thirds" note in `SagaCard.swift` under-read the photo. 500×281 reproduces
+        /// that: 3 × 500 + 2 × `Spacing.lg` + `Spacing.screen` = 1608 pt of 1920 (84%).
+        static let sagaCardWidth: CGFloat = 500
+        static let sagaCardHeight: CGFloat = 281    // 16:9 (500 × 9 / 16 = 281.25)
         /// Episode thumbnail cards in the Detail episodes row (16:9, larger than landscape cards
         /// so the still + badges stay readable at 10 feet).
         static let episodeWidth: CGFloat = 420
@@ -393,10 +599,10 @@ enum Theme {
         /// focusable element — the info block above it is static content).
         static let heroButtonSlotHeight: CGFloat = 56
         /// Fixed logo/title slot inside a hero page (bottom-aligned; image fits within it).
-        static let heroLogoSlotHeight: CGFloat = 150
+        nonisolated static let heroLogoSlotHeight: CGFloat = 150
         static let heroLogoMaxWidth: CGFloat = 520
         /// Fixed single-line metadata slot inside a hero page.
-        static let heroMetaSlotHeight: CGFloat = 32
+        nonisolated static let heroMetaSlotHeight: CGFloat = 32
         /// Fixed two-line synopsis slot inside a hero page.
         static let heroSynopsisSlotHeight: CGFloat = 72
         // UX-2 hero redesign, v2: "Nuvio-style" — info panel top-LEFT, artwork reading on the
@@ -413,7 +619,7 @@ enum Theme {
         /// Nuvio-style hero is pinned above the rows now and uses the compacted
         /// `heroPinnedTopPad` instead. Kept as the in-scroll Nuvio value in case that layout
         /// comes back.
-        static let heroForegroundTopPadNuvio: CGFloat = 120
+        nonisolated static let heroForegroundTopPadNuvio: CGFloat = 120
         /// Width of the right-anchored artwork panel in the Nuvio-style hero (tvOS layout is
         /// a fixed 1920pt canvas). Its left ~30% fades out via a gradient mask, so the flat
         /// background region behind the 680pt info panel meets the art in a smooth blend.
@@ -423,7 +629,10 @@ enum Theme {
         // ONE 1080pt screen instead of the hero scrolling away, so the hero region has to be
         // compacted. Height budget, measured in the sim:
         //   ~76 tab-bar safe area + 8 top pad + ~490 carousel (452 + page dots) + 0 gap ≈ 574,
-        // leaving ~506pt for the rows viewport. A default poster row's FOCUS FRAME is
+        // leaving ~506pt for the rows viewport. (beta.18 verdict, BUG-66: that 76 was a sim-era
+        // estimate; the band measured on hardware is 157 — `bug30-probe-capture-2026-08-02.log`,
+        // the BUG-66 rig's "classic inset 157". The live budget is `heroPinnedRowsViewportBudget`,
+        // verified against the platform by `PinnedRowTitle.verifyViewportBudget`.) A default poster row's FOCUS FRAME is
         //   72 top reach + 330 poster + 16 gap + ~28 caption + 48 bottom reach ≈ 494 ≤ 506 —
         // both reaches must fit INSIDE the viewport or the focus engine can't reveal the whole
         // frame and rest positions degrade. Oversized user Poster Style settings can exceed the
@@ -439,7 +648,7 @@ enum Theme {
         /// 16 + 56 CTA + 16 ≈ 350 → frame 352, freeing ~100pt (rows viewport ≈ 606).
         /// Classic keeps the full-size slots everywhere.
         static let heroCarouselHeightPinned: CGFloat = 352
-        static let heroLogoSlotHeightPinned: CGFloat = 110
+        nonisolated static let heroLogoSlotHeightPinned: CGFloat = 110
         /// 2-line synopsis in the compact pinned hero (3 lines in full Nuvio).
         static let heroSynopsisSlotHeightPinned: CGFloat = 72
         /// Top padding above the PINNED hero header (pinned Nuvio mode only — the classic
@@ -531,6 +740,7 @@ enum Theme {
         ///     Poster Size       artwork height              46pt intrusion
         ///     Small  (105 dp)   275pt (183 × 1.5)           16.7%
         ///     Medium (126 dp)   330pt                       13.9%
+        ///     Medium+ 351: takes the Large dial (FEAT-39)
         ///     Large  (154 dp)   403pt                       11.4%
         ///     Landscape rows    203pt                       22.7%
         ///     Folder tile,      183pt (square/16:9 folder   25.1%  ← the tester's
@@ -566,8 +776,48 @@ enum Theme {
         /// (BrowseComponents) returns this in both zoom modes and 0 under "No Zoom on Focus"
         /// (Wave 7 made that genuinely zero-lift). Nothing lays out against it — it feeds the
         /// settle re-reveal's correction band, the visibility belt's threshold, and the
-        /// `intrLifted=` probe field.
-        static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
+        /// `intrLifted=` probe field. rc12: also the floor `PinnedRowGeometry.plan`'s `floorLift`
+        /// borrows in No Zoom when the reach-hold A/B is on, reserving the same band width even
+        /// though nothing actually scales in that mode.
+        nonisolated static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
+        /// BUG-87/89 zoom-on reach hold (2026-09-30, `zoom-on-title-fix-plan.md` option A): extra
+        /// points the pinned rows' top-reach FLOOR reserves above `heroPinnedRowFocusLiftAllowance`
+        /// + the belt's arm when a zoom mode is active and `FocusModeFlags.zoomReachHold` is on.
+        ///
+        /// Device evidence (Christian's ATV, Large + Hide Titles + carousel, 2026-09-30 walks): the
+        /// focus engine rests every middle row at margin −22 at top reach 66 and at −12 at reach 86
+        /// — about +0.5 margin per point of reach, and identical in both zoom modes. With zoom on at
+        /// reach 86 the band is [−4, 48], so a −12 rest puts the LIFTED poster 8pt into the title's
+        /// line box, the belt arms (> 4) and fades the title, and the corrector bounces the row +12.
+        /// At reach 92 (86 + this 6) the predicted rest is −9..−12 against a band of [−10, 48]:
+        /// lifted intrusion ≤ 2, never arms. Not applied in No Zoom (its own hold already rests
+        /// −12 inside a [−24, 48] band; the extra would only cost rest range).
+        static let heroPinnedRowZoomReachHold: CGFloat = 6
+        /// Ceiling for the top reach when the zoom-on hold above is active. It is the ONLY path
+        /// allowed past `heroPinnedRowTopPad` (88): system font lands exactly on it (48 + 38 − 24
+        /// + 20 + 4 + 6 = 92), Open Sans wants 96.2 and is capped here (partial fix, measure it).
+        /// Kept well short of 100, where the sim bisected focus resolution dying outright; above
+        /// the proven 72–88 corridor, so the sim reach sweep, the BUG-112 up walk and one device
+        /// walk gate it (2026-09-30 plan).
+        static let heroPinnedRowTopReachHoldCap: CGFloat = 92
+        /// Target rest range (`viewport − linkFrame`) for a pinned regime whose reach hold is
+        /// effective (zoom-on `hz` or No Zoom `h1`), replacing `Spacing.lg + heroPinnedRowsSettledCushion`
+        /// (32) in `PinnedRowGeometry.plan`'s demand for those regimes only.
+        ///
+        /// The rest law (2026-09-30 device walks, re-derived from the settle lines' `rowB`/`rowH`):
+        /// the engine parks the title at margin ≈ −restRange/2 − 5.5. Four measured points:
+        ///
+        ///     L403 No Zoom reach 66   restRange 31.7  → −22
+        ///     L403 zoom on reach 86   restRange 11.7  → −12
+        ///     L403 hz reach 92        restRange  5.7  → −8/−9
+        ///     P351 hz reach 92        restRange 31    → −21/−22
+        ///
+        /// Large passed only because the carousel hero's 70pt give caps the compression, which
+        /// happens to leave 5.7; Medium+ still has give, so `plan` paid the full 32 of slack and the
+        /// row rested at −21/−22, outside the zoom-on band [−10, 48]. Reach cannot fix that (the
+        /// hero absorbs it). A target of 4 predicts −7.5: inside both the zoom-on held band and the
+        /// No Zoom band [−24, 48].
+        static let heroPinnedRowsRestTarget: CGFloat = 4
         /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
         ///
         /// The measured Large failure needs ~90pt (sim probe 2026-08-30: `margin=-86..-100`,
@@ -586,7 +836,20 @@ enum Theme {
         /// back would be a layout feedback loop on the single most regression-prone surface in the
         /// app. `PinnedRowTitle.pinnedHeroCompression` logs loudly if the live `vh` ever disagrees
         /// with `budget + compression`, so the assumption cannot rot silently.
-        static let heroPinnedRowsViewportBudget: CGFloat = 455
+        ///
+        /// 2026-09-30: that 455 is the CAROUSEL form's number, so the constant became a function of
+        /// the hero form. The pinned header is a `VStack(spacing: Spacing.sm)` whose fixed-height
+        /// hero frame is followed by `HeroPageDots` ONLY when the carousel is active (mounted at
+        /// opacity 0 when hidden, so it always takes layout). FEAT-15's focus panel (`showsCTA ==
+        /// false`, Show Hero OFF) drops that child and its spacing, so its header is
+        /// `Spacing.sm + HeroPageDots.height` = 12 + 26 = 38pt shorter and its rows viewport 38pt
+        /// taller. Device evidence (walkhf, Large + Hide Titles + panel): `hero viewport live=561
+        /// expected=522`, and rows rested at −26..−28 — the rest law's prediction for the
+        /// resulting restRange 41.7 (−26.4). Deriving the extra from `HeroPageDots.height` keeps the
+        /// two from drifting.
+        nonisolated static func heroPinnedRowsViewportBudget(showsCTA: Bool) -> CGFloat {
+            showsCTA ? 455 : 455 + Spacing.sm + HeroPageDots.height
+        }
 
         // MARK: FEAT-30 — sidebar chrome
 
@@ -601,8 +864,8 @@ enum Theme {
         /// logging its BUDGET MISMATCH line). Padding the top back by the delta keeps 455 valid
         /// instead of forking the constant per chrome mode.
         ///
-        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`sidebarTopCompensation()` in
-        /// SidebarOverlay.swift branches structurally), so an untouched build in either mode is
+        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`railTopCompensation()` in
+        /// NavigationRail.swift branches structurally), so an untouched build in either mode is
         /// unaffected. The Phase 0 device spike (`-debug.sidebarSpike YES`) measures the real delta
         /// against 455 and the shipping value replaces the 0 below.
         ///
@@ -675,6 +938,7 @@ enum Theme {
         ///
         ///     Small      24 + 88 + 275.0 + 8 = 395.0  →  under 455, compression 0
         ///     Medium     24 + 88 + 330.0 + 8 = 450.0  →  under 455, compression 0 (5pt spare)
+        ///     Medium+ 351: takes the Large dial (FEAT-39)
         ///     Large      24 + 88 + 403.3 + 8 = 523.3  →  compression 68.3
         ///     Landscape  24 + 88 + 203.0 + 8 = 323.0  →  0 (landscape rows are shorter)
         ///
@@ -706,8 +970,22 @@ enum Theme {
         /// hero from hard-clipping: the logo keeps a legible slot and the synopsis drops from two
         /// lines to one. Their combined give is exactly 68pt (110→78 and 72→36), which covers
         /// Large's 68.3pt requirement with the frame's own 2pt of slack (352 frame vs 350 content).
-        static let heroLogoSlotHeightPinnedFloor: CGFloat = 78
+        /// rc14 (Steven rc13 verdict, 2026-09-30): 78 → 76. Two more points of logo give so the
+        /// Large carousel's synopsis keeps two `Theme.Font.synopsis` lines (≈30pt each on the system
+        /// face): held compression 68.33 − slack 22 − logo 34 = 12.33 from the synopsis ⇒ a 59.67pt
+        /// slot ⇒ 2 lines with the 1pt tolerance. At 78 the slot was 57.67 and rounded to one.
+        static let heroLogoSlotHeightPinnedFloor: CGFloat = 76
         static let heroSynopsisSlotHeightPinnedFloor: CGFloat = 36
+
+        /// rc14: the pinned hero's chrome, shaved so its content carries 22pt of free slack. The
+        /// vertical padding (was `Spacing.md` 16 each side) and the three slot gaps (logo→meta,
+        /// meta→synopsis, synopsis→CTA; were `Spacing.md`) are the cheapest points in the hero —
+        /// nothing the viewer reads lives in them — and `HeroSlotGive.split` spends that slack
+        /// BEFORE either elastic slot, which is what gives Medium+ a full-height logo AND two
+        /// synopsis lines, and Large two lines where it had one. Classic (non-pinned) keeps
+        /// `Spacing.md`/`Spacing.lg`.
+        static let heroPinnedVerticalPad: CGFloat = 12
+        nonisolated static let heroPinnedSlotGap: CGFloat = Theme.Spacing.sm
 
         /// FEAT-29 (Steven's beta.17 report, re-raised as a regression): a focused collection
         /// folder's hero wordmark used to render inside the shared TITLE-hero pinned logo slot,
@@ -721,7 +999,8 @@ enum Theme {
         /// enough that a 2:1 wordmark spans 300+pt at Large. 160 is a FIXED point value (not
         /// poster-scaled) so the wordmark reads the same size at every Poster Size rather than
         /// shrinking with the grid — 0.40x Small (275), 0.48x Medium (330), 0.58x Large (403.3)
-        /// poster height; a 2:1 wordmark renders 320pt wide. The inside-collection folder page
+        /// poster height; a 2:1 wordmark renders 320pt wide. Medium+ 351: takes the Large dial
+        /// (FEAT-39). The inside-collection folder page
         /// title (`FolderRoute`) is untouched — this only sizes the HOME hero's wordmark.
         static let heroFolderLogoSlotHeight: CGFloat = 160
 
@@ -756,17 +1035,27 @@ enum Theme {
         /// the same arithmetic: 32 + 110 + 16 + 32 + 16 + 144 = 350 = 32 + 110 + 16 + 32 + 16 + 72
         /// + 16 + 56). Named here (BUG-87, beta.18) because the compression ceiling and the slot's
         /// own give both have to be derived from it rather than from the carousel's 72.
+        /// rc14: the gap folded in is `heroPinnedSlotGap` (12) now, so 72 + 56 + 12 = 140.
         static let heroSynopsisSlotHeightPinnedPanel: CGFloat =
-            heroSynopsisSlotHeightPinned + heroButtonSlotHeight + Theme.Spacing.md  // 72 + 56 + 16 = 144
+            heroSynopsisSlotHeightPinned + heroButtonSlotHeight + heroPinnedSlotGap  // 72 + 56 + 12 = 140
         /// The panel form's synopsis give against the SAME one-line floor the carousel uses:
-        /// 144 → 36 = 108.
+        /// 140 → 36 = 104.
         static let heroSynopsisSlotPanelPinnedGive: CGFloat =
-            heroSynopsisSlotHeightPinnedPanel - heroSynopsisSlotHeightPinnedFloor  // 144 → 36 = 108
-        /// The pinned hero's frame is 2pt taller than the content it holds — 352 against
-        /// `32 padding + 110 logo + 16 + 32 meta + 16 + 72 synopsis + 16 + 56 CTA = 350` (the
-        /// arithmetic `HomeHeroForeground.synopsisSlotHeight` documents). That slack is real give:
-        /// the frame can lose it without the content losing anything.
-        static let heroPinnedFrameSlack: CGFloat = 2
+            heroSynopsisSlotHeightPinnedPanel - heroSynopsisSlotHeightPinnedFloor  // 140 → 36 = 104
+        /// How much taller the pinned hero's frame is than the content it holds. rc14: DERIVED, not
+        /// a literal — 352 against `2·12 padding + 110 logo + 3·12 gaps + 32 meta + 72 synopsis +
+        /// 56 CTA = 330`, i.e. 22 (it was 2 against the old 350 of content). That slack is real
+        /// give: the frame can lose it without the content losing anything, and
+        /// `HeroSlotGive.split` spends it first. Stating it as the subtraction keeps it honest if
+        /// any slot or pad above ever moves.
+        static let heroPinnedFrameSlack: CGFloat =
+            heroCarouselHeightPinned
+                - (2 * heroPinnedVerticalPad
+                   + heroLogoSlotHeightPinned
+                   + 3 * heroPinnedSlotGap
+                   + heroMetaSlotHeight
+                   + heroSynopsisSlotHeightPinned
+                   + heroButtonSlotHeight)
 
         // MARK: Wave 10 / Wave G — settled rests
 

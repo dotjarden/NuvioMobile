@@ -170,6 +170,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     /// the full-bleed hero backdrop, never rounded) and what every existing caller that doesn't pass
     /// this parameter keeps getting.
     var cornerRadius: CGFloat = 0
+    /// BUG-128: which surface this is, for the `[TrailerHealth]` summary (`detail-bg`, `home-hero`).
+    /// nil falls back to `hero` (looping) / `inline`.
+    var surfaceTag: String? = nil
 
     /// UX-9: our YouTube trailer encodes bake letterboxing directly into the frame (2.39:1 film
     /// inside a 16:9 container), so `.resizeAspectFill` alone still shows black bars — it fills the
@@ -210,7 +213,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         view.layer.cornerCurve = .continuous
         view.layer.masksToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId, surfaceTag: surfaceTag)
         return view
     }
 
@@ -242,6 +245,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         private var player: AVQueuePlayer?
         private var looper: AVPlayerLooper?
         private var statusObservation: NSKeyValueObservation?
+        /// BUG-128 A/B: only set when `TrailerTuning.forwardBufferSeconds` is. The looper plays COPIES of
+        /// the template item, so the buffer hint must be re-applied to each `currentItem`.
+        private var currentItemObservation: NSKeyValueObservation?
         private var failureObserver: NSObjectProtocol?
         private var endObserver: NSObjectProtocol?
         private var watchdog: Timer?
@@ -262,6 +268,11 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         /// `dismantleUIView` + `deinit`), so the counter must decrement exactly once per counted
         /// `attach()` or the live-pipeline gauge undercounts (Codex round 1).
         private var attachCounted = false
+        /// BUG-128: KVO-only playback-health monitor; stopped in `teardown()` before the pause.
+        private var health: TrailerPlaybackHealthMonitor?
+        /// BUG-130: which surface this is; the Detail background (`detail-bg`) hands its position to
+        /// the full-screen player at teardown (`TrailerPositionHandoff`).
+        private var surfaceTag: String?
 
         init(onFailure: @escaping (TrailerFailureReport) -> Void, onPlaybackEnded: (() -> Void)? = nil) {
             self.onFailure = onFailure
@@ -269,9 +280,10 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         }
 
         func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil,
-                    videoId: String? = nil) {
+                    videoId: String? = nil, surfaceTag: String? = nil) {
             attachedURLString = urlString
             attachedView = view
+            self.surfaceTag = surfaceTag
             guard let url = URL(string: urlString) else { fail(.badURL); return }
 
             if TrailerProbe.enabled {
@@ -283,6 +295,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             let item = AVPlayerItem(url: url)
             let queue = AVQueuePlayer()
             queue.allowsExternalPlayback = false
+            if let s = TrailerTuning.forwardBufferSeconds {
+                item.preferredForwardBufferDuration = s
+                currentItemObservation = queue.observe(\.currentItem, options: [.new]) { _, change in
+                    if let new = change.newValue ?? nil { new.preferredForwardBufferDuration = s }
+                }
+            }
 
             // Seed with the shared preference's current value (rather than always hardcoding muted)
             // so re-attaching (e.g. returning to a title after unmuting) doesn't flash muted first.
@@ -308,6 +326,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             view.playerLayer.player = queue
             player = queue
+            health = TrailerPlaybackHealthMonitor(player: queue, surface: surfaceTag ?? (loops ? "hero" : "inline"), urlString: urlString)
+            health?.start()
 
             statusObservation = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 switch observed.status {
@@ -409,10 +429,24 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 let snap = TrailerPipelineCounters.shared.teardown()
                 NSLog("[TrailerPipeline] teardown live=%d views=%d url=%@", snap.livePlayers, snap.liveViews, attachedURLString.map(TrailerProbe.redactedHost) ?? "-")
             }
+            // BUG-130: the Detail background loop is torn down the moment the full-screen trailer is
+            // requested; leave its position for the cover's player, which starts ~0.6 s later.
+            // Not gated on `started`: with a looper the TEMPLATE item never turns ready (its copies
+            // play), so the player's own position is the signal (`isUsable` drops < 1 s).
+            if surfaceTag == "detail-bg", let player, let url = attachedURLString {
+                TrailerPositionHandoff.shared.record(url: url, time: player.currentTime(),
+                                                     duration: player.currentItem?.duration)
+            }
+            // BUG-128: stop (and emit) BEFORE `player?.pause()` / queue teardown so the access log is
+            // read from a live item.
+            health?.stop()
+            health = nil
             watchdog?.invalidate()
             watchdog = nil
             statusObservation?.invalidate()
             statusObservation = nil
+            currentItemObservation?.invalidate()
+            currentItemObservation = nil
             if let failureObserver {
                 NotificationCenter.default.removeObserver(failureObserver)
                 self.failureObserver = nil
@@ -464,6 +498,90 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 /// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above (always unmuted —
 /// FEAT-11's default only governs the background loop) — the two never run concurrently, so
 /// there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
+/// BUG-128: the switch away from a trailer stream YouTube cuts off. When the preferred clients refuse
+/// a video, the extractor falls back to one (`android`) whose 1080p streams YouTube refuses with HTTP
+/// 403 past roughly the first minute of the MEDIA (fresh URLs hit the same point), unless a proof
+/// token the extractor does not send is attached. The progressive stream is not cut off.
+@MainActor
+enum TrailerStreamRefresh {
+    /// One switch: fresh URLs for the same 1080p pair hit the same position cut-off (device 10-18),
+    /// so the switch goes to the progressive stream, which YouTube does not cut off.
+    static let maxRefreshes = 1
+    /// A stall past this point switches at once (no backstop wait).
+    static let immediateSwitchAfterSeconds: Double = 20
+    /// A stall that has not moved for this long refreshes too (the backstop to the 403 trigger).
+    static let stallBackstopSeconds: TimeInterval = 5
+
+    /// The item's newest error-log entry is a 403.
+    static func lastErrorIsForbidden(_ item: AVPlayerItem) -> Bool {
+        item.errorLog()?.events.last?.errorStatusCode == 403
+    }
+
+    /// Any 403 in the item's error log (the cut-off's evidence; startup prefetch 403s count too, but
+    /// only a stall past `immediateSwitchAfterSeconds` ever asks).
+    static func sawForbidden(_ item: AVPlayerItem) -> Bool {
+        item.errorLog()?.events.contains { $0.errorStatusCode == 403 || ($0.errorComment ?? "").contains("403") } ?? false
+    }
+
+    /// The 403 entry lands after the stall notice; the stall is re-checked this much later.
+    static let forbiddenGraceSeconds: TimeInterval = 1.2
+    /// The re-extraction's own deadline (the extractor's default is ~30 s of frozen picture).
+    static let extractionTimeoutMillis: Int64 = 10_000
+
+    /// Re-extracts `videoId` and returns its progressive stream (YouTube's single-file format,
+    /// 360p here), which is not cut off. Device 10-18 (*Pinocchio* 2022, `android` client): the
+    /// 1080p repack pair 403s past ~48 s even with fresh URLs, while the progressive stream played
+    /// to the end. Falls back to a fresh repack URL when the source has no progressive stream.
+    static func fallbackURL(videoId: String, preferProgressive: Bool) async -> String? {
+        let source: TrailerPlaybackSource? = await withCheckedContinuation { continuation in
+            HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: "https://www.youtube.com/watch?v=\(videoId)",
+                                                       timeoutMillis: extractionTimeoutMillis) { source, _ in
+                continuation.resume(returning: source)
+            }
+        }
+        guard let source else { return nil }
+        if preferProgressive, let progressive = source.progressiveUrl, !progressive.isEmpty { return progressive }
+        return await TrailerLocalHLS.shared.playbackURL(for: source)
+    }
+}
+
+/// BUG-130: the Detail background trailer's position, handed to the full-screen player of the same
+/// stream. Written at the background loop's teardown (the full-screen request removes it), read once
+/// by the cover ~0.6 s later. Stale after `freshness`; skipped near the end of the clip (the cover
+/// would end at once) and near the start (nothing to carry). Main thread only.
+@MainActor
+final class TrailerPositionHandoff {
+    static let shared = TrailerPositionHandoff()
+
+    static let freshness: TimeInterval = 10
+    nonisolated static let minimumSeconds: Double = 1
+    nonisolated static let endMarginSeconds: Double = 3
+
+    private var entry: (url: String, time: CMTime, at: TimeInterval)?
+
+    func record(url: String, time: CMTime, duration: CMTime?) {
+        // Review r1 P3-3: an unusable reading clears an older entry (a re-entered Detail page within
+        // 10 s must not inherit the previous visit's position). Teardown's second pass never gets
+        // here: the first one nils the player.
+        guard Self.isUsable(time: time, duration: duration) else { entry = nil; return }
+        entry = (url, time, ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The position for `url`, consumed; nil when none, another stream's, or stale.
+    func take(url: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> CMTime? {
+        defer { entry = nil }
+        guard let entry, entry.url == url, now - entry.at <= Self.freshness else { return nil }
+        return entry.time
+    }
+
+    nonisolated static func isUsable(time: CMTime, duration: CMTime?) -> Bool {
+        guard time.isNumeric, time.seconds >= minimumSeconds else { return false }
+        if let duration, duration.isNumeric, duration.seconds > 0,
+           time.seconds > duration.seconds - endMarginSeconds { return false }
+        return true
+    }
+}
+
 struct FullScreenTrailerPlayer: View {
     let urlString: String
     var onPlaybackEnded: () -> Void = {}
@@ -536,12 +654,19 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         // will also consult, rather than a `.resizeAspectFill` literal that could drift from it.
         view.playerLayer.videoGravity = TrailerSurfaceZoomPolicy.decide(surface: "full", cached: nil).gravity
         if let url = URL(string: urlString) {
-            let player = AVPlayer(url: url)
+            let fullItem = AVPlayerItem(url: url)
+            if let s = TrailerTuning.forwardBufferSeconds { fullItem.preferredForwardBufferDuration = s }
+            let player = AVPlayer(playerItem: fullItem)
             player.isMuted = false
+            // BUG-130 (u/an_angry_Moose, 10-02: "replays the few seconds already watched"): continue
+            // from where the Detail background copy of the SAME stream had got to.
+            let resumeAt = TrailerPositionHandoff.shared.take(url: urlString)
             view.playerLayer.player = player
             control.player = player
             control.surface = view
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
+            context.coordinator.startHealth(player: player, urlString: urlString)
+            context.coordinator.watchForExpiredURLs(player: player, videoId: videoId)
             context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the
             // inline/hero surfaces (`TrailerHeroPlayer.Coordinator`) so a full-screen "Watch
@@ -550,7 +675,19 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
                 let snap = TrailerPipelineCounters.shared.attach()
                 NSLog("[TrailerPipeline] attach(full) live=%d views=%d url=%@", snap.livePlayers, snap.liveViews, TrailerProbe.redactedHost(urlString))
             }
-            player.play()
+            if let resumeAt {
+                TrailerZoomProbe.log("handoff full resume=\(String(format: "%.2f", resumeAt.seconds))")
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) {
+                    [weak player] _ in
+                    // A Back during the cold seek pauses and unhooks the player first.
+                    MainActor.assumeIsolated {
+                        guard let player, player.currentItem != nil, control.player === player else { return }
+                        player.play()
+                    }
+                }
+            } else {
+                player.play()
+            }
         }
         return view
     }
@@ -572,13 +709,109 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
     final class Coordinator {
         private var endObserver: NSObjectProtocol?
         private var letterboxProbe: TrailerLetterboxProbe?
+        private var health: TrailerPlaybackHealthMonitor?
+
+        /// BUG-128: health monitor for the full-screen player (`detail-full`).
+        func startHealth(player: AVPlayer, urlString: String) {
+            health = TrailerPlaybackHealthMonitor(player: player, surface: "detail-full", urlString: urlString)
+            health?.start()
+        }
 
         func observeEnd(of player: AVPlayer, onEnded: @escaping () -> Void) {
+            self.onEnded = onEnded
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: player.currentItem,
                 queue: .main
             ) { _ in onEnded() }
+        }
+
+        private var onEnded: (() -> Void)?
+        private var stallObserver: NSObjectProtocol?
+        private var refreshes = 0
+        private var refreshing = false
+        /// Set by `teardown()`; a refresh or seek completing after it does nothing.
+        private var tornDown = false
+
+        /// BUG-128 (u/an_angry_Moose, 10-02; reproduced 2026-10-18 on *Pinocchio* 2022): when the
+        /// preferred clients refuse a video, the extractor falls back to one whose 1080p streams
+        /// YouTube refuses (HTTP 403) past ~48 s of media; the player replayed a few seconds and froze.
+        /// A stall past `immediateSwitchAfterSeconds` with a 403 in the item's error log (checked again
+        /// after a short grace: the entry lands after the stall notice) switches to the progressive
+        /// stream, which is not cut off. Any other stall that makes no progress for
+        /// `stallBackstopSeconds` re-extracts the same 1080p pair (a plain network stall keeps 1080p).
+        func watchForExpiredURLs(player: AVPlayer, videoId: String?) {
+            guard let videoId, !videoId.isEmpty else { return }
+            stallObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemPlaybackStalled, object: nil, queue: .main
+            ) { [weak self, weak player] note in
+                MainActor.assumeIsolated {
+                    guard let self, let player, let item = note.object as? AVPlayerItem,
+                          item === player.currentItem else { return }
+                    self.handleStall(player: player, item: item, videoId: videoId)
+                }
+            }
+        }
+
+        private func handleStall(player: AVPlayer, item: AVPlayerItem, videoId: String) {
+            let stalledAt = player.currentTime()
+            if stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds,
+               TrailerStreamRefresh.sawForbidden(item) {
+                refresh(player: player, videoId: videoId, progressive: true, reason: "403")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.forbiddenGraceSeconds) {
+                [weak self, weak player] in
+                MainActor.assumeIsolated {
+                    guard let self, let player, item === player.currentItem, player.timeControlStatus != .playing,
+                          stalledAt.seconds >= TrailerStreamRefresh.immediateSwitchAfterSeconds,
+                          TrailerStreamRefresh.sawForbidden(item) else { return }
+                    self.refresh(player: player, videoId: videoId, progressive: true, reason: "403")
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + TrailerStreamRefresh.stallBackstopSeconds) {
+                [weak self, weak player] in
+                MainActor.assumeIsolated {
+                    guard let self, let player, item === player.currentItem,
+                          player.timeControlStatus != .playing,
+                          abs(player.currentTime().seconds - stalledAt.seconds) < 0.5 else { return }
+                    let forbidden = TrailerStreamRefresh.sawForbidden(item)
+                    self.refresh(player: player, videoId: videoId, progressive: forbidden,
+                                 reason: forbidden ? "403" : "stall")
+                }
+            }
+        }
+
+        private func refresh(player: AVPlayer, videoId: String, progressive: Bool, reason: String) {
+            guard !tornDown, !refreshing, refreshes < TrailerStreamRefresh.maxRefreshes else { return }
+            refreshing = true
+            refreshes += 1
+            let resumeAt = player.currentTime()
+            TrailerZoomProbe.log("refresh full n=\(refreshes) at=\(String(format: "%.1f", resumeAt.seconds))s reason=\(reason) progressive=\(progressive ? 1 : 0)")
+            Task { @MainActor [weak self, weak player] in
+                let url = await TrailerStreamRefresh.fallbackURL(videoId: videoId, preferProgressive: progressive)
+                guard let self, !self.tornDown, let player else { return }
+                self.refreshing = false
+                guard let url, let parsed = URL(string: url) else {
+                    // Review r1 P3-2: nothing to switch to; end like a finished trailer rather than
+                    // leave a frozen frame up.
+                    TrailerZoomProbe.log("refresh full n=\(self.refreshes) failed -> end")
+                    self.onEnded?()
+                    return
+                }
+                let item = AVPlayerItem(url: parsed)
+                if let s = TrailerTuning.forwardBufferSeconds { item.preferredForwardBufferDuration = s }
+                player.replaceCurrentItem(with: item)
+                if let onEnded = self.onEnded { self.observeEnd(of: player, onEnded: onEnded) }
+                player.seek(to: resumeAt, toleranceBefore: .zero, toleranceAfter: CMTime(value: 1, timescale: 4)) {
+                    [weak self, weak player] finished in
+                    MainActor.assumeIsolated {
+                        guard finished, let self, !self.tornDown, let player else { return }
+                        player.play()
+                    }
+                }
+            }
         }
 
         /// UX-9: same probe the inline/hero surfaces use, so all three get their zoom from one
@@ -591,10 +824,18 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         func teardown() {
+            tornDown = true
+            health?.stop()
+            health = nil
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
                 self.endObserver = nil
             }
+            if let stallObserver {
+                NotificationCenter.default.removeObserver(stallObserver)
+                self.stallObserver = nil
+            }
+
             letterboxProbe?.stop()
             letterboxProbe = nil
         }
@@ -882,7 +1123,7 @@ final class TrailerLetterboxProbe {
     /// Ceiling on the measured zoom. DERIVED, not tuned: the widest format anyone bakes into a 16:9
     /// container is ~2.55:1, and 2.55 / (16/9) = 1.435. (The 2.39:1 scope trailers UX-9 was filed
     /// over land at 1.344.) Anything past this is a measurement gone wrong, not a real bar.
-    static let maxZoom: CGFloat = 1.45
+    nonisolated static let maxZoom: CGFloat = 1.45
     /// Every trailer surface is 16:9: the inline tile by construction (UX-4a sizes it
     /// `posterHeight * 16/9`), the Detail hero and full-screen surfaces because they are the screen.
     private static let cardAspect: Double = 16.0 / 9.0
@@ -909,12 +1150,12 @@ final class TrailerLetterboxProbe {
     /// true black bar, well below any real picture content. Internal (not private) so
     /// `ArtworkLetterbox` scans static key art with the exact same thresholds — one definition of
     /// "black bar" for the whole trailer tile.
-    static let blackLuma: Double = 16
+    nonisolated static let blackLuma: Double = 16
     /// No plausible baked bar eats more than a quarter of the frame per edge (the 2.55:1 worst case
     /// is ~15%), so the scan stops there rather than walking into the picture on a dark shot.
-    static let maxBarFraction: Double = 0.25
+    nonisolated static let maxBarFraction: Double = 0.25
     /// Bars thinner than this are encoder rounding, not letterboxing.
-    static let minBarFraction: Double = 0.01
+    nonisolated static let minBarFraction: Double = 0.01
     /// BUG-59 (reveal gate): a concealed surface is force-revealed after this many FRAME-BEARING
     /// ticks (≈3 s of delivered video) with no measurement — content whose decoded frames keep
     /// getting rejected as samples is dark (a black opening, a long fade), and dark frames have no
@@ -1096,6 +1337,19 @@ final class TrailerLetterboxProbe {
             view?.alpha = 1
             apply(policy.zoom, animated: false)
             TrailerZoomProbe.log(String(format: "policy=uncropped surface=%@ zoom=%.3f key=%@", surface, policy.zoom, zoomKey))
+            return
+        }
+        // BUG-128 A/B (launch-latched knob, default off): no sampling timer, no video output, no
+        // cache write. Hero/inline only (the full surface returned above, already uncropped).
+        if TrailerTuning.letterboxProbeOff {
+            var zoom = TrailerHeroPlayer.parityZoom
+            if let cached = TrailerZoomCache.shared.entry(for: zoomKey), cached.token == token {
+                zoom = cached.zoom
+            }
+            revealed = true
+            view?.alpha = 1
+            apply(zoom, animated: false)
+            TrailerZoomProbe.log(String(format: "probe-off surface=%@ key=%@ zoom=%.3f", surface, zoomKey, zoom))
             return
         }
         // Hero/inline only, from here on — the ONLY `TrailerZoomCache` read `start()` ever makes.

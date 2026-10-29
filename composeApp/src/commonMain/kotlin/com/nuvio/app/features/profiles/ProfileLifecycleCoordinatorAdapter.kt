@@ -1,6 +1,7 @@
 package com.nuvio.app.features.profiles
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonRepository
@@ -20,9 +21,11 @@ import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.search.SearchHistoryRepository
 import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
+import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
+import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
@@ -39,6 +42,8 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         WatchedRepository.onProfileChanged(profileIndex)
         TraktSettingsRepository.onProfileChanged()
         TraktAuthRepository.onProfileChanged(profileIndex)
+        // BUG-220: replay pending Trakt scrobble stops for the incoming profile.
+        TraktScrobbleRepository.onProfileChanged(profileIndex)
         LibraryRepository.onProfileChanged(profileIndex)
         LibraryDisplaySettingsRepository.onProfileChanged()
         WatchProgressRepository.onProfileChanged(profileIndex)
@@ -48,6 +53,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         }
         ThemeSettingsRepository.onProfileChanged()
         PosterCardStyleRepository.onProfileChanged()
+        CustomPosterUrlRepository.onProfileChanged()
         CardDepthStyleRepository.onProfileChanged()
         PlayerSettingsRepository.onProfileChanged()
         StreamBadgeSettingsRepository.onProfileChanged()
@@ -55,6 +61,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         HomeCatalogSettingsRepository.onProfileChanged()
         HomeRepository.clear()
         MetaScreenSettingsRepository.onProfileChanged()
+        EpisodeShuffleRepository.onProfileChanged()
         ContinueWatchingPreferencesRepository.onProfileChanged()
         ContinueWatchingEnrichmentCache.onProfileChanged()
         EpisodeReleaseNotificationsRepository.onProfileChanged()

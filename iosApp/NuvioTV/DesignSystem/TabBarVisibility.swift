@@ -13,13 +13,29 @@ final class TabBarVisibility: ObservableObject {
     /// also prevents a parent disappear/child appear from flashing the bar between details.
     func pushImmersive(owner: UUID) {
         guard immersiveOwners.insert(owner).inserted else { return }
+        // A rise publishes now and cancels a pending zero publish, so 1 → 0 → 1 never shows the bar.
+        pendingZeroPublish = false
         recompute()
     }
 
     func popImmersive(owner: UUID) {
         guard immersiveOwners.remove(owner) != nil else { return }
-        recompute()
-        TabBarProbe.recordPop(depthAfter: detailDepth)
+        guard detailDepth == 0 else {
+            recompute()
+            TabBarProbe.recordPop(depthAfter: detailDepth)
+            return
+        }
+        // Upstream Batch A (review r1 P3-5): a folder page popping as a Detail pushes over it can
+        // cross 1 → 0 → 1 inside one update cycle. Defer the zero publish one runloop turn and drop
+        // it if another owner arrived by then (BUG-66's bar blip class).
+        pendingZeroPublish = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pendingZeroPublish else { return }
+            self.pendingZeroPublish = false
+            self.recompute()
+            TabBarProbe.recordPop(depthAfter: 0)
+            TabBarStateProbe.notePop()
+        }
     }
 
     /// BUG-30/66/62 diagnostics only — read-only surface of the depth `immersiveHidden` is
@@ -92,6 +108,8 @@ final class TabBarVisibility: ObservableObject {
     /// Only publish actual visibility changes. The presentation coordinator coalesces lifecycle
     /// updates and restores the bar after the navigation transition has completed.
     @Published private(set) var immersiveHidden: Bool = false
+    /// `popImmersive`'s deferred zero publish is still owed.
+    private var pendingZeroPublish = false
 }
 
 private struct TabBarVisibilityKey: EnvironmentKey {
@@ -112,7 +130,12 @@ extension EnvironmentValues {
 /// transitions — timestamping exactly the BUG-66 moment the bar's resolved visibility changes.
 /// Hysteresis is unaffected by those extra fires: `residual` is inset-invariant at rest, so a
 /// same-position re-fire from a bar transition never crosses either arm on its own.
-private struct TabBarScrollSample: Equatable {
+///
+/// beta.18 verdict (BUG-66): internal (was `private`) and `nonisolated`, with the hysteresis arms
+/// and the latch step moved here as pure statics, so `TabBarContentScrollLinkTests` can pin the
+/// residual's inset invariance (classic 157 vs pinned 0) — the explicit scroll-view link must not
+/// change where the latch crosses. Values and behaviour unchanged.
+nonisolated struct TabBarScrollSample: Equatable, Sendable {
     var offsetY: CGFloat
     var insetTop: CGFloat
     /// T1 sign fix: 0 at a scroll view's true top, matching the in-tree formula this residual
@@ -122,6 +145,17 @@ private struct TabBarScrollSample: Equatable {
     /// to −2×insetTop instead of 0, and every threshold below it was tuned against that wrong
     /// number.
     var residual: CGFloat { offsetY + insetTop }
+
+    /// See `TabBarScrollAutoHide`'s doc comment on these two values.
+    static let hideArm: CGFloat = 300
+    static let showArm: CGFloat = 160
+
+    /// The hysteresis step: the latch after this sample, given the latch before it.
+    static func latch(after current: Bool, residual: CGFloat) -> Bool {
+        if !current, residual > hideArm { return true }
+        if current, residual < showArm { return false }
+        return current
+    }
 }
 
 /// Reports a tab root's main scroll view position via hysteresis so the bar doesn't flicker right
@@ -135,10 +169,11 @@ private struct TabBarScrollSample: Equatable {
 /// state.
 private struct TabBarScrollAutoHide: ViewModifier {
     @State private var hidesBar = false
-    /// FEAT-30: the sidebar's own copy of this hysteresis, so the floating panel can get out of
-    /// the way while the user browses rows. Read through `@Environment` (no observation), and
-    /// written only on the same crossings the local latch flips on — never per scroll tick.
-    @Environment(\.sidebarChrome) private var sidebarChrome
+    /// FEAT-30 / H9: the rail's own copy of this hysteresis, so Hide While Browsing can get the
+    /// rail out of the way while the user browses rows. Read through `@Environment` (no
+    /// observation), and written only on the same crossings the local latch flips on — never per
+    /// scroll tick.
+    @Environment(\.navigationChrome) private var navigationChrome
     /// BUG-30/66/62: which tab root this is, for the About-pane diagnostics readout.
     let tab: String
     /// Optional mirror of `hidesBar` for the attaching screen's own use (BUG-27: Home keys its
@@ -162,16 +197,17 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// the app from Home. If a device pass finds 160 too eager, the conservative fallback pair is
     /// the expanded-bar values above (374 / 322), which reproduce today's shipped behavior
     /// byte-for-byte.
-    private static let hideArm: CGFloat = 300
-    private static let showArm: CGFloat = 160
+    /// beta.18 verdict (BUG-66): the values now live on `TabBarScrollSample` (pure, unit-tested).
+    private static let hideArm: CGFloat = TabBarScrollSample.hideArm
+    private static let showArm: CGFloat = TabBarScrollSample.showArm
 
-    /// FEAT-30: tab NAME → `TabView` selection value, so the sidebar can key its per-tab
+    /// FEAT-30 / H9: tab NAME → `TabView` selection value, so the rail can key its per-tab
     /// scrolled-down map by the same number `selectedTab` carries. A table here rather than a new
     /// parameter on `reportsScrollToTabBar` — the four call sites (Home, Search, Library, Add-ons)
     /// keep their existing `tab:` signature, and the names they already pass are the same ones
     /// `TabBarProbe.tabNames` fixes for the diagnostics readout. Settings and Profile never attach
     /// this modifier (they don't meaningfully scroll), so they are correctly absent.
-    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3, "Live TV": 6, "Browse": 1]
+    private static let tabIndexByName: [String: Int] = ["Home": 0, "Search": 1, "Library": 2, "Add-ons": 3, "Discover": 6, "Live TV": 7, "Browse": 1]
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: TabBarScrollSample.self, of: { geo in
@@ -179,14 +215,28 @@ private struct TabBarScrollAutoHide: ViewModifier {
         }, action: { _, sample in
             TabBarProbe.recordScrollFire(tab: tab, offsetY: sample.offsetY, insetTop: sample.insetTop)
             let residual = sample.residual
+            var crossedHysteresis = false
             if !hidesBar, residual > Self.hideArm {
                 hidesBar = true
                 isScrolledDown?.wrappedValue = true
-                reportToSidebar(true)
+                reportToRail(true)
+                crossedHysteresis = true
             } else if hidesBar, residual < Self.showArm {
                 hidesBar = false
                 isScrolledDown?.wrappedValue = false
-                reportToSidebar(false)
+                reportToRail(false)
+                crossedHysteresis = true
+            }
+            // BUG-66 evidence probe (2026-09-10): `TabBarStateProbe` samples the SYSTEM tab bar's
+            // own geometry on a real hysteresis crossing, not per scroll-geometry tick (this
+            // closure fires many times a second while scrolling — see `TabBarProbe`'s own doc
+            // comment on why ITS readout is a counter snapshot, not a per-fire log). One call
+            // site, gated by the probe's own toggle so an off probe costs nothing beyond the
+            // `Bool` read.
+            if crossedHysteresis, TabBarStateProbe.enabled {
+                // beta.18 verdict (BUG-66): per-tab latch, keyed by the selection value; the mode
+                // is read live by the probe itself.
+                TabBarStateProbe.noteScrollState(isScrolledDown: hidesBar, tab: Self.tabIndexByName[tab])
             }
         })
     }
@@ -195,9 +245,11 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// even touch the shared model, so the default (unconnected) instance every non-shell screen
     /// falls back to stays untouched too. One `UserDefaults` read per CROSSING — the hysteresis
     /// above is what makes that a handful of reads per page walk rather than one per frame.
-    private func reportToSidebar(_ scrolledDown: Bool) {
-        guard SidebarChrome.isEnabled(), let index = Self.tabIndexByName[tab] else { return }
-        sidebarChrome.setScrolledDown(tab: index, scrolledDown)
+    /// A `.scroll` write (P4 #8): on Home in Stage the strip's page write owns the rail and lands
+    /// first, so this crossing writes the same value and is a no-op (R4).
+    private func reportToRail(_ scrolledDown: Bool) {
+        guard NavigationChrome.isRail(), let index = Self.tabIndexByName[tab] else { return }
+        navigationChrome.setScrolledDown(tab: index, scrolledDown)
     }
 }
 

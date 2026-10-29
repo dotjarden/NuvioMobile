@@ -83,11 +83,15 @@ struct PinEntryView: View {
         }
     }
 
+    // Keys are never `.disabled` while a submit is in flight: disabling every key on the cover
+    // left nothing focusable after the 4th digit, and focus came back on an arbitrary key. Each
+    // action guards `isBusy` instead.
     @ViewBuilder
     private func padButton(_ key: String) -> some View {
         switch key {
         case "delete":
             Button {
+                guard !isBusy else { return }
                 errorMessage = nil
                 if !pin.isEmpty { pin.removeLast() }
             } label: {
@@ -95,16 +99,15 @@ struct PinEntryView: View {
                     .frame(width: 90, height: 60)
             }
             .buttonStyle(.chip)
-            .disabled(isBusy)
         case "cancel":
             Button {
+                guard !isBusy else { return }
                 onCancel()
             } label: {
                 Image(systemName: "xmark")
                     .frame(width: 90, height: 60)
             }
             .buttonStyle(.chip)
-            .disabled(isBusy)
         default:
             Button {
                 appendDigit(key)
@@ -114,7 +117,6 @@ struct PinEntryView: View {
                     .frame(width: 90, height: 60)
             }
             .buttonStyle(.chip)
-            .disabled(isBusy)
         }
     }
 

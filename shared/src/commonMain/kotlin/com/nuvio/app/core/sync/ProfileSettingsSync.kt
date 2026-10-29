@@ -5,6 +5,9 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.CustomPosterUrlStorage
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsStorage
 import com.nuvio.app.features.debrid.DebridSettingsRepository
@@ -12,6 +15,7 @@ import com.nuvio.app.features.debrid.DebridSettingsStorage
 import com.nuvio.app.features.details.MetaScreenSettingsStorage
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.home.HomeCatalogSettingsSyncService
+import com.nuvio.app.features.home.HomeRepository
 import com.nuvio.app.features.mdblist.MdbListMetadataService
 import com.nuvio.app.features.mdblist.MdbListSettingsStorage
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
@@ -136,15 +140,14 @@ object ProfileSettingsSync {
     /// visible-in-UI setting reverting to the account's value, and the pre-gate behavior for the
     /// same window was pushing the whole unhydrated blob over the account.
     private fun maybeRetryGatedPush(token: SettingsPullToken) {
-        pendingGatedPushSignature ?: return
-        pendingGatedPushSignature = null
-        if (currentObservedStateSignature() == skipNextPushSignature) {
-            // Consumed WITH the echo (Codex 2026-08-28 P2 round 7): left set, a later user edit
-            // that restores exactly this state would have its emission mistaken for the old echo
-            // by the observer's skip branch and never pushed.
-            skipNextPushSignature = null
-            return
-        }
+        val decision = gatedPushDecision(
+            pending = pendingGatedPushSignature,
+            marker = skipNextPushSignature,
+            signature = currentObservedStateSignature(),
+        )
+        pendingGatedPushSignature = decision.remainingPending
+        skipNextPushSignature = decision.remainingMarker
+        if (!decision.shouldPush) return
         // The launch runs after the settling pull releases syncMutex; the identity can change in
         // that gap, and pushCurrentProfileToRemote() exports whatever profile is active at push
         // time — so the push must be pinned to the settled token and revalidated under the mutex
@@ -191,6 +194,24 @@ object ProfileSettingsSync {
         ProviderCredentialSync.clearAccountState()
         TrackingSourceSettingsSyncService.clearAccountState()
         HomeCatalogSettingsSyncService.clearAccountState()
+    }
+
+    /**
+     * Re-baselines both settings observers against the profile that is active RIGHT NOW
+     * (upstream 1854dfc3). The profile fan-out reloads every settings repository, so the observer
+     * would otherwise read the incoming profile's values as a local EDIT and push them — over the
+     * account blob it has not pulled for this profile yet.
+     *
+     * Fork: `pull()` resets `skipNextPushSignature` when `lastPullToken` changes (it must — a
+     * stale skip could swallow another profile's deferred push), which drops the signature this
+     * sets if a pull for the new profile starts first. That window is already covered by the
+     * fork-only initial-pull gate in [observeLocalChangesAndPush], which defers any push until
+     * this (user, profile) has settled a pull.
+     */
+    fun onProfileChanged() {
+        if (observeJob?.isActive != true) return
+        skipNextPushSignature = currentObservedStateSignature()
+        ProviderCredentialSync.onProfileChanged()
     }
 
     suspend fun pull(profileId: Int): Boolean {
@@ -335,6 +356,8 @@ object ProfileSettingsSync {
                 features = export.features.copy(
                     playerSettings = restoringLegacyCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, export.features.playerSettings, legacyBlob.features.playerSettings),
                     debridSettings = restoringLegacyCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, export.features.debridSettings, legacyBlob.features.debridSettings),
+                    // Upstream df589078: the personal TMDB key is a real (optional) credential
+                    // again, so it is carried forward like the others.
                     tmdbSettings = restoringLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, export.features.tmdbSettings, legacyBlob.features.tmdbSettings),
                     mdbListSettings = restoringLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, export.features.mdbListSettings, legacyBlob.features.mdbListSettings),
                 ),
@@ -387,6 +410,11 @@ object ProfileSettingsSync {
             ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.map { "liquid_glass_tab_bar" },
             ThemeSettingsRepository.navBarStyle.map { "nav_bar_style" },
             PosterCardStyleRepository.uiState.map { "poster_card_style" },
+            // Upstream cf59d255 / 92968510. Both must also be in currentObservedStateSignature():
+            // the combine() below maps every emission to that signature, so a flow listed here but
+            // absent there would emit an unchanged signature and never push.
+            CustomPosterUrlRepository.pattern.map { "custom_poster_url" },
+            CustomPosterUrlRepository.enabledScreens.map { "custom_poster_screens" },
             CardDepthStyleRepository.uiState.map { "card_depth_style" },
             PlayerSettingsRepository.uiState.map { "player" },
             StreamBadgeSettingsRepository.uiState.map { "stream_badges" },
@@ -403,8 +431,12 @@ object ProfileSettingsSync {
 
         observeJob = scope.launch {
             combine(signatureFlows) { currentObservedStateSignature() }
-                .drop(1)
+                // Upstream 1854dfc3 reordered these: dropping BEFORE the distinct filter threw
+                // away the first DISTINCT signature rather than the first emission, so a real
+                // first edit could be swallowed. Safe for the fork's gate below, which only
+                // relies on `distinctUntilChanged` never re-emitting an equal signature.
                 .distinctUntilChanged()
+                .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
                 .collect { signature ->
                     val authState = AuthRepository.state.value
@@ -434,10 +466,19 @@ object ProfileSettingsSync {
                         return@collect
                     }
                     if (isApplyingRemoteBlob || isServerSyncInFlight) return@collect
-                    if (signature == skipNextPushSignature) {
-                        skipNextPushSignature = null
-                        return@collect
-                    }
+                    // Upstream 1854dfc3: the debounce window may have outlived the state that
+                    // produced this signature (a profile switch, or a remote apply that landed
+                    // while it waited) — push only what is still true.
+                    if (signature != currentObservedStateSignature()) return@collect
+                    // Fork: the marker expires on the very next emission that reaches this point,
+                    // matching or not. Left set on a mismatch it outlives the echo it was armed
+                    // for — reselecting the ACTIVE profile arms one for unchanged settings S, and
+                    // `distinctUntilChanged` means no echo emission ever arrives to consume it, so
+                    // a later S -> T pushes and the T -> S that follows is mistaken for the stale
+                    // echo and never pushed, leaving the server at T for good.
+                    val skipDecision = consumeSettingsSkipMarker(skipNextPushSignature, signature)
+                    skipNextPushSignature = skipDecision.remainingMarker
+                    if (skipDecision.skipPush) return@collect
                     pushCurrentProfileToRemote()
                 }
         }
@@ -481,6 +522,12 @@ object ProfileSettingsSync {
             features = MobileProfileSettingsFeatures(
                 themeSettings = ThemeSettingsStoreProvider.store.exportToSyncPayload(),
                 posterCardStyleSettingsPayload = PosterCardStyleStorage.loadPayload().orEmpty().trim(),
+                // Not a credential, and deliberately NOT routed through withoutProfileCredentials /
+                // ProviderCredentialSync — but note an RPDB-family pattern embeds the user's personal
+                // RPDB key in the URL (`https://api.ratingposterdb.com/<KEY>/imdb/...`). Upstream
+                // syncs it in the settings blob as-is; the fork follows upstream here.
+                customPosterUrlPattern = currentCustomPosterPatternForSync(),
+                customPosterEnabledScreens = encodeCustomPosterScreenKeys(CustomPosterUrlStorage.loadEnabledScreens()),
                 cardDepthStyleSettingsPayload = CardDepthStyleStorage.loadPayload().orEmpty().trim(),
                 // Provider credentials are stripped here and synced per-provider by
                 // ProviderCredentialSync instead — a whole-blob push must never carry them.
@@ -561,6 +608,13 @@ object ProfileSettingsSync {
                 notifyChanged = { PosterCardStyleRepository.onProfileChanged() },
             )
         }
+
+        applyRemoteCustomPosterSettings(
+            log = log,
+            rawFeatures = rawFeatures,
+            incomingPattern = blob.features.customPosterUrlPattern,
+            incomingScreens = blob.features.customPosterEnabledScreens,
+        )
 
         if (has("card_depth_style_settings_payload")) {
             applyFeatureUnlessUnchanged(
@@ -755,6 +809,7 @@ object ProfileSettingsSync {
     private fun ensureRepositoriesLoaded() {
         ThemeSettingsRepository.ensureLoaded()
         PosterCardStyleRepository.ensureLoaded()
+        CustomPosterUrlRepository.ensureLoaded()
         CardDepthStyleRepository.ensureLoaded()
         PlayerSettingsRepository.ensureLoaded()
         StreamBadgeSettingsRepository.ensureLoaded()
@@ -803,6 +858,10 @@ object ProfileSettingsSync {
         "liquid_glass_tab_bar=${ThemeSettingsRepository.liquidGlassNativeTabBarEnabled.value}",
         "nav_bar_style=${ThemeSettingsRepository.navBarStyle.value.key}",
         "poster_card_style=${PosterCardStyleRepository.uiState.value}",
+        "custom_poster_pattern=${CustomPosterUrlRepository.pattern.value}",
+        // Keys sorted: the set's iteration order depends on toggle history, and an order-only
+        // difference must not read as a local edit.
+        "custom_poster_screens=${CustomPosterScreen.toKeys(CustomPosterUrlRepository.enabledScreens.value).sorted().joinToString(",")}",
         "card_depth_style=${CardDepthStyleRepository.uiState.value}",
         "player=${PlayerSettingsRepository.uiState.value}",
         "stream_badges=${StreamBadgeSettingsRepository.uiState.value}",
@@ -860,16 +919,23 @@ internal inline fun <T> applyFeatureUnlessUnchanged(
     notifyChanged()
 }
 
+// `internal` (not private) so commonTest can round-trip real blobs through the serializer.
+// Version 4 = upstream 92968510 (custom poster fields). The reader never branches on `version`:
+// a v3 (or unknown-version) blob decodes normally and every feature is presence-gated in
+// applyRemoteBlob(), so a blob without the poster keys leaves local poster settings untouched.
 @Serializable
-private data class MobileProfileSettingsBlob(
-    val version: Int = 3,
+internal data class MobileProfileSettingsBlob(
+    val version: Int = 4,
     val features: MobileProfileSettingsFeatures = MobileProfileSettingsFeatures(),
 )
 
 @Serializable
-private data class MobileProfileSettingsFeatures(
+internal data class MobileProfileSettingsFeatures(
     @SerialName("theme_settings") val themeSettings: JsonObject = JsonObject(emptyMap()),
     @SerialName("poster_card_style_settings_payload") val posterCardStyleSettingsPayload: String = "",
+    @SerialName(CUSTOM_POSTER_URL_PATTERN_FEATURE) val customPosterUrlPattern: String = "",
+    // Comma-joined CustomPosterScreen keys; blank = all screens (CustomPosterScreen.fromKeys).
+    @SerialName(CUSTOM_POSTER_ENABLED_SCREENS_FEATURE) val customPosterEnabledScreens: String = "",
     @SerialName("card_depth_style_settings_payload") val cardDepthStyleSettingsPayload: String = "",
     @SerialName("player_settings") val playerSettings: JsonObject = JsonObject(emptyMap()),
     @SerialName("stream_badge_settings") val streamBadgeSettings: JsonObject = JsonObject(emptyMap()),
@@ -885,7 +951,7 @@ private data class MobileProfileSettingsFeatures(
 )
 
 @Serializable
-private data class NotificationsSettingsPayload(
+internal data class NotificationsSettingsPayload(
     @SerialName("episode_release_alerts_enabled") val episodeReleaseAlertsEnabled: Boolean = false,
 )
 
@@ -896,9 +962,136 @@ private data class SettingsBlobResponse(
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 
+internal const val CUSTOM_POSTER_URL_PATTERN_FEATURE = "custom_poster_url_pattern"
+internal const val CUSTOM_POSTER_ENABLED_SCREENS_FEATURE = "custom_poster_enabled_screens"
+
+internal fun currentCustomPosterPatternForSync(): String =
+    CustomPosterUrlStorage.loadPattern().orEmpty().trim()
+
+/// Canonical wire form of the enabled-screens set: trimmed, de-duplicated, SORTED keys joined by
+/// commas (upstream joins the raw stored set, whose order is platform-dependent; the reader on
+/// both sides splits into a set, so sorting is wire-compatible and keeps the blob signature
+/// stable). Null/empty = "" = all screens.
+internal fun encodeCustomPosterScreenKeys(keys: Set<String>?): String =
+    keys.orEmpty().map(String::trim).filter(String::isNotEmpty).distinct().sorted().joinToString(",")
+
+/// Inverse of [encodeCustomPosterScreenKeys]: blank -> null (stored as "no explicit selection",
+/// which [CustomPosterScreen.fromKeys] reads as all screens).
+internal fun decodeCustomPosterScreenKeys(value: String): Set<String>? =
+    value.split(',').map(String::trim).filter(String::isNotEmpty).toSet().takeIf { it.isNotEmpty() }
+
+/**
+ * Upstream cf59d255 / 92968510, in the fork's shape: each of the two fields applies only when its
+ * key is PRESENT in [rawFeatures] (a v3 blob, or a client that doesn't model the feature, leaves
+ * the local values untouched), and only when it differs from local storage (H-1B-i no-op
+ * suppression). A blank incoming pattern clears the local one; blank screens = all screens.
+ *
+ * Upstream re-applies Home unconditionally after every pull; here the repository reload and ONE
+ * [reapplyHome] run only when at least one field actually changed, so an identical pull never
+ * touches Home. Storage is written directly (not via the repository setters, which would each call
+ * `HomeRepository.applyCurrentSettings()` themselves and double the re-application).
+ *
+ * @return whether anything changed.
+ */
+internal fun applyRemoteCustomPosterSettings(
+    log: Logger,
+    rawFeatures: JsonObject,
+    incomingPattern: String,
+    incomingScreens: String,
+    reapplyHome: () -> Unit = { HomeRepository.applyCurrentSettings() },
+): Boolean {
+    var changed = false
+    if (rawFeatures.containsKey(CUSTOM_POSTER_URL_PATTERN_FEATURE)) {
+        val incoming = incomingPattern.trim()
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = CUSTOM_POSTER_URL_PATTERN_FEATURE,
+            current = currentCustomPosterPatternForSync(),
+            incoming = incoming,
+            apply = { CustomPosterUrlStorage.savePattern(incoming.ifBlank { null }) },
+            notifyChanged = { changed = true },
+        )
+    }
+    if (rawFeatures.containsKey(CUSTOM_POSTER_ENABLED_SCREENS_FEATURE)) {
+        val incomingKeys = decodeCustomPosterScreenKeys(incomingScreens)
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = CUSTOM_POSTER_ENABLED_SCREENS_FEATURE,
+            current = encodeCustomPosterScreenKeys(CustomPosterUrlStorage.loadEnabledScreens()),
+            incoming = encodeCustomPosterScreenKeys(incomingKeys),
+            apply = { CustomPosterUrlStorage.saveEnabledScreens(incomingKeys) },
+            notifyChanged = { changed = true },
+        )
+    }
+    if (changed) {
+        CustomPosterUrlRepository.onProfileChanged()
+        reapplyHome()
+    }
+    return changed
+}
+
 /// A settings push may only run when the CURRENT (user, profile) identity has a settled pull
 /// recorded — non-null current token (authenticated, non-anonymous) matching the settled one.
 internal fun settingsPushAllowed(
     settledToken: SettingsPullToken?,
     currentToken: SettingsPullToken?,
 ): Boolean = currentToken != null && settledToken == currentToken
+
+/// Outcome of testing a push emission against the echo marker: whether to suppress the push, and
+/// what the marker should be afterwards.
+internal data class SettingsSkipMarkerDecision(
+    val skipPush: Boolean,
+    val remainingMarker: String?,
+)
+
+/// Fork: the echo marker (`skipNextPushSignature`) suppresses exactly ONE emission — the echo of a
+/// remote apply or of a profile re-selection — and then expires, whether or not it matched.
+///
+/// It used to survive a mismatch, which turned it into a landmine: `onProfileChanged()` arms it
+/// with the CURRENT signature, so reselecting the active profile with unchanged settings S arms a
+/// marker no emission ever consumes (`distinctUntilChanged` never re-emits S). A later S -> T then
+/// pushes normally, and the T -> S that follows matches the stale marker, is taken for the echo,
+/// and is dropped — leaving the server on T with no further emission able to correct it.
+///
+/// Clearing on mismatch is safe for the echo case it exists for: the echo emission is the first
+/// one to reach the observer's push decision after the apply, so a mismatch there already means
+/// the state moved on and the echo is moot.
+internal fun consumeSettingsSkipMarker(
+    marker: String?,
+    signature: String,
+): SettingsSkipMarkerDecision = SettingsSkipMarkerDecision(
+    skipPush = marker != null && marker == signature,
+    remainingMarker = null,
+)
+
+/// Outcome of testing a deferred, gate-skipped emission against the echo marker once the gate
+/// settles: whether to spend it as a push, and what the marker/pending signature should be
+/// afterwards.
+internal data class GatedPushDecision(
+    val shouldPush: Boolean,
+    val remainingMarker: String?,
+    val remainingPending: String?,
+)
+
+/// Fork: [maybeRetryGatedPush]'s pure decision. A settle with no deferred push
+/// (`pending == null`) is not an emission — the marker is left exactly as it was for whatever
+/// emission arms or consumes it next. A deferred push present routes through the same
+/// [consumeSettingsSkipMarker] the observer uses, so the marker expires on EITHER outcome (a
+/// match spends it as the echo; a mismatch still expires it — Codex 2026-08-28 P2 round 7's
+/// fix for the stale-marker landmine, see that function's doc) — and the pending signature is
+/// always cleared once tested, whether or not it was pushed.
+internal fun gatedPushDecision(
+    pending: String?,
+    marker: String?,
+    signature: String,
+): GatedPushDecision {
+    if (pending == null) {
+        return GatedPushDecision(shouldPush = false, remainingMarker = marker, remainingPending = null)
+    }
+    val skipDecision = consumeSettingsSkipMarker(marker, signature)
+    return GatedPushDecision(
+        shouldPush = !skipDecision.skipPush,
+        remainingMarker = skipDecision.remainingMarker,
+        remainingPending = null,
+    )
+}

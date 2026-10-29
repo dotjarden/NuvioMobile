@@ -1,0 +1,304 @@
+import Foundation
+
+/// Library L1 (2026-10-04, `docs/library-l1-grid-plan-2026-10-04.md` in the outer repo): the pure
+/// rules behind the Library grid's header, pills, smart filters, badges and empty states.
+///
+/// `LibraryViewModel` feeds it plain values (no SharedCore types), so `LibraryGridPolicyTests`
+/// can pin every decision without a Kotlin runtime. The view only renders what this says.
+///
+/// `nonisolated` (like `PlayerEngineRouter`): pure rules over Sendable values, so the test target
+/// can build and compare them without the app's default MainActor isolation getting in the way.
+nonisolated enum LibraryGridPolicy {
+    // MARK: - Watch state
+
+    /// A title's watch state as the grid sees it.
+    nonisolated struct WatchState: Equatable, Sendable {
+        /// A movie's own marker, or a series that is fully watched (or marked at title level):
+        /// the same test the hold menu's "Mark as Unwatched" label uses.
+        var isWatched: Bool
+        /// 0...1 when an unfinished playback position is worth drawing, else nil. See
+        /// `visibleProgress(fraction:isCompleted:)`.
+        var progress: Double?
+
+        /// In progress = a drawable position on a title that isn't watched. A finished series
+        /// with a stray half-watched episode reads as watched, not in progress.
+        var isInProgress: Bool { progress != nil && !isWatched }
+    }
+
+    /// Below this a position is a misclick or a probe; at or above `progressCeiling` it reads as
+    /// done. Either way no bar is drawn and the title isn't "In Progress". In practice the shared
+    /// completion rule (`WatchProgressEntry.isEffectivelyCompleted`, from 90 %) ends bars first:
+    /// the ceiling is a backstop for an entry that reports a position but no completion.
+    static let progressFloor = 0.02
+    static let progressCeiling = 0.97
+
+    /// The bar a card draws for a raw progress fraction, or nil for none.
+    static func visibleProgress(fraction: Double, isCompleted: Bool) -> Double? {
+        guard !isCompleted, fraction.isFinite else { return nil }
+        guard fraction >= progressFloor, fraction < progressCeiling else { return nil }
+        return fraction
+    }
+
+    // MARK: - Smart filters
+
+    /// VortX's smart filters (Short is left out: library items carry no runtime).
+    nonisolated enum SmartFilter: String, CaseIterable, Hashable, Sendable {
+        case unwatched
+        case inProgress
+        case watched
+
+        var title: String {
+            switch self {
+            case .unwatched: return String(localized: "Unwatched")
+            case .inProgress: return String(localized: "In Progress")
+            case .watched: return String(localized: "Watched")
+            }
+        }
+    }
+
+    /// Whether a title passes every active filter. Active filters combine with AND.
+    static func passes(_ state: WatchState, filters: Set<SmartFilter>) -> Bool {
+        for filter in filters {
+            switch filter {
+            case .unwatched: if state.isWatched { return false }
+            case .inProgress: if !state.isInProgress { return false }
+            case .watched: if !state.isWatched { return false }
+            }
+        }
+        return true
+    }
+
+    /// The active set after a chip press. A pressed chip that is on turns off. One that is off
+    /// turns on and drops the chips it can never combine with: Watched excludes both Unwatched and
+    /// In Progress (an in-progress title is never watched), so those pairs would always be empty.
+    static func toggling(_ filter: SmartFilter, in active: Set<SmartFilter>) -> Set<SmartFilter> {
+        var next = active
+        if next.contains(filter) {
+            next.remove(filter)
+            return next
+        }
+        next.insert(filter)
+        switch filter {
+        case .unwatched, .inProgress:
+            next.remove(.watched)
+        case .watched:
+            next.remove(.unwatched)
+            next.remove(.inProgress)
+        }
+        return next
+    }
+
+    /// The chips worth showing for `states` (the titles left after the list and type choices,
+    /// before any smart filter). A chip shows only when it would split the set, i.e. some titles
+    /// pass and some don't, or when it is already on, so it can always be turned off again.
+    /// Keeps `SmartFilter.allCases` order.
+    static func visibleSmartFilters(states: [WatchState], active: Set<SmartFilter>) -> [SmartFilter] {
+        SmartFilter.allCases.filter { filter in
+            if active.contains(filter) { return true }
+            let passing = states.reduce(0) { $0 + (passes($1, filters: [filter]) ? 1 : 0) }
+            return passing > 0 && passing < states.count
+        }
+    }
+
+    // MARK: - Header
+
+    /// The count line under the title, e.g. "31 movies · 17 series". `kinds` are each visible
+    /// title's `mediaCategory ?? type`, in any case or spelling (`normalizedKind` folds them).
+    /// Empty when there is nothing to count. (Plural forms are hand-made for English; the
+    /// translation pass should turn each noun into one plural-variant key.)
+    static func countLine(kinds: [String]) -> String {
+        var movies = 0
+        var series = 0
+        var anime = 0
+        var other = 0
+        for kind in kinds {
+            switch normalizedKind(kind) {
+            case "movie": movies += 1
+            case "series": series += 1
+            case "anime": anime += 1
+            default: other += 1
+            }
+        }
+        var parts: [String] = []
+        if movies > 0 {
+            parts.append(movies == 1 ? String(localized: "1 movie") : String(localized: "\(movies) movies"))
+        }
+        if series > 0 {
+            parts.append(series == 1 ? String(localized: "1 series") : String(localized: "\(series) series"))
+        }
+        if anime > 0 {
+            parts.append(String(localized: "\(anime) anime"))
+        }
+        if other > 0 {
+            parts.append(other == 1 ? String(localized: "1 other title") : String(localized: "\(other) other titles"))
+        }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// Folds the type spellings add-ons and trackers use onto the four count buckets.
+    static func normalizedKind(_ kind: String) -> String {
+        switch kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "movie", "movies", "film": return "movie"
+        case "series", "show", "shows", "tv", "tvshow": return "series"
+        case "anime": return "anime"
+        default: return "other"
+        }
+    }
+
+    /// Label for a type segment (the projection's type keys).
+    static func typeLabel(_ kind: String) -> String {
+        switch normalizedKind(kind) {
+        case "movie": return String(localized: "Movies")
+        case "series": return String(localized: "Series")
+        case "anime": return String(localized: "Anime")
+        default: return kind.capitalized
+        }
+    }
+
+    // MARK: - Source
+
+    /// The provider behind the library, from the shared `LibrarySourceMode` case name
+    /// (`TRAKT` / `SIMKL` / `MDBLIST`). Nil for the local Nuvio library.
+    static func providerName(sourceModeName: String) -> String? {
+        switch sourceModeName.uppercased() {
+        case "TRAKT": return "Trakt"
+        case "SIMKL": return "Simkl"
+        case "MDBLIST": return "MDBList"
+        default: return nil
+        }
+    }
+
+    /// Whether the control row shows the provider controls (the Refresh pill, batch D review r2
+    /// P2): a provider library (Trakt / Simkl / MDBList) is a copy of the provider's server state
+    /// and can go stale without any local change (a list re-sorted on mdblist.com keeps its
+    /// `updatedAt`), so the viewer needs a user-initiated pull; the local library has nothing to
+    /// pull.
+    static func showsProviderControls(sourceModeName: String) -> Bool {
+        providerName(sourceModeName: sourceModeName) != nil
+    }
+
+    /// The small spaced badge beside the title (official NuvioTV's LOCAL / TRAKT / …). Nil for
+    /// the local library, which needs no badge.
+    static func sourceBadge(sourceModeName: String) -> String? {
+        providerName(sourceModeName: sourceModeName)?.uppercased()
+    }
+
+    // MARK: - Sort
+
+    /// Label for a shared `LibrarySortOption`, by its Kotlin case name. DEFAULT is the provider's
+    /// own order: Trakt's rank for Trakt, newest-added-then-rank for MDBList, the list order for
+    /// Simkl; only Trakt's is named after the provider (the old "Trakt Order" label was shown for
+    /// all three).
+    static func sortLabel(optionName: String, sourceModeName: String) -> String {
+        switch optionName {
+        case "DEFAULT":
+            return sourceModeName.uppercased() == "TRAKT"
+                ? String(localized: "Trakt Order")
+                : String(localized: "List Order")
+        case "ADDED_DESC": return String(localized: "Recently Added")
+        case "ADDED_ASC": return String(localized: "Oldest First")
+        // Batch D U1 (upstream d8ce7258): MDBList lists sort by the title's release date; the shared
+        // `availableLibrarySortOptions` offers these for MDBLIST only.
+        case "RELEASED_DESC": return String(localized: "Recently Released")
+        case "RELEASED_ASC": return String(localized: "Oldest Released")
+        case "TITLE_ASC": return String(localized: "A\u{2013}Z")
+        case "TITLE_DESC": return String(localized: "Z\u{2013}A")
+        default: return optionName
+        }
+    }
+
+    // MARK: - What the screen shows
+
+    nonisolated enum Content: Equatable, Sendable {
+        /// First load, or a load still running with nothing to show yet.
+        case loading
+        /// A load failed and there is nothing cached to show. Offers Retry.
+        case failed(message: String)
+        /// Nothing saved at all (in this provider, for a provider library).
+        case empty
+        /// Titles exist, but the smart filters leave none. Offers Clear Filters.
+        case noMatches
+        case grid
+    }
+
+    /// Mirrors mobile's `LibraryScreen` order: loading, then failure, then empty. A failure WITH
+    /// cached sections still shows the grid (stale beats blank).
+    static func content(
+        isLoaded: Bool,
+        isLoading: Bool,
+        errorMessage: String?,
+        hasAnySection: Bool,
+        visibleCount: Int,
+        smartFiltersActive: Bool
+    ) -> Content {
+        if !isLoaded || (isLoading && !hasAnySection) { return .loading }
+        let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !message.isEmpty, !hasAnySection { return .failed(message: message) }
+        if !hasAnySection { return .empty }
+        if visibleCount == 0 { return smartFiltersActive ? .noMatches : .empty }
+        return .grid
+    }
+
+    static func emptyTitle(providerName: String?) -> String {
+        guard let providerName else { return String(localized: "Your library is empty") }
+        return String(localized: "Your \(providerName) library is empty")
+    }
+
+    static func emptyMessage(providerName: String?) -> String {
+        guard let providerName else {
+            return String(localized: "Add movies and shows with the + button on a title\u{2019}s page.")
+        }
+        return String(localized: "Titles you save on \(providerName) show up here.")
+    }
+
+    static var noMatchesTitle: String {
+        String(localized: "No titles match these filters")
+    }
+
+    static func failedTitle(providerName: String?) -> String {
+        guard let providerName else { return String(localized: "Couldn\u{2019}t load your library") }
+        return String(localized: "Couldn\u{2019}t load your \(providerName) library")
+    }
+
+    // MARK: - Hold menu
+
+    /// Whether the hold menu shows the remove action. The local library (no list key) always can;
+    /// a provider list can unless its owner marks it read-only (Batch K: MDBList external, dynamic
+    /// and liked lists, upstream 3913a140b / 2cc2e6a61), where the remove would be a no-op.
+    static func offersRemove(listKey: String?, canRemoveFromList: (String) -> Bool) -> Bool {
+        guard let listKey else { return true }
+        return canRemoveFromList(listKey)
+    }
+
+    /// The remove action's label. A provider list names the list; the local library (or a
+    /// provider library with no list picked) keeps "Remove from Library".
+    static func removeLabel(listTitle: String?) -> String {
+        guard let listTitle, !listTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "Remove from Library")
+        }
+        return String(localized: "Remove from \(listTitle)")
+    }
+
+    /// The confirmation a Simkl remove asks for (see `LibraryRepository.removalNeedsConfirmation`).
+    static func removeConfirmationTitle(listTitle: String?) -> String {
+        guard let listTitle, !listTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "Remove from Library?")
+        }
+        return String(localized: "Remove from \(listTitle)?")
+    }
+
+    static func removeConfirmationMessage(providerName: String?) -> String {
+        String(localized: "\(providerName ?? "Simkl") also clears this title\u{2019}s watched history and rating when it leaves a list.")
+    }
+
+    static func removeFailedTitle(providerName: String?) -> String {
+        guard let providerName else { return String(localized: "Couldn\u{2019}t remove the title") }
+        return String(localized: "Couldn\u{2019}t update \(providerName)")
+    }
+
+    /// The failed alert's body: the provider's message, or a generic line when it gave none.
+    static func removeFailedMessage(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? String(localized: "Something went wrong. Try again.") : trimmed
+    }
+}

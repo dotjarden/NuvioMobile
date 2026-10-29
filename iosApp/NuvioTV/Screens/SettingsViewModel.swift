@@ -9,7 +9,18 @@ import SharedCore
 ///   reads these preferences, so changes take effect on Home after a refresh (which we trigger).
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    /// Writes a published value only when it changed. The ~15 watchers in `start()` replay on every
+    /// open of Settings and each wrote several values unconditionally; `@Published` fires on equal
+    /// writes too, so every one re-rendered Settings and the open pane.
+    private func assign<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<SettingsViewModel, T>, _ value: T) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
     @Published private(set) var skipIntroEnabled = true
+    @Published private(set) var episodeShuffleAvailable = false
+    /// Upstream 199c5882: segment types the player skips automatically, as `AutoSkipSegmentType`
+    /// stored values (empty by default — nothing auto-skips until the user opts in).
+    @Published private(set) var autoSkipSegmentTypes: Set<String> = []
     /// The selected app theme's enum name ("CRIMSON", "OCEAN", ...). Persisted profile-scoped via
     /// the tvOS ThemeSettingsStore adapter; the root AppThemeModel applies it to the palette.
     @Published private(set) var themeName = "CRIMSON"
@@ -18,12 +29,12 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var heroEnabled = true
     /// Home rows append the media type to catalog titles (synced; default on).
     @Published private(set) var showCatalogType = true
-    /// UX-8: hide the entire Discover section on the Search screen (synced; default off).
-    @Published private(set) var hideDiscover = false
-    /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
+    /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Upstream 60ee0160:
+    /// a bundled key (`TmdbConfig.API_KEY`) is the default; an optional personal key overrides it.
     @Published private(set) var tmdbEnabled = false
-    @Published private(set) var tmdbHasKey = false
     @Published private(set) var tmdbUseReleaseDates = false
+    /// Whether a personal TMDB key override is stored (blank = the bundled key is in use).
+    @Published private(set) var tmdbHasPersonalKey = false
     /// Chip code for the metadata-language row: "device" while no language is stored (the shared
     /// repo derives it from the device language), else the stored code's primary subtag.
     @Published private(set) var tmdbLanguageSelection = "device"
@@ -31,11 +42,20 @@ final class SettingsViewModel: ObservableObject {
     /// the shared MetaDetailsRepository applies the enrichment itself on every load.
     @Published private(set) var mdbListEnabled = false
     @Published private(set) var mdbListHasKey = false
+    @Published private(set) var mdbListHasPersonalKey = false
+    @Published private(set) var mdbListAccountConnected = false
+    /// Account connected and no personal key: ratings are served through the account.
+    @Published private(set) var mdbListUsingAccount = false
     /// Subtitle appearance (applied by the player on file load). Nil until settings load.
     @Published private(set) var subtitleStyle: SubtitleStyleState?
     /// Preferred track languages (player auto-selects a matching track on load).
     @Published private(set) var preferredAudioLanguage = "device"
     @Published private(set) var preferredSubtitleLanguage = "none"
+    /// FEAT-84: the fallback track languages (shared `secondaryPreferred*Language`, synced per
+    /// profile, the values mobile's dialogs set). "" is None: the shared state carries nil, and the
+    /// pane's `SettingsListPickerRow` needs a non-optional value.
+    @Published private(set) var secondaryPreferredAudioLanguage = ""
+    @Published private(set) var secondaryPreferredSubtitleLanguage = ""
     /// Poster card style (size in dp, corner radius in dp, hide titles, landscape catalog rows).
     @Published private(set) var posterWidthDp: Int32 = 126
     @Published private(set) var posterCornerRadiusDp: Int32 = 12
@@ -43,6 +63,11 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var posterLandscapeRows = false
     /// Card-depth styling (master toggle + edge/sheen/coverage strengths + per-surface flags).
     @Published private(set) var cardDepth = CardDepthStyle.default
+    /// Episode-card rating badge visibility (show all / watched only / hide). rc14 (Steven rc13
+    /// verdict, 2026-09-30): a tester asked for an option to disable episode ratings completely.
+    /// Read from the shared `MetaScreenSettingsRepository` (same value mobile syncs), so a change
+    /// here also reaches Detail through that repository's own watcher.
+    @Published private(set) var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
     /// FEAT-10: every search-capable catalog across the enabled addons — the rows behind
     /// Settings → Content Sources → Search Sources. Derived from the addon watcher below.
     @Published private(set) var searchSourceOptions: [SearchCatalogOption] = []
@@ -64,6 +89,42 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var librarySourceMode = "trakt"
     /// Which backend owns Continue Watching / watched history: "trakt", "simkl", or "nuvio_sync".
     @Published private(set) var watchProgressSource = "trakt"
+    /// FEAT-38: pure black background for OLED screens. Backed by
+    /// `ThemeSettingsRepository.amoledEnabled` (profile-scoped, synced); `AppearanceSettingsPane`
+    /// binds directly to this member.
+    @Published private(set) var amoledEnabled = false
+    /// Upstream 7c1c6578: on/off switch for recent-search history. `SearchViewModel` already
+    /// consumes `SearchHistoryRepository`; this mirrors its `enabled` flag for the Settings pane.
+    @Published private(set) var recentSearchesEnabled = true
+    /// Upstream ecb69a88 (mobile "pause overlay toggle"): gates the mpv player's own
+    /// "metadata card after a sustained pause" overlay. Read out of the existing `playerWatcher`.
+    @Published private(set) var pauseOverlayEnabled = true
+    /// P4 B24: Settings › Playback › Loading Screen (`PlayerSettingsUiState.showLoadingOverlay`,
+    /// shared and synced; default on). Read out of the existing `playerWatcher`.
+    @Published private(set) var showLoadingOverlay = true
+    /// Orivio batch, item 1 (Settings → Playback → Auto-Play Source): whether playing a title
+    /// starts the first source in the Sources order by itself (`StreamAutoPlayMode.firstStream`).
+    /// `false` covers manual and the synced-from-mobile regex mode (tvOS has no UI for that one).
+    /// Read out of the existing `playerWatcher`.
+    @Published private(set) var autoPlayBestSource = false
+    /// With auto-play on: only start a link the debrid service already has cached, otherwise show
+    /// the source list (`PlayerSettingsUiState.streamAutoPlayCachedOnly`). Same watcher.
+    @Published private(set) var autoPlayCachedOnly = false
+    /// FEAT-49 (upstream 22c9ab20, Settings → Playback → Next Episode): start the Up Next source
+    /// search ahead of the card's display threshold (`PlayerSettingsUiState.preloadNextEpisodeSources`).
+    /// Same watcher.
+    @Published private(set) var preloadNextEpisodeSources = false
+    /// Orivio batch (Settings → Playback → Sources): the global source ordering/filter settings,
+    /// mirrored from `DebridSettings` by `debridSourcesWatcher`. Pickers bind string keys, not the
+    /// bridged Kotlin enums (see `streamSortKey(_:)` and friends below).
+    @Published private(set) var streamSortMode = "default"
+    @Published private(set) var streamMinimumQuality = "any"
+    @Published private(set) var streamDolbyVisionFilter = "any"
+    @Published private(set) var streamHdrFilter = "any"
+    /// Hide sources the debrid service has not cached. The Settings row only shows while
+    /// `debridCanResolvePlayableLinks` is true (a service is connected and enabled).
+    @Published private(set) var streamCachedOnly = false
+    @Published private(set) var debridCanResolvePlayableLinks = false
 
     /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
     ///
@@ -99,9 +160,22 @@ final class SettingsViewModel: ObservableObject {
     private var mdbListWatcher: FlowWatcher?
     private var posterStyleWatcher: FlowWatcher?
     private var cardDepthWatcher: FlowWatcher?
+    private var metaScreenWatcher: FlowWatcher?
     private var trackingSettingsWatcher: FlowWatcher?
     private var searchStateWatcher: FlowWatcher?
+    private var amoledWatcher: FlowWatcher?
+    private var recentSearchesWatcher: FlowWatcher?
+    private var episodeShuffleWatcher: FlowWatcher?
+    private var debridSourcesWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
+    /// Add-ons hub C, H4: the display titles of the enabled add-ons in installed order, the same
+    /// string the catalog items carry as `addonName` (`HomeCatalogDefinitions`). Set wherever
+    /// `enabledAddons` is set.
+    @Published private(set) var addonOrder: [String] = []
+    /// The same enabled add-ons' manifest ids, in the same order: catalog keys are
+    /// `"<manifest.id>:<type>:<catalogId>"`, so this is the reliable match (titles can repeat or
+    /// be renamed by the user).
+    @Published private(set) var addonIds: [String] = []
 
     func start() {
         guard playerWatcher == nil else { return }
@@ -109,51 +183,104 @@ final class SettingsViewModel: ObservableObject {
         ThemeSettingsRepository.shared.ensureLoaded()
         themeWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.selectedTheme) { [weak self] emitted in
             guard let self, let theme = emitted as? AppTheme else { return }
-            self.themeName = theme.name
+            self.assign(\.themeName, theme.name)
+        }
+        // FEAT-38: `amoledEnabled` is a bare `StateFlow<Boolean>` with no synchronous
+        // `currentThemeName()`-style accessor — the watch callback receives a boxed
+        // `KotlinBoolean`, same idiom as `AppThemeModel`'s `oledWatcher`.
+        amoledWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.amoledEnabled) { [weak self] emitted in
+            guard let self, let boxed = emitted as? KotlinBoolean else { return }
+            self.assign(\.amoledEnabled, boxed.boolValue)
         }
 
         PlayerSettingsRepository.shared.ensureLoaded()
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
-            self.skipIntroEnabled = state.skipIntroEnabled
-            self.subtitleStyle = state.subtitleStyle
-            self.preferredAudioLanguage = state.preferredAudioLanguage
-            self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
+            self.assign(\.skipIntroEnabled, state.skipIntroEnabled)
+            self.assign(\.autoSkipSegmentTypes, Set(state.autoSkipSegmentTypes.map { $0.storedValue }))
+            self.assign(\.subtitleStyle, state.subtitleStyle)
+            self.assign(\.preferredAudioLanguage, state.preferredAudioLanguage)
+            self.assign(\.preferredSubtitleLanguage, state.preferredSubtitleLanguage)
+            self.assign(\.secondaryPreferredAudioLanguage, state.secondaryPreferredAudioLanguage ?? "")
+            self.assign(\.secondaryPreferredSubtitleLanguage, state.secondaryPreferredSubtitleLanguage ?? "")
+            self.assign(\.pauseOverlayEnabled, state.pauseOverlayEnabled)
+            self.assign(\.showLoadingOverlay, state.showLoadingOverlay)
+            self.assign(\.autoPlayBestSource, state.streamAutoPlayMode == StreamAutoPlayMode.firstStream)
+            self.assign(\.autoPlayCachedOnly, state.streamAutoPlayCachedOnly)
+            self.assign(\.preloadNextEpisodeSources, state.preloadNextEpisodeSources)
         }
+
+        // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
+        // with every add-on's streams, not only debrid ones), so this watches that repository.
+        DebridSettingsRepository.shared.ensureLoaded()
+        debridSourcesWatcher = FlowWatcherKt.watch(DebridSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? DebridSettings else { return }
+            self.assign(\.streamSortMode, Self.streamSortKey(state.streamSortMode))
+            self.assign(\.streamMinimumQuality, Self.streamMinimumQualityKey(state.streamMinimumQuality))
+            self.assign(\.streamDolbyVisionFilter, Self.streamFeatureFilterKey(state.streamDolbyVisionFilter))
+            self.assign(\.streamHdrFilter, Self.streamFeatureFilterKey(state.streamHdrFilter))
+            self.assign(\.streamCachedOnly, state.streamCachedOnly)
+            self.assign(\.debridCanResolvePlayableLinks, state.canResolvePlayableLinks)
+        }
+
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        episodeShuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let profile = emitted as? EpisodeShuffleProfile else { return }
+            self.assign(\.episodeShuffleAvailable, profile.available)
+        }
+
+        // Upstream 7c1c6578: mirror `SearchHistoryRepository.enabled` (a bare `StateFlow<Boolean>`,
+        // same idiom as `amoledWatcher` above) so the Settings pane's toggle stays in step even
+        // while the Search tab's own `SearchViewModel` instance is not mounted.
+        recentSearchesWatcher = FlowWatcherKt.watch(SearchHistoryRepository.shared.enabled) { [weak self] emitted in
+            guard let self, let boxed = emitted as? KotlinBoolean else { return }
+            self.assign(\.recentSearchesEnabled, boxed.boolValue)
+        }
+        SearchHistoryRepository.shared.ensureLoaded()
 
         TmdbSettingsRepository.shared.ensureLoaded()
         tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TmdbSettings else { return }
-            self.tmdbEnabled = state.enabled
-            self.tmdbHasKey = state.hasApiKey
-            self.tmdbUseReleaseDates = state.useReleaseDates
+            self.assign(\.tmdbEnabled, state.enabled)
+            self.assign(\.tmdbUseReleaseDates, state.useReleaseDates)
+            self.assign(\.tmdbHasPersonalKey, !state.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             // Stored languages may carry a region ("de-DE" from the phone's field); the chip row
             // keys on the primary subtag.
-            self.tmdbLanguageSelection = TmdbSettingsRepository.shared.hasExplicitLanguage()
+            self.assign(\.tmdbLanguageSelection, TmdbSettingsRepository.shared.hasExplicitLanguage()
                 ? String(state.language.split(separator: "-").first ?? Substring(state.language))
-                : "device"
+                : "device")
         }
 
         MdbListSettingsRepository.shared.ensureLoaded()
         mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MdbListSettings else { return }
-            self.mdbListEnabled = state.enabled
-            self.mdbListHasKey = state.hasApiKey
+            self.assign(\.mdbListEnabled, state.enabled)
+            self.assign(\.mdbListHasKey, state.hasApiKey)
+            self.assign(\.mdbListHasPersonalKey, state.hasPersonalKey)
+            self.assign(\.mdbListAccountConnected, state.isAccountConnected)
+            self.assign(\.mdbListUsingAccount, state.usingAccount)
         }
 
         PosterCardStyleRepository.shared.ensureLoaded()
         posterStyleWatcher = FlowWatcherKt.watch(PosterCardStyleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PosterCardStyleUiState else { return }
-            self.posterWidthDp = state.widthDp
-            self.posterCornerRadiusDp = state.cornerRadiusDp
-            self.posterHideLabels = state.hideLabelsEnabled
-            self.posterLandscapeRows = state.catalogLandscapeModeEnabled
+            self.assign(\.posterWidthDp, state.widthDp)
+            self.assign(\.posterCornerRadiusDp, state.cornerRadiusDp)
+            self.assign(\.posterHideLabels, state.hideLabelsEnabled)
+            self.assign(\.posterLandscapeRows, state.catalogLandscapeModeEnabled)
         }
 
         CardDepthStyleRepository.shared.ensureLoaded()
         cardDepthWatcher = FlowWatcherKt.watch(CardDepthStyleRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? CardDepthStyleUiState else { return }
-            self.cardDepth = CardDepthStyle(from: state)
+            self.assign(\.cardDepth, CardDepthStyle(from: state))
+        }
+
+        // rc14 (Steven rc13 verdict, 2026-09-30): episode-ratings visibility (Poster Style pane).
+        MetaScreenSettingsRepository.shared.ensureLoaded()
+        metaScreenWatcher = FlowWatcherKt.watch(MetaScreenSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? MetaScreenSettingsUiState else { return }
+            self.assign(\.episodeRatingsVisibility, state.episodeRatingsVisibility)
         }
 
         // Library Source / Watch Progress Source (Content Sources pane). `TrackingSettingsRepository`
@@ -163,8 +290,8 @@ final class SettingsViewModel: ObservableObject {
         TrackingSettingsRepository.shared.ensureLoaded()
         trackingSettingsWatcher = FlowWatcherKt.watch(TrackingSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TraktSettingsUiState else { return }
-            self.librarySourceMode = Self.librarySourceModeKey(state.librarySourceMode)
-            self.watchProgressSource = Self.watchProgressSourceKey(state.watchProgressSource)
+            self.assign(\.librarySourceMode, Self.librarySourceModeKey(state.librarySourceMode))
+            self.assign(\.watchProgressSource, Self.watchProgressSourceKey(state.watchProgressSource))
         }
 
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
@@ -172,9 +299,11 @@ final class SettingsViewModel: ObservableObject {
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? AddonsUiState else { return }
             let enabled = AddonModelsKt.enabledAddons(state.addons)
-            self.enabledAddons = enabled
+            self.assign(\.enabledAddons, enabled)
+            self.assign(\.addonOrder, enabled.map(\.displayTitle))
+            self.assign(\.addonIds, enabled.compactMap { $0.manifest?.id })
             // FEAT-10: keep the Search Sources rows in step with the installed addons.
-            self.searchSourceOptions = SearchRepository.shared.searchCatalogOptions(addons: enabled)
+            self.assign(\.searchSourceOptions, SearchRepository.shared.searchCatalogOptions(addons: enabled))
             // "Home Rows blank" bug (docs/steven-batch-plan-2026-08-29.md, "data clobber"):
             // HomeCatalogSettingsRepository derives its published items ONLY from the in-memory
             // `definitions` set here. Feeding it an empty/pending-manifest emission — app start
@@ -189,17 +318,16 @@ final class SettingsViewModel: ObservableObject {
         }
         catalogWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
-            self.catalogs = state.items
-            self.showCatalogType = state.showCatalogType
-            self.heroEnabled = state.heroEnabled
-            self.hideDiscover = state.hideDiscover
+            self.assign(\.catalogs, state.items)
+            self.assign(\.showCatalogType, state.showCatalogType)
+            self.assign(\.heroEnabled, state.heroEnabled)
         }
 
         // BUG-33 defect 1 instrumentation: the Search Sources pane's fan-out caption. Watches
         // the same shared `SearchRepository.uiState` the Search tab's `SearchViewModel` watches.
         searchStateWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? SearchUiState else { return }
-            self.lastSearchFanOut = state.lastFanOut
+            self.assign(\.lastSearchFanOut, state.lastFanOut)
         }
 
         // "Home Rows blank" bug: Settings must not depend on Home/Search having mounted first to
@@ -219,8 +347,13 @@ final class SettingsViewModel: ObservableObject {
         mdbListWatcher?.cancel(); mdbListWatcher = nil
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
         cardDepthWatcher?.cancel(); cardDepthWatcher = nil
+        metaScreenWatcher?.cancel(); metaScreenWatcher = nil
         trackingSettingsWatcher?.cancel(); trackingSettingsWatcher = nil
         searchStateWatcher?.cancel(); searchStateWatcher = nil
+        amoledWatcher?.cancel(); amoledWatcher = nil
+        recentSearchesWatcher?.cancel(); recentSearchesWatcher = nil
+        episodeShuffleWatcher?.cancel(); episodeShuffleWatcher = nil
+        debridSourcesWatcher?.cancel(); debridSourcesWatcher = nil
     }
 
     // MARK: - Actions
@@ -229,8 +362,132 @@ final class SettingsViewModel: ObservableObject {
         ThemeSettingsRepository.shared.setTheme(theme: theme)
     }
 
+    /// Persists the Episode Shuffle master switch; a refused write (returns false) leaves the
+    /// published value untouched so the toggle snaps back to its stored state.
+    func setEpisodeShuffleAvailable(_ available: Bool) {
+        if !EpisodeShuffleRepository.shared.setAvailable(available: available) {
+            objectWillChange.send()
+        }
+    }
+
     func setSkipIntro(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)
+    }
+
+    /// Upstream 199c5882: whether the player auto-skips `type` segments.
+    func isAutoSkipEnabled(_ type: AutoSkipSegmentType) -> Bool {
+        autoSkipSegmentTypes.contains(type.storedValue)
+    }
+
+    func setAutoSkip(_ type: AutoSkipSegmentType, enabled: Bool) {
+        PlayerSettingsRepository.shared.setAutoSkipSegmentType(type: type, enabled: enabled)
+    }
+
+    /// FEAT-38: pure black background for OLED screens.
+    func setAmoled(_ enabled: Bool) {
+        ThemeSettingsRepository.shared.setAmoled(enabled: enabled)
+    }
+
+    /// Upstream 7c1c6578: on/off switch for recording new recent searches (and showing existing
+    /// ones) on the Search screen.
+    func setRecentSearchesEnabled(_ enabled: Bool) {
+        SearchHistoryRepository.shared.setEnabled(enabled: enabled)
+    }
+
+    /// Upstream ecb69a88: gates the mpv player's "metadata card after a sustained pause" overlay.
+    func setPauseOverlayEnabled(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setPauseOverlayEnabled(enabled: enabled)
+    }
+
+    /// P4 B24: the loading screen both players draw while a video starts.
+    func setShowLoadingOverlay(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setShowLoadingOverlay(enabled: enabled)
+    }
+
+    // MARK: - Auto-Play Source / Sources (Orivio batch)
+
+    /// On = `firstStream` (Play starts the first source in the Sources order), off = `manual`
+    /// (Play opens the source list). Switching off also replaces a regex mode synced from mobile.
+    func setAutoPlayBestSource(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayMode(
+            mode: enabled ? StreamAutoPlayMode.firstStream : StreamAutoPlayMode.manual
+        )
+    }
+
+    func setAutoPlayCachedOnly(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayCachedOnly(enabled: enabled)
+    }
+
+    func setPreloadNextEpisodeSources(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setPreloadNextEpisodeSources(enabled: enabled)
+    }
+
+    /// "default" | "quality" | "sizeDesc" | "sizeAsc" → `DebridStreamSortMode`.
+    func setStreamSortMode(_ key: String) {
+        let mode: DebridStreamSortMode
+        switch key {
+        case "quality": mode = .qualityDesc
+        case "sizeDesc": mode = .sizeDesc
+        case "sizeAsc": mode = .sizeAsc
+        default: mode = .default_
+        }
+        DebridSettingsRepository.shared.setStreamSortMode(value: mode)
+    }
+
+    /// "any" | "720" | "1080" | "2160" → `DebridStreamMinimumQuality`.
+    func setStreamMinimumQuality(_ key: String) {
+        let quality: DebridStreamMinimumQuality
+        switch key {
+        case "720": quality = .p720
+        case "1080": quality = .p1080
+        case "2160": quality = .p2160
+        default: quality = DebridStreamMinimumQuality.any
+        }
+        DebridSettingsRepository.shared.setStreamMinimumQuality(value: quality)
+    }
+
+    /// "any" | "only" | "exclude" → `DebridStreamFeatureFilter`.
+    func setStreamDolbyVisionFilter(_ key: String) {
+        DebridSettingsRepository.shared.setStreamDolbyVisionFilter(value: Self.streamFeatureFilter(forKey: key))
+    }
+
+    func setStreamHdrFilter(_ key: String) {
+        DebridSettingsRepository.shared.setStreamHdrFilter(value: Self.streamFeatureFilter(forKey: key))
+    }
+
+    func setStreamCachedOnly(_ enabled: Bool) {
+        DebridSettingsRepository.shared.setStreamCachedOnly(enabled: enabled)
+    }
+
+    // Bridged Kotlin enum ↔ picker key. Compared with `==` rather than switched over: Kotlin enum
+    // entries do not import as an exhaustively-switchable Swift enum (same caution as
+    // `librarySourceModeKey`).
+    private static func streamSortKey(_ mode: DebridStreamSortMode) -> String {
+        if mode == .qualityDesc { return "quality" }
+        if mode == .sizeDesc { return "sizeDesc" }
+        if mode == .sizeAsc { return "sizeAsc" }
+        return "default"
+    }
+
+    private static func streamMinimumQualityKey(_ quality: DebridStreamMinimumQuality) -> String {
+        if quality == .p720 { return "720" }
+        if quality == .p1080 { return "1080" }
+        if quality == .p2160 { return "2160" }
+        return "any"
+    }
+
+    private static func streamFeatureFilterKey(_ filter: DebridStreamFeatureFilter) -> String {
+        if filter == .only { return "only" }
+        if filter == .exclude { return "exclude" }
+        return "any"
+    }
+
+    private static func streamFeatureFilter(forKey key: String) -> DebridStreamFeatureFilter {
+        switch key {
+        case "only": return .only
+        case "exclude": return .exclude
+        default: return DebridStreamFeatureFilter.any
+        }
     }
 
     // MARK: - Device-local player tuning (UserDefaults — hardware knobs, deliberately unsynced)
@@ -241,6 +498,12 @@ final class SettingsViewModel: ObservableObject {
     @Published var readaheadSec: Int = UserDefaults.standard.integer(forKey: PlayerTuning.readaheadSecKey)
     /// Ask tvOS to match the display's refresh rate (and dynamic range) to the content.
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
+    /// What holding Left/Right does in the mpv player: "step" or "scan". Device-local.
+    @Published var holdMode: String = UserDefaults.standard.string(forKey: PlayerTuning.holdModeKey) ?? "step"
+    /// What one click on Left/Right does in the mpv player: "skip10" or "chapter". Device-local.
+    @Published var edgeClickMode: String = UserDefaults.standard.string(forKey: PlayerTuning.edgeClickModeKey) ?? "skip10"
+    /// Show the time of day while the mpv player controls are up. Device-local.
+    @Published var showClock: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.showClockKey)
     /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
     @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
@@ -264,6 +527,21 @@ final class SettingsViewModel: ObservableObject {
         UserDefaults.standard.set(value, forKey: PlayerTuning.matchFrameRateKey)
     }
 
+    func setHoldMode(_ value: String) {
+        holdMode = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.holdModeKey)
+    }
+
+    func setEdgeClickMode(_ value: String) {
+        edgeClickMode = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.edgeClickModeKey)
+    }
+
+    func setShowClock(_ value: Bool) {
+        showClock = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.showClockKey)
+    }
+
     func setEnhancedRenderer(_ value: Bool) {
         enhancedRenderer = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.enhancedRendererKey)
@@ -280,12 +558,17 @@ final class SettingsViewModel: ObservableObject {
     }
 
     // MARK: - TMDB
+    // Upstream 60ee0160 + df589078: a bundled key is the default; the optional personal key below
+    // overrides it (synced cross-device). Neither gates the enrichment toggle.
 
-    /// Save a key and turn enrichment on. Order matters: `setEnabled(true)` is a no-op while the key
-    /// is blank, so set the key first (the repo trims it and persists via NSUserDefaults).
+    /// Store a personal key override; the shared repo's effective key switches over immediately.
     func saveTmdbKey(_ key: String) {
-        TmdbSettingsRepository.shared.setApiKey(value: key)
-        TmdbSettingsRepository.shared.setEnabled(value: true)
+        TmdbSettingsRepository.shared.setApiKey(value: key.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Blank clears the override and the bundled key is used again.
+    func clearTmdbKey() {
+        TmdbSettingsRepository.shared.setApiKey(value: "")
     }
 
     // MARK: - MDBList
@@ -302,10 +585,12 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearMdbListKey() {
+        // Key-only: ratings stay enabled when a connected account can serve them; the shared
+        // `isActive` covers the no-key/no-account case.
         MdbListSettingsRepository.shared.setApiKey(value: "")
-        MdbListSettingsRepository.shared.setEnabled(value: false)
     }
 
+    /// Unconditional now that the key is bundled — no more no-op-while-blank gate.
     func setTmdbEnabled(_ enabled: Bool) {
         TmdbSettingsRepository.shared.setEnabled(value: enabled)
     }
@@ -343,9 +628,18 @@ final class SettingsViewModel: ObservableObject {
         HomeCatalogSettingsRepository.shared.setHideDiscover(enabled: enabled)
     }
 
-    /// Clearing the key also disables enrichment (handled inside the repo).
-    func clearTmdbKey() {
-        TmdbSettingsRepository.shared.setApiKey(value: "")
+    /// Search & Discover batch (A5): where Discover lives. Writes the device-local placement and
+    /// mirrors Off into the synced Hide Discover flag (so the phone hides it too, and a profile
+    /// that hid it elsewhere reads back as Off here).
+    func setDiscoverPlacement(_ choice: DiscoverPlacement) {
+        let writes = DiscoverPlacement.writes(for: choice)
+        UserDefaults.standard.set(writes.placementRaw, forKey: DiscoverPlacement.defaultsKey)
+        setHideDiscover(writes.hideDiscover)
+        // Review r1 P2-1: every pick remounts the tab tree, even one that leaves the stored string
+        // unchanged (`ContentView`'s `.id` key carries this revision).
+        let defaults = UserDefaults.standard
+        defaults.set(defaults.integer(forKey: DiscoverPlacement.revisionKey) &+ 1,
+                     forKey: DiscoverPlacement.revisionKey)
     }
 
     // MARK: - Subtitles
@@ -403,6 +697,16 @@ final class SettingsViewModel: ObservableObject {
         PlayerSettingsRepository.shared.setPreferredSubtitleLanguage(language: code)
     }
 
+    /// FEAT-84 Fallback Audio Language. "" (None) clears it: the shared setter takes nil.
+    func setSecondaryPreferredAudioLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setSecondaryPreferredAudioLanguage(language: code.isEmpty ? nil : code)
+    }
+
+    /// FEAT-84 Fallback Subtitle Language. "" (None) clears it: the shared setter takes nil.
+    func setSecondaryPreferredSubtitleLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setSecondaryPreferredSubtitleLanguage(language: code.isEmpty ? nil : code)
+    }
+
     // MARK: - Poster style
 
     func setPosterWidth(_ dp: Int32) {
@@ -423,6 +727,13 @@ final class SettingsViewModel: ObservableObject {
 
     func resetPosterStyle() {
         PosterCardStyleRepository.shared.resetToDefaults()
+    }
+
+    // MARK: - Episode ratings
+
+    /// rc14 (Steven rc13 verdict, 2026-09-30): persists the episode-rating badge visibility.
+    func setEpisodeRatingsVisibility(_ visibility: EpisodeRatingsVisibility) {
+        MetaScreenSettingsRepository.shared.setEpisodeRatingsVisibility(visibility: visibility)
     }
 
     // MARK: - Card depth
@@ -463,18 +774,20 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Library Source / Watch Progress Source
 
-    /// "local", "trakt", or "simkl" → the shared `LibrarySourceMode`. Comparisons use `==` against
+    /// "local", "trakt", "simkl", or "mdblist" → the shared `LibrarySourceMode`. Comparisons use `==` against
     /// the bridged Kotlin enum rather than `switch` (same caution as `setCardDepthSurface`: Kotlin
     /// enum entries are not guaranteed to import as an exhaustively-switchable Swift enum).
     private static func librarySourceModeKey(_ mode: LibrarySourceMode) -> String {
         if mode == .trakt { return "trakt" }
         if mode == .simkl { return "simkl" }
+        if mode == .mdblist { return "mdblist" }
         return "local"
     }
 
     private static func watchProgressSourceKey(_ source: WatchProgressSource) -> String {
         if source == .trakt { return "trakt" }
         if source == .simkl { return "simkl" }
+        if source == .mdblist { return "mdblist" }
         return "nuvio_sync"
     }
 
@@ -486,6 +799,7 @@ final class SettingsViewModel: ObservableObject {
         switch key {
         case "trakt": mode = .trakt
         case "simkl": mode = .simkl
+        case "mdblist": mode = .mdblist
         default: mode = .local
         }
         TrackingSettingsRepository.shared.setLibrarySourceMode(source: mode)
@@ -496,6 +810,7 @@ final class SettingsViewModel: ObservableObject {
         switch key {
         case "trakt": source = .trakt
         case "simkl": source = .simkl
+        case "mdblist": source = .mdblist
         default: source = .nuvioSync
         }
         // Route through the repository/coordinator rather than writing the setting directly.
@@ -541,6 +856,74 @@ final class SettingsViewModel: ObservableObject {
         refreshHome()
     }
 
+    /// Add-ons hub C, H4: one-shot "Match add-ons order". Reorders the catalogs to follow the
+    /// installed add-ons' order through `moveByIndex`, which indexes ALL ordered keys, collections
+    /// included, so the plan is computed over every key and never moves a collection. Reads the
+    /// repository's current items (as `move` does), else this model's. Returns the number of moves
+    /// made (0 when Home already follows the add-ons).
+    @discardableResult
+    func matchCatalogsToAddonOrder() -> Int {
+        let repoItems = (HomeCatalogSettingsRepository.shared.uiState.value_ as? HomeCatalogSettingsUiState)?.items ?? []
+        let items = repoItems.isEmpty ? catalogs : repoItems
+        let current = items.map(\.key)
+        let desired = Self.catalogOrderFollowingAddons(items: items, addonIds: addonIds, addonTitles: addonOrder)
+        let moves = Self.movesToReach(current: current, desired: desired)
+        for (from, to) in moves {
+            HomeCatalogSettingsRepository.shared.moveByIndex(fromIndex: Int32(from), toIndex: Int32(to))
+        }
+        if !moves.isEmpty { refreshHome() }
+        return moves.count
+    }
+
+    /// The manifest id at the front of a catalog key `"<manifest.id>:<type>:<catalogId>"`: the key
+    /// minus its last two components. nil for keys that do not have that shape (collections).
+    nonisolated static func idPrefix(of key: String) -> String? {
+        let parts = key.components(separatedBy: ":")
+        guard parts.count >= 3 else { return nil }
+        return parts.dropLast(2).joined(separator: ":")
+    }
+
+    /// The keys in the order "follow the add-ons" wants: collections keep their current positions;
+    /// the other items are stably sorted by their add-on's position (matched by manifest id, else
+    /// by title; unknown add-ons last, ties by current order).
+    nonisolated static func catalogOrderFollowingAddons(
+        items: [HomeCatalogSettingsItem], addonIds: [String], addonTitles: [String]
+    ) -> [String] {
+        func rank(_ item: HomeCatalogSettingsItem) -> Int {
+            if let id = idPrefix(of: item.key), let byId = addonIds.firstIndex(of: id) { return byId }
+            return addonTitles.firstIndex(of: item.addonName) ?? Int.max
+        }
+        let movable = items.enumerated()
+            .filter { !$0.element.isCollection }
+            .sorted { lhs, rhs in
+                let l = rank(lhs.element)
+                let r = rank(rhs.element)
+                return l != r ? l < r : lhs.offset < rhs.offset
+            }
+            .map(\.element.key)
+        var queue = movable[...]
+        return items.map { item in
+            if item.isCollection { return item.key }
+            return queue.popFirst() ?? item.key
+        }
+    }
+
+    /// The `moveByIndex(from, to)` steps that turn `current` into `desired`: a selection pass that,
+    /// for each index, moves the wanted key from where it now sits. `[]` when equal or when the key
+    /// sets differ.
+    nonisolated static func movesToReach(current: [String], desired: [String]) -> [(from: Int, to: Int)] {
+        guard current != desired, current.count == desired.count, Set(current) == Set(desired),
+              Set(current).count == current.count else { return [] }
+        var working = current
+        var moves: [(from: Int, to: Int)] = []
+        for index in desired.indices where working[index] != desired[index] {
+            guard let from = working.firstIndex(of: desired[index]) else { continue }
+            working.insert(working.remove(at: from), at: index)
+            moves.append((from: from, to: index))
+        }
+        return moves
+    }
+
     /// Re-apply the new catalog preferences to Home so the change is visible when the user returns.
     private func refreshHome() {
         HomeRepository.shared.refresh(addons: enabledAddons, force: true)
@@ -555,7 +938,11 @@ final class SettingsViewModel: ObservableObject {
         tmdbWatcher?.cancel()
         posterStyleWatcher?.cancel()
         cardDepthWatcher?.cancel()
+        metaScreenWatcher?.cancel()
         trackingSettingsWatcher?.cancel()
         searchStateWatcher?.cancel()
+        amoledWatcher?.cancel()
+        recentSearchesWatcher?.cancel()
+        debridSourcesWatcher?.cancel()
     }
 }

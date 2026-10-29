@@ -44,10 +44,12 @@ hotfix/rebuild that genuinely adds nothing user-facing.
 
 Options:
   --tag <tag>          Use an explicit release tag instead of auto-incrementing
+  --prev-tag <tag>     Changelog + README check span from this tag instead of the
+                       newest dotjarden-tvos-v* tag (a public beta after a run of rc tags)
   --changelog <file>   Markdown file with hand-written highlights for the notes
   --reddit-changelog <file>
                        After publishing, swap the "Latest build" block in the
-                       r/Nuvio beta thread's post body for this file's contents,
+                       r/NuvioForks beta thread's post body for this file's contents,
                        so the post always describes what releases/latest serves.
                        Shows a diff and asks before touching the live post; pass
                        --yes to skip the prompt. Needs REDDIT_CLIENT_ID and
@@ -66,6 +68,7 @@ EOF
 }
 
 TAG=""
+PREV_TAG_OVERRIDE=""
 SKIP_BUILD=0
 SKIP_README_CHECK=0
 DRY_RUN=0
@@ -76,6 +79,7 @@ ASSUME_YES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
+    --prev-tag) PREV_TAG_OVERRIDE="$2"; shift 2 ;;
     --changelog) CHANGELOG_FILE="$2"; shift 2 ;;
     --reddit-changelog) REDDIT_CHANGELOG_FILE="$2"; shift 2 ;;
     --reddit-post) REDDIT_POST_ID="$2"; shift 2 ;;
@@ -245,7 +249,13 @@ sanitize_changelog() {
 # exist on GitHub until fetched.
 git fetch --tags --quiet origin \
   || echo "warning: could not fetch tags from origin; changelog range may be stale." >&2
-PREV_TAG="$(git tag --list 'dotjarden-tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+if [[ -n "$PREV_TAG_OVERRIDE" ]]; then
+  git rev-parse --verify --quiet "refs/tags/$PREV_TAG_OVERRIDE" >/dev/null \
+    || { echo "error: --prev-tag $PREV_TAG_OVERRIDE is not a tag in this repo" >&2; exit 1; }
+  PREV_TAG="$PREV_TAG_OVERRIDE"
+else
+  PREV_TAG="$(git tag --list 'dotjarden-tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+fi
 CHANGELOG_BODY=""
 if [[ -n "$PREV_TAG" ]]; then
   RAW_CHANGELOG="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
@@ -463,7 +473,7 @@ fi
 # fail the release that already succeeded. It exits non-zero on its own if the post
 # is not in the shape it knows how to edit, rather than mangling it.
 if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
-  echo "==> Updating the r/Nuvio beta thread's post body"
+  echo "==> Updating the r/NuvioForks beta thread's post body"
   reddit_args=(--changelog "$REDDIT_CHANGELOG_FILE")
   [[ -n "$REDDIT_POST_ID" ]] && reddit_args+=(--post-id "$REDDIT_POST_ID")
   [[ "$ASSUME_YES" -eq 1 ]] && reddit_args+=(--yes)

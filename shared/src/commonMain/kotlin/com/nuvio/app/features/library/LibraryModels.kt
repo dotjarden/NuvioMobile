@@ -1,10 +1,12 @@
 package com.nuvio.app.features.library
 
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.details.knownImdbRating
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.tracking.TrackingAttributedItem
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class LibraryItem(
@@ -22,12 +24,19 @@ data class LibraryItem(
     val addonBaseUrl: String? = null,
     val listKeys: Set<String> = emptySet(),
     val traktRank: Int? = null,
+    val listRanks: Map<String, Int> = emptyMap(),
     val imdbId: String? = null,
     val tmdbId: Int? = null,
     val traktId: Int? = null,
     /** Original media category from the tracking provider (e.g. "anime").
      *  Used for UI filtering while [type] stays as "movie"/"series" for meta addon compatibility. */
     val mediaCategory: String? = null,
+    val rawPosterUrl: String? = null,
+    val landscapePoster: String? = null,
+    /** UI-only overlay bookkeeping (never persisted or synced): the pre-overlay landscape art. */
+    @Transient val rawLandscapePosterUrl: String? = null,
+    /** UI-only: true once a custom poster overlay recorded the originals (a null original is restorable). */
+    @Transient val customPosterApplied: Boolean = false,
     override val trackingProviderId: String? = null,
     override val trackingProviderItemId: String? = null,
     override val trackingSourceUrl: String? = null,
@@ -47,6 +56,7 @@ enum class LibrarySourceMode {
     LOCAL,
     TRAKT,
     SIMKL,
+    MDBLIST,
 }
 
 data class LibraryUiState(
@@ -80,7 +90,8 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         id = id,
         type = type,
         name = name,
-        poster = poster,
+        // Never persist/sync a custom-poster (RPDB-key) URL: store the original art.
+        poster = if (customPosterApplied) rawPosterUrl else (rawPosterUrl ?: poster),
         banner = banner,
         logo = logo,
         description = description,
@@ -88,6 +99,7 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         imdbRating = imdbRating,
         genres = genres,
         posterShape = posterShape,
+        landscapePoster = if (customPosterApplied) rawLandscapePosterUrl else (rawLandscapePosterUrl ?: landscapePoster),
         imdbId = id.takeIf { it.startsWith("tt") },
         savedAtEpochMs = savedAtEpochMs,
     )
@@ -103,6 +115,12 @@ fun LibraryItem.toMetaPreview(): MetaPreview =
         posterShape = posterShape,
         description = description,
         releaseInfo = releaseInfo,
-        imdbRating = imdbRating,
+        // Review r5: Detail falls back to the preview's rating, and library rows can carry a
+        // synced 0 ("0.0") or an "N/A" saved before the 2026-10-04 parse fix.
+        imdbRating = knownImdbRating(imdbRating),
         genres = genres,
+        rawPosterUrl = rawPosterUrl,
+        landscapePoster = landscapePoster,
+        rawLandscapePosterUrl = rawLandscapePosterUrl,
+        customPosterApplied = customPosterApplied || rawPosterUrl != null,
     )

@@ -3,7 +3,7 @@ import Combine
 import SharedCore
 import SwiftUI
 
-/// Feeds the shared bottom drawer from the native AVPlayer path: media-selection groups →
+/// Feeds the swipe-down top panel from the native AVPlayer path: media-selection groups →
 /// Subtitles/Audio rows, playback ticks → Info rows/chips, AVAudioSession → output route name.
 /// Panel picks go straight back to `NativePlaybackCoordinator.select(...)`, which uses the same
 /// `AVPlayerItem.select(_:in:)` path as the native transport-bar popovers, so both UIs stay in step.
@@ -22,8 +22,6 @@ final class NativePlayerPanelAdapter {
         self.model = model
         self.context = context
         self.routingNote = routingNote
-        model.onPresentation = { [weak self] in self?.rebuildSelections() }
-        model.onDetailsVisibilityChange = { [weak self] visible in if visible { self?.onTick() } }
 
         model.onSelectSubtitle = { [weak self] option in self?.selectSubtitle(option) }
         model.onSelectAudio = { [weak self] option in self?.selectAudio(option) }
@@ -36,16 +34,32 @@ final class NativePlayerPanelAdapter {
             .receive(on: RunLoop.main)
             .sink { [weak model] ms in if model?.subtitleDelayMs != ms { model?.subtitleDelayMs = ms } }
             .store(in: &cancellables)
+        // Sync Line (P5 B19): position captured at press time; cues from the server's cached VTT.
+        model.syncLineCapturePositionMs = { [weak self] in self?.coordinator.currentPositionMs() ?? 0 }
+        model.syncLineCues = { [weak self] in await self?.coordinator.selectedAddonSubtitleCues() }
 
-        Publishers.Merge4(
+        Publishers.MergeMany([
             coordinator.$legibleGroup.map { _ in () }.eraseToAnyPublisher(),
             coordinator.$audibleGroup.map { _ in () }.eraseToAnyPublisher(),
             coordinator.$selectionVersion.map { _ in () }.eraseToAnyPublisher(),
-            coordinator.$audioTracks.map { _ in () }.eraseToAnyPublisher()
-        )
+            coordinator.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
+            // B17: late add-on renditions and the item rebuild.
+            coordinator.$lateSubtitleRows.map { _ in () }.eraseToAnyPublisher(),
+            coordinator.$isRebuildingItem.map { _ in () }.eraseToAnyPublisher(),
+        ])
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildSelections() }
         .store(in: &cancellables)
+
+        // Chapters tab (A6-native), same close-after-select rule as mpv.
+        model.onSelectChapter = { [weak coordinator, weak model] chapter in
+            coordinator?.seek(toChapter: chapter.sec)
+            model?.onClose?()
+        }
+        coordinator.$chapters
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.rebuildChapters() }
+            .store(in: &cancellables)
 
         refreshRoute()
         routeObserver = NotificationCenter.default.addObserver(
@@ -62,7 +76,6 @@ final class NativePlayerPanelAdapter {
     /// Called from the coordinator's tick: refresh the Info tab and re-derive the checkmarks (the
     /// media-selection notification is not reliable everywhere).
     func onTick() {
-        guard model.detailsVisible else { return }
         let rows = coordinator.streamInfoRows(routingNote: routingNote)
         var dynamic = coordinator.infoChips()
         // The catalog runtime stands in until the player reports a real duration.
@@ -73,12 +86,31 @@ final class NativePlayerPanelAdapter {
         if model.info.rows != rows { model.info.rows = rows }
         if model.info.chips != chips { model.info.chips = chips }
         rebuildSelections()
+        rebuildChapters()
+    }
+
+    private func rebuildChapters() {
+        let list = coordinator.chapters
+        let current = PlayerChapters.index(at: coordinator.lastPositionSec, in: list)
+        let rows = list.enumerated().map { i, c in
+            PlayerPanelChapter(id: i, title: PlayerChapters.displayTitle(c, index: i), sec: c.sec, isCurrent: i == current)
+        }
+        if model.chapters != rows { model.chapters = rows }
     }
 
     // MARK: - Selections
 
     private func rebuildSelections() {
-        // Subtitles: Off, embedded (rendition order), addon (rendition order).
+        rebuildSubtitleRows()
+        rebuildAudioRows()
+    }
+
+    private func rebuildSubtitleRows() {
+        // B17: while the item is being rebuilt its legible group is not loaded yet; keep the list
+        // the viewer is looking at instead of flashing an empty one under the focused row.
+        if coordinator.isRebuildingItem && coordinator.legibleGroup == nil { return }
+        // Subtitles: Off, embedded (rendition order), addon (rendition order), then late add-on
+        // renditions not yet in the item (a pick rebuilds it).
         var subtitles: [PlayerPanelOption] = []
         if let group = coordinator.legibleGroup {
             let selected = coordinator.currentSubtitleOption
@@ -115,6 +147,16 @@ final class NativePlayerPanelAdapter {
                     isSelected: selectedName == name))
             }
         }
+        let late = coordinator.lateSubtitleRows
+        if !late.isEmpty {
+            if subtitles.isEmpty {
+                subtitles.append(PlayerPanelOption(id: "off", title: String(localized: "Off"), group: .off,
+                                                   isSelected: true))
+            }
+            for r in late where !subtitles.contains(where: { $0.id == r.name }) {
+                subtitles.append(PlayerPanelOption(id: r.name, title: r.name, group: .addon, isSelected: false))
+            }
+        }
         if model.subtitles != subtitles { model.subtitles = subtitles }
         // The Timing row is only meaningful for a showing ADDON rendition: the whole file is ours to
         // re-serve. Embedded text tracks are per-segment VTTs the remux writes as it goes and are not
@@ -124,9 +166,12 @@ final class NativePlayerPanelAdapter {
         let canRetime = subtitles.contains { $0.isSelected && $0.group == .addon }
             || (coordinator.isRefetchingSubtitles && model.supportsSubtitleDelay)
         if model.supportsSubtitleDelay != canRetime { model.supportsSubtitleDelay = canRetime }
+        if model.syncLineAvailable != canRetime { model.syncLineAvailable = canRetime }
         let searching = !coordinator.addonSubtitlesFetched
         if model.subtitlesSearching != searching { model.subtitlesSearching = searching }
+    }
 
+    private func rebuildAudioRows() {
         // Audio: every audible option; the title is the rendition NAME ("English · TrueHD 7.1").
         var audio: [PlayerPanelOption] = []
         if let group = coordinator.audibleGroup {
@@ -142,13 +187,18 @@ final class NativePlayerPanelAdapter {
 
     private func selectSubtitle(_ option: PlayerPanelOption?) {
         guard let option else { coordinator.select(subtitle: nil); return }
-        guard let group = coordinator.legibleGroup,
-              let target = group.options.first(where: {
-                  let name = NativePlaybackCoordinator.renditionName(of: $0)
-                  return NativePlaybackCoordinator.subtitleSlot(ofName: name) == 0
-                      && NativePlaybackCoordinator.canonicalSubtitleName(name) == option.id
-              })
-        else { return }
+        let target = coordinator.legibleGroup?.options.first(where: {
+            let name = NativePlaybackCoordinator.renditionName(of: $0)
+            return NativePlaybackCoordinator.subtitleSlot(ofName: name) == 0
+                && NativePlaybackCoordinator.canonicalSubtitleName(name) == option.id
+        })
+        guard let target else {
+            // B17: a late rendition the current item does not carry yet.
+            if coordinator.lateSubtitleRows.contains(where: { $0.name == option.id }) {
+                coordinator.selectLateSubtitle(name: option.id)
+            }
+            return
+        }
         coordinator.select(subtitle: target)
     }
 

@@ -6,6 +6,10 @@ import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.network.NetworkStatusRepository
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.core.ui.ToastControllerProvider
 import com.nuvio.app.features.library.sync.LibrarySyncAdapter
 import com.nuvio.app.features.library.sync.SupabaseLibrarySyncAdapter
@@ -13,10 +17,13 @@ import com.nuvio.app.features.library.sync.consumeCursorPages
 import com.nuvio.app.features.library.sync.libraryDeltaPageSize
 import com.nuvio.app.features.library.sync.librarySnapshotPageSize
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
+import com.nuvio.app.features.mdblist.isMdbListReadOnlyListKey
+import com.nuvio.app.features.mdblist.localizedMdbListMessage
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.tracking.TrackingLibraryTabKind
+import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.TrackingSettingsRepository
@@ -31,15 +38,23 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+/** The pattern the LIBRARY screen effectively uses: blank when the screen is disabled. */
+internal fun libraryPosterPatternKey(pattern: String, screens: Set<CustomPosterScreen>): String =
+    if (CustomPosterScreen.LIBRARY in screens) pattern else ""
 
 object LibraryRepository {
     private const val pushDebounceMs = 500L
@@ -60,17 +75,26 @@ object LibraryRepository {
     init {
         ensureTrackingProvidersRegistered()
         syncScope.launch {
-            TrackingProviderRegistry.connectedProviderIds.collectLatest {
-                TrackingProviderRegistry.connectedLibraryProviders().forEach(TrackingLibraryProvider::prepare)
-                activeLibraryProvider()?.let { provider ->
-                    refreshLibraryProvider(
-                        provider = provider,
-                        reason = "connection state change",
-                        intent = provider.connectionRefreshIntent,
-                    )
+            // Fork: only library-capable connections matter here, and the ACTIVE library provider is
+            // re-pulled only when it (re)appears. Upstream re-pulled it on every connect/disconnect of
+            // any provider, so connecting MDBList while Trakt is the library source pulled Trakt again.
+            var refreshedActiveProviderId: TrackingProviderId? = null
+            TrackingProviderRegistry.connectedProviderIds
+                .map { ids -> ids.filterTo(linkedSetOf()) { id -> TrackingProviderRegistry.libraryProvider(id) != null } }
+                .distinctUntilChanged()
+                .collectLatest {
+                    TrackingProviderRegistry.connectedLibraryProviders().forEach(TrackingLibraryProvider::prepare)
+                    val provider = activeLibraryProvider()
+                    if (provider != null && provider.providerId != refreshedActiveProviderId) {
+                        refreshLibraryProvider(
+                            provider = provider,
+                            reason = "connection state change",
+                            intent = provider.connectionRefreshIntent,
+                        )
+                    }
+                    refreshedActiveProviderId = provider?.providerId
+                    publish()
                 }
-                publish()
-            }
         }
         syncScope.launch {
             TrackingSettingsRepository.uiState
@@ -82,6 +106,23 @@ object LibraryRepository {
                         provider.prepare()
                         refreshLibraryProviderAsync(provider)
                     }
+                }
+        }
+        // Upstream db6c3128: republish when the effective library poster pattern changes. (Upstream
+        // maps to Unit here, so distinctUntilChanged + drop(1) swallow every emission and the
+        // collector never fires; the mapped key is a real value.) drop(1) skips the initial value.
+        syncScope.launch {
+            combine(
+                CustomPosterUrlRepository.pattern,
+                CustomPosterUrlRepository.enabledScreens,
+            ) { pattern, screens -> libraryPosterPatternKey(pattern, screens) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collectLatest {
+                    // Before the local library has loaded (cold start, or the window in a profile
+                    // switch where onProfileChanged() re-emits the pattern), publish() would push an
+                    // empty unloaded state; loadFromDisk publishes with the current pattern itself.
+                    if (localState.snapshot().hasLoaded) publish()
                 }
         }
         TrackingProviderRegistry.libraryProviders().forEach { provider ->
@@ -184,18 +225,26 @@ object LibraryRepository {
         ) != null
     }
 
-    suspend fun pullFromServer(profileId: Int) {
+    /**
+     * Upstream c1022e2eb: a pull is AUTOMATIC unless the user asked for it. `SyncManager`'s
+     * foreground / periodic / profile-entry pulls stay on the default, so a provider that treats
+     * USER_INITIATED as "download every list again" (MDBList, `MdbListLibraryService.refresh`)
+     * only does so from the Library screen's own Retry ([retryLoadAsync]).
+     */
+    suspend fun pullFromServer(
+        profileId: Int,
+        refreshIntent: TrackingRefreshIntent = TrackingRefreshIntent.AUTOMATIC,
+    ) {
         val operationToken = activeOperationToken(profileId) ?: run {
             log.d { "Skipping library pull for inactive profile $profileId" }
             return
         }
-        var serializedOperationToken: LibraryProfileToken? = null
 
         activeLibraryProvider()?.let { provider ->
             refreshLibraryProvider(
                 provider = provider,
                 reason = "explicit pull",
-                intent = TrackingRefreshIntent.USER_INITIATED,
+                intent = refreshIntent,
             )
             if (!isActiveOperation(operationToken)) return
             publish()
@@ -204,7 +253,6 @@ object LibraryRepository {
 
         nuvioSyncMutex.withLock {
             val serializedToken = activeOperationToken(profileId) ?: return@withLock
-            serializedOperationToken = serializedToken
             val pullSnapshot = localState.markPullStarted(serializedToken) ?: return@withLock
 
             try {
@@ -235,10 +283,19 @@ object LibraryRepository {
                 log.e(error) { "Failed to pull library from server" }
             }
         }
-        val completedToken = serializedOperationToken ?: operationToken
-        val pendingSnapshot = localState.snapshot()
-        if (pendingSnapshot.token == completedToken && isActiveOperation(completedToken)) {
-            pushToServer(pendingSnapshot, delayMs = 0L)
+        // Upstream 1854dfc3 removed the push that used to run here. A pull is a READ: pushing the
+        // freshly-pulled snapshot straight back meant an automatic sync re-uploaded items the
+        // user had deleted on another device. Real local edits still push through the ordinary
+        // mutation paths.
+        //
+        // Fork: upstream 1854dfc3 removed the unconditional post-pull push (it re-uploaded the
+        // whole pulled snapshot); this re-push runs only when local mutations are still pending,
+        // so a failed push retries on the next pull instead of waiting for the next edit.
+        if (isActiveOperation(operationToken)) {
+            val current = localState.snapshot()
+            if (current.hasPendingPush) {
+                pushToServer(current, delayMs = 0L)
+            }
         }
     }
 
@@ -401,6 +458,19 @@ object LibraryRepository {
                 .flatMap { provider -> provider.snapshot().tabs },
         ).filter { tab -> item == null || tab.supportsContentType(item.type) }
 
+    internal fun listManagementContext(): LibraryManagementContext? {
+        val source = effectiveLibrarySourceMode()
+        val provider = activeLibraryProvider(source) ?: return null
+        if (provider.listManager == null) return null
+        val account = TrackingProviderRegistry.authProvider(provider.providerId) ?: return null
+        return LibraryManagementContext(ProfileRepository.activeProfileId, source, account.accountGeneration)
+    }
+
+    internal fun listManager(context: LibraryManagementContext): com.nuvio.app.features.tracking.TrackingListManager {
+        check(context == listManagementContext()) { "Library account changed" }
+        return requireNotNull(activeLibraryProvider(context.source)?.listManager)
+    }
+
     suspend fun getMembershipSnapshot(item: LibraryItem): Map<String, Boolean> {
         ensureLoaded()
         val inLocal = localState.contains(item.id, item.type)
@@ -462,6 +532,113 @@ object LibraryRepository {
             listKey = listKey,
         )
         applyMembershipChanges(item, desiredMembership)
+    }
+
+    /**
+     * Fork (tvOS Library L1, 2026-10-04): whether the Library grid's "Remove from <list>" needs the
+     * viewer's OK first. Only Simkl answers yes: taking a title out of a Simkl status also clears its
+     * watched history and rating there, so `applyStatusMembership` refuses unless confirmed (mobile
+     * never passes the confirmation, so it simply fails there). False for a list no connected
+     * provider owns; [removeFromListAsync] reports that one.
+     */
+    fun removalNeedsConfirmation(item: LibraryItem, listKey: String): Boolean {
+        ensureLoaded()
+        val provider = libraryProviderOwning(listKey) ?: return false
+        return provider.membershipRemovalConfirmation(item, mapOf(listKey to false)) != null
+    }
+
+    /**
+     * Fork (tvOS Library L1, 2026-10-04): the Library grid's "Remove from <list>" hold action.
+     *
+     * Touches only the provider that owns [listKey]. [removeFromList] reads and re-applies the
+     * membership of every connected provider, so one that failed to load (MDBList's snapshot
+     * throws) would abort a Trakt removal, and every remove would refresh all of them.
+     *
+     * Non-suspending and failure-contained, like [toggleSaved]: a Kotlin exception that escapes a
+     * suspend call into Swift without `@Throws` terminates the app. [onFinished] gets, off the main
+     * thread, nil when the title was removed (or the remove was abandoned because the profile or
+     * account changed), else the failure's message: MDBList's auth and sync failures mapped to its own
+     * copy, other messages as thrown (possibly empty, which tvOS shows as a generic line). tvOS
+     * shows it itself: the shared toast controller is a no-op there.
+     */
+    fun removeFromListAsync(
+        item: LibraryItem,
+        listKey: String,
+        destructiveRemovalConfirmed: Boolean,
+        onFinished: (String?) -> Unit,
+    ) {
+        ensureLoaded()
+        val profileId = localState.snapshot().token.profileId
+        syncScope.launch {
+            val provider = libraryProviderOwning(listKey)
+            val failure = try {
+                // The list went away between the menu and the tap: the MDBList writer's own words.
+                checkNotNull(provider) { "This list is no longer available" }
+                provider.applyMembership(
+                    profileId = profileId,
+                    item = item,
+                    desiredMembership = libraryMembershipWithRemovedList(provider.membership(item), listKey),
+                    destructiveRemovalConfirmed = destructiveRemovalConfirmed,
+                )
+                null
+            } catch (error: CancellationException) {
+                // MDBList throws its own CancellationException when the profile or account changes
+                // mid-write ("MDBList profile changed"); syncScope itself is never cancelled. That
+                // remove is abandoned for a profile the viewer has left: nothing to report.
+                if (!isActive) throw error
+                log.w { "Abandoned remove item=${item.id} from list=$listKey: ${error.message}" }
+                null
+            } catch (error: Throwable) {
+                log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
+                val isPlainRequireFailure = error::class == IllegalArgumentException::class
+                if (provider?.providerId == TrackingProviderId.MDBLIST && !isPlainRequireFailure) {
+                    // MDBList's auth and sync failures carry enum names or HTTP codes; its
+                    // `require` failures ("This list is no longer available") are already copy.
+                    // Exactly `require`'s class: subclasses (Ktor's illegal-header exception, whose
+                    // message holds the header value, i.e. the bearer token) stay mapped.
+                    error.localizedMdbListMessage()
+                } else {
+                    error.message?.trim().orEmpty()
+                }
+            }
+            publish()
+            onFinished(failure)
+        }
+    }
+
+    /**
+     * Fork (tvOS, Batch K): whether the Library grid's hold menu may offer "Remove from <list>" for
+     * [listKey]. False only for MDBList's external, dynamic and liked lists (upstream 3913a140b /
+     * 2cc2e6a61), whose writes the MDBList writer skips, so a Remove there would silently do
+     * nothing. Review r1 (P2): not `isMembershipDestination` — Simkl's Completed is not an ADD
+     * destination but removing from it works (L1's confirmed Simkl removal). A pure key check, so
+     * the per-cell hold-menu builder pays nothing.
+     */
+    fun canRemoveFromList(listKey: String): Boolean = !isMdbListReadOnlyListKey(listKey)
+
+    private fun libraryProviderOwning(listKey: String): TrackingLibraryProvider? =
+        TrackingProviderRegistry.connectedLibraryProviders().firstOrNull { provider ->
+            provider.snapshot().tabs.any { tab -> tab.key == listKey }
+        }
+
+    /**
+     * Fork (tvOS Library L1, 2026-10-04): the Library screen's Retry after a failed provider or
+     * server load. Mobile's `retryLibraryLoad`: force a network-status refresh, then pull, wrapped
+     * so nothing can escape into Swift ([pullFromServer] already logs its own sync failures; this
+     * only adds the guard).
+     */
+    fun retryLoadAsync() {
+        NetworkStatusRepository.requestRefresh(force = true)
+        val profileId = ProfileRepository.activeProfileId
+        syncScope.launch {
+            try {
+                pullFromServer(profileId, refreshIntent = TrackingRefreshIntent.USER_INITIATED)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.e(error) { "Library retry failed profile=$profileId" }
+            }
+        }
     }
 
     private fun pushToServer(
@@ -532,12 +709,16 @@ object LibraryRepository {
     private fun publish() {
         val localSnapshot = localState.snapshot()
         val sourceMode = effectiveLibrarySourceMode()
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.LIBRARY)
         activeLibraryProvider(sourceMode)?.let { provider ->
             val providerSnapshot = provider.snapshot()
             val newUiState = LibraryUiState(
                 sourceMode = sourceMode,
-                items = providerSnapshot.items,
-                sections = providerSnapshot.sections,
+                items = providerSnapshot.items.withCustomPosterUrls(posterPattern),
+                sections = providerSnapshot.sections.map { section ->
+                    section.copy(items = section.items.withCustomPosterUrls(posterPattern))
+                },
                 isLoaded = providerSnapshot.hasLoaded,
                 isLoading = providerSnapshot.isLoading,
                 errorMessage = providerSnapshot.errorMessage,
@@ -563,8 +744,10 @@ object LibraryRepository {
 
         val newUiState = LibraryUiState(
             sourceMode = LibrarySourceMode.LOCAL,
-            items = items,
-            sections = sections,
+            items = items.withCustomPosterUrls(posterPattern),
+            sections = sections.map { section ->
+                section.copy(items = section.items.withCustomPosterUrls(posterPattern))
+            },
             isLoaded = localSnapshot.hasLoaded,
             isLoading = localSnapshot.isLoading,
             errorMessage = null,
@@ -632,6 +815,22 @@ object LibraryRepository {
         sourceMode: LibrarySourceMode = effectiveLibrarySourceMode(),
     ): TrackingLibraryProvider? =
         sourceMode.providerId?.let(TrackingProviderRegistry::libraryProvider)
+
+    /**
+     * Fork (tvOS Library, batch D review r1 F2): the provider order of one list under [sortOption],
+     * the `providerOrders[listKey]` input of `buildLibraryVerticalProjection`. Mobile's grid
+     * collects `observeLibraryProviderOrders` directly; Swift cannot, so this wraps it for the
+     * active source's sorter (the provider [publish] projects). Emits once with null ranks when
+     * the sort has no provider order (DEFAULT / TITLE_*) or the source has no sorter; `failed`
+     * is set when the sorter's flow threw. A plain `Flow`, watched from Swift with `watchFlow`
+     * (the bridge collects on `Dispatchers.Main`).
+     */
+    fun observeProviderOrder(listKey: String, sortOption: LibrarySortOption): Flow<LibraryProviderOrderResult> =
+        observeLibraryProviderOrders(
+            sorter = effectiveLibrarySourceMode().librarySorter(),
+            listKeys = listOf(listKey),
+            sortOption = sortOption,
+        ).map { orders -> orders.forList(listKey) }.distinctUntilChanged()
 }
 
 internal const val LOCAL_LIBRARY_LIST_KEY = "local"

@@ -88,6 +88,7 @@ class AccountDataStoresTest {
                     is AppleKeySpec.ProfileIndexed -> "ProfileIndexed" to key.prefix
                     is AppleKeySpec.DynamicPrefix -> "DynamicPrefix" to key.prefix
                     is AppleKeySpec.FileStore -> "FileStore" to key.subdirectory
+                    is AppleKeySpec.Keychain -> "Keychain" to key.service
                 }
                 assertTrue(value.isNotBlank(), "\"${store.name}\" has a blank $kind identifier")
             }
@@ -145,6 +146,41 @@ class AccountDataStoresTest {
                 .toSet(),
             AccountDataStores.appleFileStoreSubdirectories().toSet(),
         )
+        assertEquals(
+            AccountDataStores.all
+                .flatMap { it.appleKeys }
+                .filterIsInstance<AppleKeySpec.Keychain>()
+                .map { it.service }
+                .distinct()
+                .toSet(),
+            AccountDataStores.appleKeychainServices().toSet(),
+        )
+    }
+
+    @Test
+    fun `no two stores declare the same Apple Keychain service`() {
+        assertNoDuplicates(
+            AccountDataStores.all.flatMap { store ->
+                store.appleKeys.filterIsInstance<AppleKeySpec.Keychain>().map { it.service }
+            },
+            label = "Keychain service",
+        )
+    }
+
+    /**
+     * MDBList account tokens live in the Keychain under [MDBLIST_KEYCHAIN_SERVICE] (the constant the
+     * Apple persistence actual also uses), not NSUserDefaults. A Keychain item outlives an app
+     * delete, so a registry miss here would leak a live OAuth refresh token across accounts.
+     */
+    @Test
+    fun `mdblist account tokens are wiped on both platforms`() {
+        // Pinned once: renaming the service would orphan every stored token on upgrade.
+        assertEquals("com.nuvio.media.mdblist", MDBLIST_KEYCHAIN_SERVICE)
+        assertContains(AccountDataStores.appleKeychainServices(), MDBLIST_KEYCHAIN_SERVICE)
+        assertContains(AccountDataStores.androidPreferenceNames(), "nuvio_mdblist_auth")
+        // A Keychain service is not a defaults key: it must not leak into the defaults projections.
+        assertTrue(MDBLIST_KEYCHAIN_SERVICE !in AccountDataStores.applePlainKeys())
+        assertTrue(AccountDataStores.appleDynamicPrefixes().none { MDBLIST_KEYCHAIN_SERVICE.startsWith(it) })
     }
 
     /**
@@ -207,6 +243,21 @@ class AccountDataStoresTest {
             }
         }
         assertTrue(collisions.isEmpty(), "Unreported dynamic-prefix collisions: $collisions")
+    }
+
+    /**
+     * The Apple reinstall sentinel (`AppleKeychainStores.INSTALL_SENTINEL_KEY`, appleMain) must
+     * SURVIVE sign-out: if a wipe erased it, the next launch would treat the device as a fresh
+     * install and delete Keychain credentials connected after signing back in. So no registry key
+     * may name or sweep it. Literal duplicated because commonTest cannot see the appleMain constant.
+     */
+    @Test
+    fun `keychain install sentinel is never wiped by sign-out`() {
+        val sentinel = "keychain_install_generation"
+        assertTrue(sentinel !in AccountDataStores.applePlainKeys())
+        assertTrue(AccountDataStores.appleProfileScopedBases().none { sentinel.startsWith(it) })
+        assertTrue(AccountDataStores.appleProfileIndexedPrefixes().none { sentinel.startsWith(it) })
+        assertTrue(AccountDataStores.appleDynamicPrefixes().none { sentinel.startsWith(it) })
     }
 
     private fun assertNoDuplicates(values: List<String>, label: String) {

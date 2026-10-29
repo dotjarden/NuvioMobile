@@ -58,7 +58,7 @@ final class CloudLibraryViewModel: ObservableObject {
                 if let success = result as? CloudLibraryPlaybackResultSuccess {
                     self.startPlayback(item: item, file: file, success: success)
                 } else if result is CloudLibraryPlaybackResultMissingCredentials {
-                    self.errorMessage = String(localized: "Missing provider credentials \u{2014} reconnect in Settings \u{2192} Debrid.")
+                    self.errorMessage = String(localized: "Missing provider credentials \u{2014} reconnect in Settings \u{2192} Services \u{2192} Debrid.")
                 } else if result is CloudLibraryPlaybackResultNotPlayable {
                     self.errorMessage = String(localized: "This file isn't playable.")
                 } else if let failed = result as? CloudLibraryPlaybackResultFailed {
@@ -274,6 +274,6 @@ struct CloudFilePickerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.ignoresSafeArea())
+        .background(Theme.Palette.background.ignoresSafeArea())
     }
 }

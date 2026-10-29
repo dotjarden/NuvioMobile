@@ -8,6 +8,8 @@ import com.nuvio.app.features.tracking.TrackingProgressProvider
 import com.nuvio.app.features.tracking.TrackingProgressSnapshot
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.TrackingWatchedProvider
+import com.nuvio.app.features.tracking.isHistoryRemovable
+import com.nuvio.app.features.tracking.trackingHistoryPushItems
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import kotlinx.coroutines.CancellationException
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 object SimklWatchedSyncAdapter : TrackingWatchedProvider {
+    private val log = Logger.withTag("SimklWatched")
     override val providerId: TrackingProviderId = TrackingProviderId.SIMKL
     override suspend fun pull(profileId: Int, pageSize: Int): List<WatchedItem> {
         if (profileId != ProfileRepository.activeProfileId) return emptyList()
@@ -67,9 +70,14 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
 
     override suspend fun push(profileId: Int, items: Collection<WatchedItem>) {
         if (profileId != ProfileRepository.activeProfileId || items.isEmpty()) return
+        val pushableItems = simklHistoryPushItems(items)
+        if (pushableItems.isEmpty()) {
+            log.i { "Skipped ${items.size} Simkl history items: nothing but whole-series marks" }
+            return
+        }
         SimklSyncRepository.ensureLoaded()
         val snapshot = SimklSyncRepository.state.value.snapshot
-        val historyItems = items.map { item ->
+        val historyItems = pushableItems.map { item ->
             TrackingHistoryItem(
                 media = snapshot.mediaReference(
                     contentId = item.id,
@@ -79,6 +87,7 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
                     season = item.season,
                     episode = item.episode,
                     videoId = item.videoId,
+                    posterUrl = item.poster,
                 ),
                 watchedAtEpochMs = item.markedAtEpochMs,
             )
@@ -100,7 +109,7 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
         // (e.g. once a new episode airs and the show is no longer fully watched), which would
         // silently wipe history the user never asked to remove.
         // Allowlist, not denylist: an unrecognized type is skipped rather than sent destructively.
-        val removableItems = items.filter { item -> item.isSimklHistoryRemovable() }
+        val removableItems = items.filter { item -> item.isHistoryRemovable() }
         if (removableItems.isEmpty()) return
         val episodeItems = removableItems.filter { item -> item.season != null && item.episode != null }
         // Optimistically mark video IDs as removed so fallback won't show them as watched
@@ -212,6 +221,7 @@ object SimklProgressRepository {
 object SimklTrackingProgressProvider : TrackingProgressProvider {
     override val providerId: TrackingProviderId = TrackingProviderId.SIMKL
     override val changes: Flow<Unit> = SimklProgressRepository.uiState.map { Unit }
+    override fun showIdSiblings() = SimklSyncRepository.state.value.snapshot.toSimklShowIdSiblings()
 
     override fun ensureLoaded() = SimklProgressRepository.ensureLoaded()
 
@@ -247,18 +257,8 @@ object SimklTrackingProgressProvider : TrackingProgressProvider {
 private const val SIMKL_PLAYBACK_PROGRESS_KEY_PREFIX = "simkl-playback:"
 
 /**
- * Fork: which watched entries may be forwarded to Simkl's `/sync/history/remove`.
- *
- * Episodes and movies map to a single Simkl history entry, so removing them is precise. A
- * series-level marker has no season/episode and would serialize as a bare show, which Simkl treats
- * as "remove this show's entire history" — far more destructive than the local marker it mirrors.
- *
- * Deliberately an allowlist: anything whose type is unrecognized (or that carries a partial
- * season/episode pair) is skipped rather than sent, so the failure mode is a stale Simkl entry
- * instead of deleted history.
+ * What may travel to Simkl as a watched mark. The rule (upstream `ba786215`) lives in the shared
+ * [trackingHistoryPushItems] so MDBList applies the same guard; see its KDoc.
  */
-private fun WatchedItem.isSimklHistoryRemovable(): Boolean {
-    val isEpisode = season != null && episode != null
-    val isMovie = type.trim().lowercase() in setOf("movie", "film")
-    return isEpisode || isMovie
-}
+internal fun simklHistoryPushItems(items: Collection<WatchedItem>): List<WatchedItem> =
+    trackingHistoryPushItems(items)

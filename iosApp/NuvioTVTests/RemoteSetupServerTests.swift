@@ -13,7 +13,7 @@ final class RemoteSetupServerTests: XCTestCase {
         XCTAssertNotNil(try proposal(#"{"rowOrder":["one","one"]}"#).validationError)
         XCTAssertNotNil(try proposal(#"{"rowOrder":["one"],"disabledRowKeys":["two"]}"#).validationError)
         XCTAssertNil(try proposal(#"{"addons":[{"url":"https://example.invalid/manifest.json","enabled":false}],"rowOrder":["one"],"disabledRowKeys":["one"]}"#).validationError)
-        XCTAssertNil(try proposal(#"{"tmdbKey":"new-key"}"#).validationError)
+        XCTAssertNil(try proposal(#"{"mdblistKey":"new-key"}"#).validationError)
     }
 
     @MainActor func testApprovalWaitsForCompletionAndReportsImportFailure() async throws {
@@ -31,7 +31,7 @@ final class RemoteSetupServerTests: XCTestCase {
         XCTAssertTrue(server.beginApplying(id: id))
         var status = try await request(base, token: token, path: "/api/status/\(id)")
         XCTAssertEqual(status.1["status"] as? String, "applying")
-        let duplicate = try await request(base, token: token, path: "/api/apply", body: ["tmdbKey": "test"])
+        let duplicate = try await request(base, token: token, path: "/api/apply", body: ["mdblistKey": "test"])
         XCTAssertEqual(duplicate.0, 409)
         server.complete(id: id, errors: ["Badge pack: Couldn't import."])
         status = try await request(base, token: token, path: "/api/status/\(id)")
@@ -49,7 +49,7 @@ final class RemoteSetupServerTests: XCTestCase {
         server.updateState(Data(#"{"addons":[],"rows":[]}"#.utf8))
         let state = try await request(base, token: token, path: "/api/state")
         let revision = try XCTUnwrap(state.1["revision"] as? String)
-        let sent = try await request(base, token: token, path: "/api/apply", body: ["baseRevision": revision, "tmdbKey": "test"])
+        let sent = try await request(base, token: token, path: "/api/apply", body: ["baseRevision": revision, "mdblistKey": "test"])
         let id = try XCTUnwrap(sent.1["id"] as? String)
         server.updateState(Data(#"{"addons":[],"rows":[{"key":"new"}]}"#.utf8))
         XCTAssertFalse(server.beginApplying(id: id))

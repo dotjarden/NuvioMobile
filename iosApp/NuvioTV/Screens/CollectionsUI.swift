@@ -57,11 +57,30 @@ struct CollectionRowView: View {
     /// was the Home page, not the folder page.
     var onFolderFocusChange: ((CollectionFolder?) -> Void)? = nil
     @FocusState private var focusedFolderId: String?
+    /// BUG-108: read here only for `rowGap`'s doc and `liftedTileZIndex` — the tile's own
+    /// treatments read the same keys inside `FolderTile`.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last — and, since rc14 (BUG-122), every collection row (the mixed-shape short row).
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    @Environment(\.pinnedRowIsLast) private var isLastRow
     @Environment(\.posterStyle) private var style
+    /// BUG-146 second trim: nil outside the Stage strip (Classic keeps `md` under the heading).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
+
+    /// rc14 (BUG-122): see `PinnedRowGeometry.shortRowLayoutCompensation`. The natural shelf is
+    /// `shelfMinHeight`'s pre-floor value — the tallest tile plus its caption chrome, inside the
+    /// reaches.
+    private var shortRowCompensation: CGFloat {
+        PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                     naturalLabel: naturalShelfHeight,
+                                                     isLastRow: isLastRow)
+    }
 
     /// Wave 4 item 6 (tester: the section title sliding onto his "Streaming Services" tiles): the
     /// SHORTEST artwork height in this row, handed to the pinned title's slide clamp so its
@@ -78,6 +97,36 @@ struct CollectionRowView: View {
         collection.folders
             .map { FolderTile.artworkHeight(for: $0, style: style) }
             .min() ?? style.height
+    }
+
+    /// BUG-108 / BUG-106: ring mode's lift is a UNIFORM scale of `1 + 2 × 20 / artworkHeight`, so a
+    /// 16:9 folder tile grows `2 × 20 × 16/9 ≈ 71pt` of width at every Poster Size — ≈35.5 per side,
+    /// which overruns `rowGap` (28) by ≈7.5 and lands the raised tile's 4pt ring on its neighbour's
+    /// artwork. Exactly the BUG-106 arithmetic and exactly the BUG-106 dial, applied whenever this
+    /// mixed-shape row holds a landscape folder at all (square tiles grow 20/side → 8 clear,
+    /// posters ≈13.3/side → ≈14.7 clear, so they keep `rowGap`).
+    ///
+    /// NOT gated on the ring setting, for two reasons: the native `.borderless` lift grows the tile
+    /// by a comparable amount in the default mode, and a row gap that changed with an Appearance
+    /// toggle would move this row's scroll geometry under the focus engine. Nothing in the pinned
+    /// math reads the gap (`shortestTileHeight`, `shelfMinHeight` and `focusedTileLockupExtent` are
+    /// all vertical).
+    private var rowGap: CGFloat {
+        collection.folders.contains { $0.posterShape == PosterShape.landscape }
+            ? Theme.Spacing.landscapeLiftRowGap
+            : Theme.Spacing.rowGap
+    }
+
+    /// BUG-108: ring mode's lift is SwiftUI's own `.scaleEffect`, which — unlike the native lift —
+    /// does not composite the focused card into its own layer, so without an explicit zIndex the
+    /// raised tile (and its ring, and its drop shadow) can draw UNDER its unfocused neighbours.
+    /// `PosterCard` carries the same rule (PosterCard.swift, `.zIndex(focusMode.raisesFocusedCard …)`);
+    /// the difference is WHERE: this one has to sit on the `LazyHStack`'s own child — a zIndex
+    /// inside the `NavigationLink` label has no siblings to order against.
+    private func liftedTileZIndex(_ folder: CollectionFolder) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedFolderId == folder.id ? 1 : 0
     }
 
     /// Wave 4 item 2 (the source fix; tester repro: scroll a mixed-shape collection row right,
@@ -133,6 +182,16 @@ struct CollectionRowView: View {
         // hideTitle=false whose title LOGO loads drops its text caption, a state unknowable at
         // layout time — and top alignment turns that overshoot into stable bottom padding
         // instead of a centered mid-frame float that jumps when the logo arrives.
+        // BUG-87/89 (rc11): the scroll-stable floor must agree with the per-label floor
+        // (`rowCardLinkFrameFloor`) or a recycle pass can still collapse the stack below the
+        // height the last row's labels are actually holding.
+        return max(naturalShelfHeight, cardLinkFrameFloor)
+    }
+
+    /// rc14 (BUG-122): `shelfMinHeight` before the floor — the tallest tile plus its own caption
+    /// chrome, inside the reaches. Split out so the layout compensation can compare the floor
+    /// against the same number.
+    private var naturalShelfHeight: CGFloat {
         let captionChrome = Theme.Spacing.sm + Self.folderCaptionHeight
         let maxTileHeight = collection.folders
             .map { FolderTile.artworkHeight(for: $0, style: style) + ($0.hideTitle ? 0 : captionChrome) }
@@ -222,7 +281,12 @@ struct CollectionRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("CollectionRowView")
+        #endif
+        // BUG-146 second trim: `StripGeometry.headingGap` (12) in the strip, `md` (16) elsewhere;
+        // `StripGeometry.collectionRowHeightMax` assumes the same.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
             // CatalogRowView's structural comment — out-of-bounds frames froze the focus
             // engine; all paddings must stay positive).
@@ -230,6 +294,7 @@ struct CollectionRowView: View {
                 Text(collection.title)
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
+                    .stripHeadingLineLimit()
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -238,7 +303,7 @@ struct CollectionRowView: View {
                 // shorter tiles' frames below the overlaid title, breaking the reveal-contains-
                 // title invariant for them (Codex review). Classic keeps center, as ever.
                 LazyHStack(alignment: cardTopReach > 0 ? .top : .center,
-                           spacing: Theme.Spacing.rowGap) {
+                           spacing: rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
                             FolderTile(
@@ -252,11 +317,25 @@ struct CollectionRowView: View {
                             )
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
+                                // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for
+                                // every row but Home's last. `.top` so the artwork and caption do
+                                // not move a point.
+                                .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                       alignment: .top)
                         }
-                        // BUG-93: FolderTile draws its own still ring and has no manual-scale branch - keep the native lift in ring mode.
-                        .cardFocusButtonStyle(lift: .plain)
+                        // BUG-108: this label draws its own ring AND (since rc10) its own ring-mode
+                        // lift, so ring mode must take the native `.borderless` lift away from it —
+                        // `CardButtonLift.card`, the default. On the native lift the ring stayed at
+                        // base geometry while the artwork rose (rc9 device photos).
+                        .cardFocusButtonStyle()
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                         .focused($focusedFolderId, equals: folder.id)
+                        // BUG-109: a stable identity for native focus restoration after the folder page
+                        // pops — parity with CatalogRowView's `.id(item.id)` on its cards.
+                        .id(folder.id)
+                        .zIndex(liftedTileZIndex(folder))
+                        // FEAT-76: Default / Rows / Grid for this folder, held on the tile.
+                        .modifier(FolderLayoutHoldMenu(collectionId: collection.id, folderId: folder.id))
                     }
                 }
                 // Wave 4 item 2: floor the stack's height independent of scroll position — see
@@ -273,6 +352,17 @@ struct CollectionRowView: View {
                 .padding(.top, cardTopReach > 0 ? Theme.Spacing.lg : Theme.Spacing.sm)
                 .padding(.bottom, Theme.Spacing.sm)
             }
+            // BUG-103 (u/mrStevenx3, 2026-09-10 photos + video): this row was the only Home row
+            // still clipped to its own padded bounds, so its first and last visible tiles were cut
+            // ~60 pt inside the screen edges while every catalog row (`CatalogRowView`,
+            // BrowseComponents.swift) bleeds to the edge through the same modifier. Unlike the
+            // catalog rows there is no `RowLeadingEdgeClip` here on purpose: BUG-92's leading-edge
+            // clip exists for the inline trailer's rightward morph, and a folder tile has no
+            // trailer — its only bleed past the padded edge is the native lift + ring, the exact
+            // allowance that clip lets through anyway.
+            .scrollClipDisabled()
+            // BUG-118: see `RowEdgeEffectStyleModifier`.
+            .rowEdgeEffectStyle()
             .overlay(alignment: .topLeading) {
                 if cardTopReach > 0 {
                     Text(collection.title)
@@ -284,24 +374,28 @@ struct CollectionRowView: View {
                         // Codex r7 P2: `isFocused` picks which clearance the belt judges this row
                         // by — only a FOCUSED row's tiles are raised by the focus treatment.
                         //
-                        // Codex r9 P2: and `.plainBorderless` is what decides HOW MUCH. This row
-                        // is the one pinned row whose cards do NOT go through `CardFocusTreatment`
-                        // — `FolderTile` draws its own still-mode shrink-and-ring and never adopts
-                        // ring mode's manual scale, so its zoom-on branch is the bare `.borderless`
-                        // native lift whatever the accent-ring setting says. Left on the default
-                        // (`.cardTreatment`) the allowance was a scale derived from this row's
-                        // SHORTEST tile, well under the real ~20pt, so a ring-on user's title could
-                        // still sit on the focused folder's artwork.
+                        // Codex r9 P2 / BUG-108: this row's cards now resolve through
+                        // `CardFocusMode` like every other pinned row's — `FolderTile` carries
+                        // `CardArtworkFocusLift`, so its zoom-on rise IS
+                        // `heroPinnedRowFocusLiftAllowance` in both zoom modes rather than the
+                        // native lift's ~20pt by coincidence. `.plainBorderless` described the
+                        // pre-BUG-108 architecture and is gone; the published allowance is
+                        // unchanged either way (`focusLiftAllowance` charges 20 unless No Zoom).
                         .pinnedRowTitleTracking(rowKey: collection.id,
                                                 artworkHeight: shortestTileHeight,
                                                 isFocused: focusedFolderId != nil,
-                                                treatment: .plainBorderless)
+                                                treatment: .cardTreatment)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }
             }
         }
         .focusSection()
+        // rc14 (BUG-122): cancel the floor's layout growth so the row's reported height stays its
+        // natural one while the tiles keep their floored (tall) focusable frames. AFTER the focus
+        // section (review r1 P1: frames outside their own section froze directional focus on
+        // device) and before the settle tracker, which must measure the natural row.
+        .padding(.bottom, -shortRowCompensation)
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents. This row is the mixed-shape one, so it is
         // also the one whose stale-relayout rests Wave 4 item 2 could only floor, not correct.
@@ -311,6 +405,10 @@ struct CollectionRowView: View {
         .pinnedRowSettleTracking(rowKey: collection.id,
                                  isFocused: focusedFolderId != nil,
                                  focusedLockupExtent: focusedTileLockupExtent)
+        // BUG-112 (Item A)
+        .pinnedRowUpFallbackTarget(rowKey: collection.id,
+                                   firstId: collection.folders.first?.id,
+                                   focus: $focusedFolderId)
         .onChange(of: focusedFolderId) { _, id in
             // FEAT-33 (Wave 1, agent C; Codex r1): armed BEFORE the callback below. The callback
             // is synchronous, so with the default leg its `reportRowFocus` hero work — and any
@@ -370,6 +468,38 @@ enum CollectionCoverProbe {
     }
 }
 
+/// FEAT-76 (D17): the folder tile's hold menu. The choice is read live through `@AppStorage` on
+/// the folder's own key, so the checkmark is current every time the menu opens.
+private struct FolderLayoutHoldMenu: ViewModifier {
+    let collectionId: String
+    let folderId: String
+    @AppStorage private var raw: String
+
+    init(collectionId: String, folderId: String) {
+        self.collectionId = collectionId
+        self.folderId = folderId
+        _raw = AppStorage(wrappedValue: "", FolderLayoutOverride.key(collectionId: collectionId, folderId: folderId))
+    }
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            Section(String(localized: "Layout")) {
+                ForEach(FolderLayoutOverride.allCases, id: \.self) { option in
+                    Button {
+                        FolderLayoutOverride.set(option, collectionId: collectionId, folderId: folderId)
+                    } label: {
+                        if FolderLayoutOverride.resolve(raw) == option {
+                            Label(option.label, systemImage: "checkmark")
+                        } else {
+                            Text(option.label)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct FolderTile: View {
     let folder: CollectionFolder
     /// BUG-38 (2026-08-10 re-specification): the parent collection's user-configured
@@ -381,14 +511,70 @@ struct FolderTile: View {
     /// BUG-38 probe: folder ids are unique per COLLECTION, so the diagnostics key on both.
     var collectionId: String = ""
 
-    /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
-    /// this tile has no focus treatment of its own, and the ring must hug the ARTWORK frame —
-    /// only this view knows it — not the padded outer button bounds.
+    /// Caller-supplied focus truth for the ring drawn on the artwork (Codex 2026-08-29 rounds
+    /// 3-5): this tile has no focus treatment of its own, and the ring must hug the ARTWORK frame —
+    /// only this view knows it — not the padded outer button bounds. Named for the no-zoom still
+    /// ring it was added for; since BUG-102 (rc9) it gates the accent ring in zoom-on mode too.
     var stillFocused: Bool = false
 
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-102: with zoom on and the accent ring on, every `PosterCard` in the neighbouring rows
+    /// wore the ring and this tile drew nothing (it only knew the still ring). Same key as every
+    /// other card, resolved through `PlainLabelRing` (PosterCard.swift).
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30): poster-coloured focus ring, default OFF —
+    /// see `PosterCard`'s copy of these properties for the full rationale. Here it recolours
+    /// whichever `PlainLabelRing` the tile draws (accent or still), keyed on `stillFocused` like
+    /// the ring itself.
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    @State private var posterRingTint: Color?
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
+    /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
+    /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
+    /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
+    /// rail is the white it always was and nothing is sampled.
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    /// The last rail colour the store answered for this card; the re-render trigger for a colour
+    /// sampled after the image landed (a store hit is read straight from `body`, never written here).
+    @State private var depthRailTint: Color?
+    @Environment(\.cardDepthStyle) private var depthStyle
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// rc14 FEAT-46: sample only when the setting is on and a ring can draw on this tile
+    /// (`PlainLabelRing.reservesBand` is exactly "accent ring on, or No Zoom on").
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor
+            && PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// rc14 FEAT-46: the ring colour override — the cover's colour, nil with the setting off, while
+    /// unfocused, or on the gradient placeholder (no cover to sample). See `PosterCard.posterTint`.
+    private var posterTint: Color? {
+        guard samplesPosterColor, stillFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: [coverURLString]) ?? posterRingTint
+    }
+
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour only when the
+    /// toggle is on AND depth actually draws for this surface (and the tile has a real cover to sample: the gradient placeholder keeps the white rail).
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: .posters) && hasArtworkCover
+    }
+
+    /// The rail tint handed to `nuvioCardDepth`: store peek first (a read, so a colour sampled by
+    /// another row or before a recycle is on the rail from the first frame), then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: [coverURLString], use: .rail) ?? depthRailTint
+    }
+
+    /// BUG-108: in ring mode this tile owns its lift, so the ring it draws on its own artwork rides
+    /// that lift instead of standing still under the native one. `.still` (a no-op) in both other
+    /// modes — see `PlainLabelRing.lift` for why it must never be `.systemLift` here.
+    private var artworkLift: CardFocusMode {
+        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     /// BUG-38 display-time fallback: genre folders are TMDB DISCOVER sources, which
     /// `TmdbCollectionSourceResolver.importMetadata` never mints a cover for (only
@@ -459,6 +645,11 @@ struct FolderTile: View {
         folder.posterShape == PosterShape.landscape ? style.width * 16 / 9 : style.width
     }
 
+    /// See the BUG-102 note on the `.scaleEffect` below.
+    private var reservesRingBand: Bool {
+        PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
     private var tileHeight: CGFloat { FolderTile.artworkHeight(for: folder, style: style) }
 
     /// A folder tile's ARTWORK height, without instantiating the tile — the pinned row needs it up
@@ -479,6 +670,39 @@ struct FolderTile: View {
         case PosterShape.square: return style.width
         default: return style.height
         }
+    }
+
+    /// BUG-110 (rc13): whether the ZStack in `body` is about to render a photographic/GIF cover, as
+    /// opposed to the gradient+initial/emoji placeholder — mirrors the precedence chain the `body`
+    /// cover `let` computes exactly (own cover, folder backdrop, emoji [no cover — falls through],
+    /// collection backdrop, resolved fallback). Duplicated rather than hoisted out of the ZStack
+    /// closure (same tradeoff as `rendersTextCaption`/the `.task` guard elsewhere in this file):
+    /// `.nuvioCardDepth` is attached to the ZStack from OUTSIDE its own builder scope, where the
+    /// `body` `let`s aren't visible. Feeds `artworkPresent:` below so a placeholder tile's rail
+    /// clamps to the Subtle preset instead of reading as a glitch on a flat gradient.
+    private var hasArtworkCover: Bool {
+        !(coverURLString?.isEmpty ?? true)
+    }
+
+    /// The cover string the `body` ZStack hands `CachedAsyncImage(string:)` (nil/empty on the
+    /// gradient placeholder branch) — the chain BUG-110 duplicated into `hasArtworkCover`, lifted
+    /// into its own property for rc14 FEAT-46 so `ArtworkColorStore` samples the exact art on
+    /// screen (same trimmed string, so the same `ArtworkStore` key). `hasArtworkCover` above reads
+    /// it; the `body` `let`s still duplicate it for the BUG-110 reason given there.
+    private var coverURLString: String? {
+        let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folderBackdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let collectionBackdrop = collectionBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasOwnCover = !(ownCover?.isEmpty ?? true)
+        let hasFolderBackdrop = !(folderBackdrop?.isEmpty ?? true)
+        let hasCollectionBackdrop = !(collectionBackdrop?.isEmpty ?? true)
+        let hasEmoji = !(emoji?.isEmpty ?? true)
+        return hasOwnCover ? ownCover
+            : hasFolderBackdrop ? folderBackdrop
+            : hasEmoji ? nil
+            : hasCollectionBackdrop ? collectionBackdrop
+            : fallbackCoverUrl
     }
 
     var body: some View {
@@ -527,7 +751,23 @@ struct FolderTile: View {
                 // expanded GIF frame array on the main thread). That teardown/rebuild, not the
                 // animation, is the 700–830 ms per-step main-thread hang the tester measured.
                 if let cover, !cover.isEmpty {
-                    CachedAsyncImage(string: cover)
+                    // beta.19-rc1 verdict (I1, BUG-134): decoded for the tile's drawn size (points ×
+                    // displayScale) instead of the old fixed 1920 px cap. The tile's own width
+                    // (`tileWidth`: 16:9 for a landscape folder), not the row's poster width, so a
+                    // landscape cover is not decoded for a square. No URL upgrade: folder covers
+                    // are the user's own art on arbitrary hosts.
+                    CachedAsyncImage(string: cover, decodeSize: .points(width: tileWidth, height: tileHeight))
+                        // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
+                        // the image lands. No animation (the image's own fade is running); a store hit is already on the
+                        // rail via `depthRailTintResolved`, so it writes no state.
+                        .onImageLoaded { _ in
+                            guard samplesDepthColor else { return }
+                            let sources = [coverURLString]
+                            if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+                            ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                                if depthRailTint != color { depthRailTint = color }
+                            }
+                        }
                 } else {
                     LinearGradient(
                         colors: [Theme.Palette.accent.opacity(0.55), Theme.Palette.background],
@@ -583,6 +823,36 @@ struct FolderTile: View {
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+            // BUG-105 (u/mrStevenx3, 2026-09-10: "depth effect does not apply to images in
+            // collections"): this tile never carried the card-depth rail every PosterCard /
+            // LandscapeCard / SagaCard wears. Attached BEFORE the ring-band `.scaleEffect` below so
+            // the rail scales with the artwork and traces the picture, not the outer tile box —
+            // the same "rail hugs the INSET artwork" rule BUG-91 set for PosterCard. `.posters` is
+            // the surface a collection tile reads as (the Settings toggle that governs poster rows).
+            //
+            // BUG-110 (rc13) re-examined this against `PosterCard`/`LandscapeCard`'s
+            // `max(0, cornerRadius - inset)` convention: those cards reserve a SMALLER inset artwork
+            // frame for the ring band (`ringInset`) and attach the rail to that inner box before
+            // re-framing back up to the card's outer size. This tile has no such inset frame — the
+            // ring band is instead reserved by uniformly `.scaleEffect`-shrinking the WHOLE already-
+            // drawn ZStack (cover + logo + GIF) below, itself, so there is no smaller artwork box to
+            // move this modifier onto. The radius therefore stays the tile's own `style.cornerRadius`
+            // unchanged (`max(0, r - 0)` would be a no-op), and the rail already traces the full,
+            // un-inset artwork exactly as intended — it rides the same `.scaleEffect` as the ring, so
+            // it shrinks concentrically with the picture once a ring band is reserved, same as BUG-91.
+            //
+            // `artworkPresent: hasArtworkCover` — the second BUG-110 finding — caps the rail to the
+            // Subtle preset on the gradient+initial/emoji placeholder branch below (every TMDB
+            // Discover genre folder with no configured cover), where a Balanced/Bold rail drawn over
+            // a flat solid reads as a stray bright line rather than an edge catching light on a
+            // picture. Photo/GIF-covered tiles are unaffected (`artworkPresent` true → the level the
+            // user picked, unclamped).
+            .nuvioCardDepth(
+                RoundedRectangle(cornerRadius: style.cornerRadius),
+                surface: .posters,
+                artworkPresent: hasArtworkCover,
+                railTint: depthRailTintResolved
+            )
             // 2026-08-30 no-zoom investigation: same overpaint as TileFocusLift's ring, same fix —
             // the ring used to strokeBorder straight over this tile's own cover/logo/GIF stack.
             // That stack's internal layout (the logo overlay in particular) is pinned to this
@@ -590,17 +860,58 @@ struct FolderTile: View {
             // smaller size the way PosterCard redraws its own artwork frame — shrunk in place with
             // the same static, never-focus-linked `.scaleEffect` TileFocusLift uses instead, which
             // leaves the `.overlay` below measuring the TRUE, unscaled tile bounds.
+            // BUG-102 (rc9): the band is reserved whenever a ring may ever draw (`ringInset`'s
+            // rule — accent ring on OR no-zoom on), not only in still mode, so the accent ring
+            // lands in the vacated margin instead of over the artwork's edge.
             .scaleEffect(
-                x: noZoomOnFocus && tileWidth > 0 ? max(0, tileWidth - 2 * ringWidth) / tileWidth : 1,
-                y: noZoomOnFocus && tileHeight > 0 ? max(0, tileHeight - 2 * ringWidth) / tileHeight : 1
+                x: reservesRingBand && tileWidth > 0 ? max(0, tileWidth - 2 * ringWidth) / tileWidth : 1,
+                y: reservesRingBand && tileHeight > 0 ? max(0, tileHeight - 2 * ringWidth) / tileHeight : 1
             )
             .overlay {
-                if noZoomOnFocus && stillFocused {
-                    // No-zoom still ring on the artwork itself, mirroring TileFocusLift's look.
+                // Still ring (no-zoom) or accent ring (setting on, zoom on or off) on the artwork
+                // itself — `PlainLabelRing` holds the precedence, shared with CastCard.
+                // rc14 FEAT-46: `posterTint` (nil unless the poster-colour setting is on and the
+                // cover has been sampled) replaces either ring's colour; same stroke, same geometry.
+                if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                     noZoomOnFocus: noZoomOnFocus,
+                                                     focused: stillFocused) {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(stillHighlight, lineWidth: ringWidth)
+                        .strokeBorder(posterTint ?? ring.color, lineWidth: ringWidth)
                 }
             }
+            // BUG-108 probe (test56): the tile box the ring is drawn on, inside the lift —
+            // `.scaleEffect` is render-only, so in ring/no-zoom modes the drawn picture is
+            // `ringWidth` smaller on each edge than this rect; test56's assertions are relative
+            // (rise/growth), so this is the right box for them. Armed only by
+            // `-debug.cardGeometryProbe YES`, DEBUG only.
+            .modifier(DebugAXIdentifier("folder_artwork"))
+            // BUG-108 (u/mrStevenx3, rc9 device photos: with the ring on, the collection tile's
+            // picture lifts out of its ring): this tile's lift hangs HERE — outside the ring overlay
+            // above, outside the ring band's `.scaleEffect`, outside `.nuvioCardDepth`'s rail, and
+            // outside the `.clipShape` — so all four are one SwiftUI layer that scales together.
+            // Attached after the overlay on purpose: the overlay must keep measuring the TRUE,
+            // unscaled tile bounds (the band-scale comment above), and the lift must be the
+            // outermost of the pair so it carries both.
+            //
+            // `stillFocused`, not `@Environment(\.isFocused)`: the ring is drawn off the ROW's own
+            // FocusState (Codex 2026-08-29 rounds 3-5 — a second `.focused` binding collides with
+            // `focusedFolderId`), and a lift keyed on a different truth could scale the artwork in a
+            // frame where the ring is not drawn, which is the very split this bug is about.
+            //
+            // `artworkHeight: tileHeight` is what keeps the rise at exactly
+            // `heroPinnedRowFocusLiftAllowance` (20pt) for all three tile shapes, so the pinned
+            // row's clip budget (`PinnedRowTitle.focusLiftAllowance`, already 20 for this row) is
+            // unchanged by this commit.
+            .modifier(CardArtworkFocusLift(
+                mode: artworkLift,
+                isFocused: stillFocused,
+                artworkHeight: tileHeight,
+                cornerRadius: style.cornerRadius
+            ))
+            // BUG-108 probe (test56): the tile's LAYOUT box, outside the lift. `.scaleEffect` is
+            // render-only, so this rect must NOT move when the tile lifts — that is the negative
+            // control that proves the rise costs the row no reflow.
+            .modifier(DebugAXIdentifier("folder_card"))
             // BUG-38: keyed on the folder's Kotlin data-class hash (NOT `isFocused` — see the
             // BUG-19 comment above on why this tile must never key off focus), so a cloud-sync
             // edit that keeps the folder's id but changes its sources/cover/emoji re-runs the
@@ -668,12 +979,36 @@ struct FolderTile: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: tileWidth, alignment: .leading)
+                    // BUG-108: in ring mode the artwork grows DOWNWARD by the same 20pt it rises,
+                    // so the caption follows its bottom edge exactly as every other card's does.
+                    // 0 in both other modes: the native lift moves the whole label itself, and
+                    // still mode moves nothing. Render-only `.offset`, so the lockup's measured
+                    // height is unchanged and `shortestTileHeight`/`shelfMinHeight` do not move.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: artworkLift, isFocused: stillFocused, artworkHeight: tileHeight
+                    ))
             }
         }
         // FEAT-33 (Wave 1, agent C): leg 2/3 of `debug.collectionFocusAB` drops this animation
         // entirely to test whether it's the source of the reported 30fps-looking focus step.
         // Identical to shipping behavior with the knob off (the default).
-        .animation(CollectionFocusAB.dropTileAnimation ? nil : .easeOut(duration: 0.15), value: isFocused)
+        // BUG-108: `reduceMotion` added because this animation now wraps `CardArtworkFocusLift`'s
+        // manual scale. That modifier honours Reduce Motion by passing a nil animation; a blanket
+        // `.animation` out here would animate the scale anyway and undo it.
+        .animation(CollectionFocusAB.dropTileAnimation || reduceMotion
+                   ? nil : .easeOut(duration: 0.15),
+                   value: isFocused)
+        // rc14 FEAT-46: focus-gain-only colour resolution — see `PosterCard`'s copy. Keyed on
+        // `stillFocused`, the same row-owned focus truth the ring and lift use (never
+        // `isFocused`, for the BUG-108 reason given on `CardArtworkFocusLift` above), so the tint
+        // can never be resolved for a frame in which the ring is not drawn.
+        .onChange(of: stillFocused, initial: true) { _, focused in
+            guard focused, samplesPosterColor else { return }
+            ArtworkColorStore.shared.color(for: [coverURLString]) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
     }
 }
 
@@ -709,15 +1044,49 @@ final class FolderDetailViewModel: ObservableObject {
     /// NETWORK — LIST/COLLECTION/PERSON/DIRECTOR ignore Discover filters at resolve time).
     @Published private(set) var editableSource: EditableSource?
 
-    private let collectionId: String
-    private let folderId: String
+    /// Home Stage & Strip (P2 §2.2): the Rows page's strip, one row per source tab (no "All"), built
+    /// from EVERY tab's state — `FolderDetailRepository.initialize` already loads each source's first
+    /// page concurrently, so this is Swift only. Assigned only when it changes; a row whose equality
+    /// key is unchanged keeps its previous instance and section (`FolderRowsPlan.reusing`).
+    @Published private(set) var stripRows: [FolderStripRow] = []
+    /// P2 §2.2: no source is still on its first load (`!FolderDetailUiState.isLoading`).
+    @Published private(set) var allSettled = false
+    /// P2 §2.6: one entry per filter-editable source tab (the Rows page's Edit menu); the Grid page
+    /// keeps `editableSource`, the selected tab's.
+    @Published private(set) var editableSources: [EditableSource] = []
+    /// P2 §2.2: the folder's collection, for the Rows page's stage preview (`HomeRowPreviews.folder`).
+    /// Read at init, refreshed when the repository's folder changes.
+    @Published private(set) var collection: NuvioCollection? = nil
+
+    /// Internal (P2 §2.2): the folder page builds its per-folder layout key from them.
+    let collectionId: String
+    let folderId: String
     private var watcher: FlowWatcher?
+    /// The repository folder `collection` was last refreshed for.
+    private var lastFolder: CollectionFolder?
+    /// Review r1 (B P3-9): the strip state (rows, sources, settled, collection) is built only while
+    /// something shows it: Stage (the Edit band) or a Rows page on either Home layout (Batch F), so
+    /// Classic's grid does exactly the per-emission work it did before. `FolderDetailView` sets it
+    /// from the live layouts; turning it on builds from the last emission at once.
+    var buildsStripState = false {
+        didSet {
+            guard buildsStripState, !oldValue, let state = lastState else { return }
+            applyStripState(state)
+        }
+    }
+    private var lastState: FolderDetailUiState?
+
+    /// The folder this page shows, from `collection` (the route carries only ids and titles).
+    var folder: CollectionFolder? {
+        collection?.folders.first { $0.id == folderId }
+    }
 
     init(route: FolderRoute) {
         collectionId = route.collectionId
         folderId = route.folderId
         folderTitle = route.folderTitle
         titleLogoUrl = route.titleLogoUrl
+        collection = CollectionRepository.shared.getCollection(id: route.collectionId)
     }
 
     func start() {
@@ -735,11 +1104,49 @@ final class FolderDetailViewModel: ObservableObject {
             self.canLoadMore = state.selectedTabCanLoadMore
             self.tabIsLoading = state.selectedTab?.isLoading ?? false
             self.editableSource = Self.editableSource(
+                forTabAt: Int(state.selectedTabIndex),
                 in: state,
                 collectionId: self.collectionId,
                 folderId: self.folderId
             )
+            self.lastState = state
+            if self.buildsStripState { self.applyStripState(state) }
         }
+        FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
+    }
+
+    /// P2 §2.2: the Rows page's per-tab state, published only when it changes.
+    private func applyStripState(_ state: FolderDetailUiState) {
+        // The repository is a singleton: an emission still carrying another folder (before this
+        // page's `initialize` replaced it) is never drawn as this folder's rows.
+        if let folder = state.folder, folder.id != folderId { return }
+        let snapshots = state.tabs.enumerated().map { index, tab in
+            FolderTabSnapshot(tab: tab, tabIndex: index)
+        }
+        let rows = FolderRowsPlan.reusing(
+            stripRows,
+            for: FolderRowsPlan.rows(snapshots, collectionId: collectionId, folderId: folderId)
+        )
+        if rows != stripRows { stripRows = rows }
+        let settled = !state.isLoading
+        if settled != allSettled { allSettled = settled }
+        let sources = state.tabs.indices.compactMap { index in
+            Self.editableSource(forTabAt: index, in: state, collectionId: collectionId, folderId: folderId)
+        }
+        if sources.map(\.id) != editableSources.map(\.id) || sources.map(\.title) != editableSources.map(\.title) {
+            editableSources = sources
+        }
+        if let folder = state.folder, folder != lastFolder {
+            lastFolder = folder
+            let fresh = CollectionRepository.shared.getCollection(id: collectionId)
+            if fresh != collection { collection = fresh }
+        }
+    }
+
+    /// P2 §2.3 (the Rows page's Try Again): clear, then load every source again. `reload()` is not
+    /// enough here: `initialize` early-returns on unchanged inputs, so it never refetches a failed tab.
+    func retry() {
+        FolderDetailRepository.shared.clear()
         FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
     }
 
@@ -757,19 +1164,20 @@ final class FolderDetailViewModel: ObservableObject {
         }
     }
 
-    /// Maps the selected tab back to its `resolvedSources` index. FolderDetailRepository builds
+    /// Maps tab `tabIndex` back to its `resolvedSources` index. FolderDetailRepository builds
     /// one tab per source, with an "All" tab first when `showAllTab` (`tabIndex = showAll ?
     /// sourceIndex + 1 : sourceIndex`, FolderDetailRepository.kt:278). Addon sources whose
     /// catalog can't be materialised are skipped while building tabs, which would shift the
     /// indices — so the offset result is verified against the folder's sources and corrected by
-    /// identity when it doesn't line up.
+    /// identity when it doesn't line up. The Grid page asks for the selected tab; the Rows page's
+    /// Edit menu (P2 §2.6) for every tab.
     private static func editableSource(
+        forTabAt tabIndex: Int,
         in state: FolderDetailUiState,
         collectionId: String,
         folderId: String
     ) -> EditableSource? {
         let tabs = state.tabs
-        let tabIndex = Int(state.selectedTabIndex)
         guard tabs.indices.contains(tabIndex) else { return nil }
         let tab = tabs[tabIndex]
         guard !tab.isAllTab, let source = tab.source, source.isTmdb else { return nil }
@@ -816,134 +1224,1004 @@ final class FolderDetailViewModel: ObservableObject {
     }
 }
 
+/// C (Steven beta.19-rc1 verdict, 2026-10-03; BUG-135): the folder page header's geometry. Pure, so
+/// `FolderHeaderGeometryTests` pins it without a view host.
+///
+/// The header (title logo + tab chips) sits at the top of the grid's scroll content. As the grid
+/// scrolls by `s`, the logo rises from `restTop` to `compactTop` and shrinks from `logoSlot` to
+/// `compactLogoSlot` over the first `riseDistance` points; the chips and the opaque band behind
+/// them move with the content until `s == riseDistance`, then pin at the compact position. Every
+/// moving piece reads `s` from its own `GeometryProxy` inside its own `.visualEffect`, so nothing
+/// writes view state per scroll frame (BUG-19/BUG-41).
+///
+/// Both blocks are one `VStack(spacing: gap)` of [logo slot, chips?] then a `gap` and a `fade`:
+///   full    Bf = restTop + logoSlot + [gap + chips] + gap + fade
+///   compact Bc = compactTop + compactLogoSlot + [gap + chips] + gap + fade
+/// so `Bf − Bc == riseDistance` whatever the chip row's height.
+nonisolated enum FolderHeaderGeometry {
+    /// T: the logo's top at rest (today's header top, rc14 device round 2).
+    static let restTop: CGFloat = Theme.Spacing.screen - Theme.Spacing.lg - Theme.Spacing.xxs   // 32
+    /// Lf: the full logo slot.
+    static let logoSlot: CGFloat = Theme.Size.heroLogoSlotHeight                                 // 150
+    /// Tc: the logo's top once compact.
+    static let compactTop: CGFloat = Theme.Spacing.sm                                            // 12
+    /// Lc: the compact logo slot.
+    static let compactLogoSlot: CGFloat = 64
+    /// g: logo → chips, chips → fade.
+    static let gap: CGFloat = Theme.Spacing.md                                                   // 16
+    /// F: the band's fade under the chips (`EdgeFadeCurve`, background colour → clear).
+    static let fade: CGFloat = 36
+    /// The bottom-of-page fade (outside the scroll view).
+    static let bottomFade: CGFloat = 60
+    /// R: how far the grid scrolls while the header rises. (T − Tc) + (Lf − Lc).
+    static var riseDistance: CGFloat { (restTop - compactTop) + (logoSlot - compactLogoSlot) }  // 106
+    /// The named coordinate space on the scroll CONTENT; `s` = a piece's minY in this space minus
+    /// its minY in the scroll view's visible space.
+    static let contentSpace = "folderContent"
+
+    /// 0 at rest, 1 once the header is compact.
+    static func progress(scrolled s: CGFloat) -> CGFloat {
+        guard riseDistance > 0, s.isFinite else { return s > 0 ? 1 : 0 }
+        return min(max(s / riseDistance, 0), 1)
+    }
+
+    static func logoScale(scrolled s: CGFloat) -> CGFloat {
+        let p = progress(scrolled: s)
+        return 1 + (compactLogoSlot / logoSlot - 1) * p
+    }
+
+    /// The logo's offset on top of the content's own scroll: it cancels the scroll (`+ s`) and
+    /// moves from `restTop` to `compactTop`. Overscroll (s ≤ 0) moves it with the content.
+    static func logoOffsetY(scrolled s: CGFloat) -> CGFloat {
+        guard s > 0 else { return 0 }
+        let p = progress(scrolled: s)
+        return (restTop + (compactTop - restTop) * p) - restTop + s
+    }
+
+    /// The chips' and band's offset: zero while the header rises, then cancels the scroll.
+    static func pinnedOffsetY(scrolled s: CGFloat) -> CGFloat {
+        max(0, s - riseDistance)
+    }
+
+    /// 0…4, for the DEBUG probe only.
+    static func phase(scrolled s: CGFloat) -> Int {
+        Int(progress(scrolled: s) * 4)
+    }
+}
+
 /// A collection folder's contents: tab chips (one per source + "All") over an adaptive paginated
 /// poster grid. All view modes render as the tabbed grid on tvOS (v1 simplification). Pushed within
 /// the Home stack, so `TitleRoute` resolves against the ancestor's destination.
+///
+/// C (Steven beta.19-rc1 verdict, 2026-10-03; BUG-135, a regression from build 133's R4): the
+/// header used to LEAVE the view tree once the grid scrolled, inside a clipped fixed-height slot
+/// with a 0.3 s move + fade, which read as a 1–2-frame cut on hardware; the tab chips were the
+/// scroll content's first child, so they scrolled away on the next press and came back in steps;
+/// and every poster flashed its grey shimmer for 0.25–0.5 s on open. Now the title rises and
+/// stays (compact, centred), the chips pin under it, and the grid is held back for at most 0.45 s
+/// while its first posters warm. See `FolderHeaderGeometry`.
+///
+/// Home Stage & Strip (H5, FEAT-43; P2 spec §2): a folder follows the Home layout. Classic Home
+/// keeps this grid exactly (`gridPage`, with its Edit Filters button). Stage Home opens the folder
+/// as a stage-and-strip page (`FolderRowsPage`), or as the grid when Settings › Home Screen ›
+/// Collections Layout says Grid (FEAT-71, `FolderLayoutDefault`; a per-folder Grid choice stored
+/// before FEAT-71 is ignored since review r1 P2-1). In Stage the Edit menu (`FolderEditMenuBand`,
+/// Edit Filters only since FEAT-71) replaces the Edit Filters button and is mounted OUTSIDE the
+/// Rows/Grid switch. Both layouts share the one view model. `home_layout`, the default and the
+/// per-folder choice are read live, so a folder left open while either setting flips in Settings
+/// shows the new layout on return.
 struct FolderDetailView: View {
     @StateObject private var model: FolderDetailViewModel
 
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.dismiss) private var dismiss
-    /// Drives the TMDB filter editor cover for the selected tab's tmdb source.
+    @Environment(\.displayScale) private var displayScale
+    /// BUG-148 / BUG-144 / BUG-161 / UX-16 (3): the shared immersive depth (see `body`).
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
+    /// Fork: this page's immersive claim, so a pop can only release its own push.
+    @State private var immersiveOwner = UUID()
+    /// P2 §2.1: the Home layout, read live (`HomeLayout` is the one copy of the key).
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
+    /// FEAT-71: Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), read live as the
+    /// enum itself; an unset or unknown stored value reads as the default (Rows).
+    @AppStorage(FolderLayoutDefault.defaultsKey) private var folderLayoutDefault = FolderLayoutDefault.defaultValue
+    /// Batch F: Classic's own Collections Layout default (Grid unless changed).
+    @AppStorage(FolderLayoutDefault.classicDefaultsKey) private var classicFolderLayoutDefault = FolderLayoutDefault.classicDefaultValue
+    /// FEAT-76: this folder's own choice from its tile's hold menu ("" = follow the default).
+    @AppStorage private var layoutOverrideRaw: String
+    /// P2 §2.6: the Rows page's Edit band gate, written by `FolderRowsPage` only when it changes
+    /// (true while the strip's focused row is its top focusable row, or before any row had focus).
+    @State private var rowsAtTop = true
+    /// FEAT-79: the Classic rows page's last focused row and card, and the request that puts focus
+    /// back there when the page reappears after a push (Back from a title landed on the first card
+    /// of the first row: the device pass, 2026-10-18).
+    /// Review r1 (P2-3): a reference box, so a card hop writes no view state.
+    @State private var classicFocusMemory = ClassicRowsFocusMemory()
+    @State private var classicFocusRequest = PinnedRowFocusRequest.none
+    /// A layout switch happened while this page was open (Home Layout or, since FEAT-71, Collections
+    /// Layout flipped in Settings): a Rows page mounted by it leaves focus where it is instead of
+    /// pulling it to the first card (P2 §2.6).
+    @State private var layoutSwitched = false
+    /// Drives the TMDB filter editor cover for the selected tab's tmdb source (Grid) or the source
+    /// picked in the Edit menu (Rows).
     @State private var editing: FolderDetailViewModel.EditableSource?
+    /// True once the grid has scrolled past its top (content offset > 8 pt). Derived through a Bool
+    /// transform in `onScrollGeometryChange`, so it writes once per crossing, not per scroll frame.
+    /// C: drives only `Edit Filters` (fade + disabled) and the probe now; the header itself is
+    /// driven by `.visualEffect`.
+    @State private var gridScrolled = false
+    /// C: the grid stays covered until its first posters are warm (≤ 0.45 s), instead of every card
+    /// flashing its shimmer. One write per load; reset without animation on a tab change.
+    @State private var gridRevealed = false
+    /// C (probe only): which tab chip holds focus.
+    @FocusState private var focusedChip: Int?
+    /// BUG-190: the Classic rows page's hero models live in `FolderClassicHeroHost`, mounted only
+    /// by that page (review r1: a `@StateObject` here built them for every Grid and Stage Rows
+    /// folder page too).
+    /// BUG-190: `HeroTextLayer` takes a CTA focus binding; the panel has no CTA (`showsCTA: false`),
+    /// so nothing is ever bound to it.
+    @FocusState private var ctaUnused: Bool
+    #if DEBUG
+    /// C (probe only): `FolderHeaderGeometry.phase`, from an Int transform (5 buckets).
+    @State private var headerPhase = 0
+    #endif
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// C: how many posters the reveal warms (the first rows at any Poster Size) and how long it
+    /// waits for them.
+    private static let revealPrefetchCount = 12
+    private static let revealTimeout: TimeInterval = 0.45
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
+        _layoutOverrideRaw = AppStorage(wrappedValue: "",
+                                        FolderLayoutOverride.key(collectionId: route.collectionId,
+                                                                 folderId: route.folderId))
     }
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: posterStyle.width), spacing: Theme.Spacing.xl)]
     }
 
+    /// FEAT-79: the Classic rows page lists every source as a row, so it has no tab chips.
+    private var hasChips: Bool { model.tabs.count > 1 && !classicRows }
+
+    /// FEAT-79: Classic Home + Rows layout: the grid page with Classic rows in place of the grid.
+    private var classicRows: Bool { homeLayout == .classic && pageLayout == .rows }
+
+    /// The Stage strip page (`FolderRowsPage`) is showing (it reports `rowsAtTop` itself).
+    private var usesStripRowsPage: Bool { pageLayout == .rows && homeLayout == .stage }
+
+    private var homeLayout: HomeLayout { HomeLayout.resolve(homeLayoutRaw) }
+
+    /// The folder's own choice (FEAT-76) wins; otherwise the Collections Layout default for the
+    /// current Home layout (Stage: Rows, Classic: Grid, each changeable in Settings).
+    private var pageLayout: FolderPageLayout {
+        FolderPageLayout.resolve(override: FolderLayoutOverride.resolve(layoutOverrideRaw),
+                                 defaultForLayout: homeLayout == .classic ? classicFolderLayoutDefault : folderLayoutDefault)
+    }
+
     var body: some View {
-        ZStack {
-            Theme.Palette.background.ignoresSafeArea()
-
-            // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
-            // more (it shipped that way in beta.14; the reporter found it made the page text
-            // unreadable depending on the image). The logo-as-title stays; the backdrop moved
-            // to the Home hero, which follows the focused folder tile.
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    HStack(alignment: .center, spacing: Theme.Spacing.lg) {
-                        // H-2: the parent collection's title ("Genres", "Services de
-                        // Streaming") used to render as a caption above this logo — a
-                        // tvOS-only invention (mobile's `hideTitle` is tile-scoped, not this)
-                        // that a tester flagged 2026-08-22. Removed unconditionally; the
-                        // folder page header is logo-only now, so the wrapping VStack that
-                        // once held both is gone too.
-                        FolderHeroTitle(title: model.folderTitle, logoUrl: model.titleLogoUrl)
-                        Spacer()
-                        // On-device TMDB Discover filter editing for the selected tmdb tab
-                        // (upstream 0fc4616b's exclusion filters + the existing include fields).
-                        // Only shown for filter-consuming sources; doubles as the empty state's
-                        // focus anchor (BUG-47) when the source currently matches nothing.
-                        if let source = model.editableSource {
-                            Button {
-                                editing = source
-                            } label: {
-                                Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
-                                    .font(Theme.Font.meta)
-                            }
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("folder.editFilters")
-                        }
-                    }
-
-                    if model.tabs.count > 1 {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: Theme.Spacing.md) {
-                                ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
-                                    TabChip(
-                                        label: tab.label,
-                                        isSelected: index == model.selectedTabIndex
-                                    ) {
-                                        model.selectTab(index)
-                                    }
-                                }
-                            }
-                            .padding(.vertical, Theme.Spacing.sm)
-                        }
-                    }
-
-                    if model.items.isEmpty {
-                        if model.isLoading || model.tabIsLoading {
-                            HStack(spacing: Theme.Spacing.md) {
-                                ProgressView()
-                                Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
-                            }
-                            .padding(.top, Theme.Spacing.xl)
-                        } else {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                                Text("Nothing here yet.")
-                                    .font(Theme.Font.body)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
-                                // BUG-47 class: a pushed screen with no focusable content strands
-                                // focus on the ancestor tab bar, where Menu exits the app instead
-                                // of popping. The Edit Filters button anchors focus when present;
-                                // otherwise keep a Go Back control here (same as CatalogGridView).
-                                if model.editableSource == nil {
-                                    Button("Go Back") { dismiss() }
-                                        .buttonStyle(.bordered)
-                                }
-                            }
-                            .padding(.top, Theme.Spacing.xl)
-                        }
-                    } else {
-                        LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                            ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                                NavigationLink(value: TitleRoute(preview: item)) {
-                                    PosterCard(title: item.name, imageURL: item.poster)
-                                }
-                                .cardFocusButtonStyle()
-                                .posterButtonShape()
-                                .onAppear { model.itemAppeared(at: index) }
-                            }
-                        }
-
-                        if model.canLoadMore || model.tabIsLoading {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
-                            }
-                            .padding(.vertical, Theme.Spacing.lg)
-                        }
-                    }
-                }
-                .padding(Theme.Spacing.screen)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let layout = pageLayout
+        ZStack(alignment: .top) {
+            switch layout {
+            case .rows where homeLayout == .classic:
+                // FEAT-79 (Steven rc7): Classic + Rows keeps Classic's look, one Classic row per
+                // source. BUG-190: under a compact logo and the focused title's hero panel.
+                FolderClassicHeroHost { hero in classicRowsPage(hero) }
+            case .rows:
+                FolderRowsPage(model: model, rowsAtTop: $rowsAtTop, requestsInitialFocus: !layoutSwitched)
+            case .grid:
+                gridPage
             }
-            .scrollClipDisabled()
+            // Batch F review r1 P1: Classic + Rows needs the band too (the Classic grid keeps its own
+            // Edit Filters button inside `gridPage`).
+            if homeLayout == .stage || layout == .rows {
+                // §2.6: visible and enabled at the top of the page (the strip's top focusable row,
+                // or the grid not scrolled), the existing Edit Filters rule.
+                FolderEditMenuBand(model: model,
+                                   layout: layout,
+                                   isActive: usesStripRowsPage ? rowsAtTop : !gridScrolled,
+                                   editing: $editing)
+            }
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        // BUG-148 / BUG-144 / BUG-161 / UX-16 (3) (Steven, beta.19-rc3 verdict 2026-10-06, follow-up
+        // 10-14): a folder is an immersive screen, like Detail. Before this only Detail pushed the
+        // depth, so (a) a one-row Stage folder never hid the tab bar (the strip's link hides it on a
+        // page turn, and one row has none) and the risen folder logo sat in the bar's band; (b) the
+        // Classic grid got the bar back drawn over its posters after Back from a Detail, when
+        // Detail's pop took the depth to 0; (c) Rail = Hide While Browsing kept the rail on screen
+        // inside a collection (`RailVisibilityRule.shown` hides on `immersive`; Always Visible is
+        // unaffected). One balanced pair here covers both layouts: a Rows ↔ Grid switch swaps the
+        // CHILD page, never this view, so it cannot push twice. A Detail pushed over the folder
+        // fires this `onDisappear` (UX-14) and its own `onAppear`, in either order; the depth may
+        // touch 0 for that one transaction (Detail → More Like This → Detail does the same), and
+        // `popImmersive`'s guard keeps an unmatched pop from going negative. Back from Detail
+        // re-pushes here, so the bar stays hidden over the grid.
+        .onAppear {
+            tabBarVisibility.pushImmersive(owner: immersiveOwner)
+            model.start()
+            // BUG-190: the hero panel's focus model thaws in `FolderClassicHeroHost.onAppear`.
+            restoreClassicRowsFocus()
+        }
+        .onDisappear {
+            // FEAT-79 review r1 (P2-2): arm the restore only for a push from a card (focus was on,
+            // or had just left, a row card), not a tab switch or the Edit cover.
+            if classicRows, editing == nil { classicFocusMemory.armIfLeavingFromCard() }
+            // BUG-190: the hero panel freezes in `FolderClassicHeroHost.onDisappear`.
+            tabBarVisibility.popImmersive(owner: immersiveOwner)
+            model.stop()
+        }
+        // Review r1 (B P3-9): see `FolderDetailViewModel.buildsStripState`.
+        // Batch F review r1 P1: and on Classic whenever the page is Rows (Collections Layout or the
+        // folder's own choice); gated on Stage alone, a Classic Rows page never got its rows.
+        .onChange(of: homeLayout == .stage || layout == .rows, initial: true) { _, builds in
+            model.buildsStripState = builds
+        }
+        // A layout switch mounts a fresh page: its scroll starts at the top and no strip row has
+        // focus yet.
+        .onChange(of: layout) { _, _ in
+            if gridScrolled { gridScrolled = false }
+            if !rowsAtTop { rowsAtTop = true }
+            if !layoutSwitched { layoutSwitched = true }
+        }
         // House pattern for full-screen flows (`ProfileEditTarget`, DetailView's players). On
         // dismiss — Save, Cancel, or Menu — re-run initialize: the repository's retained-inputs
-        // guard refetches only when the folder actually changed.
+        // guard refetches only when the folder actually changed. Serves both layouts.
         .fullScreenCover(item: $editing, onDismiss: { model.reload() }) { source in
             TmdbFilterEditorView(target: source)
         }
+    }
+
+    /// Today's folder page, moved verbatim from `body`: whenever this folder resolves to Grid (Classic
+    /// by default, Stage when chosen). Its tab-change reset and its reveal task live here, so the Rows page never
+    /// prefetches a grid. Classic keeps the Edit Filters button; Stage has the Edit band instead.
+    private var gridPage: some View {
+        ZStack(alignment: .top) {
+            Theme.Palette.background.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // C: the COMPACT block's footprint, layout only. The scroll view starts below it,
+                // so the focus engine reveals grid rows under the pinned title and chips, never
+                // beneath them. Its chip row is a hidden, disabled copy that only lends its height.
+                // `fixedSize` so the greedy scroll view below can never stretch the hidden chip
+                // row: the ghost must be exactly as tall as the real block minus `riseDistance`.
+                compactGhost
+                    .fixedSize(horizontal: false, vertical: true)
+
+                // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
+                // more (it shipped that way in beta.14; the reporter found it made the page text
+                // unreadable depending on the image). The logo-as-title stays; the backdrop moved
+                // to the Home hero, which follows the focused folder tile.
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // C: laid out `riseDistance` tall and bottom-aligned, so the header's full
+                        // height overflows UP by exactly the compact block above: at rest it draws
+                        // from the top of the page. `zIndex(1)` keeps it (and its opaque band)
+                        // painted over the grid cards passing under it (the Codex P2 rc13
+                        // paint-order rule: a VStack paints in declaration order).
+                        header
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(height: FolderHeaderGeometry.riseDistance, alignment: .bottom)
+                            .zIndex(1)
+
+                        gridContent
+                    }
+                    .coordinateSpace(.named(FolderHeaderGeometry.contentSpace))
+                }
+                .scrollClipDisabled()
+                // The one Bool this page derives from scrolling (Edit Filters + probe). SwiftUI
+                // only calls `action` when the answer flips.
+                .onScrollGeometryChange(for: Bool.self, of: { geometry in
+                    geometry.contentOffset.y > 8
+                }, action: { _, scrolled in
+                    gridScrolled = scrolled
+                })
+                #if DEBUG
+                // C (probe only): five buckets, so at most four writes per rise.
+                .onScrollGeometryChange(for: Int.self, of: { geometry in
+                    FolderHeaderGeometry.phase(scrolled: geometry.contentOffset.y + geometry.contentInsets.top)
+                }, action: { _, phase in
+                    headerPhase = phase
+                })
+                #endif
+            }
+
+            // FEAT-79: the Classic rows page has the Edit band instead (see `body`).
+            if homeLayout == .classic && !classicRows {
+                editFiltersOverlay
+            }
+
+            // C: the bottom edge fades into the background instead of cutting cards off at the
+            // bezel. Outside the scroll view, never hit-tested.
+            LinearGradient(stops: EdgeFadeCurve.stops(rising: true, color: Theme.Palette.background),
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: FolderHeaderGeometry.bottomFade)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+
+            #if DEBUG
+            // Invisible, harness-readable header state for test69 (`folder_header_state`) — same
+            // hidden-Text pattern as HomeView's `debug_*` labels. C: XCUITest frames ignore
+            // `.offset`/`.scaleEffect`, so the rise is asserted through this label and pixels.
+            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("folder_header_state")
+            #endif
+        }
+        // C: a new tab hides the grid at once (no fade-out), then the task below reveals it when
+        // the new tab's first posters are warm.
+        .onChange(of: model.selectedTabIndex) { _, _ in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { gridRevealed = false }
+        }
+        .task(id: GridRevealKey(tab: model.selectedTabIndex, hasItems: !model.items.isEmpty)) {
+            await revealGridWhenWarm()
+        }
+    }
+
+    // MARK: - Classic rows page (BUG-190)
+
+    /// BUG-190 (D5; Steven rc9: "no poster and no synopsis" on FEAT-79's Classic rows page): Classic
+    /// Home's Show Hero OFF panel for the focused card, under the folder's compact logo, over the
+    /// rows. The focused TITLE's backdrop paints behind it, Nuvio form, as on Home; the folder's
+    /// own backdrop stays unpainted (BUG-38 round three was about that one). The panel is the
+    /// pinned 352 pt frame at compression 0, so it draws what Home's panel draws at Medium (up to
+    /// 4 synopsis lines, FEAT-61). No rising header and no compact ghost: the logo and the panel
+    /// are fixed, and only the rows scroll. The Edit band (`FolderEditMenuBand`) still overlays
+    /// the top of the page from `body`. `hero` is `FolderClassicHeroHost`'s (review r1).
+    private func classicRowsPage(_ hero: HomeHeroModels) -> some View {
+        ZStack(alignment: .top) {
+            Theme.Palette.background.ignoresSafeArea()
+
+            HomeHeroBackdropLayer(resolver: hero.resolver,
+                                  focusModel: hero.focus,
+                                  trailerModel: hero.trailer,
+                                  isStage: false,
+                                  nuvioStyle: true,
+                                  gate: Self.noTrailerGate,
+                                  opacity: 1)
+
+            VStack(spacing: 0) {
+                compactLogoSlot
+                    .padding(.top, FolderHeaderGeometry.compactTop)
+
+                HomeHeroTextSlot(resolver: hero.resolver, heroFocused: $ctaUnused, compact: true,
+                                 showsCTA: false, forceNuvioLayout: true, compression: 0,
+                                 folderRoutes: [:])
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: Theme.Size.heroCarouselHeightPinned)
+
+                ScrollView(.vertical) {
+                    classicRowsContent(heroFocus: hero.focus)
+                        .padding(.top, Self.classicRowsTopInset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            // C: the bottom edge fades into the background, as on the grid page.
+            LinearGradient(stops: EdgeFadeCurve.stops(rising: true, color: Theme.Palette.background),
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: FolderHeaderGeometry.bottomFade)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+
+            #if DEBUG
+            FolderClassicHeroDebugLabel(focusModel: hero.focus, resolver: hero.resolver)
+            #endif
+        }
+        .background { FolderHeroDriver(focusModel: hero.focus, resolver: hero.resolver) }
+    }
+
+    /// Batch N (BUG-190 follow-up): the first row's top inset on the hero page. Rows run in Classic
+    /// Home's pinned mode there (`classicRowsContent`), so each carries the 88 pt reach band with
+    /// its heading overlaid inside it, ahead of the artwork. The inset that used to leave room for
+    /// a focused first-row card's lift (allowance + `sm`) is shortened by what the band adds over
+    /// the plain heading block (heading line + `md` gap), so the first row's art sits where it did.
+    private static var classicRowsTopInset: CGFloat {
+        let plainHeadingBlock = Theme.Font.sectionTitleLineHeight + Theme.Spacing.md
+        let bandOverPlain = Theme.Size.heroPinnedRowTopPad - plainHeadingBlock
+        return max(0, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm - bandOverPlain)
+    }
+
+    /// BUG-190: the panel never plays a trailer (no autoplay, no Trailer Location: Hero claim).
+    private static let noTrailerGate = HomeHeroTrailerGate(autoplayEnabled: false, sharedGatesOpen: false,
+                                                           heroFocused: false, posterFocusOnly: false,
+                                                           carouselActive: false, inlineTrailersEnabled: false,
+                                                           focusTrailerMode: false)
+
+    /// BUG-190: the folder's logo (or name) at the compact header size (`compactLogoSlot`, 64 pt),
+    /// centred, where the grid page's header comes to rest once it has risen.
+    private var compactLogoSlot: some View {
+        TitleLogoHeader(
+            title: model.folderTitle,
+            logoUrl: model.titleLogoUrl,
+            alignment: .top,
+            textFont: Theme.Font.sectionTitle,
+            slotHeight: FolderHeaderGeometry.compactLogoSlot,
+            decodeSize: .points(width: 600, height: FolderHeaderGeometry.compactLogoSlot)
+        )
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .frame(maxWidth: .infinity)
+        .frame(height: FolderHeaderGeometry.compactLogoSlot, alignment: .top)
+        .accessibilityIdentifier("folder_classic_logo")
+    }
+
+    // MARK: - Grid
+
+    @ViewBuilder
+    private var gridContent: some View {
+        if classicRows {
+            classicRowsContent(heroFocus: nil)
+        } else {
+            posterGridContent
+        }
+    }
+
+    /// FEAT-79 (Steven rc7: "use the Classic interface in collections when Classic is selected"):
+    /// one `CatalogRowView` per source, the row Classic Home draws (`HomeCatalogRowCell`), in the
+    /// grid page's plain vertical scroll. Rows come from the same strip state the Stage page reads
+    /// (`model.stripRows`); a loading source shows its skeleton, failed and empty ones drop out.
+    /// BUG-190: `heroFocus` is the Classic rows page's panel model (nil off that page).
+    @ViewBuilder
+    private func classicRowsContent(heroFocus: HomeHeroFocusModel?) -> some View {
+        let rows = FolderRowsPlan.visible(model.stripRows, focusedTabIndex: nil)
+        if rows.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                if model.allSettled {
+                    Text("Nothing here yet.")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    if model.editableSource == nil {
+                        Button("Go Back") { dismiss() }
+                            .buttonStyle(.bordered)
+                    }
+                } else {
+                    HStack(spacing: Theme.Spacing.md) {
+                        ProgressView()
+                        Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.screen)
+            .padding(.top, Theme.Spacing.xl)
+        } else {
+            // Batch N (BUG-190 follow-up; Batch M pass: the focused row's heading hid under the hero
+            // panel): on the hero page the rows use Classic Home's pinned mode. Each row's focus
+            // frame reaches up through the band its heading is overlaid in, so the engine's reveal
+            // scrolls the heading into view too; rows are self-contained, hence spacing 0 (as
+            // `HomeView.rowsScroll`). The Home values exactly: reach above 88 freezes focus
+            // resolution. The non-hero path keeps the plain heading and the xl gap.
+            let pinned = heroFocus != nil
+            LazyVStack(alignment: .leading, spacing: pinned ? 0 : Theme.Spacing.xl) {
+                ForEach(rows) { row in
+                    switch row.status {
+                    case .loaded:
+                        if let section = row.section {
+                            CatalogRowView(section: section, previewLimit: FolderRowsPlan.previewLimit,
+                                           onItemFocusChange: { [memory = classicFocusMemory, focus = heroFocus] item in
+                                               memory.note(rowKey: section.key, itemId: item?.id)
+                                               // BUG-190: the focused card drives the hero panel.
+                                               focus?.reportFocus(item, from: section.key)
+                                           })
+                        }
+                    case .loading:
+                        StripLoadingRow(heading: row.heading)
+                            .padding(.horizontal, Theme.Spacing.screen)
+                    case .failed, .empty:
+                        EmptyView()
+                    }
+                }
+            }
+            .padding(.bottom, Theme.Spacing.xl * 2)
+            .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
+            .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
+            .environment(\.pinnedRowFocusRequest, classicFocusRequest)
+            // FEAT-79 review r1: the restore stands down on a viewer press (`ViewerInputClock`),
+            // which only the Stage strip installed before.
+            .background { ViewerInputClockInstaller().frame(width: 0, height: 0) }
+            .accessibilityIdentifier("folder_classic_rows")
+        }
+    }
+
+    /// FEAT-79: back on the Classic rows page after a push from a card, focus returns to the row
+    /// and card it left. Review r1: armed only by such a push (P2-2); every rung stands down after
+    /// a viewer input or a newer appearance (generation); `forceCard` only while the card still
+    /// exists (P3-1); one late rung for the engine's own restoration (P3-2); and the request is
+    /// retired afterwards so a row remounting later never re-applies it (P2-1).
+    private func restoreClassicRowsFocus() {
+        let memory = classicFocusMemory
+        guard classicRows, let row = memory.takeArmedTarget() else { return }
+        let item = memory.itemId
+        let generation = memory.beginRestore()
+        let started = ProcessInfo.processInfo.systemUptime
+        let cardStillThere = item.map { id in
+            model.stripRows.first { $0.id == row || $0.section?.key == row }?.section?.items.contains { $0.id == id } ?? false
+        } ?? false
+        let rungs: [(delay: Double, force: Bool)] = [(0, true), (0.35, true), (0.8, false), (1.1, false)]
+        for rung in rungs {
+            DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
+                guard classicRows, memory.isCurrent(generation),
+                      !ViewerInputClock.shared.hasInput(since: started) else { return }
+                classicFocusRequest = PinnedRowFocusRequest(rowKey: row,
+                                                            generation: classicFocusRequest.generation + 1,
+                                                            itemId: cardStillThere ? item : nil,
+                                                            forceCard: rung.force && cardStillThere)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
+            guard memory.isCurrent(generation) else { return }
+            classicFocusRequest = .none
+        }
+    }
+
+    private var posterGridContent: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            if model.items.isEmpty {
+                if model.isLoading || model.tabIsLoading {
+                    HStack(spacing: Theme.Spacing.md) {
+                        ProgressView()
+                        Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    .padding(.top, Theme.Spacing.xl)
+                } else {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                        Text("Nothing here yet.")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                        // BUG-47 class: a pushed screen with no focusable content strands focus
+                        // on the ancestor tab bar, where Menu exits the app instead of popping.
+                        // The Edit Filters button anchors focus when present; otherwise keep a Go
+                        // Back control here (same as CatalogGridView).
+                        if model.editableSource == nil {
+                            Button("Go Back") { dismiss() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.top, Theme.Spacing.xl)
+                }
+            } else {
+                LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                        NavigationLink(value: TitleRoute(preview: item)) {
+                            PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
+                        }
+                        .cardFocusButtonStyle()
+                        .posterButtonShape()
+                        .titleHoldMenu(preview: item)
+                        .onAppear { model.itemAppeared(at: index) }
+                        // UI test69: only the first tile needs an identifier — the test reads its
+                        // frame to prove it clears the header's bottom fade.
+                        .accessibilityIdentifier(index == 0 ? "folder_grid_first_tile" : "")
+                    }
+                }
+                // C: the reveal gate. A cover in the page colour rather than `.opacity(0)` on the
+                // grid, so the grid stays focusable while it is held back (a zero-opacity view can
+                // be skipped when tvOS picks the first focus, and a pushed page with nothing
+                // focusable strands focus on the tab bar — the BUG-47 class). It overhangs the grid
+                // by `xl` so a focused first card's lift and shadow are covered too, and fades out
+                // once the first posters are warm.
+                .overlay {
+                    Theme.Palette.background
+                        .padding(-Theme.Spacing.xl)
+                        .opacity(gridRevealed ? 0 : 1)
+                        .allowsHitTesting(false)
+                }
+
+                if model.canLoadMore || model.tabIsLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .padding(.vertical, Theme.Spacing.lg)
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.screen)
+        .padding(.bottom, Theme.Spacing.screen)
+        // C: the header (with its own bottom fade and gap) is the scroll content's first child, so
+        // the grid only needs room for a focused first-row card's lift plus its shadow's reach
+        // above the frame. At rest the first row sits within a few points of rc14's.
+        .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Reveal gate (C)
+
+    private struct GridRevealKey: Equatable {
+        let tab: Int
+        let hasItems: Bool
+    }
+
+    /// C: warm exactly what the first posters will ask for (the card's head URL at the card's
+    /// decode bucket, `PosterCard.decodeRequest`, critique #22), wait at most `revealTimeout`, then
+    /// fade the grid in. A no-op while the tab has no items or once the grid is shown.
+    private func revealGridWhenWarm() async {
+        // FEAT-79 review r1 (P3-3): the Classic rows page draws no grid; nothing to warm.
+        guard !classicRows else { return }
+        guard !model.items.isEmpty, !gridRevealed else { return }
+        let decode = PosterCard.decodeRequest(width: posterStyle.width, height: posterStyle.height, scale: displayScale)
+        let urls = model.items.prefix(Self.revealPrefetchCount).compactMap { Self.revealPrefetchURL(poster: $0.poster) }
+        await ArtworkStore.prefetchAndWait(urls, decode: decode, timeout: Self.revealTimeout)
+        guard !Task.isCancelled else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { gridRevealed = true }
+    }
+
+    /// The first URL a `PosterCard` asks for: the larger rendition of its poster when one is known
+    /// (`ArtworkURLUpgrade`, role `.poster`), else the poster itself. A card without a poster URL
+    /// draws a flat surface and loads nothing, so there is nothing to warm.
+    private static func revealPrefetchURL(poster: String?) -> URL? {
+        guard let poster, !poster.isEmpty, let url = URL(string: poster) else { return nil }
+        return ArtworkURLUpgrade.upgraded(url, role: .poster) ?? url
+    }
+
+    // MARK: - Header (C)
+
+    /// FEAT-40 (rc13, "official Nuvio" folder header ask) → beta.18 verdict R4 → C (beta.19-rc1
+    /// verdict): the centred title logo (or the folder's name in `Theme.Font.hero` when it has no
+    /// logo) over the tab chips, on an opaque band in the page colour that fades out under the
+    /// chips. It is the scroll content's first child; `.visualEffect` makes the logo rise and shrink
+    /// to the compact slot and pins the chips and band once the grid has scrolled `riseDistance`.
+    ///
+    /// H-2: the parent collection's title ("Genres", "Services de Streaming") stays removed — a
+    /// tvOS-only invention a tester flagged 2026-08-22 — so this header is logo/title-only.
+    /// BUG-38 round three: no backdrop on this page.
+    ///
+    /// The title stays in the view tree the whole time (VoiceOver and the harness keep it), and
+    /// `folder_header` is this container: at rest its frame is exactly what is drawn.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+            VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+                logoSlot
+                    .visualEffect { content, proxy in
+                        let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                            - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                        return content
+                            .scaleEffect(FolderHeaderGeometry.logoScale(scrolled: s), anchor: .top)
+                            .offset(y: FolderHeaderGeometry.logoOffsetY(scrolled: s))
+                    }
+                    .padding(.top, FolderHeaderGeometry.restTop)
+
+                if hasChips {
+                    chipsRow(bindsFocus: true)
+                        // F (FEAT-54): the chips row fades at the screen edges like every other row.
+                        .rowEdgeEffectStyle()
+                        .padding(.horizontal, Theme.Spacing.screen)
+                        .visualEffect { content, proxy in
+                            let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                                - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                            return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
+                        }
+                }
+            }
+            // The band: opaque page colour from 600 pt above the header (it covers cards that have
+            // scrolled up past the screen top) down to the chips' bottom (the logo slot's bottom
+            // with one tab), then a `fade`-tall eased fade to clear. A background of the logo +
+            // chips block, so it sizes itself to them; it pins with the chips.
+            .background(alignment: .top) {
+                VStack(spacing: 0) {
+                    if classicRows {
+                        // FEAT-79 (device pass, Christian 2026-10-18): on the Classic rows page the
+                        // row above the focused one sits partly under the header, and the opaque
+                        // band cut its posters off with a hard edge (titles poking out below a
+                        // black box). Here the band is solid only above the title block and fades
+                        // across it, so the row above softens out under the title instead.
+                        Theme.Palette.background.frame(height: 600)
+                        LinearGradient(stops: [.init(color: Theme.Palette.background, location: 0),
+                                               .init(color: Theme.Palette.background.opacity(0.92), location: 0.55),
+                                               .init(color: Theme.Palette.background.opacity(0), location: 1)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .padding(.bottom, -FolderHeaderGeometry.fade * 2)
+                    } else {
+                        Theme.Palette.background
+                        LinearGradient(stops: EdgeFadeCurve.stops(rising: false, color: Theme.Palette.background),
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: FolderHeaderGeometry.fade)
+                    }
+                }
+                .padding(.top, -600)
+                .padding(.bottom, classicRows ? 0 : -FolderHeaderGeometry.fade)
+                .allowsHitTesting(false)
+                .visualEffect { content, proxy in
+                    let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                        - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                    return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
+                }
+            }
+
+            Color.clear.frame(height: FolderHeaderGeometry.fade)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // rc13 UI test69 → C: the real header container. At rest its (layout) frame equals what is
+        // drawn; while scrolled, XCUITest still reports the layout frame (it ignores the
+        // `.visualEffect` offsets), so test69 reads the rise from `folder_header_state` and pixels.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folder_header")
+    }
+
+    /// The compact block's footprint (see `body`): the same stack as `header` with the compact logo
+    /// slot, so `header`'s height minus this one is exactly `riseDistance`.
+    private var compactGhost: some View {
+        VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+            VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+                Color.clear.frame(height: FolderHeaderGeometry.compactTop + FolderHeaderGeometry.compactLogoSlot)
+                if hasChips {
+                    // Critique #22: layout only. Hidden and disabled so it can never take focus,
+                    // and without `rowEdgeEffectStyle` (it draws nothing to fade).
+                    chipsRow(bindsFocus: false)
+                        .padding(.horizontal, Theme.Spacing.screen)
+                        .hidden()
+                        .disabled(true)
+                        .accessibilityHidden(true)
+                }
+            }
+            Color.clear.frame(height: FolderHeaderGeometry.fade)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
+    }
+
+    /// The full-size logo slot: `TitleLogoHeader` centred and pinned to the top of a fixed
+    /// `logoSlot`-tall frame (rc14 device round 2: top-aligned so a short wordmark sits as high as
+    /// a tall one). A folder without a logo shows its name in the same slot, so the geometry does
+    /// not depend on whether a logo exists.
+    private var logoSlot: some View {
+        TitleLogoHeader(
+            title: model.folderTitle,
+            logoUrl: model.titleLogoUrl,
+            alignment: .top,
+            textFont: Theme.Font.hero,
+            slotHeight: Theme.Size.heroLogoSlotHeight,
+            // beta.19-rc1 verdict (I1 row 9b, BUG-134): decoded for the slot it is drawn in instead
+            // of the old fixed 1920 px cap. No URL upgrade: folder logos are the user's own art.
+            decodeSize: .points(width: 1200, height: Theme.Size.heroLogoSlotHeight)
+        )
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .frame(maxWidth: .infinity)
+        .frame(height: FolderHeaderGeometry.logoSlot, alignment: .top)
+    }
+
+    /// The tab chips. `bindsFocus` is true only for the real row in `header`; the compact ghost's
+    /// copy (critique #22) must never carry the focus binding.
+    private func chipsRow(bindsFocus: Bool) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
+                    let chip = TabChip(label: tab.label, isSelected: index == model.selectedTabIndex) {
+                        model.selectTab(index)
+                    }
+                    if bindsFocus {
+                        chip.focused($focusedChip, equals: index)
+                    } else {
+                        chip
+                    }
+                }
+            }
+            .padding(.vertical, Theme.Spacing.sm)
+        }
+        // F: a focused chip's lift and shadow are not clipped, and the edge fade can reach the bezel.
+        .scrollClipDisabled()
+        // One Up/Down target: from the Edit Filters button or the grid, focus enters the chips on
+        // the nearest one instead of skipping the row when no chip sits straight above/below.
+        .focusSection()
+    }
+
+    /// On-device TMDB Discover filter editing for the selected tmdb tab (upstream 0fc4616b's
+    /// exclusion filters + the existing include fields). Only shown for filter-consuming sources;
+    /// doubles as the empty state's focus anchor (BUG-47) when the source currently matches nothing.
+    ///
+    /// C: an overlay at the page's top-trailing corner, level with the logo's rest position, no
+    /// longer part of the header. It fades on the `gridScrolled` crossing and is disabled while
+    /// the grid is scrolled, so Up from the first grid row cannot land on an invisible button.
+    @ViewBuilder
+    private var editFiltersOverlay: some View {
+        if let source = model.editableSource {
+            HStack {
+                Spacer()
+                Button {
+                    editing = source
+                } label: {
+                    Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
+                        .font(Theme.Font.meta)
+                }
+                .buttonStyle(.bordered)
+                .disabled(gridScrolled)
+                .accessibilityIdentifier("folder.editFilters")
+            }
+            // Full-width (the Spacer) focus section, as `FolderEditMenuBand` does in Stage: Up from
+            // a chip or card anywhere along the page reaches the corner button.
+            .focusSection()
+            .padding(.top, FolderHeaderGeometry.restTop)
+            .padding(.trailing, Theme.Spacing.screen)
+            .opacity(gridScrolled ? 0 : 1)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: gridScrolled)
+        }
+    }
+}
+
+/// BUG-190 review r1: owns the Classic rows page's hero models (`HomeHeroModels`: the focus
+/// model, the art resolver, an idle trailer model), so only that page builds them; the Grid and
+/// Stage Rows folder pages never do. The covered/uncovered calls moved here with them: back from a
+/// push the focus model thaws and the restored card's report is the answer (BUG-138's rule, as on
+/// Home); a push freezes the panel on the title it left from (a nil report under the cover is
+/// focus leaving for the pushed page, not the viewer leaving the row). `HomeHeroModels` never
+/// publishes, so this host never re-renders `content` on a focus commit (perf review 2026-10-17, #1).
+private struct FolderClassicHeroHost<Content: View>: View {
+    @StateObject private var hero = HomeHeroModels()
+    let content: (HomeHeroModels) -> Content
+
+    init(@ViewBuilder content: @escaping (HomeHeroModels) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(hero)
+            .onAppear { hero.focus.setCovered(false, restoresFocus: true) }
+            .onDisappear { hero.focus.setCovered(true, restoresFocus: true) }
+    }
+}
+
+#if DEBUG
+/// BUG-190: `folder_classic_hero fitem=<focused card id|-> pitem=<presented identity|-> pbd=<0|1>`,
+/// the Classic rows page's hero panel state (invisible, harness-readable). A leaf.
+struct FolderClassicHeroDebugLabel: View {
+    @ObservedObject var focusModel: HomeHeroFocusModel
+    @ObservedObject var resolver: HeroArtResolver
+
+    var body: some View {
+        Text(verbatim: "folder_classic_hero fitem=\(focusModel.focusedItem?.id ?? "-") pitem=\(resolver.presented?.identity ?? "-") pbd=\(resolver.presented?.backdrop != nil ? 1 : 0)")
+            .font(.system(size: 8))
+            .opacity(0.011)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("folder_classic_hero")
+    }
+}
+#endif
+
+/// Home Stage & Strip (P2 §2.6): the folder page's Edit menu in Stage, in place of the Edit Filters
+/// button: Edit Filters, one entry per filter-editable source on the Rows page, the selected tab's on
+/// the Grid page (today's label).
+///
+/// FEAT-71 (Steven, beta.19-rc4 verdict 2026-10-16: the Rows / Grid option "breaks the immersive
+/// feel"; video 1 `v1-140` shows the "Modifier" pill top-right while row 0 holds focus): the Layout
+/// picker moved to Settings › Home Screen › Collections Layout (`FolderLayoutDefault`), and the band
+/// is HIDDEN AT REST. It draws only while its pill holds focus (Up from row 0 lands on it and shows
+/// it); otherwise it is invisible but still the page's top focus section, so it stays reachable.
+/// With no filter-editable source the pill is a Go Back button instead of the Edit menu (review r1
+/// P1-2): the band stays the page's BUG-47 anchor while a folder's first rows load, and the Rows
+/// page pulls focus to the first card as soon as a row is focusable (`requestInitialFocus`).
+///
+/// Mounted once by `FolderDetailView`, outside the Rows/Grid switch. A full-width focus section (the
+/// Library L1 pattern): Up from ANY card of the strip's top row (or from the grid's chips) reaches
+/// it, and Down returns to the row the strip shows (its own focus section). A focus section only at
+/// the top of the page (`isActive`); elsewhere it is hidden and never a focus target.
+struct FolderEditMenuBand: View {
+    @ObservedObject var model: FolderDetailViewModel
+    /// The page's current layout: decides which sources the menu lists (FEAT-71: no longer a binding).
+    let layout: FolderPageLayout
+    /// Rows: the strip's focused row is its top focusable row (or none has had focus yet). Grid: the
+    /// grid has not scrolled.
+    let isActive: Bool
+    @Binding var editing: FolderDetailViewModel.EditableSource?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
+    /// FEAT-71: the band shows only while its pill holds focus.
+    @FocusState private var menuFocused: Bool
+    /// The at-rest opacity: invisible to a viewer, still a focus target (opacity 0 is not).
+    static let hiddenOpacity: Double = 0.011
+
+    var body: some View {
+        // The band is a focus section only while it is active. Faded out, a section with only a
+        // disabled Menu in it still caught Up from a lower strip row (focus landed on the empty
+        // section, then bounced to whichever card sat under it: end-of-Wave-2 FA87 walk). Hidden,
+        // it keeps its place and is never a focus target. FEAT-71: and with nothing to edit there is
+        // no band at all.
+        // Review r1 P1-2 (the BUG-47 eject class): with nothing to edit the band used to mount
+        // nothing, and a loading folder (every add-on-only folder, and every folder before its first
+        // emission) then had no focusable view at all: a Menu left the app. The band now always
+        // exists while active; with no filter entries its pill is a Go Back button instead of the
+        // Edit menu, still invisible until focused.
+        Group {
+            if isActive {
+                band.focusSection()
+            } else {
+                band.hidden()
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isActive)
+        // FEAT-71: hidden at rest, shown while focused (opacity only: layout and the focus section
+        // are unchanged, so Up from row 0 still finds it). Device pass 2026-10-16: at opacity 0 the
+        // pill was NOT a focus target on hardware (Up from row 0 logged `moveFail heading=up`), the
+        // focus engine skips a fully transparent item; `hiddenOpacity` is as close to invisible as
+        // the engine allows (the probe labels use the same value).
+        .opacity(menuFocused ? 1 : Self.hiddenOpacity)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: menuFocused)
+    }
+
+    private var band: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if filterEntries.isEmpty {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Go Back", systemImage: "chevron.backward")
+                        .font(Theme.Font.meta)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!isActive)
+                .focused($menuFocused)
+                .accessibilityIdentifier("folder.goBack")
+            } else {
+                Menu {
+                    ForEach(filterEntries) { source in
+                        Button {
+                            editing = source
+                        } label: {
+                            Label(entryTitle(for: source), systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                    }
+                } label: {
+                    Label("Edit", systemImage: "slider.horizontal.3")
+                        .font(Theme.Font.meta)
+                }
+                // HIG contract: system styles only. If `.button` does not draw a bordered pill on tvOS,
+                // drop both modifiers and keep the system Menu look.
+                .menuStyle(.button)
+                .buttonStyle(.bordered)
+                .disabled(!isActive)
+                .focused($menuFocused)
+                .accessibilityIdentifier("folder.editMenu")
+            }
+        }
+        .padding(.top, FolderHeaderGeometry.restTop)
+        .padding(.trailing, Theme.Spacing.screen)
+    }
+
+    private var filterEntries: [FolderDetailViewModel.EditableSource] {
+        switch layout {
+        case .rows:
+            return model.editableSources
+        case .grid:
+            return model.editableSource.map { [$0] } ?? []
+        }
+    }
+
+    /// Rows names the source ("Edit Filters: Action"); Grid keeps today's label (the selected tab's).
+    private func entryTitle(for source: FolderDetailViewModel.EditableSource) -> String {
+        switch layout {
+        case .rows:
+            return String(localized: "Edit Filters: \(source.title)")
+        case .grid:
+            return String(localized: "Edit Filters")
+        }
+    }
+}
+
+// BUG-38 (folder page hero): this screen's title-logo header used to live here as a private
+// `FolderHeroTitle` — the folder's `titleLogoUrl` as the page title when it loads (the same
+// ArtworkStore path `HeroLogo` in HomeView uses for the Home hero's logo), falling back to plain
+// `screenTitle` text until then / when there is none. rc13 (FEAT-40) promoted it to
+// `DesignSystem/TitleLogoHeader.swift` — generalized with `alignment`/`textFont`/`slotHeight`
+// parameters so `FolderDetailView`'s header (centred, larger, pinned above the grid) and
+// `StreamPickerView`'s header (FEAT-42, unchanged leading/screenTitle/pinned layout) share one
+// implementation instead of two copies. See that file for the Codex round-1 fixes it carries
+// forward; `FolderDetailView.logoSlot` above is the only call site left in this file.
+
+private extension Optional where Wrapped == String {
+    /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo
+    /// check in this file applies (the editor/import path can persist whitespace-only values).
+    var nonBlankTrimmed: String? {
+        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
     }
 }
 
@@ -955,71 +2233,6 @@ struct FolderDetailView: View {
 /// covering that platter. `ChipButtonStyle(selected:)` already resolves fill and label for all
 /// four focus×selection states (accent at rest when selected, white platter + dark label on
 /// focus), so the chip must not override either.
-/// BUG-38 (folder page hero): the folder's `titleLogoUrl` as the page title when it loads —
-/// the same ArtworkStore path `HeroLogo` (HomeView) uses for the Home hero's logo — and the
-/// plain `screenTitle` text until then / when there is none. The logo is capped to the pinned
-/// Home hero's logo slot so a 1:1 genre badge and a wide wordmark both sit on one baseline.
-private struct FolderHeroTitle: View {
-    let title: String
-    private let url: URL?
-    @State private var image: UIImage?
-
-    init(title: String, logoUrl: String?) {
-        self.title = title
-        self.url = logoUrl.flatMap(URL.init(string:))
-        // Codex round 1: seed synchronously from the cache, exactly as `HeroLogo` does — a
-        // reopened folder whose logo is already in ArtworkStore must not flash its text title
-        // for one frame before the `.task` consults the same cache.
-        _image = State(initialValue: ArtworkStore.cached(url))
-    }
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: Theme.Size.heroLogoMaxWidth, maxHeight: Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
-                    .accessibilityLabel(title)
-            } else {
-                Text(title)
-                    .font(Theme.Font.screenTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-            }
-        }
-        // Codex round 1: when a logo is configured, text-while-loading and the loaded logo share
-        // ONE fixed-height slot, so the swap cannot resize the header and shove the tabs/grid
-        // while focus is live. No logo configured → no slot: the page keeps its old text metrics.
-        .frame(height: url == nil ? nil : Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
-        .task(id: url) {
-            guard let url else {
-                image = nil
-                return
-            }
-            if let hit = ArtworkStore.cached(url) {
-                image = hit
-                return
-            }
-            image = nil
-            let fetched = try? await ArtworkStore.fetch(url)
-            // Codex round 1: `.task(id:)` cancels this task when the URL changes, but
-            // `ArtworkStore.fetch` lets shared work run to completion — so a superseded fetch can
-            // land after its replacement. Never install a result for a URL that is no longer ours.
-            guard !Task.isCancelled, let fetched else { return }
-            withAnimation(.easeIn(duration: 0.25)) { image = fetched }
-        }
-    }
-}
-
-private extension Optional where Wrapped == String {
-    /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo
-    /// check in this file applies (the editor/import path can persist whitespace-only values).
-    var nonBlankTrimmed: String? {
-        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-        return value
-    }
-}
-
 private struct TabChip: View {
     let label: String
     let isSelected: Bool
@@ -1034,4 +2247,48 @@ private struct TabChip: View {
         }
         .buttonStyle(.chip(selected: isSelected))
     }
+}
+
+/// FEAT-79 (review r1): the Classic rows page's focus memory. A reference box held in `@State`,
+/// never observed, so recording a card hop re-renders nothing.
+@MainActor
+final class ClassicRowsFocusMemory {
+    private(set) var rowKey: String?
+    private(set) var itemId: String?
+    private var hasFocus = false
+    private var lostAt: TimeInterval?
+    private var armed = false
+    private var generation = 0
+
+    /// A card in `rowKey` took focus (`itemId`), or the row lost it (nil).
+    func note(rowKey: String, itemId: String?) {
+        if let itemId {
+            self.rowKey = rowKey
+            self.itemId = itemId
+            hasFocus = true
+        } else if self.rowKey == rowKey {
+            hasFocus = false
+            lostAt = ProcessInfo.processInfo.systemUptime
+        }
+    }
+
+    /// The page is going away: a push from a card arms the restore (focus still on a card, or it
+    /// left one in the last half second, the push's own hand-off). A tab switch or a cover does not.
+    func armIfLeavingFromCard() {
+        let now = ProcessInfo.processInfo.systemUptime
+        armed = rowKey != nil && (hasFocus || lostAt.map { now - $0 < 0.5 } ?? false)
+    }
+
+    /// The row to restore, once, if armed.
+    func takeArmedTarget() -> String? {
+        defer { armed = false }
+        return armed ? rowKey : nil
+    }
+
+    func beginRestore() -> Int {
+        generation &+= 1
+        return generation
+    }
+
+    func isCurrent(_ g: Int) -> Bool { g == generation }
 }

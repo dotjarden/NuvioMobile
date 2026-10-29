@@ -1,5 +1,6 @@
 #if DEBUG
 import AVFoundation
+import AVKit
 import Foundation
 import SharedCore
 
@@ -158,6 +159,55 @@ nonisolated enum RemuxSmokeTest {
                             player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { done in
                                 print("[RemuxSmoke] seek completed=\(done) pos=\(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))")
                             }
+                        }
+                    }
+                }
+                // debug.remuxSmokeChapter=N (player P4, 1-based): 4 s after ready, seek to chapter N
+                // through the coordinator (the Chapters tab's path) and log where it landed 3 s later
+                // against the chapter's served-timeline start — the native chapter timeline check.
+                let chapterPick = UserDefaults.standard.integer(forKey: "debug.remuxSmokeChapter")
+                if chapterPick > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak coordinator] in
+                        guard let coordinator, let player = coordinator.player else { return }
+                        let list = coordinator.chapters
+                        print("[RemuxSmoke] chapters: " + list.map { "\($0.title)@\(String(format: "%.3f", $0.sec))" }.joined(separator: ", "))
+                        guard chapterPick <= list.count else { print("[RemuxSmoke] chapter \(chapterPick) missing"); return }
+                        let target = list[chapterPick - 1].sec
+                        coordinator.seek(toChapter: target)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            let pos = CMTimeGetSeconds(player.currentTime())
+                            print("[RemuxSmoke] chapter \(chapterPick) target=\(String(format: "%.3f", target)) landed=\(String(format: "%.3f", pos))"
+                                  + " (before playing on: \(String(format: "%.3f", pos - 3)))"
+                                  + " markers=\(player.currentItem?.navigationMarkerGroups.first?.timedNavigationMarkers?.count ?? 0)")
+                        }
+                    }
+                }
+                // debug.remuxSmokeLatePickSec=N (player P4, B17): N s after ready, pick the first late
+                // add-on rendition the way the panel does (lazy rebuild path).
+                let latePick = UserDefaults.standard.double(forKey: "debug.remuxSmokeLatePickSec")
+                if latePick > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + latePick) { [weak coordinator] in
+                        guard let coordinator else { return }
+                        guard let first = coordinator.lateSubtitleRows.first else {
+                            print("[RemuxSmoke] late pick: no late rows (state=\(coordinator.lateState))"); return
+                        }
+                        print("[RemuxSmoke] late pick → \(first.name) at \(String(format: "%.1f", coordinator.lastPositionSec))s")
+                        coordinator.selectLateSubtitle(name: first.name)
+                    }
+                }
+                // debug.remuxSmokeScanRate=N (player P3): 6 s after ready, play at rate N for 6 s
+                // (FF scan), then back to 1. AVPlayer scans HLS through the EXT-X-I-FRAMES-ONLY
+                // rendition, so with it published the run shows iframe.m3u8 + iframe-NNNNN.m4s
+                // fetches; with Seek Preview Frames Off it shows none (canPlayFastForward=false).
+                let scanRate = UserDefaults.standard.float(forKey: "debug.remuxSmokeScanRate")
+                if scanRate != 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak coordinator] in
+                        guard let player = coordinator?.player, let item = player.currentItem else { return }
+                        print("[RemuxSmoke] SCAN rate=\(scanRate) canPlayFastForward=\(item.canPlayFastForward) canPlayFastReverse=\(item.canPlayFastReverse)")
+                        player.rate = scanRate
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                            print("[RemuxSmoke] SCAN end rate=\(player.rate) pos=\(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))")
+                            player.rate = 1
                         }
                     }
                 }

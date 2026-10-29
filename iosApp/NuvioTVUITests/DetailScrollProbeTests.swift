@@ -55,15 +55,18 @@ final class DetailScrollProbeTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the hero-CTA route into Detail), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
         // Session restore + profile fetch can take well past 15 s on a cold sim launch (same wait
         // `TrailerSoakTests.launchToHome`/`NuvioTVUITests.launchToHome` use).
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -129,11 +132,9 @@ final class DetailScrollProbeTests: XCTestCase {
     /// many D-pad downs follow — a 2026-09-04 run hit exactly this (`dark` stuck at 0 after 8
     /// downs) with the previous fixed `pause(12)`.
     private func openDetailFromHomeHero(_ app: XCUIApplication) {
-        press(.up, times: 6, gap: 0.5)
-        press(.down, times: 1)
-        pause(2)
-        remote.press(.select)
-        pause(6)
+        // ui-legs (2026-10-22): the blind hero-CTA Select (Up ×6, Down ×1) is the shared,
+        // focus-verified Search route now (`DetailEntryRoute`).
+        guard DetailEntryRoute(test: self, app: app).openDetail() else { return }
         var waited: TimeInterval = 0
         while !app.staticTexts["Cast"].exists, waited < 14 {
             pause(1)
@@ -159,7 +160,7 @@ final class DetailScrollProbeTests: XCTestCase {
         openTabByName(app, "Search")
         pause(1.5)
         _ = typeIntoSearchField(app, "Les Condés")
-        openFirstSearchResult(app)
+        openFirstSearchResult(app, query: "Les Condés")
         var waited: TimeInterval = 0
         while !app.staticTexts["debug_ux6"].exists, waited < 15 {
             pause(1)
@@ -286,6 +287,102 @@ final class DetailScrollProbeTests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground, "app must survive the leg-4 scroll pass")
     }
 
+    // MARK: - D-3: the compact logo steps aside for rows in its band
+
+    /// One rest of the D-3 walk: the probe tokens (`compactLogo=shown|hidden`,
+    /// `logoBand=hero|clear|blocked`), the rendered logo's AX presence (`DetailCompactLogo` is
+    /// `.accessibilityHidden(!visible)`), and the "Parental Guide" heading's top on screen.
+    private struct CompactLogoRest {
+        let logo: String
+        let band: String
+        let logoInTree: Bool
+        let headingTop: CGFloat?
+    }
+
+    private func compactLogoRest(_ app: XCUIApplication, _ name: String) -> CompactLogoRest {
+        let probe = app.staticTexts["debug_ux6"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : ""
+        var logo = "missing", band = "missing"
+        for part in text.split(separator: " ") {
+            if part.hasPrefix("compactLogo=") { logo = String(part.dropFirst("compactLogo=".count)) }
+            if part.hasPrefix("logoBand=") { band = String(part.dropFirst("logoBand=".count)) }
+        }
+        let logoInTree = app.descendants(matching: .any).matching(identifier: "detail_compact_logo").firstMatch.exists
+        let heading = app.staticTexts["Parental Guide"]
+        let headingTop = heading.exists ? heading.frame.minY : nil
+        let rest = CompactLogoRest(logo: logo, band: band, logoInTree: logoInTree, headingTop: headingTop)
+        let line = "\(name): compactLogo=\(logo) logoBand=\(band) ax=\(logoInTree) heading=\(headingTop.map { String(format: "%.1f", $0) } ?? "none")"
+        let attachment = XCTAttachment(string: line + " | " + text)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[D3] \(line)")
+        return rest
+    }
+
+    /// D-3 (design review 2026-10-22; review P3-1): opens the first fixture title that carries a
+    /// Parental Guide row (The Simpsons and Animals are the review's titles; TMDB on), walks Down
+    /// one rest at a time and checks the band against the heading's on-screen geometry:
+    ///
+    /// - The oracle: the Parental Guide row's top (its heading) in [−40, 92) means its lead — the
+    ///   heading and its one chip line, ~100 pt — overlaps the 36–108 band past the 16 pt rest
+    ///   tolerance, so the band MUST read `blocked` (or `hero`, before the clearance) and the
+    ///   rendered logo must be out of the AX tree. −40 is where the row ANCHORED ABOVE the next row
+    ///   rests (its bottom at 72, `screenRest − 36`), which is exactly the review's photo.
+    /// - Required: at least one such rest reads `blocked`, and a later rest reads `clear` with the
+    ///   logo back in the tree.
+    /// - Every rest: the probe's `compactLogo=` agrees with the rendered logo's AX presence.
+    ///
+    /// No fixture title with a Parental Guide row (the guide is fetched by IMDb id): skipped with
+    /// the reason; Les Condés, the probe file's usual title, has none.
+    func testCompactLogoStepsAsideForRowsInItsBand() throws {
+        let app = launchToHome(extraArguments: detailScrollProbeLaunchArguments()
+                                   + ["-debug.tmdbEnabledOverride", "YES", "-detail_trailer_autoplay", "NO"])
+        let route = DetailEntryRoute(test: self, app: app)
+        let targets = [DetailEntryRoute.Target(query: "The Simpsons", type: "series"),
+                       DetailEntryRoute.Target(query: "Animals", type: "movie"),
+                       DetailEntryRoute.Target(query: "Dune", type: "movie"),
+                       DetailEntryRoute.Target(query: "Severance", type: "series")]
+        var opened: String?
+        for target in targets {
+            guard route.openDetailBySearchIfFound(targets: [target]) else { continue }
+            if app.staticTexts["Parental Guide"].waitForExistence(timeout: 15) {
+                opened = target.query
+                break
+            }
+            add(XCTAttachment(string: "NOTE: '\(target.query)' opened with no Parental Guide row; trying the next title."))
+            press(.menu, times: 1, gap: 2)
+        }
+        guard let title = opened else {
+            throw XCTSkip("No fixture title opened with a Parental Guide row (\(targets.map(\.query))); the band fade was not exercised.")
+        }
+        add(XCTAttachment(string: "D-3 walk on '\(title)'"))
+
+        var sawBlockedInBand = false
+        var sawClearAfter = false
+        for step in 1...14 {
+            press(.down, times: 1, gap: 1.8)
+            let rest = compactLogoRest(app, "d3_\(title)_down\(step)")
+            shot(app, "d3_down\(step)_\(rest.logo)_\(rest.band)")
+            XCTAssertNotEqual(rest.logo, "missing", "debug_ux6 must carry compactLogo= (step \(step))")
+            XCTAssertEqual(rest.logoInTree, rest.logo == "shown",
+                           "the rendered logo's AX presence must match the probe (step \(step))")
+            if let top = rest.headingTop, top >= -40, top < 92 {
+                XCTAssertTrue(rest.band == "blocked" || rest.band == "hero",
+                              "Parental Guide heading at \(top) pt: the band must read blocked, read \(rest.band) (step \(step))")
+                XCTAssertFalse(rest.logoInTree, "Parental Guide heading at \(top) pt: the logo must be hidden (step \(step))")
+                if rest.band == "blocked" { sawBlockedInBand = true }
+            } else if sawBlockedInBand, rest.band == "clear" {
+                XCTAssertTrue(rest.logoInTree, "band clear past the Parental Guide row: the logo must be back (step \(step))")
+                sawClearAfter = true
+                break
+            }
+        }
+        XCTAssertTrue(sawBlockedInBand, "no rest put the Parental Guide heading in the band past the hero with logoBand=blocked")
+        XCTAssertTrue(sawClearAfter, "the band never read clear again after the Parental Guide row passed")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     // MARK: - Body-eval growth under the scroll probe (items 6/7 — log-harvested, not asserted here)
 
     /// BUG-41 items 6/7: `DetailView.logBodyEval()` NSLogs `[BUG41] detailBodyEval=N` every 10th
@@ -315,33 +412,62 @@ final class DetailScrollProbeTests: XCTestCase {
 
     // MARK: - Item 8 sim repro: Drop Game / Les Condés (the tester's named titles)
 
-    /// Types `text` into the Search tab's field and returns whether it landed — same
-    /// synthesis-first / keyboard-walk-fallback trick `NuvioTVUITests.typeOnKeyboard` documents
-    /// (hardware keyboard synthesis into a focused tvOS text field, validated by watching the
-    /// field's own `.value`), duplicated here rather than shared per this harness's own
-    /// precedent (see the type doc). One `remote.press(.menu)` at the end dismisses the full-screen
-    /// keyboard back to the results grid — `NuvioTVUITests.test19DiscoverSurvivesSearch`'s own
-    /// teardown uses the same button for the same reason; skipping it was this test's first-draft
-    /// bug (the keyboard stayed on screen and no result cell was ever reachable — see the report).
+    /// Types `text` into the Search tab's field and returns whether it landed. S1 W1: Search is
+    /// tvOS's system search field (`.searchable`) with an INLINE keyboard that is always on screen,
+    /// and `openTabByName` ends with the Down that lands focus in it — so there is nothing to open
+    /// (a Select on a key would TYPE that key) and nothing to dismiss (Menu from the keyboard moves
+    /// focus to the tab bar, a second Menu leaves the app); results render live under the
+    /// keyboard. Hardware keyboard synthesis (`app.typeText`) types into the focused keyboard, and
+    /// success is validated by the field's `.value` being EXACTLY the typed text (an empty
+    /// field's value is the prompt text, so "non-empty" would prove nothing). Same
+    /// synthesis-validated-by-value idea as `NuvioTVUITests.typeOnKeyboard`, duplicated here
+    /// rather than shared per this harness's own precedent (see the type doc).
     @discardableResult
     private func typeIntoSearchField(_ app: XCUIApplication, _ text: String) -> Bool {
-        let searchField = app.textFields.firstMatch
+        let searchField = app.searchFields.firstMatch
         guard searchField.waitForExistence(timeout: 6) else { return false }
-        if !searchField.hasFocus {
-            for _ in 0..<6 where !searchField.hasFocus {
-                remote.press(.up)
-                pause(0.4)
-            }
+        // The inline keyboard can appear 1–2 s after the tab opens; `openTabByName`'s closing Down
+        // may have landed on content below it (S1 W4 run). Wait for it, then step back Up/Left to
+        // it if no key holds focus (keys report focus on the 26.5 runtime).
+        guard app.keyboards.firstMatch.waitForExistence(timeout: 6) else { return false }
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<4 where ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27 && !keyboardHasFocus(app) {
+            // Down from the tab bar, Up/Left from content below the keyboard (review r1 P3-9).
+            // H9: in Rail mode, Right from a rail item (whose labels match the tab names, so check
+            // the rail's own probe first) hands focus back to Search's content.
+            let inRail = railFocusedItem(app) >= 0
+            let onTabBar = !inRail && tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+            XCUIRemote.shared.press(inRail ? .right : (onTabBar ? .down : (searchKeyboardIsGrid(app) ? .left : .up)))
+            pause(0.7)
         }
-        remote.press(.select)
-        pause(2) // full-screen keyboard presentation
-        let before = (searchField.exists ? searchField.value as? String : nil) ?? ""
         app.typeText(text)
         pause(1)
-        let after = (searchField.exists ? searchField.value as? String : nil) ?? ""
-        remote.press(.menu) // dismiss the keyboard so the results grid becomes reachable
+        var after = (searchField.exists ? searchField.value as? String : nil) ?? ""
+        if let hint = after.range(of: ", Press ") { after = String(after[..<hint.lowerBound]) }
         pause(2.5) // debounce + results fetch
-        return after != before && !after.isEmpty
+        return after == text
+    }
+
+    /// Whether a key of the inline search keyboard holds focus, from one snapshot (26.5 runtime;
+    /// keys never report focus on 27.0). Duplicated from `NuvioTVUITests`.
+    private func keyboardHasFocus(_ app: XCUIApplication) -> Bool {
+        guard let root = try? app.keyboards.firstMatch.snapshot() else { return false }
+        func walk(_ node: XCUIElementSnapshot) -> Bool { node.hasFocus || node.children.contains(where: walk) }
+        return walk(root)
+    }
+
+    /// Whether Search's inline keyboard is the GRID layout (6-column block on the left, results to
+    /// its RIGHT) rather than the LINEAR one (one row across the top, results below) — by the
+    /// keyboard's frame width (linear ≈ 1760, grid < 900). Duplicated from `NuvioTVUITests`.
+    private func searchKeyboardIsGrid(_ app: XCUIApplication) -> Bool {
+        app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
+    }
+
+    /// Focus from Search's inline keyboard into the first results row: one Down (linear) or
+    /// Right×7 (grid).
+    private func enterSearchResults(_ app: XCUIApplication) {
+        if searchKeyboardIsGrid(app) { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        pause(0.8)
     }
 
     /// Best-effort: walk toward the first result cell and select it. EXISTENCE-driven, not
@@ -357,9 +483,8 @@ final class DetailScrollProbeTests: XCTestCase {
     /// empty results screen just means the following `ux6Probe`/screenshot in the caller shows
     /// "debug_ux6 MISSING" or a Search screen instead of a Detail one, which the report calls out
     /// explicitly rather than this helper asserting past it.
-    private func openFirstSearchResult(_ app: XCUIApplication) {
-        remote.press(.down)
-        pause(0.8)
+    private func openFirstSearchResult(_ app: XCUIApplication, query: String, tolerant: Bool = false) {
+        enterSearchResults(app) // out of the inline keyboard: Down (linear) / Right×7 (grid)
         // 2026-09-04 finding: default focus after one Down does NOT reliably land on the leftmost
         // cell — a query with exactly one real match + a "See All" tile landed on "See All"
         // instead (confirmed via exported .xcresult screenshots: the very next screen was a
@@ -370,8 +495,45 @@ final class DetailScrollProbeTests: XCTestCase {
             remote.press(.left)
             pause(0.3)
         }
-        remote.press(.select)
+        // ui-legs (2026-10-22): Select only on a result card naming the query, read focused here
+        // (FA87's tvOS 26.5 reports focus). Since Search & Discover the Down + Lefts above stop on
+        // the suggestion chips or the keyboard (first full run: focus on the "b" key), so when no
+        // such card holds focus the shared, focus-verified route (`DetailEntryRoute`, any type)
+        // re-types the query and walks to it instead.
+        let focused = focusedSearchResultLabel(app)
+        if let label = focused, label.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            remote.press(.select)
+        } else {
+            shot(app, "search_result_not_focused_\(query)")
+            let route = DetailEntryRoute(test: self, app: app)
+            if tolerant {
+                // The repro leg notes a title missing from the fixture's catalog instead of failing.
+                guard route.openDetailBySearchIfFound(targets: [.init(query: query, type: "any")]) else { return }
+            } else {
+                guard route.openDetail(targets: [.init(query: query, type: "any")]) else { return }
+            }
+        }
         pause(10) // Detail page fetch + hero-trailer resolve chain settle
+    }
+
+    /// ui-legs: the deepest focused element's label when it sits inside a Search RESULT container
+    /// (`search.topResult` or a `search.group.*` row), from one snapshot; nil elsewhere.
+    private func focusedSearchResultLabel(_ app: XCUIApplication) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        var hits: [(container: String?, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot, _ container: String?) {
+            let id = node.identifier
+            let isContainer = id == "search.topResult" || id == "search.people" || id == "search.suggestions"
+                || id.hasPrefix("search.group.")
+            let here = isContainer ? id : container
+            if node.hasFocus { hits.append((here, node.label)) }
+            node.children.forEach { walk($0, here) }
+        }
+        walk(root, nil)
+        guard let hit = hits.last(where: { !$0.label.isEmpty }) ?? hits.last,
+              let container = hit.container,
+              container == "search.topResult" || container.hasPrefix("search.group.") else { return nil }
+        return hit.label
     }
 
     /// BUG-41 item 8: opens the two French titles the tester named (Steven's beta.17 verdict —
@@ -396,7 +558,7 @@ final class DetailScrollProbeTests: XCTestCase {
                 continue
             }
             shot(app, "bug41_repro_\(title)_00_results")
-            openFirstSearchResult(app)
+            openFirstSearchResult(app, query: title, tolerant: true)
             shot(app, "bug41_repro_\(title)_01_detail_top")
             let onDetail = app.staticTexts["debug_ux6"].waitForExistence(timeout: 4)
             if !onDetail {
@@ -420,11 +582,58 @@ final class DetailScrollProbeTests: XCTestCase {
         }
     }
 
-    /// Minimal tab-bar opener — trimmed copy of `NuvioTVUITests.openTab`'s walk (climb to the tab
+    /// The navigation rail's DEBUG probe (`rail_state … focused= …`), "" outside Rail mode.
+    private func railState(_ app: XCUIApplication) -> String {
+        let probe = app.descendants(matching: .any)["rail_state"].firstMatch
+        return probe.exists ? probe.label : ""
+    }
+
+    /// The rail's focused item (`rail_state focused=`), -1 when none (or not in Rail mode).
+    private func railFocusedItem(_ app: XCUIApplication) -> Int {
+        for token in railState(app).split(separator: " ") where token.hasPrefix("focused=") {
+            return Int(token.dropFirst("focused=".count)) ?? -1
+        }
+        return -1
+    }
+
+    /// Minimal tab opener — trimmed copy of `NuvioTVUITests.openTab`'s walk (climb to the tab
     /// bar, right/left-hunt for the named tab, select), private to that file so duplicated here per
     /// this harness's own precedent (see the type doc). Only ever called with "Search".
+    ///
+    /// H9 (Home Stage & Strip W3): in Rail mode (`rail_state` mounted) there is no tab bar. The rail
+    /// opens on a Left the focus engine cannot place from the leftmost item — never on a blind Menu,
+    /// which inside a Menu-opened rail leaves the app — then the item is reached by the probe's
+    /// `focused=` id and selected; the hand-off ladder takes up to 2.5 s on Search.
     private func openTabByName(_ app: XCUIApplication, _ name: String) {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        if !railState(app).isEmpty, let index = tabNames.firstIndex(of: name) {
+            // Up to 15 Lefts; if the rail is still closed (a hero carousel takes Left, a long
+            // keyboard outlasts the walk), one Down and 15 more.
+            for attempt in 0..<2 where !railState(app).contains("expanded=1") {
+                if attempt == 1 {
+                    remote.press(.down)
+                    pause(1.0)
+                }
+                for _ in 0..<15 where !railState(app).contains("expanded=1") {
+                    remote.press(.left)
+                    pause(0.4)
+                }
+            }
+            for _ in 0..<10 {
+                let focused = railFocusedItem(app)
+                if focused == index { break }
+                if focused >= 0 { remote.press(focused < index ? .down : .up) }
+                pause(0.5)
+            }
+            // ui-legs: never Select an unverified rail item.
+            guard railFocusedItem(app) == index, railState(app).contains("expanded=1") else {
+                XCTFail("openTabByName(\(name)): the rail's focus never read item \(index) — \(railState(app)); not pressing Select")
+                return
+            }
+            remote.press(.select)
+            pause(2.5)
+            return
+        }
         for _ in 0..<40 {
             if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
             remote.press(.up)
@@ -441,6 +650,11 @@ final class DetailScrollProbeTests: XCTestCase {
                 remote.press(.left)
                 pause(0.35)
             }
+        }
+        // ui-legs: never Select an unverified tab.
+        guard tab.exists, tab.hasFocus else {
+            XCTFail("openTabByName(\(name)): the \(name) tab never read focused — not pressing Select")
+            return
         }
         remote.press(.select)
         pause(2)

@@ -12,6 +12,13 @@ import platform.Foundation.NSUserDefaults
 
 actual object TmdbSettingsStorage {
     private const val enabledKey = "tmdb_enabled"
+    // Optional personal TMDB key (upstream df589078) that overrides the bundled
+    // `TmdbConfig.API_KEY`. Stored, exported and re-imported exactly like MDBList's key: the
+    // settings-blob push strips it (ProfileSettingsCredentialPolicy.withoutProfileCredentials),
+    // the blob apply re-asserts the LOCAL value over the remote payload
+    // (preservingLocalProfileCredentials), and ProviderCredentialSync owns cross-device sync as
+    // the "tmdb" provider. Fork: upstream leaves it out of the export/import, which is why
+    // upstream's own apply needs no credential policy for it.
     private const val apiKeyKey = "tmdb_api_key"
     private const val languageKey = "tmdb_language"
     private const val useTrailersKey = "tmdb_use_trailers"

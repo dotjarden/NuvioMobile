@@ -20,7 +20,9 @@ const val ContinueWatchingRowScanLimit = 300
  * row all three sort modes degrade to the same recency order — the modes only differ once next-up
  * placeholders join the list.
  *
- * No next-up construction happens here either: tvOS deliberately has no Up Next row.
+ * No next-up construction happens here: FEAT-85 (2026-10-23, reversing the earlier "no Up Next on
+ * tvOS" decision) builds the Up Next cards in `ContinueWatchingNextUp.kt` and Home merges them into
+ * this row with [mergeContinueWatchingWithNextUp], in recency order (mobile's DEFAULT sort mode).
  */
 fun buildContinueWatchingRowEntries(
     entries: List<WatchProgressEntry>,

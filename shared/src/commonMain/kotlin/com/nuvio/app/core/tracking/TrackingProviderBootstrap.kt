@@ -1,5 +1,6 @@
 package com.nuvio.app.core.tracking
 
+import com.nuvio.app.features.mdblist.MdbListTracker
 import com.nuvio.app.features.simkl.SimklAuthRepository
 import com.nuvio.app.features.simkl.SimklLibraryRepository
 import com.nuvio.app.features.simkl.SimklMutationRepository
@@ -26,6 +27,9 @@ import com.nuvio.app.features.watching.sync.TraktWatchedSyncAdapter
  * `TrackingProviderRegistry.registerProfileStore(this)`, `SimklMutationRepository.ensureRegistered()`
  * runs the list-writer / history-writer / scrobbler registrations, and `SimklAuthRepository.descriptor`
  * runs `TrackingProviderRegistry.register(this)`.
+ *
+ * MDBList (upstream 0a654ac4) registers through `MdbListTracker.register()`, as upstream does: the
+ * auth provider plus its history-writer, scrobbler, progress, watched and library ports.
  */
 fun ensureTrackingProvidersRegistered() {
     TraktAuthRepository.descriptor
@@ -35,6 +39,7 @@ fun ensureTrackingProvidersRegistered() {
     SimklLibraryRepository.uiState
     SimklProgressRepository.uiState
     SimklMutationRepository.ensureRegistered()
+    MdbListTracker.register()
     TrackingProviderRegistry.registerLibraryProvider(TraktTrackingLibraryProvider)
     TrackingProviderRegistry.registerLibraryProvider(SimklTrackingLibraryProvider)
     TrackingProviderRegistry.registerWatchedProvider(TraktWatchedSyncAdapter)

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.home
 
+import com.nuvio.app.features.details.knownImdbRating
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -42,21 +43,23 @@ object HomeCatalogParser {
                     continue
                 }
 
+                val landscapePoster = meta.string("landscapePoster")?.takeIf { it.isNotBlank() }
                 val item = MetaPreview(
                     id = id,
                     type = type,
                     name = name,
                     poster = meta.string("poster"),
-                    banner = meta.string("banner") ?: meta.string("background"),
+                    banner = meta.string("banner") ?: meta.string("background") ?: landscapePoster,
                     logo = meta.string("logo"),
                     posterShape = meta.string("posterShape").toPosterShape(),
                     description = meta.string("description"),
                     releaseInfo = meta.string("releaseInfo"),
                     rawReleaseDate = meta.string("released"),
-                    imdbRating = meta.string("imdbRating"),
+                    imdbRating = knownImdbRating(meta.string("imdbRating")),
                     genres = meta.array("genres").mapNotNull { genre ->
                         genre.jsonPrimitive.contentOrNull?.takeIf { it.isNotBlank() }
                     },
+                    landscapePoster = landscapePoster,
                 )
                 if (seenKeys.add(item.stableKey())) {
                     add(item)

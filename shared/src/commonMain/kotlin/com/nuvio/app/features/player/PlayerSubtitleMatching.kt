@@ -16,6 +16,9 @@ object SubtitleLanguageMatching {
     val CASTILIAN_TAGS = listOf(
         "es-es", "es_es", "castilian", "castellano", "spain", "españa", "espana", "iberian",
     )
+    val INDONESIAN_TAGS = listOf(
+        "indonesia", "indonesian", "bahasa indonesia",
+    )
 
     private val LANGUAGE_OVERRIDES = mapOf(
         "pt" to "pt",
@@ -40,6 +43,10 @@ object SubtitleLanguageMatching {
         "rus" to "ru",
         "pol" to "pl",
         "spa" to "es",
+        // OpenSubtitles Spanish-EU codes (upstream NuvioTV 2a54e8cbe).
+        "spn" to "es",
+        "sp" to "es",
+        "esp" to "es",
         "spl" to "es-419",
         "es-419" to "es-419",
         "es_419" to "es-419",
@@ -263,6 +270,20 @@ object SubtitleLanguageMatching {
             }
         }
 
+        if (containsAny("bahasa indonesia", "indonesian", "indonesia")) {
+            return "id"
+        }
+        if (containsAny("bahasa malaysia", "bahasa melayu", "malaysian")) {
+            return "ms"
+        }
+
+        // Serbo-Croatian labels like "hbs-srp" resolve to their own language
+        // instead of grouping under "hbs" (upstream NuvioTV d34a5025d).
+        if (containsAny("hbs")) {
+            val tokenizedNoHbs = tokenized.replace("hbs", "").trim()
+            LANGUAGE_OVERRIDES[tokenizedNoHbs]?.let { return it }
+        }
+
         return LANGUAGE_OVERRIDES[code] ?: normalizedCode
     }
 
@@ -320,6 +341,12 @@ object SubtitleLanguageMatching {
             val hasCastilian = CASTILIAN_TAGS.any { haystack.contains(it) }
             if (hasLatino && !hasCastilian) return "es-419"
             if (hasCastilian && !hasLatino) return "es"
+            return baseLang
+        }
+
+        if (baseLang == "ms" || baseLang == "msa" || baseLang == "may") {
+            val hasIndonesian = INDONESIAN_TAGS.any { haystack.contains(it) }
+            if (hasIndonesian) return "id"
             return baseLang
         }
 

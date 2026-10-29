@@ -10,23 +10,92 @@ struct EpisodesSection: View {
     let meta: MetaDetails
     /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
     var episodeRatings: [String: Double] = [:]
-    /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the Settings → Poster Style "Episode Ratings" choice
+    /// (from `DetailViewModel.episodeRatingsVisibility`). `hideEpisodes` drops every badge;
+    /// `hideUnwatchedEpisodes` keeps only watched episodes' badges.
+    var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
+    /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`;
+    /// `TitleHoldMenuPolicy.episodeKey`, a missing number is -1).
     var watchedEpisodeKeys: Set<String> = []
+    /// P5 B22: a post-play More Like This pick from an episode's player; called from the picker
+    /// cover's `onDismiss` so the host pushes only after the cover is gone.
+    var onPostPlayTitle: ((MetaPreview) -> Void)? = nil
 
+    @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideSpoilers = false
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
+    @State private var postPlayPending: MetaPreview?
     @FocusState private var focusedEpisodeId: String?
+    /// FEAT-83: the episode a hold-menu action just ran on, until focus is back on the shelf.
+    /// Marking the next-up episode moves `nextUpId` while the menu still holds focus
+    /// (`focusedEpisodeId == nil`), and the shelf would then scroll to the new next-up under the
+    /// returning focus (and `.defaultFocus` would offer it); while this is set, neither happens.
+    /// Review r1 P3-2: cleared by the first `focusedEpisodeId` change after it is armed, whatever
+    /// the new value, and by a 1 s backstop, so it can never stay armed (the action can run after
+    /// focus is already back on the card, or focus may never leave the card while the menu is up).
+    @State private var heldEpisodeId: String?
+    /// BUG-153 (Batch M): gates the episode row's `zIndex` (`DetailTileFocus.raisedZIndex`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    /// Review r1 #4: the "N aired unwatched" count, cached per (meta, season, watched keys) so a
+    /// Left/Right press (a body evaluation) does not re-read the date and re-parse every episode.
+    /// A reference held in `@State`: filling it never invalidates the view.
+    @State private var airedCountCache = AiredUnwatchedCountCache()
+    /// Grouping, season order and season posters, computed once per `MetaDetails` object. The body
+    /// re-runs on every Left/Right (the `focusedEpisodeId` FocusState lives here), and regrouping
+    /// re-sorted every episode with Kotlin reads in the comparator on each press.
+    @State private var groupingCache = EpisodeGroupingCache()
+
+    private func airedUnwatchedCount(season: Int?, episodes: [MetaVideo]) -> Int {
+        airedCountCache.count(
+            key: AiredUnwatchedCountCache.Key(metaId: meta.id, season: season,
+                                              episodeCount: episodes.count, watchedKeys: watchedEpisodeKeys)
+        ) { todayIsoDate in
+            EpisodeSpoilerRules.airedUnwatchedCount(
+                episodes.map {
+                    EpisodeSpoilerRules.EpisodeFacts(
+                        season: $0.season?.value,
+                        episode: $0.episode?.value,
+                        released: $0.released
+                    )
+                },
+                watchedKeys: watchedEpisodeKeys,
+                todayIsoDate: todayIsoDate
+            )
+        }
+    }
 
     var body: some View {
-        let grouped = Self.groupedEpisodes(meta.videos)
-        let seasons = grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) }
+        let grouping = groupingCache.resolve(meta) { meta in
+            let grouped = Self.groupedEpisodes(meta.videos)
+            return EpisodeGroupingCache.Grouping(
+                grouped: grouped,
+                seasons: grouped.keys.sorted { Self.seasonSortKey($0) < Self.seasonSortKey($1) },
+                posterBySeason: Self.seasonPosters(grouped, meta: meta),
+                releasedSeasons: Self.seasonsWithReleasedEpisodes(meta)
+            )
+        }
+        let grouped = grouping.grouped
+        let seasons = grouping.seasons
         let current = selectedSeason.flatMap { seasons.contains($0) ? $0 : nil } ?? seasons.first
         let episodes = current.flatMap { grouped[$0] } ?? []
+        // Where focus lands when it enters the shelf, and where the shelf scrolls to: the first
+        // unwatched episode of the season (Apple TV app behaviour), else the first episode. Before,
+        // Down from the season row landed on whichever card sat nearest, usually E1.
+        let nextUpId = episodes.first(where: { !isWatched($0) })?.id ?? episodes.first?.id
 
         return VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 28) {
                 Text(String(localized: "Episodes"))
                     .font(Theme.Font.sectionTitle)
+                if hideSpoilers, let label = EpisodeSpoilerRules.airedUnwatchedLabel(
+                    count: airedUnwatchedCount(season: current, episodes: episodes),
+                    settingOn: hideSpoilers
+                ) {
+                    Text(label)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .accessibilityIdentifier("episodes_aired_unwatched")
+                }
                 if seasons.count > 1, let current {
                     Menu {
                         Picker(String(localized: "Season"), selection: Binding(
@@ -62,34 +131,100 @@ struct EpisodesSection: View {
                                     episode: episode,
                                     fallbackImage: meta.background ?? meta.poster,
                                     rating: rating(for: episode),
-                                    isWatched: isWatched(episode)
+                                    isWatched: isWatched(episode),
+                                    hidesSpoiler: EpisodeSpoilerRules.hidesSpoilers(
+                                        settingOn: hideSpoilers, isWatched: isWatched(episode))
                                 )
                             }
-                            // BUG-93: EpisodeThumbCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
-                            .cardFocusButtonStyle(lift: .plain)
+                            // BUG-177 (Steven rc7): EpisodeThumbCard owns its ring-mode lift now
+                            // (`DetailTileFocusLift`), so the default `.card` style applies.
+                            .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
+                            // FEAT-83 (GitHub #9 item 3): hold for the watched actions. Attached
+                            // unconditionally (an empty menu is never possible here: the episode
+                            // item always exists), after `.focused` and before `.id`, the Continue
+                            // Watching row's order. A plain press still opens the source list.
+                            .contextMenu {
+                                EpisodeHoldMenuItems(meta: meta, episode: episode,
+                                                     watchedEpisodeKeys: watchedEpisodeKeys,
+                                                     willAct: { armHeldEpisode(episode.id) })
+                            }
                             .id(episode.id)
+                            // BUG-177: the lifted card draws over its right neighbour.
+                            // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                            .zIndex(DetailTileFocus.raisedZIndex(
+                                isFocused: focusedEpisodeId == episode.id,
+                                accentFocusRing: focusAppearance.accentFocusRing,
+                                noZoomOnFocus: focusAppearance.noZoomOnFocus))
                             .accessibilityIdentifier("detail.episode.\(episode.id)")
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): the episode cards fade at the screen edges like
+                // the other Detail rows (Christian 2026-10-03: the Episodes rows get it too). The
+                // fade only reads the horizontal scroll offset, so the `scrollTo` snap below is
+                // unaffected.
+                .rowEdgeEffectStyle()
                 .onChange(of: current) { _, _ in
-                    // A new season can be shorter than the old scroll offset; snap back to the
-                    // first episode without animating through the intermediate layout.
-                    guard let first = episodes.first?.id else { return }
+                    // A new season can be shorter than the old scroll offset; snap to its next-up
+                    // episode (the first one when all are watched) without animating through the
+                    // intermediate layout.
+                    guard let target = nextUpId else { return }
                     var tx = Transaction()
                     tx.disablesAnimations = true
-                    withTransaction(tx) { proxy.scrollTo(first, anchor: .leading) }
+                    withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
+                }
+                .onAppear {
+                    guard let target = nextUpId, target != episodes.first?.id else { return }
+                    // One runloop later: a scrollTo during the first appear can no-op before the
+                    // row has a content size.
+                    DispatchQueue.main.async {
+                        var tx = Transaction()
+                        tx.disablesAnimations = true
+                        withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
+                    }
+                }
+                .onChange(of: nextUpId) { _, target in
+                    // Watched state often lands after the first render (review r1 P2). Only move
+                    // a shelf the user isn't on — nor one whose card just ran a hold-menu action
+                    // and is about to take focus back (FEAT-83, `heldEpisodeId`).
+                    guard focusedEpisodeId == nil, heldEpisodeId == nil, let target else { return }
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { proxy.scrollTo(target, anchor: .leading) }
                 }
             }
+            // `.userInitiated`: the default priority only applies to programmatic focus and first
+            // load, never to the user's Down from the season row (review r1 P1). Up from Cast now
+            // also lands on next-up rather than the last-visited card, as in the Apple TV app.
+            // FEAT-83: while a hold-menu action is settling, the acted-on card is the default, so
+            // focus coming back from the menu is never redirected to a next-up that just moved.
+            .defaultFocus($focusedEpisodeId, heldEpisodeId ?? nextUpId, priority: .userInitiated)
             .focusSection()
+            .onChange(of: focusedEpisodeId) { _, _ in
+                // FEAT-83: focus moved after the action (back to the held card, on along the
+                // shelf, or anywhere else): the hold is over. Any change, not only a return to
+                // the shelf (review r1 P3-2).
+                if heldEpisodeId != nil { heldEpisodeId = nil }
+            }
 
             focusedOverviewPanel(episodes: episodes)
         }
-        .fullScreenCover(item: $episodeForStreams) { route in
+        .fullScreenCover(item: $episodeForStreams, onDismiss: {
+            guard let pick = postPlayPending else { return }
+            postPlayPending = nil
+            onPostPlayTitle?(pick)
+        }) { route in
+            // P3.3: the episode's saved entry for the resume pill. Review r1: a finished entry
+            // offers nothing (the players start a completed episode from 0).
+            let entry = WatchProgressRepository.shared.progressForVideo(
+                videoId: Self.episodeVideoId(metaId: route.meta.id, episode: route.episode),
+                parentMetaId: route.meta.id,
+                seasonNumber: route.episode.season, episodeNumber: route.episode.episode)
+                .flatMap { $0.isCompleted ? nil : $0 }
             StreamPickerView(
                 type: route.meta.type,
                 videoId: Self.episodeVideoId(metaId: route.meta.id, episode: route.episode),
@@ -99,9 +234,14 @@ struct EpisodesSection: View {
                 episode: route.episode.episode?.value,
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
+                background: route.meta.background,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
-                meta: PlaybackMeta(details: route.meta)
+                meta: PlaybackMeta(details: route.meta),
+                logoUrl: route.meta.logo,
+                resumePositionMs: entry.map { $0.lastPositionMs }.flatMap { $0 > 0 ? $0 : nil },
+                resumeFraction: entry.map { Double($0.progressFraction) },
+                onOpenTitle: onPostPlayTitle == nil ? nil : { postPlayPending = $0 }
             )
         }
     }
@@ -120,7 +260,12 @@ struct EpisodesSection: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
                 let overview: String? = episode.overview
-                if let overview, !overview.isEmpty {
+                if EpisodeSpoilerRules.hidesSpoilers(settingOn: hideSpoilers, isWatched: isWatched(episode)) {
+                    Text(String(localized: "Synopsis hidden until watched"))
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .accessibilityIdentifier("episode_synopsis_hidden")
+                } else if let overview, !overview.isEmpty {
                     Text(overview)
                         .font(Theme.Font.caption)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
@@ -187,8 +332,30 @@ struct EpisodesSection: View {
         return a.title < b.title
     }
 
-    private static func seasonLabel(_ season: Int) -> String {
+    fileprivate static func seasonLabel(_ season: Int) -> String {
         season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
+    }
+
+    /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule), then —
+    /// upstream 22096a1e parity — the addon's own `app_extras.seasonPosters` art for that season
+    /// number. Same precedence as mobile's `resolveSeasonPoster`: per-episode (TMDB enrichment or a
+    /// per-video addon field) first, addon season map second, and the caller's show poster/backdrop
+    /// last. The map is keyed by season NUMBER with specials at 0, matching `groupedEpisodes` keys.
+    nonisolated private static func seasonPosters(_ grouped: [Int: [MetaVideo]], meta: MetaDetails) -> [Int: String?] {
+        var result: [Int: String?] = [:]
+        for (season, episodes) in grouped {
+            let poster = episodes.lazy
+                .compactMap { $0.seasonPoster?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            // `Map<Int, String>` crosses the SharedCore boundary as `[KotlinInt: String]`.
+            let trimmedAddon: String? = meta.seasonPosters[KotlinInt(int: Int32(season))]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let addonPoster: String? = (trimmedAddon?.isEmpty == false) ? trimmedAddon : nil
+            // Explicit `String?` so `??` doesn't infer against the dictionary's `String??` value type.
+            let resolved: String? = poster ?? addonPoster
+            result[season] = resolved
+        }
+        return result
     }
 
     private static func episodeVideoId(metaId: String, episode: MetaVideo) -> String {
@@ -206,13 +373,37 @@ struct EpisodesSection: View {
     }
 
     private func rating(for episode: MetaVideo) -> Double? {
+        // rc14 (Steven rc13 verdict, 2026-09-30): honour the episode-ratings visibility setting.
+        guard episodeRatingsVisibility.showRating(isWatched: isWatched(episode)) else { return nil }
         guard let s = episode.season?.value, let e = episode.episode?.value else { return episode.rating?.doubleValue }
         return episodeRatings["\(s):\(e)"] ?? episode.rating?.doubleValue
     }
 
     private func isWatched(_ episode: MetaVideo) -> Bool {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
-        return watchedEpisodeKeys.contains("\(s):\(e)")
+        // Review r1 P3-8: the shared key form, so an episode with only one number reads watched.
+        guard let key = EpisodeHoldMenuItems.key(episode) else { return false }
+        return watchedEpisodeKeys.contains(key)
+    }
+
+    /// FEAT-83: arms `heldEpisodeId` before a hold-menu action, with a 1 s backstop (review r1
+    /// P3-2) in case no focus change follows to clear it. The backstop leaves a newer arm alone.
+    private func armHeldEpisode(_ id: String) {
+        heldEpisodeId = id
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if heldEpisodeId == id { heldEpisodeId = nil }
+        }
+    }
+
+    /// FEAT-83 (review r1 P3-9): the seasons, normalized like `groupedEpisodes`, that hold at least
+    /// one RELEASED episode in the shared list the season menu marks (`releasedPlayableEpisodes`,
+    /// which `releasedEpisodesForSeason` filters). A season outside it gets no menu content, so a
+    /// hold shows no menu at all, the device-verified behaviour of an empty `.contextMenu` (the
+    /// Detail Play button's hold with Auto-Play off is inert, Orivio pass 2026-10-01). Read once per
+    /// `MetaDetails` (`EpisodeGroupingCache`) with today's date: one shared sort per Detail visit.
+    nonisolated private static func seasonsWithReleasedEpisodes(_ meta: MetaDetails) -> Set<Int> {
+        let released = meta.releasedPlayableEpisodes(todayIsoDate: CurrentDateProvider.shared.todayIsoDate())
+        return Set(released.map { normalizeSeasonNumber($0.season) })
     }
 }
 
@@ -242,9 +433,168 @@ private struct EpisodeRoute: Identifiable {
     }
 }
 
+/// FEAT-83 (GitHub #9 item 3): an episode card's hold menu — Mark Episode Watched / Unwatched,
+/// then Mark Previous Episodes Watched / Unwatched (mobile's episode action sheet). The policy is
+/// `TitleHoldMenuPolicy.episodeActions`.
+///
+/// Everything is resolved in THIS body, which tvOS evaluates when it presents the menu — never in
+/// the shelf's body, which re-runs on every Left/Right (BUG-153): the previous-episodes list is a
+/// shared sort over every episode. Review r1 P3-10, confirmed from device consoles: the same
+/// shape's `[HoldMenu] menu built` line (`TitleHoldMenuItems`, a `.contextMenu` content body)
+/// logs only around a hold, as the menu presents (just before focus moves into
+/// `_UIContextMenuCell`) and once more while it is open, and never while rows of those cards
+/// render and scroll (`docs/research/rc5-promises-device-2026-10-17/console-a.log`: 2 builds in a
+/// 525-line Home walk; `bug170-device-2026-10-18/console-mpv.log`: 1). The shared toggles are
+/// called with the state each LABEL was
+/// built from (`DetailTileAction.labelState`), never a re-read of the live state; the watched keys
+/// refresh by themselves through `DetailViewModel`'s watched and progress watchers.
+private struct EpisodeHoldMenuItems: View {
+    let meta: MetaDetails
+    let episode: MetaVideo
+    let watchedEpisodeKeys: Set<String>
+    /// Runs before an action, so the shelf records the card before the watched state moves.
+    let willAct: () -> Void
+
+    var body: some View {
+        let today = CurrentDateProvider.shared.todayIsoDate()
+        let previous = meta.previousReleasedEpisodesBefore(target: episode, todayIsoDate: today)
+        let isWatched = TitleHoldMenuPolicy.areAllWatched(keys: [Self.key(episode)],
+                                                          watchedKeys: watchedEpisodeKeys)
+        let arePreviousWatched = TitleHoldMenuPolicy.areAllWatched(keys: previous.map(Self.key),
+                                                                   watchedKeys: watchedEpisodeKeys)
+        ForEach(TitleHoldMenuPolicy.episodeActions(isEpisodeWatched: isWatched,
+                                                   previousCount: previous.count,
+                                                   arePreviousWatched: arePreviousWatched),
+                id: \.self) { action in
+            Button {
+                willAct()
+                switch action {
+                case .episode:
+                    WatchingActions.shared.toggleEpisodeWatched(
+                        meta: meta, episode: episode, isCurrentlyWatched: action.labelState)
+                case .previousEpisodes:
+                    // `episodes` is a Kotlin `Collection<MetaVideo>` (bridged as `Any`): pass the
+                    // `[MetaVideo]` array the shared extension returned, as is.
+                    WatchingActions.shared.togglePreviousEpisodesWatched(
+                        meta: meta, episodes: previous, areCurrentlyWatched: action.labelState)
+                case .season:
+                    break // never in an episode menu (`episodeActions`)
+                }
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        }
+    }
+
+    nonisolated static func key(_ episode: MetaVideo) -> String? {
+        TitleHoldMenuPolicy.episodeKey(season: episode.season?.value, episode: episode.episode?.value)
+    }
+}
+
+/// FEAT-83: a season poster's or season chip's hold menu — Mark Season Watched / Unwatched over
+/// the season's RELEASED episodes (`TitleHoldMenuPolicy.seasonActions`). Same presentation-time
+/// rule as `EpisodeHoldMenuItems`. The callers include it only for a season in
+/// `releasedSeasons`, so a season with nothing released has no menu (review r1 P3-9). That set is
+/// cached per `MetaDetails`: a season whose first episode airs during the visit gets no menu until
+/// `meta` is republished (never a dead item, at worst a missing one).
+private struct SeasonHoldMenuItems: View {
+    let meta: MetaDetails
+    /// `EpisodesSection`'s season number (specials normalized to 0, as the shared side does).
+    let season: Int
+    let watchedEpisodeKeys: Set<String>
+
+    var body: some View {
+        let today = CurrentDateProvider.shared.todayIsoDate()
+        let released = meta.releasedEpisodesForSeason(seasonNumber: KotlinInt(int: Int32(season)),
+                                                      todayIsoDate: today)
+        let isWatched = TitleHoldMenuPolicy.seasonIsWatched(releasedKeys: released.map(EpisodeHoldMenuItems.key),
+                                                            watchedKeys: watchedEpisodeKeys)
+        ForEach(TitleHoldMenuPolicy.seasonActions(seasonLabel: EpisodesSection.seasonLabel(season),
+                                                  releasedCount: released.count,
+                                                  isSeasonWatched: isWatched),
+                id: \.self) { action in
+            Button {
+                WatchingActions.shared.toggleSeasonWatched(
+                    meta: meta, episodes: released, areCurrentlyWatched: action.labelState)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+        }
+    }
+}
+
+/// FEAT-24's season poster row, pulled out of `EpisodesSection.body` (BUG-153, Batch M) so its
+/// `FocusState` invalidates only this row. Same buttons, styles and identifiers as before.
+private struct SeasonPosterRow: View {
+    let seasons: [Int]
+    let posterBySeason: [Int: String?]
+    /// The show poster (else background) — a season without its own poster falls back to it.
+    let fallbackImage: String?
+    let current: Int?
+    /// FEAT-83: for the hold menu only (`SeasonHoldMenuItems` reads them when the menu opens).
+    let meta: MetaDetails
+    let watchedEpisodeKeys: Set<String>
+    /// FEAT-83 (review r1 P3-9): seasons with a released episode; the others get no menu.
+    let releasedSeasons: Set<Int>
+    let onSelect: (Int) -> Void
+
+    /// BUG-177: which season poster holds focus — only to raise it over its neighbours (`zIndex`).
+    @FocusState private var focusedSeason: Int?
+    @Environment(\.focusAppearance) private var focusAppearance
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                ForEach(seasons, id: \.self) { season in
+                    Button {
+                        onSelect(season)
+                    } label: {
+                        SeasonPosterCard(
+                            label: EpisodesSection.seasonLabel(season),
+                            imageURL: posterBySeason[season] ?? nil ?? fallbackImage,
+                            isSelected: season == current
+                        )
+                    }
+                    // BUG-177 (Steven rc7): SeasonPosterCard owns its ring-mode lift now
+                    // (`DetailTileFocusLift`), so ring mode takes the native lift away
+                    // (`.card`, the default); ring off is the same `.borderless` as before.
+                    .cardFocusButtonStyle()
+                    // BUG-32: follow the user's Corners setting (system radius
+                    // otherwise overrides it — the BUG-25 class).
+                    .posterButtonShape()
+                    .focused($focusedSeason, equals: season)
+                    // FEAT-83 (GitHub #9 item 3): hold for Mark Season Watched / Unwatched;
+                    // attached unconditionally, with no content (so no menu) for a season with
+                    // nothing released (review r1 P3-9).
+                    .contextMenu {
+                        if releasedSeasons.contains(season) {
+                            SeasonHoldMenuItems(meta: meta, season: season,
+                                                watchedEpisodeKeys: watchedEpisodeKeys)
+                        }
+                    }
+                    // BUG-177: the lifted poster draws over its right neighbour.
+                    // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                    .zIndex(DetailTileFocus.raisedZIndex(
+                        isFocused: focusedSeason == season,
+                        accentFocusRing: focusAppearance.accentFocusRing,
+                        noZoomOnFocus: focusAppearance.noZoomOnFocus))
+                    .accessibilityIdentifier("season_poster_\(season)")
+                }
+            }
+            .padding(.vertical, Theme.Spacing.md)
+        }
+        .scrollClipDisabled()
+        // beta.19-rc1 verdict (F, FEAT-54): the season-poster row wears the Appearance
+        // "Row Edge Fade" like every other row. The text season-chip row below has no
+        // `scrollClipDisabled`, so it is left alone.
+        .rowEdgeEffectStyle()
+        .focusSection()
+    }
+}
+
 /// One 16:9 episode thumbnail in the horizontal shelf: still + watched/rating badges over a bottom
-/// scrim, title below. Platter-free — used inside a `.poster` Button, so it carries the same focus
-/// ring/scale/shadow language as `LandscapeCard`.
+/// scrim, title below. Platter-free — used inside a `cardFocusButtonStyle()` Button; draws the same
+/// focus ring/scale/shadow language as `LandscapeCard` itself (`DetailTileFocusLift`, BUG-177).
 private struct EpisodeThumbCard: View {
     let episode: MetaVideo
     let fallbackImage: String?
@@ -252,46 +602,75 @@ private struct EpisodeThumbCard: View {
     var rating: Double? = nil
     /// Shows the green watched checkmark on the thumbnail (mirrors mobile's watched badge).
     var isWatched: Bool = false
+    /// "Hide Episode Spoilers": blur the still until the episode is watched.
+    var hidesSpoiler: Bool = false
 
     @Environment(\.isFocused) private var isFocused
     // BUG-32: shared corner token, not the hardcoded Theme.Radius.card.
     @Environment(\.posterStyle) private var posterStyle
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-177: ring/zoom/poster-colour settings from the root (`ProvidesFocusAppearance`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    @Environment(\.cardDepthStyle) private var depthStyle
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// BUG-177: the rail colour sampled when the still lands ("Depth Takes Poster Color").
+    @State private var depthRailTint: Color?
+
+    private var samplesDepthColor: Bool {
+        DetailTileFocus.samplesRailColor(depthTakesPosterColor: focusAppearance.depthTakesPosterColor,
+                                         depthEnabled: depthStyle.isEnabled(for: .episodeCards),
+                                         artworkURL: thumbnailURL)
+    }
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack(alignment: .bottom) {
-                CachedAsyncImage(string: thumbnailURL)
+                // Decoded at the card's focused size (×1.2 covers the lift), not the 1920 px default.
+                CachedAsyncImage(string: thumbnailURL,
+                                 decodeSize: .points(width: Theme.Size.episodeWidth * 1.2,
+                                                     height: Theme.Size.episodeHeight * 1.2))
+                    .onImageLoaded { _ in
+                        DetailTileRailTint.imageLoaded(samples: samplesDepthColor, source: thumbnailURL) { color in
+                            if depthRailTint != color { depthRailTint = color }
+                        }
+                    }
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    .blur(radius: hidesSpoiler ? EpisodeSpoilerRules.stillBlurRadius : 0, opaque: true)
                     // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
                     // the `.fill` image overflows this fixed frame and the hover lift copies the
                     // overflow as a ghost-doubled subject. Clip inside the frame first.
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-                    .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .episodeCards)
 
                 // Soft scrim so the rating badge reads over bright stills.
+                // BUG-177: under the depth layer now (inside the clip, before `nuvioCardDepth`).
                 if rating != nil {
                     LinearGradient(
                         colors: [.clear, .black.opacity(0.45)],
                         startPoint: .top, endPoint: .bottom
                     )
                     .frame(height: 70)
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
                     .allowsHitTesting(false)
                 }
             }
+            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .clipShape(shape)
+            .nuvioCardDepth(shape, surface: .episodeCards,
+                            railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
+                                                                  source: thumbnailURL,
+                                                                  sampled: depthRailTint))
             .overlay(alignment: .topTrailing) {
                 if isWatched { WatchedCheckBadge().padding(10) }
             }
             .overlay(alignment: .bottomTrailing) {
                 if let rating { ratingBadge(rating).padding(10) }
             }
-            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
             // BUG-31/BUG-25: highlight geometry pinned to the card's own corner radius; goes
             // still under "No Zoom on Focus" (which this tile used to ignore).
-            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
+            // BUG-177 (Steven rc7): draws the accent ring and owns its lift in ring mode.
+            .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
+                                 size: CGSize(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight),
+                                 tintSource: thumbnailURL)
 
             Text(heading)
                 .font(Theme.Font.cardTitle)
@@ -302,12 +681,17 @@ private struct EpisodeThumbCard: View {
                 .frame(width: Theme.Size.episodeWidth, alignment: .leading)
                 // UX-15 class: keep the artwork↔title gap constant under the system lift.
                 .modifier(CardCaptionFocusDrop(
-                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                                noZoomOnFocus: focusAppearance.noZoomOnFocus),
                     isFocused: isFocused,
                     artworkHeight: Theme.Size.episodeHeight
                 ))
         }
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // BUG-177: Reduce Motion gate — see `TrailerThumbCard`. BUG-153 (Batch M): also nil in
+        // ring mode under the `debug.detailTileRingNoAnim` knob.
+        .animation(DetailTileFocus.tileFocusAnimation(reduceMotion: reduceMotion,
+                                                      accentFocusRing: focusAppearance.accentFocusRing),
+                   value: isFocused)
     }
 
     /// Heatmap-colored IMDb rating chip (green ≥ 8.5, lime ≥ 7, orange ≥ 5.5, red below).
@@ -360,9 +744,12 @@ struct WatchedCheckBadge: View {
 
 /// FEAT-24: one season in the poster selector — 2:3 artwork with the season label under it, the
 /// selected season outlined in the accent (the same "selected vs focused" split the text chips
-/// draw with colour). Same idioms as `TrailerThumbCard`: `.borderless` button, `tileFocusLift`
-/// (goes still under No Zoom on Focus), `Theme.Font.cardTitle` caption.
-private struct SeasonPosterCard: View {
+/// draw with colour). Same idioms as `TrailerThumbCard`: `cardFocusButtonStyle()` button,
+/// `detailTileFocusLift` (the accent ring in ring mode, still under No Zoom on Focus, BUG-177),
+/// `Theme.Font.cardTitle` caption.
+// beta.19-rc1 verdict (review r1, I1): internal (was private) only so `SeasonPosterDecodeSizeTests`
+// can pin `decodeSize`; nothing outside this file constructs it.
+struct SeasonPosterCard: View {
     let label: String
     let imageURL: String?
     let isSelected: Bool
@@ -370,18 +757,41 @@ private struct SeasonPosterCard: View {
     // BUG-32: read the shared corner token instead of hardcoding Theme.Radius.card, so the
     // Poster Style → Corners setting reaches this card (both states, focused and not).
     @Environment(\.posterStyle) private var posterStyle
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-177: ring/zoom/poster-colour settings from the root (`ProvidesFocusAppearance`).
+    @Environment(\.focusAppearance) private var focusAppearance
+    @Environment(\.cardDepthStyle) private var depthStyle
+    /// BUG-177: the rail colour sampled when the poster lands ("Depth Takes Poster Color").
+    @State private var depthRailTint: Color?
+
+    private var samplesDepthColor: Bool {
+        DetailTileFocus.samplesRailColor(depthTakesPosterColor: focusAppearance.depthTakesPosterColor,
+                                         depthEnabled: depthStyle.isEnabled(for: .posters),
+                                         artworkURL: imageURL)
+    }
 
     // FEAT-26: 180×270 — the same miniPoster size as More Like This, so the season row no longer
     // reads as the smallest tile on the detail screen (it shipped at 120×180).
     private static let width: CGFloat = Theme.Size.miniPosterWidth
     private static let height: CGFloat = Theme.Size.miniPosterHeight
 
+    /// beta.19-rc1 verdict (review r1, I1): the decode size the card's artwork is drawn at. This batch
+    /// moved the Kotlin season poster to TMDB w780 (780x1170); left on the unsized `.legacy` decode
+    /// (a 1920 px cap) each one became a ~3.6 MB bitmap for a 180x270 pt card. Sized to the drawn
+    /// frame (points x displayScale, 540 px long side at scale 2, bucketed to 640) it is the same
+    /// request `PosterCard.decodeRequest` builds for a poster of this size. No `upgrade:` here: the
+    /// shared parser already hands over the larger rendition.
+    static let decodeSize: ArtworkDecodeSize = .points(width: width, height: height)
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
                 if let imageURL, !imageURL.isEmpty {
-                    CachedAsyncImage(string: imageURL)
+                    CachedAsyncImage(string: imageURL, decodeSize: Self.decodeSize)
+                        .onImageLoaded { _ in
+                            DetailTileRailTint.imageLoaded(samples: samplesDepthColor, source: imageURL) { color in
+                                if depthRailTint != color { depthRailTint = color }
+                            }
+                        }
                 } else {
                     Theme.Palette.surface
                     // FEAT-26: at 180×270 the caption2 label got lost in the empty surface — meta
@@ -395,14 +805,23 @@ private struct SeasonPosterCard: View {
             .frame(width: Self.width, height: Self.height)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-            // FEAT-26: these cards were the only detail tiles without the card-depth treatment —
-            // same surface as the poster rows, attached to the artwork like EpisodeThumbCard.
-            .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .posters)
+            // BUG-177 (Steven rc7): the selection stroke now sits UNDER the depth layer (it used
+            // to be stroked over the rail and hide it on every card). The selected season keeps its
+            // 4 pt accent outline; the rail draws its thin highlight over the outline's top edge.
             .overlay {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
                     .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 4 : 1)
             }
-            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
+            // FEAT-26: these cards were the only detail tiles without the card-depth treatment —
+            // same surface as the poster rows, attached to the artwork like EpisodeThumbCard.
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .posters,
+                            railTint: DetailTileRailTint.resolved(samples: samplesDepthColor,
+                                                                  source: imageURL,
+                                                                  sampled: depthRailTint))
+            // BUG-177: draws the accent ring and owns its lift in ring mode (`DetailTileFocusLift`).
+            .detailTileFocusLift(cornerRadius: posterStyle.cornerRadius,
+                                 size: CGSize(width: Self.width, height: Self.height),
+                                 tintSource: imageURL)
 
             Text(label)
                 .font(Theme.Font.cardTitle)
@@ -413,12 +832,61 @@ private struct SeasonPosterCard: View {
                 // artwork's bottom edge over this caption. Same fix as PosterCard's BUG-54
                 // treatment — the focused caption drops by the lift's bottom expansion.
                 .modifier(CardCaptionFocusDrop(
-                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    mode: CardFocusMode.resolve(accentFocusRing: focusAppearance.accentFocusRing,
+                                                noZoomOnFocus: focusAppearance.noZoomOnFocus),
                     isFocused: isFocused,
                     artworkHeight: Self.height
                 ))
         }
         .accessibilityLabel(label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// Review r1 #4: see `EpisodesSection.airedCountCache`. Today's date is read once per Detail visit
+/// (the section's lifetime), the count once per key.
+/// See `EpisodesSection.groupingCache`. Holds the `MetaDetails` it was built from (a strong
+/// reference, so identity can't be confused with a freed object's reused address); a new object
+/// (enrichment, a reload) rebuilds. Filling it never invalidates the view.
+final class EpisodeGroupingCache {
+    struct Grouping {
+        let grouped: [Int: [MetaVideo]]
+        let seasons: [Int]
+        let posterBySeason: [Int: String?]
+        /// FEAT-83 (review r1 P3-9): see `EpisodesSection.seasonsWithReleasedEpisodes`.
+        let releasedSeasons: Set<Int>
+    }
+
+    private var source: MetaDetails?
+    private var cached: Grouping?
+
+    func resolve(_ meta: MetaDetails, build: (MetaDetails) -> Grouping) -> Grouping {
+        if let cached, source === meta { return cached }
+        let next = build(meta)
+        source = meta
+        cached = next
+        return next
+    }
+}
+
+final class AiredUnwatchedCountCache {
+    struct Key: Equatable {
+        /// Review r2 #4: the meta's stable id, not `ObjectIdentifier(meta)` — the cache does not
+        /// retain the meta, so a freed object's address could be reused by a different title.
+        let metaId: String
+        let season: Int?
+        let episodeCount: Int
+        let watchedKeys: Set<String>
+    }
+
+    private var key: Key?
+    private var cached = 0
+    private lazy var todayIsoDate: String = CurrentDateProvider.shared.todayIsoDate()
+
+    func count(key: Key, compute: (String) -> Int) -> Int {
+        if let existing = self.key, existing == key { return cached }
+        cached = compute(todayIsoDate)
+        self.key = key
+        return cached
     }
 }

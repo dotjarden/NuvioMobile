@@ -3,6 +3,27 @@ import QuartzCore
 import SwiftUI
 import SharedCore
 
+/// rc14 (Steven rc13 verdict, 2026-09-30): the Detail backdrop was reported softer than the
+/// reference app's. The addon/TMDB URL the meta carries is the *medium* rendition, so Detail asks
+/// for the larger one first and falls back to the original URL when the larger file does not exist
+/// (`CachedAsyncImage(string:fallback:)` retries the fallback once the primary fails).
+///
+/// Pure string rewrite, `nonisolated` so a unit test can call it synchronously from any isolation
+/// domain. Only two well-known path shapes are rewritten; every other URL passes through untouched.
+enum DetailBackdropURL {
+    /// metahub `/background/medium/…` -> `/background/large/…`; TMDB `/t/p/w1280/…` ->
+    /// `/t/p/original/…`. Anything else (including an empty string) is returned unchanged.
+    nonisolated static func upgraded(_ url: String) -> String {
+        if url.contains("/background/medium/") {
+            return url.replacingOccurrences(of: "/background/medium/", with: "/background/large/")
+        }
+        if url.contains("/t/p/w1280/") {
+            return url.replacingOccurrences(of: "/t/p/w1280/", with: "/t/p/original/")
+        }
+        return url
+    }
+}
+
 /// BUG-41 (beta.18): pure timing math behind `ScrollDimModel.isScrolling` — deliberately split out
 /// of the model so the debounce/hysteresis arithmetic can be exercised in
 /// `DetailScrollProbeTests` with fabricated timestamps instead of a real `Task.sleep`/clock.
@@ -33,13 +54,24 @@ enum ScrollingLatch {
 /// see `DetailView.dimModel` and `ScrollDimOverlay` below, its sole observer.
 private final class ScrollDimModel: ObservableObject {
     @Published var value: Double = 0
+    /// FEAT-60: the Cinematic hero, action row included, has scrolled off the top (drives
+    /// `DetailCompactLogo`). Bool, so it publishes only on the crossing.
+    @Published var heroGone: Bool = false
+    /// D-3: a row's heading or chips sit inside the compact logo's band, so the logo steps aside
+    /// (`DetailCompactLogoBand`). Decided at rest (review P2-1: `DetailView.settleCompactLogoBand`
+    /// on the `isScrolling` false edge), held mid-glide; false while the hero is still on screen.
+    @Published var logoBandBlocked: Bool = false
 
     /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
     /// instant a scroll-geometry change is observed, false again ~150ms after the last one
     /// (`ScrollingLatch.defaultIdle`). Lives here, not a plain `@State` on `DetailView`, for the
-    /// same reason `value` does: writing it every scroll frame must invalidate only the small
-    /// views that actually read it (the chip glass/flat swap — see `DetailView.chipGlassFlat`),
-    /// not the whole `DetailView.body`.
+    /// same reason `value` does: writing it every scroll frame must not be a `@State` write on
+    /// the whole `DetailView.body`.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): nothing in the page's look reads this any more. Until
+    /// then the chip glass/flat swap (`DetailView.chipGlassFlat`) and Classic's synopsis panel
+    /// followed it, so the glass popped flat on every scroll and back ~150 ms after it stopped
+    /// (Steven's video, 3:39.9). It now only feeds the `scrolling=` token of the `debug_ux6` probe.
     @Published var isScrolling: Bool = false
     /// BUG-96 diagnostic: the last anchor decision (`row=… h=… vh=… k=…`), surfaced on the
     /// `debug_ux6` probe so a UI leg can read it off the accessibility tree (the tvOS 27 runtime
@@ -51,8 +83,44 @@ private final class ScrollDimModel: ObservableObject {
     /// on every scroll frame and must not invalidate anything (the BUG-41 rule).
     var contentInsetTop: CGFloat = 0
     var lastContentOffset: CGFloat = 0
+    /// W3-15 (BUG-153): the duration the last anchor / hero glide started with; the verify sleeps
+    /// wait at least this long plus a slack so a 0.45 s verify never restarts a longer glide mid-way.
+    var anchorGlideSeconds: TimeInterval = DetailRowAnchor.anchorDurationFloor
     /// BUG-96 diagnostic sample (plain field); published into `scrollGeoNote` by the anchor pass.
     var geometrySample: String = "-"
+    /// BUG-96 blend: armed with the just-focused row the instant `focusedRow` changes, and the
+    /// content offset captured at that moment — disarmed (`nil`) the first time the scroll-geometry
+    /// handler sees the engine's own reveal actually move the page, which is also the instant the
+    /// anchor pass fires. Plain fields, not published: read/written on the per-frame geometry path.
+    /// BUG-99: only ever armed on an UP focus change now — a Down change leaves this `nil`, so the
+    /// blend trigger in the scroll-geometry handler below is inert for the whole visit; Down has
+    /// its own settle-check task instead (see `DetailView.onChange(of: focusedRow)`).
+    var awaitingRevealRow: DetailRowID?
+    var awaitingRevealStartOffset: CGFloat = 0
+    /// FEAT-35 correction 10 (P3 F7): an extra tag for the blend pass the geometry handler fires
+    /// for `awaitingRevealRow` — the hero-exit branch sets `"hero-exit"`, so the probe reads
+    /// `anchor=… blend+hero-exit`. Cleared whenever `awaitingRevealRow` is. Plain field.
+    var awaitingRevealNote: String?
+    /// FEAT-35 hero return (any row → Cinematic hero): armed with the offset at the moment focus
+    /// entered the hero; the geometry handler fires the scroll to the top the instant the engine's
+    /// own reveal starts moving the page (the same blend as `awaitingRevealRow`), with a fallback
+    /// timer in `DetailView.armHeroReturn`. Plain fields, written on the per-frame path.
+    var awaitingHeroReturn = false
+    var awaitingHeroReturnStartOffset: CGFloat = 0
+    /// D-3 (review P3-a): set while a Down focus change's settle task is unresolved (the engine's
+    /// reveal can rest >150 ms before the 0.35 s straddle check, and a down-straddle anchor may
+    /// still glide the row to 108). The scroll latch's false edge does not decide the compact
+    /// logo's band while it is set; the task's `.free` branch (or the anchor glide's own rest)
+    /// does. A token, so a cancelled task never clears a newer one's mark. Plain field.
+    var downSettlePending: UUID?
+    /// BUG-96 oracle: timestamped content-offset samples for the current focus visit, capped at
+    /// ~600 and reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the
+    /// `moves=` count appended to `geometrySample`. Timestamped (not just the raw offset) because
+    /// `onScrollGeometryChange` delivers CHANGES only — a genuine pause between motions can produce
+    /// no samples at all, so the split has to be time-based, not a run of stationary samples (see
+    /// `DetailScrollMotion`). Plain field for the same reason as `geometrySample` itself; only ever
+    /// grown when `DetailScrollProbe.enabled`.
+    var motionSamples: [MotionSample] = []
 
     /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
     /// the debounce window against.
@@ -129,8 +197,53 @@ private struct DetailTopScrim: View {
             .frame(maxWidth: .infinity)
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
-            .opacity(model.value > 0.001 ? 1 : 0)
-            .animation(.linear(duration: 0.12), value: model.value > 0.001)
+            // BUG-178: ramps with the dim (`DetailDim.topScrimOpacity`) instead of on/off, so it
+            // fades with the page on the way back up rather than riding it as a solid band. The
+            // 0.12 s linear smooths the 0.05 dim steps (the `ScrollDimOverlay` rule).
+            .opacity(DetailDim.topScrimOpacity(dim: model.value, stepped: DetailDim.topScrimStepped))
+            .animation(.linear(duration: 0.12), value: model.value)
+    }
+}
+
+/// FEAT-60: the compact title logo pinned at the top of a scrolled Cinematic Detail page. Text
+/// title while the logo loads or when there is none (`TitleLogoHeader`). Sits over `DetailTopScrim`,
+/// never takes focus or hits. Device pass: the first Down only reveals the next row (BUG-99), so
+/// "focus is in the rows" alone showed the logo beside the dimmed action row; it now also waits
+/// for the whole hero to have scrolled off (`ScrollDimModel.heroGone`).
+private struct DetailCompactLogo: View {
+    static let slotHeight: CGFloat = DetailCompactLogoBand.slotHeight
+    /// How far past the hero-exit rest the page must scroll (that rest sits at about
+    /// `heroHeight − 12 + inset` from the top, `DetailDim.scrolledDistance`, and leaves the dimmed
+    /// action row on screen), so the logo waits for the next row down.
+    static let heroClearance: CGFloat = 120
+    let title: String
+    let logoUrl: String?
+    @ObservedObject var model: ScrollDimModel
+    let inRows: Bool
+    let reduceMotion: Bool
+
+    /// D-3: also steps aside while a row's heading or chips cross its band (`model.logoBandBlocked`).
+    private var visible: Bool {
+        DetailCompactLogoBand.shows(inRows: inRows, heroGone: model.heroGone, bandBlocked: model.logoBandBlocked)
+    }
+
+    var body: some View {
+        TitleLogoHeader(title: title, logoUrl: logoUrl, alignment: .center,
+                        textFont: Theme.Font.screenTitle, slotHeight: Self.slotHeight,
+                        decodeSize: .legacy)
+            .frame(maxWidth: 420, maxHeight: Self.slotHeight)
+            .lineLimit(1)
+            .shadow(color: .black.opacity(0.5), radius: 8)
+            .opacity(visible ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: visible)
+            .allowsHitTesting(false)
+            .accessibilityHidden(!visible)
+            // D-3 (review P3-1): the page's own `.accessibilityHidden(bridgePhase != .idle)` (false
+            // while idle) wins over the `true` above, so the hidden logo stayed in the AX tree and a
+            // leg could not read its visibility. The identifier is carried only while it shows.
+            .accessibilityIdentifier(visible ? "detail_compact_logo" : "")
+            .padding(.top, DetailCompactLogoBand.topPadding)
+            .ignoresSafeArea(edges: .top)
     }
 }
 
@@ -152,6 +265,9 @@ private struct ScrollDimOverlay: View {
     /// the `debug_ux6` probe, or the page has two matching elements while the cover is up
     /// (test17 "Multiple matching elements found").
     var showsProbe: Bool = true
+    /// D-3 probe only: the compact logo is mounted and focus is in the rows (Cinematic, knob off,
+    /// `bridgePhase == .idle`) — the `inRows` half of its visibility; the model carries the rest.
+    var compactLogoInRows: Bool = false
 
     var body: some View {
         ZStack {
@@ -170,7 +286,7 @@ private struct ScrollDimOverlay: View {
             // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
             // BUG-41 item 3) is the newest token, appended last for the same reason.
             if showsProbe {
-            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote)")
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote) compactLogo=\(compactLogoShown ? "shown" : "hidden") logoBand=\(!model.heroGone ? "hero" : model.logoBandBlocked ? "blocked" : "clear")")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
@@ -178,6 +294,14 @@ private struct ScrollDimOverlay: View {
             #endif
         }
     }
+
+    #if DEBUG
+    /// D-3: the compact logo's visibility, the same rule `DetailCompactLogo` renders.
+    private var compactLogoShown: Bool {
+        DetailCompactLogoBand.shows(inRows: compactLogoInRows, heroGone: model.heroGone,
+                                    bandBlocked: model.logoBandBlocked)
+    }
+    #endif
 }
 
 /// Runtime knob for DetailView's scroll-diagnostic probes (the BUG-41 body-eval counter and the
@@ -195,6 +319,33 @@ enum DetailScrollProbe {
     /// this key (F-C's picker) can flip probing on/off without a relaunch — matches
     /// `DetailScrollAB.leg` below.
     nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: "debug.detailScrollProbe") }
+}
+
+/// FEAT-82 (Steven rc9, D4): the Detail action buttons (Play/Resume, Start Over, Trailer and the
+/// compact bordered buttons) go square when Poster › Corners is Square (radius 0); Rounded and Round
+/// keep capsules. Chips stay as they are.
+enum DetailActionShape {
+    nonisolated static func isSquare(cornerRadius: CGFloat) -> Bool {
+        cornerRadius == 0
+    }
+}
+
+/// Batch M Wave 0 (BUG-153 regressed in rc9): launch-latched A/B knobs, one per rc7 → rc9 suspect,
+/// set per run with launch arguments (`-debug.detailImmediateTrailerMount YES`, …) and compared
+/// under `debug.detailScrollProbe`.
+enum DetailBug153Knobs {
+    /// Restores rc7's immediate trailer mount (Batch K deferred it until the scroll settles).
+    static let immediateTrailerMount = UserDefaults.standard.bool(forKey: "debug.detailImmediateTrailerMount")
+    /// Skips the FEAT-60 compact logo overlay (Batch C).
+    static let noCompactLogo = UserDefaults.standard.bool(forKey: "debug.detailNoCompactLogo")
+    /// Puts Trailers, Episodes and Season tiles back on `TileFocusLift` (BUG-177's ring path off).
+    static let noTileRing = UserDefaults.standard.bool(forKey: "debug.detailNoTileRing")
+    /// Batch M Wave 1: keeps the tile ring but drops the focused tile's black platter + 22 pt
+    /// shadow (`CardArtworkFocusLift.focusShadow`), the main suspect under the SwiftUI scale.
+    static let ringNoShadow = UserDefaults.standard.bool(forKey: "debug.detailTileRingNoShadow")
+    /// Batch M Wave 1: keeps the tile ring but snaps it: no animation on the ring branch's lift,
+    /// ring and band (`DetailTileFocusLift`), nor on the tile's own `value: isFocused` animation.
+    static let ringNoAnim = UserDefaults.standard.bool(forKey: "debug.detailTileRingNoAnim")
 }
 
 /// BUG-41 item 6: a device-side hitch counter for one Detail visit, armed only while
@@ -215,6 +366,7 @@ private final class HitchCounter: NSObject, ObservableObject {
         frameCount = 0
         maxGapMs = 0
         lastTimestamp = nil
+        DetailHitchSnapshot.reset()
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -225,6 +377,9 @@ private final class HitchCounter: NSObject, ObservableObject {
         displayLink?.invalidate()
         displayLink = nil
         NSLog("[BUG41] hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs)
+        TrailerZoomProbe.log(String(format: "hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs))
+        // The detail-bg trailer monitor's stop() may run after onDisappear; reset after it has read the snapshot.
+        DispatchQueue.main.async { DetailHitchSnapshot.reset() }
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -235,6 +390,7 @@ private final class HitchCounter: NSObject, ObservableObject {
             if gapMs > maxGapMs { maxGapMs = gapMs }
         }
         lastTimestamp = link.timestamp
+        DetailHitchSnapshot.update(.init(hitches: hitchCount, frames: frameCount, maxGapMs: maxGapMs))
     }
 
     deinit { displayLink?.invalidate() }
@@ -253,19 +409,26 @@ private final class HitchCounter: NSObject, ObservableObject {
 ///   - 1: dim disabled — the `.onScrollGeometryChange` `of:` closure that feeds `dimModel` always
 ///     returns 0, so the UX-6 overlay never darkens past its first frame.
 ///   - 2: glass off in the top block — `metaChip` and the parental-guide chips fall back to a
-///     plain translucent capsule fill instead of `.glassEffect`. `actionRow`'s
-///     `.glass`/`.glassProminent` BUTTON styles are left alone — button styles are a different
-///     swap from the chip backgrounds this leg targets.
+///     plain translucent capsule fill instead of `.glassEffect`. `actionRow`'s BUTTON styles
+///     were left alone (none to flatten since D9: they are `.bordered` outright).
 ///   - 3: both 1 and 2.
-///   - 4: leg 3, plus `actionRow`'s buttons swap `.glass`/`.glassProminent` for
-///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` becomes a plain `HStack` —
-///     the one piece of glass legs 2/3 deliberately left alone.
+///   - 4: leg 3, plus `actionRow`'s buttons swapped `.glass`/`.glassProminent` for
+///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` for a plain `HStack`.
+///     **D9 (BUG-206, 2026-10-22): that swap SHIPS** — the bordered row is the only action row now
+///     (`prominentActionButtonStyle` / `compactActionButtonStyle` / `actionRow` below), so leg 4
+///     reads exactly as leg 3. The value stays accepted because `DetailScrollProbeTests` pins the
+///     live-read contract on it and the Developer pane still offers it.
 enum DetailScrollAB {
     nonisolated static var leg: Int { UserDefaults.standard.integer(forKey: "debug.detailScrollAB") }
     nonisolated static var dimDisabled: Bool { leg == 1 || leg == 3 || leg == 4 }
     nonisolated static var glassDisabled: Bool { leg == 2 || leg == 3 || leg == 4 }
-    /// Leg 4 only — see the doc list above.
-    nonisolated static var buttonGlassDisabled: Bool { leg == 4 }
+}
+
+/// H9 (P4 §2.5): the hero button Detail's rail route captured when the rail armed. A reference box
+/// held by the route's closures, so the capture writes no view state.
+@MainActor
+final class DetailRailFocusBox {
+    var focus: DetailHeroFocus?
 }
 
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
@@ -282,15 +445,33 @@ struct DetailView: View {
     /// don't affect anything since there's no tab bar to hide.
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @State private var immersiveOwner = UUID()
+    /// FEAT-82 (Steven rc9): Poster › Corners = Square squares the action buttons too
+    /// (`DetailActionShape`); Rounded and Round keep the capsules.
+    @Environment(\.posterStyle) private var posterStyle
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
+    /// Hold-Play "Choose Source…" (movies): the next picker presentation skips auto-play and shows
+    /// the list. Reset when the cover goes away. Series carry the same flag on `SeriesPlayRoute`.
+    @State private var forceManualPlay = false
     @State private var seriesPlay: SeriesPlayRoute?
+    /// P5 B22: the post-play More Like This pick, stored while the player covers close and pushed
+    /// from the cover's `onDismiss` (never while a cover is still up: the empty-pushed-view EJECT).
+    @State private var postPlayPending: MetaPreview?
+    @State private var postPlayRoute: TitleRoute?
+    /// Episode shuffle sheet (upstream `23b048c3`), opened from the action row's Shuffle button.
+    @State private var showShuffleSheet = false
+    /// The shuffle pick the sheet asked to play; presented as `seriesPlay` once the sheet is gone
+    /// (a full-screen cover can't present while the sheet is still dismissing).
+    @State private var pendingShuffleRoute: SeriesPlayRoute?
     /// Trakt comment ids the user has expanded (reveals spoilers / full text).
     @State private var expandedComments: Set<Int64> = []
 
     /// Tester ask: auto full-screen the hero trailer a few seconds after opening a title.
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
+    /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
+    /// dotjarden fork: off by default (design rule: wide backdrop, no separate poster layer).
+    @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = false
     /// UX-4b (tester ask): the muted trailer looping behind the description previously had no
     /// switch at all — only auto-play did. Off = detail pages stay on the still artwork; the
     /// explicit "Watch Trailer" button and auto-play (if enabled) still work.
@@ -308,6 +489,40 @@ struct DetailView: View {
     /// only to restore the shared `HeroTrailerAudioState` back to this default once a full-screen
     /// trailer is dismissed (see the `.fullScreenCover(item: $model.trailerPlayback` below).
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
+    /// FEAT-35 (D2): Cinematic (default) or Classic. Classic renders today's `topBlock`, unchanged.
+    @AppStorage(DetailSettingsKeys.layout) private var detailLayoutRaw = DetailLayout.cinematic.rawValue
+    private var detailLayout: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// FEAT-35 section toggle "Ratings" (closes FEAT-28): the Cinematic ratings strip and the meta
+    /// line's IMDb ★ (D10). Classic's chips are untouched.
+    @AppStorage(DetailSettingsKeys.sectionRatings) private var sectionRatings = true
+    /// FEAT-35 section toggles (P1 §H, default ON, both layouts). Episodes has no toggle; About only
+    /// exists in Cinematic. A hidden row's stale `detailRowOffsets` entry is harmless: focus can
+    /// never be inside it.
+    @AppStorage(DetailSettingsKeys.sectionStudioLogos) private var sectionStudioLogos = true
+    @AppStorage(DetailSettingsKeys.sectionParentalGuide) private var sectionParentalGuide = true
+    @AppStorage(DetailSettingsKeys.sectionCast) private var sectionCast = true
+    @AppStorage(DetailSettingsKeys.sectionCollection) private var sectionCollection = true
+    @AppStorage(DetailSettingsKeys.sectionTrailers) private var sectionTrailers = true
+    @AppStorage(DetailSettingsKeys.sectionMoreLikeThis) private var sectionMoreLikeThis = true
+    @AppStorage(DetailSettingsKeys.sectionComments) private var sectionComments = true
+    @AppStorage(DetailSettingsKeys.sectionAbout) private var sectionAbout = true
+    /// FEAT-35 (W2-A): the Cinematic hero's laid-out height, for the dim ramp only. Written by a
+    /// rare `onGeometryChange` on the hero (rounded, and only when it changes — about once per visit,
+    /// the BUG-41 rule), never per scroll frame. Classic never reads it (`DetailDim.rampDistance`
+    /// returns 400 there). Starts at the hero's floor.
+    @State private var cinematicHeroHeight: CGFloat = DetailCinematicLayout.heroMinimumHeight
+    /// FEAT-35 (D3, correction F8): the full-synopsis cover, opened from the Cinematic teaser. Lives
+    /// here, not in the hero, because it also pauses the background trailer (`isTrailerActive`).
+    @State private var showSynopsisSheet = false
+    /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
+    /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
+    @State private var startOverMovie = false
+    /// FEAT-82 (Batch P): Play's measured padded label and whole button, from which the equal
+    /// square icon buttons are cut when Poster > Corners = Square (side = the button's height, the
+    /// style's insets = button minus label; `DetailActionSquare.labelSize`). Whole points, written
+    /// only on change (BUG-41).
+    @State private var playLabelSize: CGSize = .zero
+    @State private var playButtonSize: CGSize = .zero
 
     /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
     /// fades the background player back out to the still backdrop without ever touching
@@ -320,7 +535,9 @@ struct DetailView: View {
     /// stops firing once fully saturated. BUG-41: lives in `ScrollDimModel` (a tiny
     /// `ObservableObject`), not a plain `@State` on `DetailView` — see that type's doc comment for
     /// why the indirection matters for scroll smoothness.
-    @StateObject private var dimModel = ScrollDimModel()
+    // `@State`, not `@StateObject`: holding the model must not subscribe DetailView's whole body to
+    // every dim step and scroll latch flip. Only `ScrollDimOverlay` and `DetailTopScrim` observe it.
+    @State private var dimModel = ScrollDimModel()
 
     /// BUG-41: hysteresis latch on `dimModel.value` — true once it reaches 0.80, false again once
     /// it drops below 0.55 (scrolling back up). Gates the hero-trailer `AVPlayerLayer` mount at
@@ -348,6 +565,13 @@ struct DetailView: View {
     /// Set the moment the user swipes/moves focus at all (see `onMoveCommand` below); cancels the
     /// pending auto-play so it never yanks focus away from someone who's already exploring the page.
     @State private var userInteracted = false
+    /// BUG-153: see `trailerMountCandidate`.
+    @State private var trailerMounted = false
+    @State private var pageScrolling = false
+    /// Review r3 #4: the late Play claim only applies while the page is still settling. A Select on
+    /// Watched/Library is not a move command, so a claim that fired after add-ons finished loading
+    /// could pull focus away from where the user is working.
+    @State private var detailAppearedAt = Date()
     @State private var autoPlayTrailerTask: Task<Void, Never>?
     /// True only while the CURRENT `trailerPlayback` presentation was kicked off by the auto-play
     /// timer (not the explicit "Watch Trailer" button or a "Trailers & Extras" row item) — gates the
@@ -372,21 +596,94 @@ struct DetailView: View {
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
     @FocusState private var focusedCastIndex: Int?
+    /// BUG-111: which company/studio chip holds focus — mirrors `focusedCastIndex` exactly.
+    /// `CompanyChip` has no border treatment of its own either, so it reads this same row-owned
+    /// `FocusState` for its `stillFocused`/ring/lift truth instead of installing a second
+    /// `.focused` binding of its own (the same collision `focusedFolderId` avoids — see
+    /// `cardFocusButtonStyle`'s doc comment).
+    @FocusState private var focusedCompanyIndex: Int?
+    /// BUG-187: the last card focus held in Cast / Studios / Collection / More Like This, for the
+    /// fallback restore after a pop (`DetailFocusMemory`). A reference box: writes never invalidate.
+    @State private var focusMemory = DetailFocusMemory()
+    /// BUG-194 (Batch P): the row and card of a live pop restore (Back from a biography, a More Like
+    /// This title or a collection). While set, the engine's stray landings (Play, the hero) do not
+    /// move the page: the forced rungs' request lands the card when the pop transition ends, the
+    /// engine's late restoration then lands on Play (the only default candidate), and the gate
+    /// re-grabs the card at once (`DetailPopGate.Decision.regrab`). Ended on viewer input or when
+    /// the request retires (1.3 s). Only the row and key are view state; the counters, the clock
+    /// stamps and the held change live in `focusMemory` so they never re-evaluate the body.
+    @State private var popRestoreRow: DetailRowID?
+    @State private var popRestoreKey: String?
+    /// BUG-187: the restore rung handed to the rows that own their `FocusState` (Collection, More
+    /// Like This). Changes only during a restore.
+    @State private var detailFocusRestore = DetailFocusRestoreRequest.none
+    /// BUG-187: the `debug_detail_focus` probe's card key; written only under `DetailFocusProbe`.
+    @State private var detailFocusProbeKey = "-"
+    /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
+    /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+
+    /// BUG-108: ring mode's lift is SwiftUI's own scale, so the raised avatar's platter+shadow can
+    /// draw under its unfocused neighbours. On the `LazyHStack`'s child, not inside the label.
+    private func liftedCastZIndex(_ index: Int) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedCastIndex == index ? 1 : 0
+    }
+    /// BUG-111: `liftedCastZIndex`'s twin for the company/studio row. BUG-200: read off the chip's
+    /// own lift (`PlainLabelRing.smallLabelLift`), which is SwiftUI's scale in the default cell too.
+    private func liftedCompanyZIndex(_ index: Int) -> Double {
+        let raises = PlainLabelRing.smallLabelLift(accentFocusRing: accentFocusRing,
+                                                   noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedCompanyIndex == index ? 1 : 0
+    }
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
+    /// Codex P2 review finding (BUG-99 follow-up, round 2): `.comments` is now a TRACKED row
+    /// (`commentsSection` carries `.detailRowAnchored(.comments, …)` below) like every other row
+    /// past the top block, so this reports `.comments` — never nil — while focus is inside it. A
+    /// round-1 fix added a separate `lastKnownRow` state field to tell "focus is nil because it's
+    /// in the top block" apart from "focus is nil because it's in Comments"; tracking Comments here
+    /// retires that field entirely — `onChange(of: focusedRow)`'s own `old` parameter is already
+    /// the row that lost focus, real or nil, with no separate bookkeeping needed.
     @FocusState private var focusedRow: DetailRowID?
+    /// FEAT-35: lets `.defaultFocus` land on Play/Resume (the Cinematic teaser above it can be
+    /// focusable). Bound on both Play buttons in `actionRow`.
+    @FocusState private var heroFocus: DetailHeroFocus?
+    /// FEAT-35: true while focus is anywhere inside the Cinematic hero (read by the hero-return
+    /// scroll in W2-A, so a focus loss to a push or cover never scrolls the page).
+    @FocusState private var heroHasFocus: Bool
+    /// Review r1 #2: one-shot latch for the late Play claim (`claimLatePlayFocusIfNeeded`).
+    @State private var didClaimLatePlayFocus = false
+    /// Review r2 #1: a late Play claim is in flight; it latches (`didClaimLatePlayFocus`) only when
+    /// `onChange(of: heroFocus)` sees focus arrive on Play.
+    @State private var latePlayClaimPending = false
+    /// Review r1 #2: focus moved between two hero targets this visit. `onMoveCommand` only sees
+    /// moves the focus engine did not consume, so a press from Watched to Library never sets
+    /// `userInteracted`; this catches it.
+    @State private var userMovedInHero = false
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
     @State private var detailRowOffsets: [DetailRowID: CGFloat] = [:]
+    /// D-3: each row's height, same cadence as `detailRowOffsets`; with it the hero-exit observer
+    /// knows where each row's lead sits against the compact logo's band (`DetailCompactLogoBand`).
+    @State private var detailRowHeights: [DetailRowID: CGFloat] = [:]
     /// BUG-96: the vertical scroll view's position, driven the way Home's corrector drives its rows.
     @State private var detailScrollPosition = ScrollPosition()
     /// BUG-96: the pending anchor move; a newer focus change cancels the previous one.
     @State private var detailAnchorTask: Task<Void, Never>?
-    /// BUG-96: the row top the last anchor pass rested on. A later layout change that moves the
-    /// focused row (cast photos landing, a parental-guide row inserting above) shifts this, and
-    /// the focus engine re-reveals the moved card; `.onChange(of: detailRowOffsets)` re-anchors
-    /// once on that signal — a layout-settled trigger, never a polling loop.
-    @State private var lastAnchoredRowTop: CGFloat?
+    /// BUG-96: which row the last anchor pass rested, and where. A later layout change that moves
+    /// the focused row (cast photos landing, a parental-guide row inserting above) shifts that
+    /// row's top away from here, and the focus engine re-reveals the moved card;
+    /// `.onChange(of: detailRowOffsets)` re-anchors once on that signal — a layout-settled
+    /// trigger, never a polling loop. Codex P2 review finding (BUG-99 follow-up): ownership is now
+    /// per ROW, not just a top — the old bare `CGFloat?` compared the new focused row's top against
+    /// whatever the PREVIOUS row's anchor pass had left here, so a relayout within 350 ms of a
+    /// focus change could anchor a row that was deliberately left `.free`. Cleared at the top of
+    /// `.onChange(of: focusedRow)` on every change; set only by `anchorPass`, for the row it
+    /// anchored. The relayout pass below only fires when `lastAnchored?.row == focusedRow`.
+    @State private var lastAnchored: (row: DetailRowID, top: CGFloat)?
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -415,6 +712,43 @@ struct DetailView: View {
         }
     }
 
+    /// P5 B22: runs from the player covers' `onDismiss`, so the push happens after the cover is gone.
+    private func openPostPlayPick() {
+        guard let pick = postPlayPending else { return }
+        postPlayPending = nil
+        postPlayRoute = TitleRoute(preview: pick)
+    }
+
+    /// FEAT-60: focus is in the rows and no trailer bridge is running — the `inRows` half of the
+    /// compact logo's visibility (the D-3 probe reads it too).
+    private var compactLogoInRows: Bool { focusedRow != nil && bridgePhase == .idle }
+
+    /// D-3 (review P3-3): only Cinematic has a compact logo, so only Cinematic rows report heights.
+    private var compactLogoRowHeights: Binding<[DetailRowID: CGFloat]>? {
+        detailLayout == .cinematic ? $detailRowHeights : nil
+    }
+
+    /// D-3: the rows' content-space frames for `DetailCompactLogoBand`, read at rest
+    /// (`settleCompactLogoBand`). Both maps change on layout only.
+    /// Cinematic only (Classic has no compact logo). A row that leaves the hierarchy drops its
+    /// height (`DetailRowAnchored`, review P3-2), so only rendered rows reach the band.
+    private var compactLogoBandRows: [DetailCompactLogoBand.Row] {
+        guard detailLayout == .cinematic else { return [] }
+        // Sorted so the `.onChange` below compares like with like (dictionary order can shift).
+        return detailRowOffsets.compactMap { id, top in
+            detailRowHeights[id].map { DetailCompactLogoBand.Row(top: top, height: $0) }
+        }.sorted { $0.top < $1.top }
+    }
+
+    /// D-3 (review P2-1): decides the compact logo's band from the rows and the resting content
+    /// offset (`lastContentOffset`, the plain per-frame field). Called on the scroll latch's false
+    /// edge, on a layout change while still, and on a still hero edge — never per frame.
+    private func settleCompactLogoBand() {
+        let blocked = DetailCompactLogoBand.bandAtRest(heroGone: dimModel.heroGone, rows: compactLogoBandRows,
+                                                       contentOffset: dimModel.lastContentOffset)
+        if dimModel.logoBandBlocked != blocked { dimModel.logoBandBlocked = blocked }
+    }
+
     var body: some View {
         // BUG-41 measurement probe, gated at runtime by `DetailScrollProbe.enabled` (see above).
         let _ = Self.logBodyEval()
@@ -423,6 +757,10 @@ struct DetailView: View {
                 // FEAT-32: the still lands enlarged when the trailer cover goes and settles to 1.
                 .scaleEffect(TrailerBridgeChoreography.backdropScale(bridgePhase))
                 .animation(TrailerBridgeChoreography.backdropAnimation(to: bridgePhase), value: bridgePhase)
+            if showPosterBackdrop {
+                posterBackdropLayer
+                    .transition(.opacity)
+            }
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio). BUG-41: also
@@ -438,14 +776,23 @@ struct DetailView: View {
                 // themselves do the clipping. The failure report is ignored: Detail has one hero
                 // trailer and no negative cache to scope (that's the inline card's problem).
                 TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() },
-                                  zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId)
+                                  zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId,
+                                  surfaceTag: "detail-bg")
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
-            scrimOverlay
+            // FEAT-35: each layout has its own scrim. Written out at both call sites (here and the
+            // trailer cover's copy) so the two always compose the same way (Codex r3 rule).
+            if detailLayout == .cinematic {
+                cinematicScrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            } else {
+                scrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            }
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
-            ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
+            ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat,
+                             compactLogoInRows: compactLogoInRows && detailLayout == .cinematic
+                                 && !DetailBug153Knobs.noCompactLogo)
             // FEAT-32: the hero dims to black under the fading chrome before the cover presents, so
             // the trailer cuts in from black. Cleared with no animation on return (hard cut to the
             // still, as in Nuvio), the settle above does the rest.
@@ -456,38 +803,71 @@ struct DetailView: View {
                 .animation(TrailerBridgeChoreography.blackoutAnimation(to: bridgePhase), value: bridgePhase)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
-                    topBlock
+                    heroBlock
                     // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
                     // below the top block is anchored — see `DetailRowAnchor`.
                     Group {
-                        companyLogosRow
-                            .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
+                        if sectionStudioLogos {
+                            companyLogosRow
+                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        if sectionParentalGuide {
+                            parentalGuideSection
+                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
                         EpisodesSection(
                             meta: meta,
                             episodeRatings: model.episodeRatings,
-                            watchedEpisodeKeys: model.watchedEpisodeKeys
+                            episodeRatingsVisibility: model.episodeRatingsVisibility,
+                            watchedEpisodeKeys: model.watchedEpisodeKeys,
+                            onPostPlayTitle: { postPlayRoute = TitleRoute(preview: $0) }
                         )
                         // A discrete focus region: vertical D-pad moves must land here instead of
                         // geometrically skipping from the info/network chips down to the cast row.
                         .focusSection()
-                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
                     }
                     Group {
-                        castRow
-                            .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        supportingInformation
-                        collectionRow
-                            .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        trailersRow
-                            .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        moreLikeThisRow
-                            .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        // Codex BUG-96 r1/r2 (P2): NOT anchored — a vertical list of expandable cards
-                        // whose focus moves never change `focusedRow`, so a pending correction
-                        // could scroll back to the section top under a later comment.
-                        commentsSection
+                        if sectionCast {
+                            castRow
+                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        if sectionCollection {
+                            collectionRow
+                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        if sectionTrailers {
+                            trailersRow
+                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        if sectionMoreLikeThis {
+                            moreLikeThisRow
+                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
+                        // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
+                        // "a vertical list of expandable cards whose focus moves never change
+                        // `focusedRow`" — which was true only because nothing here reported focus
+                        // in the first place; that left `focusedRow` nil both here and in the top
+                        // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
+                        // section resolves that ambiguity structurally (see `DetailRowID`'s and
+                        // `direction`'s doc comments); it still must never anchor — a pending
+                        // correction could scroll back to the section top under a later comment —
+                        // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
+                        // before any anchor decision runs.
+                        if sectionComments {
+                            commentsSection
+                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
+                        // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
+                        // not a Comments-style bail).
+                        if detailLayout == .cinematic && sectionAbout {
+                            DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
+                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets, heights: compactLogoRowHeights)
+                        }
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -495,48 +875,110 @@ struct DetailView: View {
                 .coordinateSpace(name: DetailRowAnchor.contentSpace)
             }
             .scrollPosition($detailScrollPosition)
+            // BUG-178 (Steven rc7: scrolling back up, "the shadow that appears going down moves up
+            // with" the page): the tvOS 26 system top scroll-edge effect draws its own soft shadow
+            // under the top edge while content sits under it, and it follows the content. Home
+            // already opts out (`.scrollEdgeEffectStyle(.hard, for: .top)`); Detail has its own
+            // fixed scrim (`DetailTopScrim`), so the system one is hidden here. A/B:
+            // `-debug.detailEdgeEffectShown YES` puts it back.
+            .scrollEdgeEffectHidden(!DetailDim.edgeEffectShown, for: .top)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
-            // BUG-96: anchor the focused row's top at `DetailRowAnchor.topInset`. Issued at once,
-            // in the same run of the run loop as the engine's own reveal, so the two animate as
-            // one move; `scrollTo` clamps at the end of content, so the last rows simply rest as
-            // low as the content allows.
-            .onChange(of: focusedRow) { _, row in
-                guard let row else {
-                    detailAnchorTask?.cancel()
-                    detailAnchorTask = nil
-                    if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
-                    return
+            // FEAT-60 (Steven rc3, the Apple TV app and Fusion): once focus leaves the Cinematic
+            // hero, a small title logo fades in at the top so the page still names what it is.
+            .overlay(alignment: .top) {
+                if detailLayout == .cinematic, !DetailBug153Knobs.noCompactLogo {
+                    DetailCompactLogo(title: title, logoUrl: logoUrl, model: dimModel,
+                                      inRows: compactLogoInRows,
+                                      reduceMotion: reduceMotion)
                 }
-                // The engine's own reveal runs AFTER this handler and overrides an immediate
-                // scrollTo (first fixture run: an Episodes row top-aligned with k=0 still rested at
-                // 519 pt). Let the reveal settle, then slide the row to its place — one deliberate
-                // settle per focus change, never a repeated correction (the Home bounce class).
-                detailAnchorTask?.cancel()
-                detailAnchorTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleDelay * 1_000_000_000))
-                    guard anchorPass(row, note: "fired") else { return }
-                    // One verify pass: a card whose thumbnails land after the settle makes the
-                    // engine re-reveal it and undo the rest. Re-issue once, never loop.
-                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
-                    _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
-                    // Publish the geometry sample once, AT REST, for the probe (never per frame).
-                    try? await Task.sleep(nanoseconds: 350_000_000)
-                    if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+            }
+            // BUG-96/BUG-99: a focus change is decided by DIRECTION first — see
+            // `DetailRowAnchor.Direction`/`decision` and that type's doc comment for the tester
+            // reports behind the split. UP always anchors the focused row's top at
+            // `DetailRowAnchor.topInset`, exactly as every row did before BUG-99: rc5
+            // (u/mrStevenx3) reported the first shipped design waited for the engine's own reveal
+            // to FINISH, then slid the row to rest — a visible two-step move on every press. The
+            // fix BLENDS: arm a flag here, remember the offset the page is at right now, and let
+            // the scroll-geometry handler below fire the anchor pass the instant it sees the
+            // engine actually start moving the page, so the two read as one motion, with a short
+            // fallback timer for the case where the engine never moves the page at all (the
+            // focused card was already fully visible).
+            //
+            // DOWN does not blend or anchor by default any more (rc6, BUG-99): once the blend fix
+            // made one Down press one motion, the row still rested at the anchor every time, which
+            // pushed the title, synopsis, buttons and meta fully off screen on the very FIRST Down
+            // off the header — official Nuvio's Down instead reveals the next section at the
+            // BOTTOM of the screen, description still visible (the engine's own minimal reveal).
+            // Christian's call 2026-09-08: keep that minimal reveal on Down, and only pull the row
+            // up to `screenRest` when it would otherwise leave the header straddling the top scrim
+            // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
+            .onChange(of: focusedRow) { old, row in
+                // BUG-194 (Batch P): during a live pop restore the engine's stray first landing must
+                // not move the page (the "up, then down onto the card" Steven filmed). Decided by
+                // the ROW the engine lands on, never by timestamps (Batch N's lesson): a landing on the remembered
+                // row is the one move; anything else holds until the rung lands it or the viewer
+                // presses, and the request's own retire ends it regardless.
+                if let liveRow = popRestoreRow, let liveKey = popRestoreKey {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    let clock = ViewerInputClock.shared
+                    // Row only (review r1 P3-1): the rung puts the right card on the row; a landing
+                    // on the remembered row is the one move whatever card it hit. The restore ends
+                    // on viewer input or at the request's retire (1.3 s), never on a landed window
+                    // (review r1 P3-2: that window could not elapse before the retire).
+                    // The move count, the decision and its bookkeeping (stray clock, held change,
+                    // re-grab budget) are `DetailFocusMemory.report`, shared with the tests (r3 P3-3).
+                    switch focusMemory.report(row: row, old: old, target: (liveRow, liveKey),
+                                              viewerInput: clock.hasInput(since: focusMemory.popStartedAt),
+                                              clockLive: clock.isLive, at: now) {
+                    case .release:
+                        endPopRestore(reason: "viewer")
+                    case .landed:
+                        logPopLanding(row: liveRow, key: liveKey, now: now)
+                    case .hold:
+                        logPopStray(to: row, now: now, regrab: false)
+                        return
+                    case .regrab:
+                        // BUG-194 (Steven rc11): the engine's late restoration put focus on its
+                        // default candidate (Play) right after the card landed. Same hold as above,
+                        // and the card is taken back now instead of at the 0.8 s free rung.
+                        logPopStray(to: row, now: now, regrab: true)
+                        regrabPopTarget(row: liveRow, key: liveKey)
+                        return
+                    }
                 }
+                handleFocusRowChange(old: old, new: row)
             }
             // Codex BUG-96 r1 (P2): a correction must not land on a page that is leaving or
             // under the trailer cover's 0.6 s leave transition.
             .onChange(of: bridgePhase) { _, phase in
-                if phase != .idle { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+                if phase != .idle {
+                    detailAnchorTask?.cancel(); detailAnchorTask = nil
+                    dimModel.awaitingRevealRow = nil
+                    dimModel.awaitingRevealNote = nil
+                    dimModel.awaitingHeroReturn = false
+                }
             }
-            .onDisappear { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+            .onDisappear {
+                detailAnchorTask?.cancel(); detailAnchorTask = nil
+                dimModel.awaitingRevealRow = nil
+                dimModel.awaitingRevealNote = nil
+                dimModel.awaitingHeroReturn = false
+            }
             // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
             // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
+            // Codex P2 review finding (BUG-99 follow-up): gated on `lastAnchored?.row ==
+            // focusedRow`, not just `lastAnchored != nil` — the old bare `CGFloat?` compared the
+            // newly-focused row's top against whatever the PREVIOUS row's anchor pass had left
+            // there, so a relayout within 350 ms of a focus change (`lastAnchoredRowTop` still
+            // held the old row's rest) could anchor a row that was deliberately left `.free`. Per
+            // row ownership fixes that: a free row's later layout shift never gets pulled up into
+            // an anchor it was deliberately left without, and a stale prior row's rest can never be
+            // mistaken for the current row's.
             .onChange(of: detailRowOffsets) { _, offsets in
                 guard let row = focusedRow, bridgePhase == .idle,
-                      let top = offsets[row], let last = lastAnchoredRowTop,
-                      abs(top - last) > DetailRowAnchor.verifyTolerance else { return }
+                      let top = offsets[row], let last = lastAnchored, last.row == row,
+                      abs(top - last.top) > DetailRowAnchor.verifyTolerance else { return }
                 detailAnchorTask?.cancel()
                 detailAnchorTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 250_000_000)
@@ -552,9 +994,39 @@ struct DetailView: View {
             // Off the accessibility tree while invisible, so test51's "chrome is back" check reads
             // visibility, not mere existence (the tvOS 27 runtime never reports focus).
             .accessibilityHidden(bridgePhase != .idle)
+            // FEAT-60: the compact logo waits for the whole hero, action row included, to leave.
+            // The first Down only reveals the next row (BUG-99), which leaves the dimmed action row
+            // at the top, so the dim ceiling alone was too early (device pass 2026-10-18).
+            // D-3 (review P2-1): `heroGone` stays live here; the band itself is decided at rest
+            // (`settleCompactLogoBand`), so this observer only hands the hero edge over.
+            .onScrollGeometryChange(for: Bool.self, of: { [isCinematic = detailLayout == .cinematic,
+                                                           heroHeight = cinematicHeroHeight] geo in
+                guard isCinematic, heroHeight > 0 else { return false }
+                return DetailDim.scrolledDistance(layout: .cinematic, contentOffset: geo.contentOffset.y,
+                                                  contentInsetTop: geo.contentInsets.top)
+                    >= heroHeight + geo.contentInsets.top + DetailCompactLogo.heroClearance
+            }, action: { _, gone in
+                dimModel.heroGone = gone
+                // Review P3-b: never decided here — `isScrolling`/`lastContentOffset` can be a frame
+                // stale when this runs first (instant jumps: Reduce Motion, pop restore). Past the
+                // hero the band holds blocked; the latch edge or a layout change decides it.
+                let band = DetailCompactLogoBand.bandOnHeroEdge(heroGone: gone)
+                if dimModel.logoBandBlocked != band { dimModel.logoBandBlocked = band }
+            })
+            // D-3: a row's layout moved while the page is still (late rows, cast photos): re-decide.
+            // Mid-glide the rest edge below decides instead. Review P3-c: not while focus is off the
+            // page (a push or cover drops the row heights, which would read clear) or while a Down
+            // settle is pending (P3-a).
+            .onChange(of: compactLogoBandRows) { _, _ in
+                if DetailCompactLogoBand.settlesOnLayout(scrolling: dimModel.isScrolling, focusInRows: focusedRow != nil,
+                                                         downSettlePending: dimModel.downSettlePending != nil) {
+                    settleCompactLogoBand()
+                }
+            }
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
-            .onScrollGeometryChange(for: Double.self, of: { geo in
+            .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
+                                                              dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight)] geo in
                 // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
                 // this closure's result to a constant, so `action:` fires once with 0 and never
                 // again — see `DetailScrollAB`'s doc comment.
@@ -563,7 +1035,14 @@ struct DetailView: View {
                 // original 0.35 ceiling was invisible over a bright playing trailer on a real
                 // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
                 // once the description scrolls up. Sim-verified via debug_ux6 (test17).
-                let raw = min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
+                //
+                // FEAT-35 (W2-A): the ramp distance and the scrolled distance come from `DetailDim`.
+                // Classic is today's formula exactly (400 pt, `offset − inset`); Cinematic ramps over
+                // the hero's height measured from the real top, so it saturates as the hero leaves
+                // (see `DetailDim.scrolledDistance`). Same clamp and 0.05 quantisation as before.
+                let scrolled = DetailDim.scrolledDistance(layout: dimLayout, contentOffset: geo.contentOffset.y,
+                                                          contentInsetTop: geo.contentInsets.top)
+                let raw = min(max(Double(scrolled / dimRamp), 0), 1) * 0.85
                 // BUG-41: quantized to the nearest 0.05 (was 0.01) — `onScrollGeometryChange`
                 // only calls `action:` when the mapped value actually *changes*, so coarsening the
                 // step cuts the write rate from ~85 possible values over the 400pt ramp down to
@@ -606,7 +1085,39 @@ struct DetailView: View {
                 // published only from the anchor pass, so the probe never invalidates the page per
                 // frame and cannot contaminate its own hitch measurements.
                 if DetailScrollProbe.enabled {
-                    dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height)
+                    // BUG-96 oracle: append this frame's timestamped offset and re-derive the
+                    // motion-segment count so `moves=` in the probe always reflects every sample
+                    // taken since the last focus change, not just the ones seen before the last
+                    // publish. Timestamped with `CACurrentMediaTime()` (matches `HitchCounter`
+                    // elsewhere in this file) because the split is time-based — see
+                    // `DetailScrollMotion`.
+                    if dimModel.motionSamples.count < 600 {
+                        dimModel.motionSamples.append(MotionSample(time: CACurrentMediaTime(), offset: geo.contentOffset.y))
+                    }
+                    let moves = DetailScrollMotion.segments(dimModel.motionSamples)
+                    dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f moves=%d", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height, moves)
+                }
+                // BUG-96 blend: the instant the engine's own reveal actually moves the page, fire
+                // the anchor pass right here instead of waiting for the reveal to finish — the two
+                // motions then read as one. `anchorPass` re-checks `focusedRow`/`bridgePhase` itself,
+                // so a stale `row` captured just before a newer focus change is harmless.
+                // BUG-99: `awaitingRevealRow` is only ever armed on an UP focus change now — see
+                // `onChange(of: focusedRow)` above — so this block is inert for the whole duration
+                // of a Down-focused visit, which has its own settle-check task instead.
+                if let row = dimModel.awaitingRevealRow,
+                   abs(geo.contentOffset.y - dimModel.awaitingRevealStartOffset) >= DetailScrollMotion.stationaryThreshold {
+                    dimModel.awaitingRevealRow = nil
+                    // Correction 10: the hero exit tags its blend (`blend+hero-exit`).
+                    let note = dimModel.awaitingRevealNote.map { "blend+\($0)" } ?? "blend"
+                    dimModel.awaitingRevealNote = nil
+                    _ = anchorPass(row, note: note)
+                }
+                // FEAT-35 hero return: the twin of the blend above — the engine's reveal of the
+                // hero target starts moving the page, and the scroll to the top rides on it.
+                if dimModel.awaitingHeroReturn,
+                   abs(geo.contentOffset.y - dimModel.awaitingHeroReturnStartOffset) >= DetailScrollMotion.stationaryThreshold {
+                    dimModel.awaitingHeroReturn = false
+                    _ = heroTopPass("hero-return-blend")
                 }
             })
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in
@@ -615,9 +1126,25 @@ struct DetailView: View {
             // BUG-41: hysteresis latch driving `trailerLayerVisible` — see `trailerDimmedOut`'s doc
             // comment. Wired on the outer ZStack (not inside `ScrollDimOverlay`) since it needs to
             // reach the trailer-mount `if` above, not just the overlay's own opacity.
+            // BUG-153: the deferred trailer mount (see `trailerMountCandidate`).
+            .onChange(of: trailerMountCandidate, initial: true) { _, _ in updateTrailerMount() }
+            .onReceive(dimModel.$isScrolling.removeDuplicates()) { scrolling in
+                if pageScrolling != scrolling { pageScrolling = scrolling }
+                updateTrailerMount()
+                // D-3 (review P2-1): the scroll has come to rest, so the band is decided now —
+                // unless a Down settle may still move the page (review P3-a), which decides itself.
+                if DetailCompactLogoBand.settlesOnRest(scrolling: scrolling,
+                                                       downSettlePending: dimModel.downSettlePending != nil) {
+                    settleCompactLogoBand()
+                }
+            }
             .onReceive(dimModel.$value) { newValue in
                 // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as
                 // long as it is visibly exposed. See `trailerDimmedOut`'s doc comment.
+                // FEAT-35 (W2-A): no numeric change. The latch works in dim space; in Cinematic the
+                // ramp is the hero's height from the true top, so the trailer tears down at ≈94% of
+                // the hero scrolled (the hero-exit rest is past the ramp, dim at the ceiling) and
+                // remounts below ≈65% — the hero return's single motion to y = 0 crosses it.
                 if newValue >= 0.80 {
                     if !trailerDimmedOut { trailerDimmedOut = true }
                 } else if newValue < 0.55 {
@@ -626,11 +1153,14 @@ struct DetailView: View {
             }
             // FEAT-32: the title fades in bottom-left with the Back hint while the page leaves; the
             // player draws its own copy for the first seconds of playback. rc2 (u/mrStevenx3): the
-            // logo, not plain text, and no scale — and `placedBottomLeading()` is the shared
-            // placement that keeps this copy and the player's in the same rect at the hand-over.
+            // logo, not plain text, and `placedBottomLeading()` is the shared placement that keeps
+            // this copy and the player's in the same rect at the hand-over. The scale removed in
+            // rc2/rc5 is back as of 2026-09-08 (his 09-07 ask, "the logo growing while the page
+            // fades to dark") — description-side only, the cover-side copy below still never scales.
             TrailerBridgeCaption(title: model.trailerPlayback?.title ?? title, logoURL: logoUrl)
                 .placedBottomLeading()
                 .opacity(TrailerBridgeChoreography.captionOpacity(bridgePhase))
+                .scaleEffect(TrailerBridgeChoreography.captionScale(bridgePhase), anchor: .bottomLeading)
                 .animation(TrailerBridgeChoreography.captionAnimation(to: bridgePhase), value: bridgePhase)
                 .accessibilityHidden(TrailerBridgeChoreography.captionOpacity(bridgePhase) == 0)
             #if DEBUG
@@ -641,8 +1171,36 @@ struct DetailView: View {
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_bridge")
+            // BUG-187 probe (launch argument `-debug.detailFocusProbe YES`): the focused row and the
+            // last remembered card key, read by the cast/More Like This Back UI leg.
+            if DetailFocusProbe.enabled {
+                Text(verbatim: "debug_detail_focus row=\(focusedRow.map { "\($0)" } ?? "-") idx=\(detailFocusProbeKey) moves=\(focusMemory.popMoves) held=\(focusMemory.heldFocusChange == nil ? 0 : 1) landed=\(focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_detail_focus")
+            }
             #endif
         }
+        // BUG-187: the fallback restore stands down on a viewer press (`ViewerInputClock`); the
+        // clock is installed once per window, so this is a no-op once Home has mounted it.
+        .background { ViewerInputClockInstaller().frame(width: 0, height: 0) }
+        // BUG-194 (review r1 P2-1): a press that stays inside the held row never changes
+        // `focusedRow`, so the live restore also ends on any recorded viewer input.
+        .onReceive(NotificationCenter.default.publisher(for: ViewerInputClock.didRecord)) { _ in
+            if popRestoreRow != nil { endPopRestore(reason: "viewer") }
+        }
+        // FEAT-35 (correction F18): land on Play/Resume, not on the Cinematic synopsis teaser above
+        // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
+        // above Play, so this names the target the engine already picked there.
+        .defaultFocus($heroFocus, .play)
+        // BUG-194 device pass (2026-10-20, Test 2): a second `.defaultFocus` at `.userInitiated`
+        // priority with a sentinel value is NOT inert. The engine honours it, finds no card and
+        // falls to the first focusable item, which on a long synopsis is the teaser above Play
+        // (FEAT-35 regressed; proven by an A/B against the pre-batch build). The restore needs no
+        // default: the forced rungs' request lands the card when the pop transition ends (~570 ms),
+        // and the studios row lands by itself (`moves=1`). Only Play's default stays here. BUG-194
+        // (Steven rc11): ~30 ms after the card lands, the engine's late restoration lands on THIS
+        // default (Play); the pop gate re-grabs the card at once (`DetailPopGate.Decision.regrab`).
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
@@ -666,8 +1224,12 @@ struct DetailView: View {
             cancelTrailerDurationTask()
             // BUG-41 item 6: no-op unless `DetailScrollProbe.enabled` (checked inside `start()`).
             hitchCounter.start()
+            // BUG-187: back from a push off a Cast / Studios / Collection / More Like This card.
+            restoreDetailFocusIfArmed()
         }
         .onDisappear {
+            // BUG-187: a push from a remembered card arms the restore for the return.
+            focusMemory.arm()
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
@@ -699,11 +1261,60 @@ struct DetailView: View {
         .onChange(of: userInteracted) { _, interacted in
             if interacted { cancelAutoPlayTrailer() }
         }
-        .fullScreenCover(isPresented: $showStreams) {
-            StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
-                             poster: posterUrl, synopsis: overview, meta: playbackMeta)
+        .onChange(of: heroFocus) { old, new in
+            // BUG-187: back in the hero, nothing below is remembered.
+            if new != nil { focusMemory.clear() }
+            // BUG-194 probe (review r3 P3-2.4): Play focused before the card's first landing sets no
+            // `focusedRow` (nil to nil), so no `stray` line and no `away=`; this line shows it.
+            logPopHero(new: new)
+            if DetailLatePlayFocus.latchesClaim(pending: latePlayClaimPending, new: new) {
+                didClaimLatePlayFocus = true
+            } else if DetailLatePlayFocus.isUserMove(old: old, new: new) {
+                userMovedInHero = true
+            }
         }
-        .fullScreenCover(item: $seriesPlay) { route in
+        // Review r1 #2: the series Play button only mounts once `seriesAction` and `meta` land, so
+        // `.defaultFocus` (which runs once) had no target and focus settled on another button.
+        // Review r2 #1: a disabled Play is not a target, so also re-check when it turns enabled.
+        .onChange(of: isSeries && model.seriesAction != nil && model.meta != nil && model.isPlayEnabled) { _, mounted in
+            if mounted { claimLatePlayFocusIfNeeded() }
+        }
+        .sheet(isPresented: $showShuffleSheet, onDismiss: {
+            if let route = pendingShuffleRoute {
+                pendingShuffleRoute = nil
+                seriesPlay = route
+            }
+        }) {
+            EpisodeShuffleSheet(model: model, title: title) { action in
+                guard let meta = model.meta else { return }
+                model.noteSeriesPlayStarted(action)
+                pendingShuffleRoute = SeriesPlayRoute(meta: meta, action: action)
+                showShuffleSheet = false
+            }
+        }
+        .fullScreenCover(isPresented: $showStreams, onDismiss: {
+            forceManualPlay = false
+            startOverMovie = false
+            openPostPlayPick()
+        }) {
+            // P3.3: the movie's saved entry, looked up the way `DetailViewModel` does for movies.
+            // Review r1: a finished entry offers nothing (the players start a completed title from
+            // 0, see `MPVPlayerView` / `PlaybackProgressRecorder.resumePositionSec`).
+            let entry = WatchProgressRepository.shared.progressForVideo(
+                videoId: streamVideoId, parentMetaId: streamVideoId, seasonNumber: nil, episodeNumber: nil)
+                .flatMap { $0.isCompleted ? nil : $0 }
+            StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
+                             poster: posterUrl, background: backgroundUrl, synopsis: overview, meta: playbackMeta,
+                             logoUrl: logoUrl, forceManual: forceManualPlay,
+                             startFromBeginning: startOverMovie,
+                             resumePositionMs: entry.map { $0.lastPositionMs }.flatMap { $0 > 0 ? $0 : nil },
+                             resumeFraction: entry.map { Double($0.progressFraction) },
+                             onOpenTitle: { postPlayPending = $0 })
+        }
+        .navigationDestination(item: $postPlayRoute) { route in
+            DetailView(preview: route.preview)
+        }
+        .fullScreenCover(item: $seriesPlay, onDismiss: openPostPlayPick) { route in
             StreamPickerView(
                 type: route.meta.type,
                 videoId: route.action.videoId,
@@ -713,9 +1324,16 @@ struct DetailView: View {
                 episode: route.action.episodeNumber?.value,
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
+                background: backgroundUrl,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
-                meta: playbackMeta
+                meta: playbackMeta,
+                logoUrl: logoUrl,
+                forceManual: route.forceManual,
+                startFromBeginning: route.startFromBeginning,
+                resumePositionMs: route.action.resumePositionMs?.int64Value,
+                resumeFraction: nil,
+                onOpenTitle: { postPlayPending = $0 }
             )
         }
         // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the
@@ -767,7 +1385,11 @@ struct DetailView: View {
                 // Codex round 3 (P2): composed exactly as the description composes it underneath
                 // (scrim, then the scroll dim at its current value; the poster layer is held for
                 // the whole bridge), or the crossfade runs between a raw and a darkened frame.
-                scrimOverlay
+                if detailLayout == .cinematic {
+                    cinematicScrimOverlay(posterBackdropVisible: false)
+                } else {
+                    scrimOverlay(posterBackdropVisible: false)
+                }
                 ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat, showsProbe: false)
                 FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                     model.trailerPlayback = nil
@@ -812,6 +1434,27 @@ struct DetailView: View {
             bridgeTask?.cancel()
             bridgeTask = nil
         }
+        // H9 (P4 §2.5): the rail returns focus to the hero button that held it when the rail armed
+        // (Play, Trailer, …); from a row below the hero it takes the default hand-off (Play, through
+        // `.defaultFocus`). Registered beside the immersive push/pop, keyed by `\.railTabIndex`, so
+        // a Detail outside the shell (a Top Shelf deep link) registers nothing. Rail mode only.
+        .railReturnRoute { detailRailRoute }
+    }
+
+    /// H9: see the `.railReturnRoute` call above. The box lives as long as the route registered on
+    /// this appearance.
+    private var detailRailRoute: RailReturnRoute {
+        let saved = DetailRailFocusBox()
+        return RailReturnRoute(
+            name: "detail",
+            capture: { saved.focus = heroFocus },
+            restore: {
+                guard let target = saved.focus else { return false }
+                heroFocus = target
+                return true
+            },
+            vetoesLeftArm: { false }
+        )
     }
 
     // MARK: - FEAT-32: trailer bridge
@@ -917,8 +1560,20 @@ struct DetailView: View {
     /// FEAT-8: also false once the trailer-duration timer has stopped the background player, so the
     /// mute button hides and the poster-backdrop layer (below) reclaims the area it faded into.
     private var isTrailerActive: Bool {
-        backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams
-            && model.trailerPlayback == nil && !backgroundTrailerStopped
+        // BUG-198 (GitHub #8): every cover is an input of `DetailTrailerGate`; the series Play
+        // cover was missing from the inline rule, so the hero trailer kept playing under the
+        // series source picker and the player. FEAT-35 (correction F8): the synopsis cover too.
+        DetailTrailerGate.isActive(.init(
+            enabled: backgroundTrailerEnabled,
+            hasTrailer: model.trailerVideoURL != nil,
+            stopped: backgroundTrailerStopped,
+            filmPickerShown: showStreams,
+            seriesPlayShown: seriesPlay != nil,
+            fullScreenTrailerShown: model.trailerPlayback != nil,
+            synopsisSheetShown: showSynopsisSheet,
+            // Review r1 P2-2: the sheet's action clears `showShuffleSheet` before `onDismiss` sets
+            // `seriesPlay`, so the pending route keeps the gate shut across the dismissal.
+            shuffleSheetShown: showShuffleSheet || pendingShuffleRoute != nil))
     }
 
     /// BUG-41: `isTrailerActive` plus the scroll-dim hysteresis latch — whether the hero-trailer
@@ -926,25 +1581,112 @@ struct DetailView: View {
     /// trailer's own `if` in `body` and the `trailerActive` flag `ScrollDimOverlay` uses to decide
     /// whether to animate or step (see `trailerDimmedOut`'s doc comment for the "why tear it down"
     /// reasoning).
-    private var trailerLayerVisible: Bool { isTrailerActive && !trailerDimmedOut }
+    private var trailerLayerVisible: Bool { trailerMounted }
 
-    /// BUG-41 leg 2/3/4 + "flatten while a trailer plays" (item 4) + "flatten while scrolling"
-    /// (beta.18, item 2): whether the top-block chips (`metaChip`, parental-guide) should render
-    /// flat translucent material instead of `.glassEffect`. Mirrors `detailChipBackground`'s own
-    /// condition (the only other reader — see `Self.chipGlassFlat` below); also folded into the
-    /// `debug_ux6` diagnostic's `glass=` token.
-    ///
-    /// Deliberately NOT unified with `actionRow`'s `GlassEffectContainer`/button-style swap
-    /// (`DetailScrollAB.buttonGlassDisabled`, leg 4 only): that enum's own doc comment records it
-    /// as an intentionally SEPARATE knob so legs 2/3 can isolate "chips only" from leg 4's "chips +
-    /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device. Folding
-    /// `dimModel.isScrolling` in here would silently make ordinary (leg 0) scrolling flatten the
-    /// action row too, widening that experiment's scope as a side effect of this fix.
+    /// BUG-153 (Steven rc3: the first Down on heavy pages stutters). Release Time Profiler on the
+    /// Living Room ATV (2026-10-19, Sheriff Country): the first Down's two ~50 ms main-thread bursts
+    /// held the rows' first build AND the background trailer's `AVPlayerLayer` creation, the trailer
+    /// URL having resolved a beat earlier. A trailer that becomes mountable while the page scrolls
+    /// now mounts once the scroll settles (`ScrollDimModel.isScrolling`, ~150 ms debounce); one that
+    /// is already mounted is never torn down for scrolling (only by the dim latch, as before).
+    private var trailerMountCandidate: Bool { isTrailerActive && !trailerDimmedOut }
+
+    private func updateTrailerMount() {
+        guard trailerMountCandidate else {
+            if trailerMounted { trailerMounted = false }
+            return
+        }
+        if !trailerMounted, !pageScrolling || DetailBug153Knobs.immediateTrailerMount { trailerMounted = true }
+    }
+
     /// BUG-96: one anchor pass. Codex r1 (P2): geometry is read HERE, at fire time — the row's
     /// content-space top and the live top inset — never captured before the wait (a parental-guide
     /// row inserting asynchronously moves every row below it). Gated on the page being visible and
     /// the trailer bridge idle; honours Reduce Motion (no animated translation). Returns false when
     /// the pass was skipped for good.
+    /// BUG-96 Up blend (extracted unchanged for FEAT-35, which reuses it for the Cinematic hero
+    /// exit): arm the blend for `row`, then a fallback pass if the engine never moved the page, one
+    /// verify pass, and the at-rest probe sample. `revealNote` tags the geometry handler's blend
+    /// pass (correction 10: `blend+hero-exit`); `fallbackNote` names the fallback pass.
+    private func startBlendAnchor(_ row: DetailRowID, fallbackNote: String, revealNote: String? = nil) {
+        dimModel.awaitingRevealRow = row
+        dimModel.awaitingRevealNote = revealNote
+        dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
+        detailAnchorTask = Task { @MainActor in
+            // Fallback only: if the scroll-geometry handler hasn't already disarmed by
+            // the time this fires, the engine never moved the page — fire the pass
+            // ourselves.
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if dimModel.awaitingRevealRow == row {
+                dimModel.awaitingRevealRow = nil
+                dimModel.awaitingRevealNote = nil
+                guard anchorPass(row, note: fallbackNote) else { return }
+            }
+            // Whether the geometry handler blended in already or the fallback just
+            // fired: one verify pass. A card whose thumbnails land after the settle
+            // makes the engine re-reveal it and undo the rest. Re-issue once, never
+            // loop.
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay(for: dimModel.anchorGlideSeconds) * 1_000_000_000))
+            _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
+            // Publish the geometry sample once, AT REST, for the probe (never per
+            // frame).
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+        }
+    }
+
+    /// FEAT-35 (P1 §F): focus just entered the Cinematic hero from a row. Same shape as the Up
+    /// blend: the geometry handler scrolls to the top the instant the engine starts revealing the
+    /// hero target; if it never moves the page, a fallback does it; then one verify pass.
+    private func armHeroReturn() {
+        dimModel.awaitingHeroReturn = true
+        dimModel.awaitingHeroReturnStartOffset = dimModel.lastContentOffset
+        detailAnchorTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if dimModel.awaitingHeroReturn {
+                dimModel.awaitingHeroReturn = false
+                guard heroTopPass("hero-return-fallback") else { return }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay(for: dimModel.anchorGlideSeconds) * 1_000_000_000))
+            _ = heroTopPass("hero-return-reissued", onlyIfDrifted: true)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+        }
+    }
+
+    /// FEAT-35: one scroll to the page top (`DetailRowAnchor.heroTopScrollTarget`). Refuses unless
+    /// focus is genuinely inside the hero and the bridge is idle: a focus loss to a push (Cast →
+    /// Person) or a cover also reads row → nil, and must never scroll the page under it. Animates
+    /// exactly like `anchorPass`, Reduce Motion included. The probe note carries no `top=` token,
+    /// so the UI anchor oracle never counts it as a residual.
+    @discardableResult
+    private func heroTopPass(_ note: String, onlyIfDrifted: Bool = false) -> Bool {
+        guard !Task.isCancelled, focusedRow == nil, heroHasFocus, bridgePhase == .idle else { return false }
+        let inset = dimModel.contentInsetTop
+        let target = DetailRowAnchor.heroTopScrollTarget
+        if onlyIfDrifted, DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset, contentInsetTop: inset) {
+            return true
+        }
+        // W3-15 (BUG-153): the glide's duration scales with its travel (0.3 s up to 380 pt, ~0.6 s
+        // for the ~766 pt hero return), so press 1 no longer starts at twice the engine's speed.
+        let glide = reduceMotion ? 0 : DetailRowAnchor.anchorDuration(
+            travel: DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset) - dimModel.lastContentOffset)
+        dimModel.anchorGlideSeconds = glide
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
+        } else {
+            withAnimation(.easeOut(duration: glide)) { detailScrollPosition.scrollTo(y: target) }
+        }
+        if DetailScrollProbe.enabled {
+            dimModel.anchorNote = "hero-return y=0 \(note)"
+        }
+        return true
+    }
+
     @discardableResult
     private func anchorPass(_ row: DetailRowID, note: String, onlyIfDrifted: Bool = false) -> Bool {
         // Codex BUG-96 r2 (P2): the sleeps swallow cancellation (`try?`), so the pass itself must
@@ -954,37 +1696,91 @@ struct DetailView: View {
         let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
         let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
         if onlyIfDrifted, abs(dimModel.lastContentOffset - expected) <= DetailRowAnchor.verifyTolerance { return true }
+        // W3-15 (BUG-153): distance-scaled glide; see `heroTopPass`.
+        let glide = reduceMotion ? 0 : DetailRowAnchor.anchorDuration(travel: expected - dimModel.lastContentOffset)
+        dimModel.anchorGlideSeconds = glide
         if reduceMotion {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
         } else {
-            withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
+            withAnimation(.easeOut(duration: glide)) { detailScrollPosition.scrollTo(y: target) }
         }
-        lastAnchoredRowTop = rowTop
+        lastAnchored = (row, rowTop)
         if DetailScrollProbe.enabled {
             dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f %@", String(describing: row), rowTop, target, note)
         }
         return true
     }
 
+    /// beta.19-rc1 verdict (D2, BUG-140): ONE glass rule for the page — scrolling never changes
+    /// glass. This says whether the top-block chips (`metaChip`, the parental-guide chips) and
+    /// Classic's synopsis panel render flat translucent material instead of `.glassEffect`, and it
+    /// is true for exactly two reasons:
+    ///   - a background trailer is live behind them (`isTrailerActive`, BUG-41 item 4: re-sampling a
+    ///     playing video frame every render is real GPU work for a barely visible effect), a steady
+    ///     state rather than a scroll transition; or
+    ///   - `DetailScrollAB` leg 2/3/4, the on-device A/B for BUG-41's attribution question.
+    /// Until this change it also followed `dimModel.isScrolling`, so the chips and the panel went
+    /// flat on every scroll and snapped back about 150 ms after it stopped (Steven's video, 3:39.9),
+    /// while the action buttons never changed. "Neither flat" was chosen over "both flat" because
+    /// flattening the buttons means swapping the button style of a FOCUSED button (an identity
+    /// change) or replacing the system glass focus look. Mirrors `detailChipBackground`'s own
+    /// condition; also folded into the `debug_ux6` diagnostic's `glass=` token.
+    ///
+    /// Covers the chips and the panel only: the action row has no glass to flatten since D9
+    /// (BUG-206) made its bordered styles the shipped ones.
     private var chipGlassFlat: Bool {
-        Self.chipGlassFlat(trailerActive: isTrailerActive, scrolling: dimModel.isScrolling, glassDisabled: DetailScrollAB.glassDisabled)
+        Self.chipGlassFlat(trailerActive: isTrailerActive, glassDisabled: DetailScrollAB.glassDisabled)
     }
 
     /// Pure truth table backing `chipGlassFlat` above, extracted so `DetailScrollProbeTests` can
-    /// exhaustively cover all 8 combinations without standing up a `DetailView`/`DetailViewModel`.
+    /// exhaustively cover all 4 combinations without standing up a `DetailView`/`DetailViewModel`.
     /// `nonisolated` for the same reason as `ScrollingLatch.isScrolling`: no instance/actor state
     /// involved, so tests can call it directly with no `@MainActor` hop.
-    nonisolated static func chipGlassFlat(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
-        trailerActive || scrolling || glassDisabled
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): the `scrolling:` input is gone — scrolling never changes
+    /// glass (see the property above).
+    nonisolated static func chipGlassFlat(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        trailerActive || glassDisabled
+    }
+
+    /// beta.18 verdict (BUG-127): the synopsis panel flattens under exactly the same rule as the
+    /// chips (BUG-41), so the truth table is shared and testable via `DetailScrim`. beta.19-rc1
+    /// verdict (D2, BUG-140): that now includes the new rule — the panel stops flattening while the
+    /// page scrolls, like the chips.
+    nonisolated static func panelUsesFlatFill(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        chipGlassFlat(trailerActive: trailerActive, glassDisabled: glassDisabled)
+    }
+
+    /// The poster-backdrop layer only earns its keep when it would show something the plain
+    /// backdrop doesn't already, and only while the hero trailer isn't occupying that same area.
+    private var showPosterBackdrop: Bool {
+        // FEAT-32: idle only, so the layer never shows through the trailer bridge's reveal.
+        posterBackdropEnabled && posterUrl != nil && posterUrl != backgroundUrl && !isTrailerActive
+            && bridgePhase == .idle
     }
 
     // MARK: - Sections
 
     private var backdropImage: some View {
         GeometryReader { geo in
-            CachedAsyncImage(string: backgroundUrl)
+            // rc14 (Steven rc13 verdict, 2026-09-30): try the larger rendition first (sharper on a
+            // 4K panel); the original URL is the fallback if that file does not exist. No fallback
+            // when the URL had no larger rendition to ask for (it would just repeat the same fetch).
+            //
+            // beta.19-rc1 verdict (I1, BUG-134): decoded at screen resolution (3840 px wide on a 4K
+            // Apple TV) instead of the old fixed 1920 px cap, which stretched a 1920 px bitmap 2× on
+            // a 4K panel (Steven's Oak Street pair). The URL chain above is unchanged. A pushed
+            // Detail stack would otherwise pin one ~33 MB bitmap per page outside the cache, so the
+            // image is released while this view is off screen and reloaded (normally a memory hit)
+            // when it returns.
+            CachedAsyncImage(
+                string: backgroundUrl.map(DetailBackdropURL.upgraded),
+                fallback: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
+                decodeSize: .fullBleed,
+                releasesWhenHidden: true
+            )
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
         }
@@ -994,21 +1790,176 @@ struct DetailView: View {
         .accessibilityHidden(true)
     }
 
+    /// The poster pinned to the right 40% of the screen, behind the description (tester ask, mirrors
+    /// mobile's Detail layout). Its own leading edge fades to transparent so it blends into the plain
+    /// backdrop underneath instead of showing a hard seam.
+    private var posterBackdropLayer: some View {
+        GeometryReader { geo in
+            // beta.19-rc1 verdict (I1, BUG-134): this layer fills 40 % of the screen, so it asks for
+            // the larger poster file (TMDB `original`, metahub `large`; the given URL is the
+            // automatic fallback) and decodes it for the size it is drawn at. A zero-sized first
+            // GeometryReader pass normalizes to the old decode, so it never decodes a tiny bucket
+            // and reloads.
+            CachedAsyncImage(string: posterUrl,
+                             decodeSize: .points(width: geo.size.width * 0.4, height: geo.size.height),
+                             upgrade: .posterLarge)
+                .frame(width: geo.size.width * 0.4, height: geo.size.height, alignment: .trailing)
+                .clipped()
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.3),
+                            .init(color: .black, location: 1)
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+        .ignoresSafeArea()
+        // Same reasoning as backdropImage — decorative right-edge poster art, not a control.
+        .accessibilityHidden(true)
+    }
+
     /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
-    private var scrimOverlay: some View {
+    /// `posterBackdropVisible` raises the trailing (right-edge) stop slightly so the poster-backdrop
+    /// layer behind it (pinned to the right 40%) reads through instead of going nearly opaque black.
+    /// rc14 (Steven rc13 verdict, 2026-09-30): a tester said a black overlay dulled the background
+    /// image. The left 0.92 stop is what keeps the text readable and stays; the right side no longer
+    /// sits under 0.85 black (now 0.30, or 0.40 over the poster layer), and the bottom fade starts
+    /// at 55% of the height instead of the middle so the lower half of the art is not darkened early.
+    ///
+    /// beta.18 verdict (BUG-127): the horizontal stops lifted off black (0.80 / 0.30 / 0.18, 0.26
+    /// over the poster layer) and the vertical fade ends at 0.70 instead of 0.85, because the
+    /// synopsis now sits on its own tinted glass panel (`synopsisPanel`) and no longer needs the
+    /// wall-to-wall scrim for legibility. All values live in `DetailScrim`.
+    private func scrimOverlay(posterBackdropVisible: Bool) -> some View {
         ZStack {
             LinearGradient(
                 colors: [
-                    .black.opacity(0.95),
-                    .black.opacity(0.4),
-                    .black.opacity(0.85)
+                    .black.opacity(DetailScrim.horizontalLeading),
+                    .black.opacity(DetailScrim.horizontalMid),
+                    .black.opacity(posterBackdropVisible ? DetailScrim.horizontalTrailingOverPoster : DetailScrim.horizontalTrailing)
                 ],
                 startPoint: .leading, endPoint: .trailing
             )
             LinearGradient(
-                colors: [.clear, .black.opacity(0.9)],
-                startPoint: .center, endPoint: .bottom
+                stops: [
+                    .init(color: .clear, location: DetailScrim.verticalClearUntil),
+                    .init(color: .black.opacity(DetailScrim.verticalBottom), location: 1.0)
+                ],
+                startPoint: .top, endPoint: .bottom
             )
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    /// FEAT-35 (D2): the layout switch point. Classic is today's `topBlock`, untouched.
+    @ViewBuilder
+    private var heroBlock: some View {
+        switch detailLayout {
+        case .classic:
+            topBlock
+        case .cinematic:
+            cinematicHero
+        }
+    }
+
+    /// FEAT-35 "Cinematic Clean": see `DetailCinematicHero`. The action row is `actionRow` itself,
+    /// so every closure, label and identifier is shared with Classic.
+    private var cinematicHero: some View {
+        let ratings = DetailRatings.ordered((model.meta?.externalRatings ?? []).map { DetailRatingInput($0) })
+        // Review r1 #1: the reserved slot comes from settings alone (no meta-dependent id check),
+        // so it never appears after first paint.
+        let ratingsGateOn = DetailRatings.reservesSlot(sectionRatings: sectionRatings,
+                                                       mdbListActive: model.mdbListRatingsActive)
+        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
+        let runtime: String? = model.meta?.runtime
+        let ageRating: String? = model.meta?.ageRating
+        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        return DetailCinematicHero(
+            title: title,
+            logoURL: logoUrl,
+            backdropURL: backgroundUrl.map(DetailBackdropURL.upgraded),
+            backdropFallbackURL: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
+            meta: DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
+                                      ageRating: ageRating, imdbRating: imdbRating),
+            ratings: ratings,
+            ratingsGateOn: ratingsGateOn,
+            ratingsSectionOn: sectionRatings,
+            overview: overview,
+            synopsisSlotVisible: !(model.meta != nil && (overview ?? "").isEmpty),
+            credits: DetailCredits.make(
+                cast: (model.meta?.cast ?? []).map { $0.name },
+                director: model.meta?.director ?? [],
+                writer: model.meta?.writer ?? [],
+                isSeries: isSeries
+            ),
+            showSynopsisSheet: $showSynopsisSheet,
+            heroFocus: $heroFocus,
+            onOpenSynopsis: {
+                userInteracted = true
+                withdrawTrailerBridgeIfLeaving()
+            }
+        ) {
+            actionRow
+        }
+        .focused($heroHasFocus)
+        // BUG-187: the Cinematic teaser is in the hero but not in `heroFocus`; forget the card too.
+        .onChange(of: heroHasFocus) { _, inHero in if inHero { focusMemory.clear() } }
+        // W2-A: the hero's real height for the dim ramp. Rounded, and written only on a change,
+        // which happens about once per visit (the BUG-41 rule: no per-frame state writes).
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
+            if height > 0, cinematicHeroHeight != height { cinematicHeroHeight = height }
+        })
+    }
+
+    /// FEAT-35: the Cinematic scrim — a lighter horizontal/vertical pair plus a radial darkening
+    /// centred bottom-leading under the text block. Values and the "never darker than Classic"
+    /// rule live in `DetailScrim`. `scrimOverlay` (Classic) is not touched.
+    private func cinematicScrimOverlay(posterBackdropVisible: Bool) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    .black.opacity(DetailScrim.cinematicHorizontalLeading),
+                    .black.opacity(DetailScrim.cinematicHorizontalMid),
+                    .black.opacity(posterBackdropVisible
+                                   ? DetailScrim.cinematicHorizontalTrailingOverPoster
+                                   : DetailScrim.cinematicHorizontalTrailing)
+                ],
+                startPoint: .leading, endPoint: .trailing
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: DetailScrim.cinematicVerticalClearUntil),
+                    .init(color: .black.opacity(DetailScrim.cinematicVerticalBottom), location: 1.0)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            GeometryReader { geo in
+                RadialGradient(
+                    colors: [.black.opacity(DetailScrim.cinematicRadialOpacity), .clear],
+                    center: .bottomLeading,
+                    startRadius: 0,
+                    endRadius: geo.size.width * DetailScrim.cinematicRadialEndRadiusFraction
+                )
+            }
+            // UX-18 (design review 2026-10-22): the meta line (year · runtime · genres · rating) and
+            // the ratings line sit ABOVE the synopsis block the Batch C band was tuned for, at
+            // y ≈ 0.47 and 0.52, where the composite fell to ~0.32 and both lines vanished over The
+            // Simpsons' yellow key art and a white trailer frame. A shelf under the text column
+            // only: black at `cinematicShelfOpacity` on the left edge fading to clear by
+            // `cinematicShelfEndX` of the width, inside y `cinematicShelfTop…Bottom` with
+            // `cinematicShelfSoftEdge` ramps. No box, no text shadow; still under the Classic
+            // ceiling above y = 0.4 and under build 284 everywhere the tests measure.
+            // Review r1 (P2-6): drawn as ONE small bitmap baked once from `cinematicShelfAlpha`
+            // (the test oracle) and stretched, not a masked gradient: a `.mask` is a CALayer mask,
+            // an offscreen pass at native resolution every frame on the GPU-bound page (BUG-206).
+            Image(uiImage: DetailScrimShelf.image)
+                .resizable()
+                .interpolation(.medium)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -1029,19 +1980,35 @@ struct DetailView: View {
     /// the section's focusability even when Play, Watch Trailer, genres, overview and infoSection
     /// are all absent (`.focusSection()` requires *something* focusable inside it).
     private var topBlock: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
-            header
-            metaLine
-            actionRow
-            if !genres.isEmpty {
-                Text(genres.joined(separator: " \u{2022} "))
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+        // beta.18 verdict (BUG-127): the synopsis moved out of the left column into its own tinted
+        // glass panel on the right (full FEAT-35 redesign comes later). Content width 1800 − panel
+        // 560 − gap 40 leaves 1200 for the left column.
+        HStack(alignment: .top, spacing: Theme.Spacing.xl) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
+                header
+                metaLine
+                actionRow
+                if !genres.isEmpty {
+                    Text(genres.joined(separator: " \u{2022} "))
+                        // beta.18 verdict (FEAT-44): 23 -> 25 pt (`caption` -> `metaStrong`) on
+                        // purpose, so the genres line matches the meta chips above it.
+                        .font(Theme.Font.metaStrong)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                infoSection
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let overview, !overview.isEmpty {
-                DetailSynopsisView(text: overview)
+                synopsisPanel(overview)
             }
         }
+        // BUG-117: this VStack used to hug its widest child (≈1100 pt — the overview `Text`'s
+        // `maxWidth: 1100` and `infoSection`'s own cap), while the season-poster shelf a few rows
+        // down spans the full ≈1800 pt content width. A season poster past ≈1100 pt (Season 6/7 on
+        // a long-running series) had no view directly above it inside this `.focusSection()`, so
+        // D-pad Up from those posters found no candidate at all. Stretching the section to the full
+        // content width gives the engine something to land on from anywhere along the shelf.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
     }
 
@@ -1052,7 +2019,17 @@ struct DetailView: View {
             // every scroll-triggered re-render were one of the choppiness suspects. The failure
             // builder keeps the title-text fallback a plain AsyncImage gave on a bad logo URL; the
             // shimmer-during-load is the one deliberate visual delta from before (see report).
-            CachedAsyncImage(string: logoUrl, contentMode: .fit, failure: {
+            //
+            // beta.19-rc1 verdict (I1, BUG-134): Classic's logo asks for the TMDB `original` file
+            // (the data keeps w500; the w500 file is the automatic fallback) and decodes it for the
+            // 600×180 box it is drawn in, instead of upscaling a 500 px logo about 2.4× on 4K.
+            CachedAsyncImage(string: logoUrl, contentMode: .fit,
+                             decodeSize: .points(width: 600, height: 180), upgrade: .logo,
+                             // BUG-152 (Steven, beta.19-rc3 verdict 2026-10-06): the title while the
+                             // logo downloads instead of a grey shimmer block.
+                             loading: {
+                Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
+            }, failure: {
                 Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
             })
             .frame(maxWidth: 600, maxHeight: 180, alignment: .leading)
@@ -1092,96 +2069,227 @@ struct DetailView: View {
             }
             if model.isLoading { ProgressView() }
         }
-        .font(Theme.Font.meta)
+        // beta.18 verdict (FEAT-44): chips read in the semibold meta token.
+        .font(Theme.Font.metaStrong)
         .foregroundStyle(Theme.Palette.textSecondary)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("detail.facts")
     }
 
-    /// BUG-41 leg 4 (`DetailScrollAB.buttonGlassDisabled`): the Play/series-primary button's style
-    /// swap, `.glassProminent` → `.borderedProminent`. `prominentAccentLabel()` inside the label
-    /// (already proven for `.borderedProminent` sites, BUG-4) covers both states either way, so the
-    /// swap is purely the button chrome.
+    /// P-2b (BUG-41 attribution knob) + item 4 (BUG-41 fix candidate #4): wraps padded chip content
+    /// in either the shipping Liquid Glass capsule or a plain translucent capsule fill — flat
+    /// whenever a trailer is actually playing behind these chips (re-sampling a live video frame
+    /// every render is real GPU work for a barely-visible effect) OR on `DetailScrollAB` leg 2/3/4
+    /// (`chipGlassFlat`). The single swap point shared by `metaChip` and the parental-guide chips
+    /// below so the two don't duplicate the conditional. `actionRow`'s buttons are `.bordered`
+    /// outright since D9 (BUG-206) and have no part in this swap.
+    ///
+    /// BUG-41 (beta.18): the hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass
+    /// as this page's RESTING-state material, so the swap back to glass when `chipGlassFlat` flips
+    /// to false (the background trailer ending or being dismissed) should read as "it was there all
+    /// along," not a visible pop/morph back in. `.transaction { $0.animation = nil }` forces a nil
+    /// transaction on this specific swap regardless of any ambient animation up the tree (e.g.
+    /// `.animation` modifiers elsewhere in `body` keyed to unrelated values) — belt-and-suspenders
+    /// alongside the fact that nothing here calls `withAnimation` in the first place.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): scrolling no longer flips `chipGlassFlat` (it used to, and
+    /// the glass popped flat and back on every scroll — Steven's video, 3:39.9), so the swap only
+    /// happens when a background trailer starts or stops playing behind the chips. The remaining
+    /// edge, by design: with a trailer playing the chips are flat while the action buttons stay
+    /// glass — a steady state, not a transition during scrolling.
     @ViewBuilder
-    private func prominentActionButtonStyle<Content: View>(_ content: Content) -> some View {
-        if DetailScrollAB.buttonGlassDisabled {
-            content.buttonStyle(.borderedProminent)
-        } else {
-            content.buttonStyle(.glassProminent)
-        }
-    }
-
-    /// BUG-41 leg 4 companion to `prominentActionButtonStyle` — `.glass` → `.bordered` for the
-    /// compact action-row buttons (Watch Trailer, Mark Watched, Add to Library).
-    @ViewBuilder
-    private func compactActionButtonStyle<Content: View>(_ content: Content) -> some View {
-        if DetailScrollAB.buttonGlassDisabled {
-            content.buttonStyle(.bordered)
-        } else {
-            content.buttonStyle(.glass)
-        }
-    }
-
-    /// Play + library/watched controls as one Liquid Glass cluster. The container lets the
-    /// individual glass shapes blend/morph as focus moves between them (mobile-reference look:
-    /// prominent Play pill next to compact glass buttons). BUG-41 leg 4: the container itself is
-    /// glass-only machinery (it coordinates `.glassEffect`/`.glass` morphing) — with every button
-    /// style flattened above, it has nothing left to do, so it's swapped for a plain `HStack`.
-    private var actionRow: some View {
+    private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
         Group {
-            if DetailScrollAB.buttonGlassDisabled {
-                actionRowButtons
+            if chipGlassFlat {
+                content().background(Color.white.opacity(0.12), in: .capsule)
             } else {
-                GlassEffectContainer(spacing: Theme.Spacing.md) {
-                    actionRowButtons
-                }
+                content().glassEffect(.regular, in: .capsule)
             }
         }
-        // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
-        // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
-        // fragment vertical navigation between this row and the content around it.
+        .transaction { $0.animation = nil }
     }
 
-    /// The actual button `HStack` shared by both `actionRow` branches (plain and
-    /// `GlassEffectContainer`-wrapped) — pulled out so BUG-41 leg 4 doesn't have to duplicate five
-    /// buttons' worth of logic across an `if`/`else`.
-    private var actionRowButtons: some View {
+    /// beta.18 verdict (BUG-127): fixed width of the synopsis panel (matches `DetailScrim.panelWidth`).
+    /// If the four-button action row ever cannot fit the remaining 1200 pt with the longest
+    /// localized labels, drop this to 520.
+    private static let synopsisPanelWidth: CGFloat = DetailScrim.panelWidth
+
+    /// beta.18 verdict (BUG-127): the synopsis on its own tinted Liquid Glass panel (flat black fill
+    /// under `chipGlassFlat`, same BUG-41 rule as the chips). The panel sits over the poster
+    /// backdrop layer's right 40 %; the frost showing the poster through is intended. Fallback if
+    /// that reads too busy (not built): tint 0.20 while `showPosterBackdrop`.
+    /// review r1 (P3-6): capped at `DetailScrim.panelMaxLines` (18, ~850 chars at 560 pt / 25 pt
+    /// caption). Trade-off: the panel is not focusable, so anything past the cap is unreadable;
+    /// 18 lines keeps the panel from growing into the action row while covering nearly all
+    /// overviews the old 1100 pt text showed in full.
+    private func synopsisPanel(_ overview: String) -> some View {
+        detailPanelBackground(flat: chipGlassFlat) {
+            Text(overview)
+                .accessibilityIdentifier("detail_synopsis_text")
+                .font(Theme.Font.synopsis)
+                .foregroundStyle(Theme.Palette.textPrimary)
+                .lineLimit(DetailScrim.panelMaxLines) // review r1 (P3-6): was 12
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(28)
+        }
+        .frame(width: Self.synopsisPanelWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        // The panel is a real AX container (the identifier on a bare background-wrapped Text was not
+        // reachable from XCUITest in the first test17 run); the text carries its own id too.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail_synopsis_panel")
+    }
+
+    /// Mirrors `detailChipBackground` for a rounded-rect panel.
+    @ViewBuilder
+    private func detailPanelBackground(flat: Bool, @ViewBuilder _ content: () -> some View) -> some View {
+        Group {
+            if flat {
+                content().background(Color.black.opacity(DetailScrim.panelFlatFill),
+                                     in: .rect(cornerRadius: DetailScrim.panelCornerRadius))
+            } else {
+                content().glassEffect(.regular.tint(.black.opacity(DetailScrim.panelGlassTint)),
+                                      in: .rect(cornerRadius: DetailScrim.panelCornerRadius))
+            }
+        }
+        .transaction { $0.animation = nil }
+    }
+
+    /// A small Liquid Glass capsule around one metadata item (year / runtime / rating).
+    private func metaChip(stroked: Bool = false, @ViewBuilder content: () -> some View) -> some View {
+        detailChipBackground {
+            content()
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs - 2)
+        }
+        .overlay {
+            if stroked {
+                Capsule().stroke(Theme.Palette.textSecondary, lineWidth: 1)
+            }
+        }
+    }
+
+    /// The Play / series-primary button's style: `.borderedProminent`. It was `.glassProminent`
+    /// from rc8 (the teaser-glass work) until **D9 (BUG-206, 2026-10-22)**: on the Apple TV the
+    /// Liquid Glass action row (`.glass` buttons inside a `GlassEffectContainer`) was the Cinematic
+    /// page's largest single cost on Steven's walk (knob A/B, `docs/research/bug206-cause-hunt-
+    /// 2026-10-22.md` §9, leg 4 = this swap + chips flat + dim off: 98 → 51 hitches; this swap
+    /// alone, `docs/research/d9-walks-2026-10-22/`: 99 → 70 / 69 on the same walk), and Christian
+    /// chose to drop the glass on this row and keep the tile-lift shadow. The bordered
+    /// styles were BUG-41's leg 4 and are proven on hardware. `prominentAccentLabel()` inside the
+    /// label (BUG-4, BUG-14) covers both states, so the swap is purely the button chrome.
+    /// FEAT-82: `actionButtonBorderShape` keeps Start Over (a compact button) and the icon
+    /// buttons following Corners.
+    private func prominentActionButtonStyle<Content: View>(_ content: Content) -> some View {
+        content.buttonStyle(.borderedProminent)
+            .buttonBorderShape(actionButtonBorderShape)
+    }
+
+    /// FEAT-82: square with Corners = Square, the capsule otherwise.
+    private var actionButtonBorderShape: ButtonBorderShape {
+        DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius) ? .roundedRectangle(radius: 0) : .capsule
+    }
+
+    /// `prominentActionButtonStyle`'s companion for the compact action-row buttons (Watch Trailer,
+    /// Mark Watched, Add to Library, Start Over, Shuffle): `.bordered`, `.glass` until D9.
+    private func compactActionButtonStyle<Content: View>(_ content: Content) -> some View {
+        content.buttonStyle(.bordered)
+            .buttonBorderShape(actionButtonBorderShape)
+    }
+
+    /// Play + library/watched controls in a plain `HStack`. Until D9 (BUG-206) this was a
+    /// `GlassEffectContainer` so the glass shapes could blend as focus moved between them; the
+    /// container is glass-only machinery and, with the bordered styles above, it had nothing left
+    /// to coordinate and cost the page its offscreen passes.
+    /// BUG-44: not its own `.focusSection()` — folded into `topBlock`'s single top-of-page section
+    /// (header/metaLine/actionRow/genres/overview/info) so the section boundary can't fragment
+    /// vertical navigation between this row and the content around it.
+    private var actionRow: some View {
         HStack(spacing: Theme.Spacing.md) {
             if !isSeries {
                 prominentActionButtonStyle(
                     Button {
                         showStreams = true
                     } label: {
-                        // BUG-14: `.glassProminent`'s unfocused fill is the raw accent tint (not
+                        // BUG-14: a prominent style's unfocused fill is the raw accent tint (not
                         // lifted/inverted the way focus is), so on the White theme that fill is
                         // near-white and an unmanaged label defaults to unreadable white-on-white.
-                        // `prominentAccentLabel()` (already proven for `.borderedProminent` sites,
-                        // BUG-4) covers both states: accent-contrasting text unfocused, dark text
-                        // on the near-white focus lift.
+                        // `prominentAccentLabel()` (proven for `.borderedProminent` sites, BUG-4;
+                        // the row's style since D9) covers both states: accent-contrasting text
+                        // unfocused, dark text on the near-white focus lift.
+                        // beta.19-rc1 verdict (D1, BUG-137): both labels are localized
+                        // (`actionLabel` takes a `LocalizedStringResource`); "Play" used to be a
+                        // bare String literal, which `Label` never looks up.
                         actionButtonPadding(
-                            actionLabel("Play", systemImage: "play.fill")
-                                .font(Theme.Font.meta)
-                                .prominentAccentLabel(),
-                            horizontal: Theme.Spacing.lg
+                            actionLabel(
+                                model.isPlayEnabled ? "Play" : "Playback unavailable",
+                                systemImage: DetailActionSymbol.play,
+                                primary: true
+                            )
+                            .font(Theme.Font.meta)
+                            .prominentAccentLabel(),
+                            horizontal: Theme.Spacing.lg,
+                            primary: true
                         )
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
+                                  action: { playButtonSize = $0 })
+                .accessibilityIdentifier("detail_action_play")
+                // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
+                // Streams screen when no addon/plugin/embedded/download source can serve this title.
+                .disabled(!model.isPlayEnabled)
+                .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
+                                                   isPlayEnabled: model.isPlayEnabled) {
+                    forceManualPlay = true
+                    showStreams = true
+                })
+                // FEAT-35: the `.defaultFocus` target (no visual effect; Classic lands here anyway).
+                .focused($heroFocus, equals: .play)
             } else if let action = model.seriesAction, let meta = model.meta {
                 prominentActionButtonStyle(
                     Button {
+                        model.noteSeriesPlayStarted(action)
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
                         // BUG-14: see the non-series Play button above.
+                        // beta.19-rc1 verdict (D1, BUG-137): `action.label` is already localized by
+                        // Kotlin (`SeriesContinuity.kt`), so it goes through `actionLabel(verbatim:)`;
+                        // the unavailable caption is a localized resource.
                         actionButtonPadding(
-                            actionLabel(action.label, systemImage: "play.fill")
-                                .font(Theme.Font.meta)
-                                .prominentAccentLabel(),
-                            horizontal: Theme.Spacing.lg
+                            Group {
+                                if model.isPlayEnabled {
+                                    actionLabel(verbatim: action.label, systemImage: DetailActionSymbol.play, primary: true)
+                                } else {
+                                    actionLabel("Playback unavailable", systemImage: DetailActionSymbol.play, primary: true)
+                                }
+                            }
+                            .font(Theme.Font.meta)
+                            .prominentAccentLabel(),
+                            horizontal: Theme.Spacing.lg,
+                            primary: true
                         )
                     }
                 )
                 .tint(Theme.Palette.accent)
+                .onGeometryChange(for: CGSize.self, of: { DetailActionSquare.whole($0.size) },
+                                  action: { playButtonSize = $0 })
+                .accessibilityIdentifier("detail_action_play")
+                // C (upstream `972109f9`): same gate as the movie Play button above.
+                .disabled(!model.isPlayEnabled)
+                .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
+                                                   isPlayEnabled: model.isPlayEnabled) {
+                    model.noteSeriesPlayStarted(action)
+                    seriesPlay = SeriesPlayRoute(meta: meta, action: action, forceManual: true)
+                })
+                // FEAT-35: same `.defaultFocus` target as the movie Play button.
+                .focused($heroFocus, equals: .play)
+            }
+
+            // FEAT-35: Cinematic only, and only with a saved position to discard. Right after
+            // Play/Resume, before Watch Trailer.
+            if showsStartOver {
+                startOverButton
             }
 
             if model.trailerVideoURL != nil {
@@ -1206,12 +2314,14 @@ struct DetailView: View {
                         }
                     } label: {
                         actionButtonPadding(
-                            actionLabel("Watch Trailer", systemImage: "play.rectangle.fill")
+                            actionLabel("Watch Trailer", systemImage: DetailActionSymbol.trailer)
                                 .font(Theme.Font.meta),
                             horizontal: Theme.Spacing.md
                         )
                     }
                 )
+                .focused($heroFocus, equals: .trailer)
+                .accessibilityIdentifier("detail_action_trailer")
             }
 
             compactActionButtonStyle(
@@ -1221,14 +2331,19 @@ struct DetailView: View {
                     actionButtonPadding(
                         actionLabel(
                             model.isWatched ? "Watched" : "Mark Watched",
-                            systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                            systemImage: model.isWatched ? DetailActionSymbol.watchedOn : DetailActionSymbol.watchedOff
                         )
-                        .font(Theme.Font.meta),
+                        .font(Theme.Font.meta)
+                        // W3-17 (BUG-205): the active colour lives on the glyph, not on a button
+                        // tint, so focus leaving the button restores at the same speed as its neighbours.
+                        .detailActiveGlyph(active: model.isWatched),
                         horizontal: Theme.Spacing.md
                     )
                 }
             )
-            .tint(model.isWatched ? Theme.Palette.accent : nil)
+            // Review r1 #2: identity only (a move between hero buttons is user input).
+            .focused($heroFocus, equals: .watched)
+            .accessibilityIdentifier("detail_action_watched")
 
             compactActionButtonStyle(
                 Button {
@@ -1237,40 +2352,512 @@ struct DetailView: View {
                     actionButtonPadding(
                         actionLabel(
                             model.isSaved ? "In Library" : "Add to Library",
-                            systemImage: model.isSaved ? "checkmark" : "plus"
+                            systemImage: model.isSaved ? DetailActionSymbol.libraryIn : DetailActionSymbol.libraryAdd
                         )
-                        .font(Theme.Font.meta),
+                        .font(Theme.Font.meta)
+                        .detailActiveGlyph(active: model.isSaved),
                         horizontal: Theme.Spacing.md
                     )
                 }
             )
-            .tint(model.isSaved ? Theme.Palette.accent : nil)
+            .focused($heroFocus, equals: .library)
+            .accessibilityIdentifier("detail_action_library")
+
+            // Episode shuffle: series only, and only while the global switch is on. Last in the
+            // row so the existing buttons keep their positions. On for this show = the accent on
+            // the glyph plus the filled shuffle symbol (W3-17), the same active treatment as
+            // Watched / In Library.
+            if model.shuffleOffered {
+                compactActionButtonStyle(
+                    Button {
+                        // Opening the sheet counts as interacting: no auto-play trailer over it,
+                        // and a trailer bridge still leaving is withdrawn rather than stacked.
+                        userInteracted = true
+                        withdrawTrailerBridgeIfLeaving()
+                        showShuffleSheet = true
+                    } label: {
+                        actionButtonPadding(
+                            actionLabel(
+                                model.shuffleSettings.enabled ? "Shuffle On" : "Shuffle",
+                                systemImage: DetailActiveGlyph.glyph(active: model.shuffleSettings.enabled,
+                                                                     onGlyph: DetailActiveGlyph.shuffleOnGlyph,
+                                                                     offGlyph: DetailActiveGlyph.shuffleOffGlyph)
+                            )
+                            .font(Theme.Font.meta)
+                            .detailActiveGlyph(active: model.shuffleSettings.enabled),
+                            horizontal: Theme.Spacing.md
+                        )
+                    }
+                )
+                .focused($heroFocus, equals: .shuffle)
+                .accessibilityIdentifier("detail_action_shuffle")
+            }
         }
+    }
+
+    /// FEAT-35 (D9): in Cinematic the secondary buttons are always round icon-only buttons and
+    /// Play/Resume always keeps its label, so the row fits the 900 pt text column beside the
+    /// credits. Classic keeps FEAT-9's setting for every button, exactly as before.
+    private func usesIconOnlyLabel(primary: Bool) -> Bool {
+        detailLayout == .cinematic ? !primary : actionIconsOnly
+    }
+
+    /// Review r1 #2: once, when the series Play button first mounts (enabled), move focus onto it —
+    /// Cinematic only, only while focus is still in the hero where the engine first put it and the
+    /// user has not pressed anything. Re-checked after one runloop turn so the new button is
+    /// focusable. Review r2 #1: the claim latches only when `onChange(of: heroFocus)` sees focus
+    /// land on Play (or Play is read back after the retry delay); if it did not land, one retry
+    /// while the rules still hold, then it gives up. Every attempt re-checks the user-input gates.
+    private func claimLatePlayFocusIfNeeded() {
+        func shouldClaim() -> Bool {
+            DetailLatePlayFocus.shouldClaim(isCinematic: detailLayout == .cinematic,
+                                            alreadyClaimed: didClaimLatePlayFocus,
+                                            userInteracted: userInteracted,
+                                            userMovedInHero: userMovedInHero,
+                                            heroHasFocus: heroHasFocus,
+                                            playEnabled: model.isPlayEnabled,
+                                            currentFocus: heroFocus)
+        }
+        guard !latePlayClaimPending,
+              Date().timeIntervalSince(detailAppearedAt) < DetailLatePlayFocus.claimWindow,
+              shouldClaim() else { return }
+        latePlayClaimPending = true
+        Task { @MainActor in
+            defer { latePlayClaimPending = false }
+            await Task.yield()
+            for _ in 0..<DetailLatePlayFocus.maxClaimAttempts {
+                guard shouldClaim() else { return }
+                heroFocus = .play
+                try? await Task.sleep(for: DetailLatePlayFocus.retryDelay)
+                if didClaimLatePlayFocus { return }
+                if heroFocus == .play, heroHasFocus {
+                    didClaimLatePlayFocus = true
+                    return
+                }
+            }
+        }
+    }
+
+    /// `.onChange(of: focusedRow)`'s body (everything the BUG-194 gate may hold and replay).
+    private func handleFocusRowChange(old: DetailRowID?, new row: DetailRowID?) {
+        // BUG-187: focus settled on a row with no remembered card; forget the last one.
+        if let row, !DetailFocusRestore.tracks(row) { focusMemory.clear() }
+        // Batch G device pass: leaving the hero for a row is interacting (see
+        // `fireAutoPlayTrailer`); the auto-play trailer must not start under the rows.
+        if row != nil, !userInteracted { userInteracted = true }
+        dimModel.motionSamples.removeAll(keepingCapacity: true)
+        // D-3 (review P3-a): a pending Down settle belongs to the focus visit that armed it.
+        dimModel.downSettlePending = nil
+        // FEAT-35: a pending hero return belongs to the focus visit that armed it.
+        dimModel.awaitingHeroReturn = false
+        // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
+        // cleared on EVERY focus change, whichever direction it turns out to be — a stale
+        // `lastAnchored` from the row that just lost focus must never let the relayout pass
+        // below anchor the newly-focused row on its behalf.
+        lastAnchored = nil
+        guard let row else {
+            detailAnchorTask?.cancel()
+            detailAnchorTask = nil
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            // FEAT-35 (P1 §F): any row → Cinematic hero scrolls back to y = 0 (dim → 0).
+            // A focus loss to a push or a cover also lands here; `heroTopPass` refuses it
+            // unless focus is genuinely inside the hero (`heroHasFocus`).
+            if detailLayout == .cinematic, DetailRowAnchor.heroReturn(old: old, new: nil) {
+                armHeroReturn()
+                return
+            }
+            if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
+            return
+        }
+        detailAnchorTask?.cancel()
+        // Codex P2 review finding (BUG-99 follow-up, round 2): Comments is now a TRACKED
+        // row (`commentsSection` carries `.detailRowAnchored(.comments, …)` above) but must
+        // still never anchor or straddle-check — bail out here, before `DetailRowAnchor
+        // .direction` runs at all, exactly like the `guard let row else` branch above does
+        // for the top block.
+        guard row != .comments else {
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            if DetailScrollProbe.enabled { dimModel.anchorNote = "comments free" }
+            return
+        }
+        // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
+        // row at `screenRest` in ONE blended motion, replacing the BUG-99 Down settle for
+        // this transition only. Only when the page is at its top: focus restored to a deep
+        // row after a push or cover also reads nil → row and must take the ordinary path.
+        if detailLayout == .cinematic,
+           DetailRowAnchor.heroExit(old: old, new: row,
+                                    pageAtTop: DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset,
+                                                                       contentInsetTop: dimModel.contentInsetTop)) {
+            startBlendAnchor(row, fallbackNote: "blend-fallback+hero-exit", revealNote: "hero-exit")
+            return
+        }
+        // `focusedRow` now reports `.comments` (never nil) while focus is inside it, so
+        // `old == nil` unambiguously means "first entry from the top block" — see
+        // `DetailRowAnchor.direction`'s doc comment for why the old
+        // `contentOffset`/`lastKnownTop` heuristic this replaced was wrong.
+        let direction = DetailRowAnchor.direction(
+            old: old,
+            oldTop: old.flatMap { detailRowOffsets[$0] },
+            newTop: detailRowOffsets[row] ?? 0
+        )
+        switch direction {
+        case .up:
+            startBlendAnchor(row, fallbackNote: "blend-fallback")
+        case .down:
+            // BUG-99: no blend arm, no fallback pass, no verify pass — leave the engine's
+            // own reveal running unmodified. One task waits for it to settle, then
+            // straddle-checks the result and anchors only if the header needs rescuing.
+            dimModel.awaitingRevealRow = nil
+            dimModel.awaitingRevealNote = nil
+            let settleToken = UUID()
+            dimModel.downSettlePending = settleToken
+            detailAnchorTask = Task { @MainActor in
+                // D-3 (review P3-a): however this task ends, it releases only its own mark.
+                defer { if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil } }
+                try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
+                guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
+                      let rowTop = detailRowOffsets[row] else {
+                    // D-3 (review P3-a): not superseded (no newer focus change cancelled it) and the
+                    // page is still, so the latch edge this mark held back is decided here instead.
+                    if !Task.isCancelled, bridgePhase == .idle, !dimModel.isScrolling { settleCompactLogoBand() }
+                    return
+                }
+                // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
+                // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
+                // i.e. `contentOffset == rowTop − rest` at rest, which is also the
+                // `(top − off) − 108` residual the UI test reads. No inset term here — with
+                // it the check would overshoot by the inset (157 pt on the fixture) and a
+                // header sitting under the scrim would read as free.
+                let screenTop = rowTop - dimModel.lastContentOffset
+                // D-3 (review P3-a): resolved — release the mark before deciding so the anchor
+                // glide's own latch edge (below) is free to settle the compact logo's band.
+                if dimModel.downSettlePending == settleToken { dimModel.downSettlePending = nil }
+                let decision = DetailRowAnchor.decision(direction: .down, screenTop: screenTop)
+                switch decision {
+                case .anchor:
+                    _ = anchorPass(row, note: "down-straddle")
+                case .free:
+                    // The engine's reveal is this visit's rest: the band is decided here.
+                    settleCompactLogoBand()
+                    // A free row is not this pass's rest — a later layout change under it
+                    // must not pull it up to the anchor either. `lastAnchored` is already
+                    // nil (cleared at the top of this handler and never set by this branch,
+                    // since `anchorPass` was not called), so the relayout pass below's
+                    // `lastAnchored?.row == focusedRow` guard already excludes this row (see
+                    // `.onChange(of: detailRowOffsets)` below).
+                    if DetailScrollProbe.enabled {
+                        // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
+                        // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
+                        dimModel.anchorNote = String(format: "%@ top=%.0f screen=%.0f free", String(describing: row), rowTop, screenTop)
+                    }
+                }
+                // Publish the geometry sample once, AT REST, for the probe (never per
+                // frame) — same as the Up path, so the UI test still gets a sample per
+                // step regardless of direction.
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+                // D-3 (review P3-a): an anchor that did not move the page (already at its rest)
+                // has no latch edge to settle on; a moving one settles there (idempotent).
+                if !Task.isCancelled, decision == .anchor, !dimModel.isScrolling { settleCompactLogoBand() }
+            }
+        }
+    }
+
+    /// BUG-187: a tracked row's card took (or left) focus. Writes the box, never view state —
+    /// except the probe's key, and only under `DetailFocusProbe`.
+    private func noteDetailFocus(_ row: DetailRowID, _ key: String?) {
+        focusMemory.note(row: row, key: key)
+        #if DEBUG
+        if DetailFocusProbe.enabled, let key, detailFocusProbeKey != key { detailFocusProbeKey = key }
+        #endif
+    }
+
+    /// BUG-187 fallback: back from a push off a remembered card, put focus back on it if the
+    /// engine's own restoration does not. FEAT-79's rungs (`DetailFocusRestore.rungs`); every rung
+    /// stands down after a viewer press or swipe (`ViewerInputClock`) or a newer appearance, and
+    /// the row request is retired afterwards so a row remounting later never re-applies it.
+    private func restoreDetailFocusIfArmed() {
+        let memory = focusMemory
+        guard let target = memory.takeArmedTarget() else { return }
+        let generation = memory.beginRestore()
+        let started = ProcessInfo.processInfo.systemUptime
+        memory.goLive((target.row, target.key), startedAt: started)
+        popRestoreRow = target.row
+        popRestoreKey = target.key
+        // Device-pass probe (Test 2 reads the console, not the label), every build: the restore went live.
+        if DetailFocusProbe.enabled { NSLog("[DetailPop] live row=%@ key=%@", "\(target.row)", target.key) }
+        for rung in DetailFocusRestore.rungs {
+            DispatchQueue.main.asyncAfter(deadline: .now() + rung.delay) {
+                guard memory.isCurrent(generation),
+                      !ViewerInputClock.shared.hasInput(since: started) else { return }
+                applyDetailFocusRung(row: target.row, key: target.key, force: rung.force, via: "ladder")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + DetailFocusRestore.retireDelay) {
+            guard memory.isCurrent(generation) else { return }
+            detailFocusRestore = .none
+            endPopRestore(reason: "retire")
+        }
+    }
+
+    /// BUG-194 (Steven rc11; his config and the Wave 1 config both logged `moves=3`): the engine's
+    /// late pop restoration took focus off the card with no viewer input since the pop
+    /// (`DetailPopGate.Decision.regrab`). Take the card back on the next runloop turn, once the rows'
+    /// own focus state has caught up with the move, instead of at the 0.8 s free rung: the stray
+    /// now lasts a frame or two, not ~230 ms on Play. The late rungs stay as the fallback for a
+    /// dropped write; a viewer input or a newer restore in between stands this down.
+    /// It runs one run-loop turn after the stray, not after Home's 0.15 s `regrabDefer`: the input clock
+    /// stamps Siri Remote presses and swipes at begin, ahead of the focus move they cause. What it
+    /// cannot see (VoiceOver, a thumbstick) is undone, and strays before the first landing spend the
+    /// budget; see the residuals at `DetailPopGate.maxRegrabs`.
+    private func regrabPopTarget(row: DetailRowID, key: String) {
+        let memory = focusMemory
+        let generation = memory.currentGeneration
+        let n = memory.popRegrabs
+        DispatchQueue.main.async {
+            guard DetailPopGate.regrabStillWanted(
+                current: memory.isCurrent(generation), restoreLive: memory.restoreLive,
+                inputSincePop: ViewerInputClock.shared.hasInput(since: memory.popStartedAt)) else { return }
+            applyDetailFocusRung(row: row, key: key, force: true, via: "regrab-\(n)")
+        }
+    }
+
+    /// BUG-194: the live pop restore is over; the page anchors normally again. A focus change the
+    /// gate held is replayed now, but only when focus is still where that change left it (a later
+    /// change has already run the handler for itself).
+    /// `reason`: `retire` (the request's 1.3 s retire) or `viewer` (a recorded viewer input), for the probe.
+    private func endPopRestore(reason: String) {
+        guard popRestoreRow != nil || focusMemory.restoreLive else { return }
+        // Every build (BUG-194 rc11): `regrabs=` stray landings re-grabbed, `away=` ms focus spent off
+        // the card after its first landing (the "second move"; ~230 ms before the re-grab).
+        if DetailFocusProbe.enabled {
+            // `input=` (review r3 P3-2.1): which input ended it. A resting thumb that rolls 40 pt on the
+            // clickpad records `.swipe`, releases the restore and leaves the engine's Play stray in
+            // place (the BUG-187 symptom): `via=viewer input=swipe` with no deliberate press. `-` for a
+            // retire, where the clock's last kind is older than the pop.
+            NSLog("[DetailPop] end row=%@ key=%@ moves=%d held=%d landed=%d regrabs=%d away=%d via=%@ input=%@ focused=%@ idx=%@",
+                  popRestoreRow.map { "\($0)" } ?? "-", popRestoreKey ?? "-", focusMemory.popMoves,
+                  focusMemory.heldFocusChange == nil ? 0 : 1,
+                  focusMemory.popLandedAt.map { Int(($0 - focusMemory.popStartedAt) * 1000) } ?? -1,
+                  focusMemory.popRegrabs,
+                  Int(focusMemory.awayTime(at: ProcessInfo.processInfo.systemUptime) * 1000), reason,
+                  reason == "viewer" ? ViewerInputClock.shared.lastKindLabel : "-",
+                  focusedRow.map { "\($0)" } ?? "-", popProbeFocusedKey)
+        }
+        let held = focusMemory.endRestore()
+        popRestoreRow = nil
+        popRestoreKey = nil
+        if let held, focusedRow == held.new { handleFocusRowChange(old: held.old, new: held.new) }
+    }
+
+    /// BUG-187: one rung. Cast and Studios focus states live here; Collection and More Like This
+    /// own theirs, so they get the request and apply the same rule (`DetailFocusRestore.shouldApply`).
+    /// `via`: `ladder` (the timed rungs) or `regrab-<n>` (BUG-194 rc11, the gate's re-grab), for the probe.
+    private func applyDetailFocusRung(row: DetailRowID, key: String, force: Bool, via: String) {
+        switch row {
+        case .cast:
+            let current = focusedCastIndex.map(String.init)
+            guard let index = Int(key),
+                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
+                return
+            }
+            logPopRung("applied", row: row, key: key, force: force, via: via)
+            focusedCastIndex = index
+        case .logos:
+            let current = focusedCompanyIndex.map(String.init)
+            guard let index = Int(key),
+                  DetailFocusRestore.shouldApply(force: force, current: current, target: key) else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: current)
+                return
+            }
+            logPopRung("applied", row: row, key: key, force: force, via: via)
+            focusedCompanyIndex = index
+        case .collection, .moreLikeThis:
+            // The row applies it (or not) with the same rule; logged only when focus is not already
+            // on that card, where the row would apply nothing.
+            if !(focusedRow == row && focusMemory.row == row && focusMemory.key == key) {
+                logPopRung("sent", row: row, key: key, force: force, via: via)
+            } else {
+                logPopRungSkipped(row: row, key: key, force: force, via: via, current: key)
+            }
+            detailFocusRestore = DetailFocusRestoreRequest(row: row, key: key, force: force,
+                                                           generation: detailFocusRestore.generation + 1)
+        default:
+            break
+        }
+    }
+
+    // MARK: BUG-194 `[DetailPop]` probe lines (`-debug.detailFocusProbe YES`, every build)
+
+    /// Milliseconds since the pop: every line's `t=`.
+    private func popProbeMs(_ now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Int {
+        Int((now - focusMemory.popStartedAt) * 1000)
+    }
+
+    /// The focused card's key in the focused row, read from the rows' own focus state (the DEBUG
+    /// label's `detailFocusProbeKey` is never written in Release).
+    private var popProbeFocusedKey: String {
+        switch focusedRow {
+        case .cast: focusedCastIndex.map(String.init) ?? "-"
+        case .logos: focusedCompanyIndex.map(String.init) ?? "-"
+        case .collection, .moreLikeThis: (focusMemory.row == focusedRow ? focusMemory.key : nil) ?? "-"
+        default: "-"
+        }
+    }
+
+    private func logPopRung(_ verb: String, row: DetailRowID, key: String, force: Bool, via: String) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] rung %@ row=%@ key=%@ force=%d t=%d via=%@", verb, "\(row)", key, force ? 1 : 0,
+              popProbeMs(), via)
+    }
+
+    /// A rung that applies nothing, logged for the gate's re-grab only (`via=regrab-<n>`; the timed
+    /// ladder's refusals are the normal case and stay silent). A re-grab that `shouldApply` refuses
+    /// still spends one of the three, so without this line it is a `stray … regrab=1` followed by
+    /// nothing (review r3 P3-2.3). `current=` is the row's focused card key (`-` when none): the
+    /// rows' focus state not yet nil, or a cast index gone after the reload.
+    private func logPopRungSkipped(row: DetailRowID, key: String, force: Bool, via: String, current: String?) {
+        guard DetailFocusProbe.enabled, via.hasPrefix("regrab") else { return }
+        NSLog("[DetailPop] rung skipped row=%@ key=%@ force=%d t=%d via=%@ current=%@", "\(row)", key,
+              force ? 1 : 0, popProbeMs(), via, current ?? "-")
+    }
+
+    /// The hero's focus changed while a restore is live (review r3 P3-2.4). `new=` the hero button
+    /// (`-` when focus left the hero). Probe-only.
+    private func logPopHero(new: DetailHeroFocus?) {
+        guard DetailFocusProbe.enabled, focusMemory.restoreLive else { return }
+        NSLog("[DetailPop] hero new=%@ t=%d", new.map { "\($0)" } ?? "-", popProbeMs())
+    }
+
+    /// A landing on the target row: `n=` counts landings, `away=` is the time off the card so far,
+    /// `idx=` the card the row's own focus state reports (`-` when focus sits on a row stand-in such
+    /// as BUG-188's `UIKitFocusableFillerItem`, where the row binding is set and the card state is
+    /// nil; the landing still counts, so no re-grab runs, and `idx=-` is the tell).
+    private func logPopLanding(row: DetailRowID, key: String, now: TimeInterval) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] land row=%@ key=%@ t=%d n=%d away=%d idx=%@", "\(row)", key, popProbeMs(now),
+              focusMemory.popLandings, Int(focusMemory.awayTime(at: now) * 1000), popProbeFocusedKey)
+    }
+
+    /// Focus went off the target: where (`to=` the row, `hero`, or `-` outside the page's rows; `item=`
+    /// the UIKit item and its window origin), whether the card had landed, and whether it is re-grabbed.
+    private func logPopStray(to row: DetailRowID?, now: TimeInterval, regrab: Bool) {
+        guard DetailFocusProbe.enabled else { return }
+        NSLog("[DetailPop] stray to=%@ item=%@ t=%d landed=%d regrab=%d n=%d",
+              row.map { "\($0)" } ?? (heroHasFocus ? "hero" : "-"), DetailFocusProbe.focusedItemSummary(),
+              popProbeMs(now), focusMemory.popLandedAt == nil ? 0 : 1, regrab ? 1 : 0, focusMemory.popRegrabs)
+    }
+
+    /// FEAT-35: Start Over sits in the row only in Cinematic, and only when there is a saved
+    /// position (`DetailViewModel.hasResumableProgress`).
+    private var showsStartOver: Bool {
+        detailLayout == .cinematic && model.hasResumableProgress
+    }
+
+    /// FEAT-35 Start Over: the Orivio batch's Continue Watching "Start Over" path, reached from
+    /// Detail — the same stream-picker covers as Play/Resume with `startFromBeginning: true`.
+    private var startOverButton: some View {
+        compactActionButtonStyle(
+            Button {
+                if isSeries {
+                    guard let action = model.seriesAction, let meta = model.meta else { return }
+                    model.noteSeriesPlayStarted(action)
+                    seriesPlay = SeriesPlayRoute(meta: meta, action: action, startFromBeginning: true)
+                } else {
+                    startOverMovie = true
+                    showStreams = true
+                }
+            } label: {
+                actionButtonPadding(
+                    actionLabel("Start Over", systemImage: DetailActionSymbol.startOver)
+                        .font(Theme.Font.meta),
+                    horizontal: Theme.Spacing.md
+                )
+            }
+        )
+        .disabled(!model.isPlayEnabled)
+        .focused($heroFocus, equals: .startOver)
+        .accessibilityIdentifier("detail_start_over")
     }
 
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
     /// (with the title preserved for VoiceOver) when `actionIconsOnly` is on.
+    ///
+    /// beta.19-rc1 verdict (D1, BUG-137; Steven's French screenshot showed Play, Watch Trailer, Mark
+    /// Watched and Add to Library in English): the title is a `LocalizedStringResource`, resolved
+    /// with `String(localized:)`. It used to be a `String`, and `Label(String, …)` never looks a
+    /// `String` up in the catalog — so only the one label that was already wrapped in
+    /// `String(localized:)` (Playback unavailable) was translated. Every key used here already has a
+    /// translation; the call sites pass plain literals (English in code).
     @ViewBuilder
-    private func actionLabel(_ title: String, systemImage: String) -> some View {
-        let label = Label(title, systemImage: systemImage)
-        if actionIconsOnly {
-            label.labelStyle(.iconOnly).accessibilityLabel(Text(title))
+    private func actionLabel(_ title: LocalizedStringResource, systemImage: String, primary: Bool = false) -> some View {
+        actionLabelBody(String(localized: title), systemImage: systemImage, primary: primary)
+    }
+
+    /// D1: the same label for a title that is already localized text, such as the series Play/Resume
+    /// caption Kotlin builds (`SeriesContinuity.kt`). Shown exactly as given.
+    @ViewBuilder
+    private func actionLabel(verbatim title: String, systemImage: String, primary: Bool = false) -> some View {
+        actionLabelBody(title, systemImage: systemImage, primary: primary)
+    }
+
+    /// D1: the one body behind both `actionLabel` overloads (icon + text, or icon-only with the
+    /// title kept for VoiceOver).
+    @ViewBuilder
+    private func actionLabelBody(_ title: String, systemImage: String, primary: Bool) -> some View {
+        if usesIconOnlyLabel(primary: primary) {
+            // FEAT-82: icon-only secondary glyphs are scaled to one optical size (see
+            // `DetailActionGlyphScale`); a `scaleEffect` changes no layout, so the platters stay.
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: systemImage)
+                    .scaleEffect(DetailActionGlyphScale.scale(for: systemImage))
+            }
+            .labelStyle(.iconOnly)
+            .accessibilityLabel(Text(title))
         } else {
-            label
+            Label(title, systemImage: systemImage)
         }
     }
 
     /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
     /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
-    @ViewBuilder
-    private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat) -> some View {
-        if actionIconsOnly {
-            content.padding(Theme.Spacing.md)
-        } else {
-            content
-                .padding(.horizontal, horizontal)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
+
+    /// FEAT-82: the fixed label frame for a SECONDARY icon-only button (Corners = Square and Play
+    /// measured), else nil; the style's insets around it make the button a square as tall as Play.
+    /// Play never takes it (it is the measure), and Classic's text labels never do (review r1 P1: a
+    /// square frame on "Watch Trailer" squashed it).
+    private var squareLabelSize: CGSize? {
+        guard let side = DetailActionSquare.side(playHeight: playButtonSize.height),
+              DetailActionSquare.applies(isSquare: DetailActionShape.isSquare(cornerRadius: posterStyle.cornerRadius),
+                                         iconOnly: usesIconOnlyLabel(primary: false), side: side) else { return nil }
+        return DetailActionSquare.labelSize(side: side, playLabel: playLabelSize, playButton: playButtonSize)
+    }
+    private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
+        Group {
+            if usesIconOnlyLabel(primary: primary) {
+                // FEAT-82 device pass (2026-10-20): the square is cut on the LABEL (icon + padding),
+                // so the button style adds the same insets to every button and the secondaries come
+                // out equal and as tall as Play. A fixed frame on the Button itself did not do that
+                // on hardware: the style drew its platter outside the frame, so the squares
+                // overlapped their gaps and sat shorter than Play.
+                content.padding(Theme.Spacing.md)
+                    .modifier(DetailActionSquareLabel(size: primary ? nil : squareLabelSize))
+            } else {
+                content
+                    .padding(.horizontal, horizontal)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
         }
+        // FEAT-82 (wave3 UI leg, 2026-10-22): Play's padded label is measured in BOTH branches.
+        // Cinematic's Play is a text label, never icon-only; measured only in the icon-only branch
+        // (rc11, 3cf873994), it was never read there, so the squares never applied in Cinematic.
+        .onGeometryChange(for: CGSize.self, of: { primary ? DetailActionSquare.whole($0.size) : .zero },
+                          action: { if primary { playLabelSize = $0 } })
     }
 
     @ViewBuilder
@@ -1295,9 +2882,21 @@ struct DetailView: View {
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
-                                // BUG-93: CastCard draws its own still ring and no manual scale, so ring mode leaves it on the native .borderless lift.
-                                .cardFocusButtonStyle(lift: .plain)
+                                // BUG-108: same as FolderTile — the avatar owns its ring-mode lift now,
+                                // so ring mode must take the native lift away (`.card`, the default).
+                                // No `.posterButtonShape()` here on purpose: it sets a rounded-RECT
+                                // border shape that only a system button style consumes, and the
+                                // avatar is a circle.
+                                .cardFocusButtonStyle()
+                                // BUG-200: in the default cell (bare `.borderless`, a system
+                                // style) the avatar wears the system highlight, whose platter
+                                // takes the BUTTON's border shape, not the avatar's content shape:
+                                // without this it stood as a rounded square around every avatar
+                                // and the lifted photo lost its circle (sim, 2026-10-21). The ring
+                                // and still styles are custom and ignore it.
+                                .buttonBorderShape(.circle)
                                 .focused($focusedCastIndex, equals: index)
+                                .zIndex(liftedCastZIndex(index))
                             } else {
                                 CastCard(person: person)
                             }
@@ -1305,7 +2904,14 @@ struct DetailView: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
+                // BUG-187: remember the card a push to a person page leaves from.
+                .onChange(of: focusedCastIndex) { _, index in noteDetailFocus(.cast, index.map(String.init)) }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
+                // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
+                // Episodes rows). The page's rows sit at the same 140 pt margin from the bezel as
+                // Home's, so the standard environment margins are right and no overrides are passed.
+                .rowEdgeEffectStyle()
             }
             .focusSection()
         }
@@ -1315,30 +2921,11 @@ struct DetailView: View {
     private var moreLikeThisRow: some View {
         let items = model.meta?.moreLikeThis ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("More Like This")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(items, id: \.id) { item in
-                            NavigationLink(value: TitleRoute(preview: item)) {
-                                PosterCard(
-                                    title: item.name,
-                                    imageURL: item.poster,
-                                    width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight
-                                )
-                            }
-                            .cardFocusButtonStyle()
-                            .posterButtonShape()
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-            }
-            .focusSection()
+            // BUG-187: a child view owning its `FocusState`, so the remembered card costs
+            // `DetailView` no new focus state (and no body re-run per Left/Right).
+            DetailPosterLinkRow(row: .moreLikeThis, title: String(localized: "More Like This"),
+                                items: items, restore: detailFocusRestore,
+                                onFocus: { noteDetailFocus(.moreLikeThis, $0) })
         }
     }
 
@@ -1350,35 +2937,31 @@ struct DetailView: View {
     /// Reading blocks share the page scroll. They deliberately avoid row-top anchoring so
     /// moving between credits never snaps back to the beginning of the Details column.
     @ViewBuilder
-    private var supportingInformation: some View {
-        let hasDetails = !infoRows.isEmpty
-        let hasGuide = !model.parentalWarnings.isEmpty
-        if hasDetails || hasGuide {
-            HStack(alignment: .top, spacing: 72) {
-                if hasDetails {
-                    VStack(alignment: .leading, spacing: 20) {
-                        Text("Details").font(Theme.Font.sectionTitle)
-                        ForEach(infoRows) { row in
-                            DetailReadingBlock(id: "detail.info.\(row.id)") {
-                                HStack(alignment: .top, spacing: 24) {
-                                    Text(row.label).foregroundStyle(Theme.Palette.textSecondary)
-                                        .frame(width: 155, alignment: .leading)
-                                    Text(row.value).frame(maxWidth: .infinity, alignment: .leading)
-                                }.font(Theme.Font.meta)
-                            }
-                        }
+    private var infoSection: some View {
+        let rows = infoRows
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                Text("Details")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                ForEach(rows) { row in
+                    HStack(alignment: .top, spacing: Theme.Spacing.md) {
+                        Text(row.label)
+                            .font(Theme.Font.meta)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .frame(width: 180, alignment: .leading)
+                        Text(row.value)
+                            // rc14 (Steven rc13 verdict, 2026-09-30): the value reads as prose, so
+                            // it takes the regular-weight token; the label above stays `meta`.
+                            .font(Theme.Font.detail)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .frame(maxWidth: 900, alignment: .leading)
+                            // D-5: a long value (the Ratings line) wraps instead of truncating
+                            // ("… letterboxd 2.2 au…" in the design review's Classic shot).
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .focusSection()
-                }
-                if hasGuide {
-                    parentalGuideSection
-                        .frame(width: hasDetails ? 450 : nil, alignment: .leading)
-                        .frame(maxWidth: hasDetails ? nil : .infinity, alignment: .leading)
-                        .focusSection()
                 }
             }
-            .padding(.top, 16)
         }
     }
 
@@ -1395,60 +2978,67 @@ struct DetailView: View {
         // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
         let country: String? = meta.country;   add(String(localized: "Country"), country ?? "")
         let language: String? = meta.language;  add(String(localized: "Language"), language ?? "")
-        let status: String? = meta.status;      add(String(localized: "Status"), status ?? "")
+        // beta.19-rc1 verdict (D1, BUG-137): known status words ("Released", "Ended", …) go through
+        // `DetailStatusText` so they translate; an unknown value shows as the add-on gave it.
+        let status: String? = meta.status;      add(String(localized: "Status"), DetailStatusText.localized(status) ?? "")
         let awards: String? = meta.awards;      add(String(localized: "Awards"), awards ?? "")
-        let hasPrimaryRating = !(model.meta?.imdbRating ?? preview.imdbRating ?? "").isEmpty
-        let ratings = meta.externalRatings.filter { !(hasPrimaryRating && $0.source.lowercased().contains("imdb")) }
+        // D-5 (design review 2026-10-22): Cinematic's labels and order, joined so the line wraps.
+        let ratings = DetailRatings.ordered(meta.externalRatings.map { DetailRatingInput($0) })
         if !ratings.isEmpty {
-            add(String(localized: "Ratings"), ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
+            add(String(localized: "Ratings"), DetailRatings.detailsLine(ratings))
         }
         return rows
     }
 
-    private func formatRating(_ v: Double) -> String {
-        let r = (v * 10).rounded() / 10
-        return r == r.rounded() ? String(Int(r)) : String(r)
+    /// FEAT-35 (P1 §G): the Cinematic About rows, from the same fields as Classic's `infoRows`.
+    private var aboutRows: [DetailAboutRow] {
+        guard let meta = model.meta else { return [] }
+        // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
+        let country: String? = meta.country
+        let language: String? = meta.language
+        let status: String? = meta.status
+        let awards: String? = meta.awards
+        return DetailAboutRows.make(
+            director: meta.director,
+            writer: meta.writer,
+            studios: meta.productionCompanies.map { $0.name },
+            networks: meta.networks.map { $0.name },
+            country: country,
+            language: language,
+            status: status,
+            awards: awards,
+            ratings: DetailRatings.ordered(meta.externalRatings.map { DetailRatingInput($0) }),
+            showRatings: sectionRatings,
+            isSeries: isSeries
+        )
     }
 
     // MARK: - Collection row ("Part of the X Collection")
 
-    /// The title's collection (e.g. sequels/prequels) as a poster row. TMDB-backed via
+    /// The title's collection (e.g. sequels/prequels) as a saga row. TMDB-backed via
     /// `collectionItems` — stays hidden until TMDB enrichment is on.
+    ///
+    /// FEAT-34 (2026-09-08, Christian's decision, tester photo
+    /// `docs/research/steven-beta18-photos/2026-09-08-official-nuvio-saga-row-landscape.jpg`):
+    /// official Nuvio renders this row as 16:9 backdrop cards with the franchise's title-logo
+    /// composited bottom-leading and film name + year captioned underneath, not the portrait
+    /// `PosterCard` this row used before (see the superseded rc2 note below). `SagaCard`
+    /// (`DesignSystem/SagaCard.swift`) is the dedicated card for this — it always shows its
+    /// caption regardless of Hide Labels, same as the row's prior `showTitle: true` override, so
+    /// the rc2 fix below carries forward unchanged.
+    ///
+    /// rc2 (u/mrStevenx3, 2026-09-06): "saga/franchise titles missing in the description — only
+    /// images". He runs Hide Labels ON, and a row of bare sequel artwork says nothing about which
+    /// film is which. On the description page this row is informational — like the Cast row,
+    /// whose names always show — so it opts out of the setting.
     @ViewBuilder
     private var collectionRow: some View {
         let items = model.meta?.collectionItems ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text(collectionTitle)
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(items, id: \.id) { item in
-                            NavigationLink(value: TitleRoute(preview: item)) {
-                                PosterCard(
-                                    title: item.name,
-                                    imageURL: item.poster,
-                                    width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight,
-                                    // rc2 (u/mrStevenx3, 2026-09-06): "saga/franchise titles
-                                    // missing in the description — only images". He runs Hide
-                                    // Labels ON, which `showTitle: nil` follows, and a row of bare
-                                    // sequel posters says nothing about which film is which. On the
-                                    // description page this row is informational — like the Cast
-                                    // row, whose names always show — so it opts out of the setting.
-                                    showTitle: true
-                                )
-                            }
-                            .cardFocusButtonStyle()
-                            .posterButtonShape()
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-            }
-            .focusSection()
+            // BUG-187: a child view owning its `FocusState` — see `moreLikeThisRow`.
+            DetailPosterLinkRow(row: .collection, title: collectionTitle,
+                                items: items, restore: detailFocusRestore,
+                                onFocus: { noteDetailFocus(.collection, $0) })
         }
     }
 
@@ -1467,8 +3057,14 @@ struct DetailView: View {
     private var companyLogosRow: some View {
         let companies = companyLogos
         if !companies.isEmpty {
+            // BUG-111: row spacing stays `Spacing.md` (16pt), unchanged — the widest chip is 180pt
+            // of content plus `Spacing.md` (16pt) padding on each side (`CompanyChip`'s own
+            // `.frame(maxWidth: 180)` + `.padding(.horizontal, Spacing.md)`) = 212pt, and its
+            // growth per side in either zoom-on mode (ring, and since BUG-200 the default cell) is
+            // `212 × 0.12 / 2 = 12.7pt` — inside the 16pt gap with room to spare, so a lifted
+            // widest chip never touches its row neighbour.
             HStack(spacing: Theme.Spacing.md) {
-                ForEach(Array(companies.enumerated()), id: \.offset) { _, entry in
+                ForEach(Array(companies.enumerated()), id: \.offset) { index, entry in
                     if let tmdbId = entry.company.tmdbId?.value {
                         NavigationLink(value: EntityRoute(
                             id: tmdbId,
@@ -1476,26 +3072,39 @@ struct DetailView: View {
                             isNetwork: entry.isNetwork,
                             sourceType: model.meta?.type ?? preview.type
                         )) {
-                            companyChip(entry.company)
+                            // stillFocused: CompanyChip draws its own ring/lift off the row's
+                            // FocusState, same rule as CastCard above (Codex 2026-08-29
+                            // rounds 3-5) — focus truth from the row, not a second binding.
+                            companyChip(entry.company, stillFocused: focusedCompanyIndex == index)
                         }
-                        // Deliberately NOT cardFocusButtonStyle() (Codex 2026-08-29 P1): unlike
-                        // CastCard, the chip has no isFocused-dependent treatment of its own, so
-                        // disabling the system effect in no-zoom mode would leave remote focus on
-                        // this link with NO visible indication at all. The system lift on a small
-                        // chip is a wiggle, not a zoom; a still-mode chip treatment can join a
-                        // future pass if a no-zoom user reports it.
-                        .buttonStyle(.borderless)
+                        // BUG-111: this used to be deliberately NOT cardFocusButtonStyle() (Codex
+                        // 2026-08-29 P1) — the chip had no isFocused-dependent treatment of its
+                        // own, so disabling the system effect in no-zoom mode would have left
+                        // remote focus on this link with NO visible indication at all. The chip
+                        // now owns a treatment in every non-default mode (`CompanyChip`'s ring +
+                        // `.manualScale` lift), so it joins the same sweep `CastCard`/`FolderTile`
+                        // already made — No Zoom now reaches this row too, and ring mode's manual
+                        // lift replaces the native `.borderless` lift here exactly as it does for
+                        // those two (see `CardButtonLift`).
+                        // BUG-200: `.manual` — the chip lifts itself in the default cell too
+                        // (`PlainLabelRing.smallLabelLift`), so no zoom-on cell is `.borderless`.
+                        .cardFocusButtonStyle(lift: .manual)
+                        .focused($focusedCompanyIndex, equals: index)
+                        .zIndex(liftedCompanyZIndex(index))
                     } else {
                         companyChip(entry.company)
                     }
                 }
             }
-            .focusSection()
+            // Full-width: a section that hugs its chips was skipped by Up/Down from the right side.
+            .focusRow(alignment: .leading)
+            // BUG-187: remember the chip a push to a studio/network page leaves from.
+            .onChange(of: focusedCompanyIndex) { _, index in noteDetailFocus(.logos, index.map(String.init)) }
         }
     }
 
-    private func companyChip(_ company: MetaCompany) -> some View {
-        CompanyChip(company: company)
+    private func companyChip(_ company: MetaCompany, stillFocused: Bool = false) -> some View {
+        CompanyChip(company: company, stillFocused: stillFocused)
     }
 
     private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] {
@@ -1558,38 +3167,10 @@ struct DetailView: View {
     private var trailersRow: some View {
         let trailers = model.meta?.trailers ?? []
         if !trailers.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                Text("Trailers & Extras")
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
-                        ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { _, trailer in
-                            Button {
-                                model.playTrailer(trailer)
-                            } label: {
-                                TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
-                            }
-                            // BUG-93: TrailerThumbCard has no manual treatment - keep the native lift in ring mode.
-                            .cardFocusButtonStyle(lift: .plain)
-                            .posterButtonShape() // BUG-32: honor the Corners setting
-                        }
-                    }
-                    .padding(.vertical, Theme.Spacing.md)
-                }
-                .scrollClipDisabled()
-                #if DEBUG
-                // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
-                // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
-                // text rows to thumbnail cards without depending on pixel comparison.
-                let rendered = Array(trailers.prefix(10))
-                Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
-                    .font(.system(size: 8))
-                    .opacity(0.011)
-                    .accessibilityIdentifier("debug_trailers")
-                #endif
-            }
-            .focusSection()
+            // BUG-153 (Batch M): a child view, so the row's focus state re-runs only the row.
+            DetailTrailersRow(trailers: trailers,
+                              resolvingTrailerId: model.resolvingTrailerId,
+                              onPlay: { model.playTrailer($0) })
         }
     }
 
@@ -1613,7 +3194,9 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             .frame(maxWidth: 1100, alignment: .leading)
-            .focusSection()
+            // Section full-width (content still capped at 1100): comments are the last row, and
+            // Down from a card right of 1100 pt found nothing.
+            .focusRow(alignment: .leading)
         }
     }
 
@@ -1705,6 +3288,10 @@ struct DetailView: View {
     }
 
     private func fireAutoPlayTrailer() {
+        // Device pass (Batch G, 2026-10-18): a Down off the hero is the engine's move, which
+        // `onMoveCommand` never sees, so the trailer went full screen under a viewer scrolling the
+        // rows. Focus anywhere below the hero counts as interacting.
+        guard focusedRow == nil else { return }
         guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
               !showStreams, seriesPlay == nil, model.trailerPlayback == nil,
               let trailer = model.trailerVideoURL else { return }
@@ -1771,10 +3358,161 @@ private struct InfoRow: Identifiable {
     var id: String { label }
 }
 
+/// BUG-187: the More Like This and Collection rows, pulled out of `DetailView` so each owns the
+/// `FocusState` the fallback restore needs (`DetailFocusMemory`) without adding one to the page.
+/// The cards, spacings and styles are the ones the two rows had inline.
+private struct DetailPosterLinkRow: View {
+    /// `.moreLikeThis` (portrait `PosterCard`s) or `.collection` (FEAT-34's 16:9 `SagaCard`s).
+    let row: DetailRowID
+    let title: String
+    let items: [MetaPreview]
+    let restore: DetailFocusRestoreRequest
+    /// BUG-194: the live pop restore's card key when it names this row, else nil (review r2: the
+    let onFocus: (String?) -> Void
+
+    @FocusState private var focusedId: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(title)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                // BUG-106: the ring-mode lift grows a 16:9 card ≈71 pt in width, so `lg` (24)
+                // put the raised saga card onto its neighbour — see `landscapeLiftRowGap`.
+                LazyHStack(spacing: row == .collection ? Theme.Spacing.landscapeLiftRowGap : Theme.Spacing.lg) {
+                    ForEach(items, id: \.id) { item in
+                        NavigationLink(value: TitleRoute(preview: item)) {
+                            if row == .collection {
+                                SagaCard(item: item)
+                            } else {
+                                PosterCard(
+                                    title: item.name,
+                                    imageURL: item.poster,
+                                    fallbackImageURL: item.rawPosterUrl,
+                                    width: Theme.Size.miniPosterWidth,
+                                    height: Theme.Size.miniPosterHeight
+                                )
+                            }
+                        }
+                        .cardFocusButtonStyle()
+                        .posterButtonShape()
+                        .focused($focusedId, equals: item.id)
+                    }
+                }
+                .padding(.vertical, Theme.Spacing.md)
+            }
+            .scrollClipDisabled()
+            // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+            .rowEdgeEffectStyle()
+        }
+        .focusSection()
+        .onChange(of: focusedId) { _, id in onFocus(id) }
+        .onChange(of: restore) { _, request in
+            guard request.row == row, let key = request.key,
+                  DetailFocusRestore.shouldApply(force: request.force, current: focusedId, target: key) else { return }
+            focusedId = key
+        }
+    }
+}
+
+/// BUG-153 (Batch M): the Trailers & Extras row, pulled out of `DetailView` so the row's own
+/// `FocusState` (BUG-177's zIndex raise) invalidates only this row on Left/Right, not the whole
+/// Detail body. `.detailRowAnchored(.trailers, …)` stays on the call site.
+private struct DetailTrailersRow: View {
+    let trailers: [MetaTrailer]
+    let resolvingTrailerId: String?
+    let onPlay: (MetaTrailer) -> Void
+
+    /// BUG-177: which Trailers & Extras card holds focus — only to raise it over its neighbours.
+    @FocusState private var focusedIndex: Int?
+    @Environment(\.focusAppearance) private var focusAppearance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Trailers & Extras")
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                    ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { index, trailer in
+                        Button {
+                            onPlay(trailer)
+                        } label: {
+                            TrailerThumbCard(trailer: trailer, isResolving: resolvingTrailerId == trailer.id)
+                        }
+                        // BUG-177 (Steven rc7): TrailerThumbCard owns its ring-mode lift now
+                        // (`DetailTileFocusLift`), so the default `.card` style takes the native
+                        // lift away in ring mode; ring off is the same `.borderless` as before.
+                        .cardFocusButtonStyle()
+                        .posterButtonShape() // BUG-32: honor the Corners setting
+                        .focused($focusedIndex, equals: index)
+                        // BUG-177: the lifted card draws over its right neighbour.
+                        // BUG-153 (Batch M): only when SwiftUI draws the lift.
+                        .zIndex(DetailTileFocus.raisedZIndex(
+                            isFocused: focusedIndex == index,
+                            accentFocusRing: focusAppearance.accentFocusRing,
+                            noZoomOnFocus: focusAppearance.noZoomOnFocus))
+                    }
+                }
+                .padding(.vertical, Theme.Spacing.md)
+            }
+            .scrollClipDisabled()
+            // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+            .rowEdgeEffectStyle()
+            #if DEBUG
+            // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
+            // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
+            // text rows to thumbnail cards without depending on pixel comparison.
+            let rendered = Array(trailers.prefix(10))
+            Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_trailers")
+            #endif
+        }
+        .focusSection()
+    }
+}
+
+/// BUG-200 (GitHub #9 item 1, erdist: on the Detail page the Cast and Production rows "lift only
+/// the picture"): the lift `CastCard` draws on its own avatar.
+///
+/// `CastCard` used to resolve through `PlainLabelRing.lift`, which maps the DEFAULT cell (Accent
+/// Focus Ring off, zoom on) to `.still` — a no-op — on the assumption that the `.borderless`
+/// button around it lifts the whole label. It does not: on tvOS `.borderless` lifts only the
+/// `Image` inside a label (device finding 2026-10-17, `SwatchFocusLift` in
+/// `ProfileSelectionView.swift`), so the photo grew inside its static circle clip and the name
+/// stayed behind.
+///
+/// This is `CardFocusMode.resolve` — the rule every poster card already uses — and it differs
+/// from `PlainLabelRing.lift` in that one cell only: default → `.systemLift`, which
+/// `CardArtworkFocusLift` renders as the system highlight on the avatar circle (`PosterCard`'s
+/// own default treatment under the same `.borderless` button), and which `CardCaptionFocusDrop`
+/// answers by dropping the name and role 20 pt with it. Ring mode stays `.manualScale` and both
+/// No Zoom cells stay `.still(ringed:)`, byte-identical to before. `PlainLabelRing.lift` itself
+/// is untouched: `FolderTile` still resolves through it.
+///
+/// Measured on the tvOS 27 simulator (a one-off Wave 3b UI measurement leg, 2026-10-21, since
+/// removed from the tree; the readings are kept here): the system
+/// lift scales the 140 pt avatar ×1.32 (22.6 pt per side, symmetric), inside the cast row's 34 pt
+/// gap; its platter is a circle only because `castRow` sets `.buttonBorderShape(.circle)` on the
+/// link (the system takes the button's border shape, not the avatar's content shape). The same
+/// lift on the 52 × 212 pt studio capsule measured ×1.19 (20 pt per side against a 16 pt row gap),
+/// over the ×1.15 ceiling, so the chip does NOT take this resolver: it draws its own manual lift
+/// in the default cell (`PlainLabelRing.smallLabelLift`: `.manualScale` with `smallLabelRise`,
+/// ×1.12, no platter), under `cardFocusButtonStyle(lift: .manual)`, the `CardButtonLift` case that
+/// drops `.borderless` for it.
+enum DetailLabelLift {
+    static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+}
+
 /// Circular cast avatar + name/role. Platter-free: used inside a `.poster`-styled NavigationLink
 /// when tappable, so it supplies its own focus visuals (ring + scale + shadow); rendered bare for
 /// non-tappable cast, where `isFocused` simply never fires.
-private struct CastCard: View {
+struct CastCard: View {
     let person: MetaPerson
     /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
     /// with the system focus effect disabled this card's only treatment was caption opacity, and
@@ -1783,7 +3521,23 @@ private struct CastCard: View {
     var stillFocused: Bool = false
 
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-102 (rc9): same gap as `FolderTile` — the avatar only knew the no-zoom still ring, so
+    /// with zoom on and the accent ring on it drew nothing. Resolved through `PlainLabelRing`.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var reservesRingBand: Bool {
+        PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// BUG-108: same architecture as `FolderTile` — ring mode takes the native `.borderless` lift
+    /// away from this label, so the avatar lifts itself and carries its ring up with it.
+    /// BUG-200: and in the default cell the avatar wears the system lift itself (`.systemLift`),
+    /// because `.borderless` only lifts the photo inside the circle; see `DetailLabelLift`.
+    private var artworkLift: CardFocusMode {
+        DetailLabelLift.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         VStack(spacing: Theme.Spacing.xs) {
@@ -1806,34 +3560,60 @@ private struct CastCard: View {
             // never-focus-linked shrink (matches `ringInset`'s "always reserved, never pops"
             // contract) so the `.overlay` below measures the avatar's TRUE, unscaled bounds. A
             // single scalar is enough — the avatar is always a perfect circle/square.
-            .scaleEffect(noZoomOnFocus && Theme.Size.castAvatar > 0
+            // BUG-102: band reserved whenever a ring may draw (`ringInset`'s rule), as FolderTile.
+            .scaleEffect(reservesRingBand && Theme.Size.castAvatar > 0
                 ? max(0, Theme.Size.castAvatar - 2 * ringWidth) / Theme.Size.castAvatar
                 : 1)
             .overlay {
-                if noZoomOnFocus && stillFocused {
-                    Circle().strokeBorder(stillHighlight, lineWidth: ringWidth)
+                if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                     noZoomOnFocus: noZoomOnFocus,
+                                                     focused: stillFocused) {
+                    Circle().strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
-            Text(person.name)
-                .font(Theme.Font.caption)
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
-                .lineLimit(1)
-                .frame(width: Theme.Size.castAvatar + 10)
-            if let role = person.role, !role.isEmpty {
-                Text(role)
+            // BUG-200: the avatar's layout box for a geometry probe (DEBUG +
+            // `-debug.cardGeometryProbe YES` only), as `company_artwork` is for the studio chip.
+            .modifier(DebugAXIdentifier("cast_artwork"))
+            .modifier(CardArtworkFocusLift(
+                mode: artworkLift,
+                isFocused: stillFocused,
+                artworkHeight: Theme.Size.castAvatar,
+                // `CardArtworkFocusLift.manualScale` draws its platter as a
+                // `RoundedRectangle(cornerRadius:)` at the attached view's bounds. The bounds here
+                // are the avatar's 140×140 square, and a rounded rect of half that side IS that
+                // square's inscribed circle — so the platter and its shadow follow the photo's own
+                // edge instead of a square behind it. Derived from the constant, never literal 70.
+                cornerRadius: Theme.Size.castAvatar / 2
+            ))
+            VStack(spacing: Theme.Spacing.xs) {
+                Text(person.name)
                     .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
                     .lineLimit(1)
                     .frame(width: Theme.Size.castAvatar + 10)
+                if let role = person.role, !role.isEmpty {
+                    Text(role)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                        .frame(width: Theme.Size.castAvatar + 10)
+                }
             }
+            // BUG-108: the avatar grows downward by the same 20pt it rises, so name+role follow it
+            // together — one modifier on the pair, so the two lines can never drift apart. 0 in
+            // both other modes.
+            .modifier(CardCaptionFocusDrop(mode: artworkLift, isFocused: stillFocused,
+                                           artworkHeight: Theme.Size.castAvatar))
         }
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // BUG-108: gated on Reduce Motion now that this wraps a manual `.scaleEffect` — see
+        // `CardArtworkFocusLift`, which passes a nil animation there and would be overridden here.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 
     /// BUG-41 failure/no-photo fallback — pulled out of `body` so both the "no `person.photo`"
     /// branch and `CachedAsyncImage`'s `failure:` builder render the identical glyph.
     @ViewBuilder
-    private static var personFallback: some View {
+    static var personFallback: some View {
         ZStack {
             Theme.Palette.surface
             Image(systemName: "person.fill")
@@ -1843,12 +3623,64 @@ private struct CastCard: View {
     }
 }
 
+/// BUG-111: geometry constants `CompanyChip` derives its ring/lift geometry from, pulled out so
+/// `PlainLabelRingTests` can assert the derived numbers directly against a named source of truth
+/// instead of hand-deriving them from literals buried inside the view. `internal` (not `private`)
+/// for exactly that reason — `@testable import` needs to reach it — but the values remain one
+/// view's own implementation detail; nothing else in the app should reference these.
+enum CompanyChipMetrics {
+    /// The logo/name content's fixed height — `CompanyChip`'s pre-existing `.frame(height:)`.
+    static let logoHeight: CGFloat = 36
+    /// The capsule's true rendered height: the logo height plus the vertical padding on both
+    /// edges (`Theme.Spacing.xs`, 8pt) `CompanyChip` already applies outside that frame. This, not
+    /// `logoHeight`, is the artwork height the ring/lift geometry must key off — the ring traces
+    /// the CAPSULE `CompanyChip.body` backgrounds itself with, not the logo image inside it.
+    /// 36 + 2×8 = 52.
+    static let capsuleHeight: CGFloat = logoHeight + 2 * Theme.Spacing.xs
+    /// The chip's platter is a `Capsule()` — a rounded rect whose corner radius is exactly half
+    /// its own height. 52 / 2 = 26.
+    static let platterCornerRadius: CGFloat = capsuleHeight / 2
+    /// BUG-111: this chip's own small-label rise — see `PlainLabelRing.smallLabelRise`, whose
+    /// existence this chip is the reason for. ≈3.12pt at this capsule's 52pt height, which is
+    /// exactly the height at which the derived scale (`cardLiftScale`) equals
+    /// `PlainLabelRing.smallLabelScaleCeiling` (1.12).
+    static let focusRise: CGFloat = PlainLabelRing.smallLabelRise(height: capsuleHeight)
+}
+
 /// Studio/network logo chip. Keeps the intentional white capsule (logo legibility); focus reads as
 /// scale + the brand focus ring, platter-free like every other tile.
+///
+/// BUG-111 (rc12, u/mrStevenx3: focusing a studio chip "zooms in on the poster instead of the
+/// description"): until this fix the chip was the ONLY card-like site left on a bare
+/// `.buttonStyle(.borderless)` (see the 2026-08-29 comment this replaced at the row's call site) —
+/// it drew no ring and no lift of its own, so `.borderless`'s system treatment always won, and
+/// turning No Zoom on reached every other card on the page except this one. It now joins the same
+/// `PlainLabelRing` architecture `FolderTile`/`CastCard` got in BUG-102/BUG-108, scaled down to
+/// its own much shorter capsule via `CompanyChipMetrics`/`PlainLabelRing.smallLabelRise`.
 private struct CompanyChip: View {
     let company: MetaCompany
+    /// Caller-supplied focus truth — same rule as `CastCard.stillFocused` (Codex 2026-08-29
+    /// rounds 3-5): the row owns one `FocusState` (`focusedCompanyIndex`), and this label draws
+    /// its ring/lift off that instead of installing a second `.focused` binding that would
+    /// collide with it.
+    var stillFocused: Bool = false
 
-    @Environment(\.isFocused) private var isFocused
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-111: same gap BUG-102 closed for `FolderTile`/`CastCard` — resolved through
+    /// `PlainLabelRing`, shared precedence.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// BUG-111: same architecture as `FolderTile`/`CastCard` — ring mode takes the native
+    /// `.borderless` lift away from this label, so the chip draws its own there.
+    /// BUG-200 (GitHub #9 item 1): and in the default cell too. Under `.borderless` only the logo
+    /// lifted out of the white capsule (a name-only chip got no cue at all), and the system lift
+    /// measured ×1.19 on this capsule (see `DetailLabelLift`), past the 16 pt row gap. So the row
+    /// passes `cardFocusButtonStyle(lift: .manual)` (a custom style in both zoom-on cells) and the
+    /// chip scales itself ×1.12 (`smallLabelRise`) in both; No Zoom stays the still ring.
+    private var artworkLift: CardFocusMode {
+        PlainLabelRing.smallLabelLift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         // BUG-41: CachedAsyncImage over the raw AsyncImage (company logos re-decoded on every
@@ -1861,11 +3693,65 @@ private struct CompanyChip: View {
                 CompanyChip.nameFallback(company.name)
             }
         }
-        .frame(height: 36)
+        .frame(height: CompanyChipMetrics.logoHeight)
         .frame(minWidth: 60, maxWidth: 180)
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
         .background(Color.white.opacity(0.92), in: Capsule())
+        // BUG-111: deliberately NO band inset here, unlike `FolderTile`/`CastCard`'s `ringInset`
+        // shrink. This chip's outer band is already white PADDING, not artwork: the vertical
+        // margin is `Theme.Spacing.xs` (8pt) and the horizontal is `Theme.Spacing.md` (16pt),
+        // both ≥ `ringWidth` (4pt), so the ring lands inside the capsule's own filler and never
+        // overpaints the logo — the BUG-64 overpaint `ringInset` exists to avoid never had a
+        // chance to happen here in the first place. Reserving a second band on top of that would
+        // ALSO break capsule/ring concentricity: unlike the avatar's perfect circle, this capsule
+        // is not square, so a per-axis shrink (the mechanism `FolderTile`/`CastCard` use) would
+        // turn the shrunk capsule into a different aspect ratio than the platter it sits inside.
+        .overlay {
+            if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                 noZoomOnFocus: noZoomOnFocus,
+                                                 focused: stillFocused) {
+                // BUG-111 review finding 1: this capsule is a WHITE surface
+                // (`Color.white.opacity(0.92)` above) — the only one among the plain-label ring
+                // sites (`FolderTile`, `CastCard` both sit on dark artwork), so the still-mode
+                // ring needs the light-surface neutral, not `stillHighlight`'s near-white. The
+                // accent ring is unaffected — `ring.color` still drives it.
+                Capsule().strokeBorder(
+                    ring == .accent ? ring.color : PlainLabelRing.stillColor(onLightSurface: true),
+                    lineWidth: ringWidth
+                )
+            }
+        }
+        .modifier(DebugAXIdentifier("company_artwork"))
+        .modifier(CardArtworkFocusLift(
+            mode: artworkLift,
+            isFocused: stillFocused,
+            // `CompanyChipMetrics.capsuleHeight`/`.platterCornerRadius`: the CAPSULE's true
+            // rendered box, not the 36pt logo frame inside it — the same "measure the box the
+            // ring traces" convention `FolderTile`/`CastCard` follow.
+            artworkHeight: CompanyChipMetrics.capsuleHeight,
+            cornerRadius: CompanyChipMetrics.platterCornerRadius,
+            // BUG-111: the whole reason `CardArtworkFocusLift.rise` and
+            // `PlainLabelRing.smallLabelRise` exist — the flat 20pt every other card class rises
+            // by would more than double this 52pt capsule (`1 + 2×20/52 ≈ 1.77`) inside a 16pt
+            // row gap; see `PlainLabelRing.smallLabelScaleCeiling`'s doc comment for the math.
+            rise: CompanyChipMetrics.focusRise,
+            // BUG-200: the black platter + shadow in ring mode only; the default cell scales the
+            // capsule alone (the platter is a black capsule of the chip's own shape that greys
+            // the 0.92-white fill and adds a shadow; whether scale alone reads is a device look).
+            focusShadow: PlainLabelRing.smallLabelPlatter(accentFocusRing: accentFocusRing,
+                                                          noZoomOnFocus: noZoomOnFocus)
+        ))
+        .modifier(DebugAXIdentifier("company_card"))
+        // No `CardCaptionFocusDrop` — the chip has no caption slot below it to drop. No
+        // `.posterButtonShape()` — that sets a rounded-RECT border shape only a system button
+        // style consumes, and ring mode installs `RingCardButtonStyle`, a custom style that
+        // receives no system treatment at all (same reasoning `CastCard`'s circular avatar rests
+        // on, just applied to this capsule instead). No `.nuvioCardDepth` — the shared Kotlin
+        // `NuvioCardDepthSurface` enum (mirrored here as `CardDepthSurface`) has no `.companies`
+        // case, so there is nothing for this chip to opt into; the depth-rail contract is
+        // untouched by this fix.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: stillFocused)
     }
 
     @ViewBuilder
@@ -1880,6 +3766,11 @@ private struct CompanyChip: View {
 private struct SeriesPlayRoute: Identifiable {
     let meta: MetaDetails
     let action: SeriesPrimaryAction
+    /// Hold-Play "Choose Source…": the picker skips auto-play and shows the list. Carried on the
+    /// route (not read from view state) so the cover's content closure is self-contained.
+    var forceManual: Bool = false
+    /// FEAT-35 Start Over: the picker plays from 0 instead of the saved position.
+    var startFromBeginning: Bool = false
     var id: String { action.videoId }
 
     /// The resolved episode (by season/episode number) — the Info header shows ITS still +
@@ -1910,5 +3801,186 @@ private struct SeriesPlayRoute: Identifiable {
             return "S\(s)E\(e)"
         }
         return action.label
+    }
+}
+
+/// Hold Play (long Select press) → "Choose Source…", for the Detail Play button. The menu only has
+/// an item while Settings → Playback → Auto-Play Best Source is on (with it off a plain press
+/// already opens the source list) and Play is enabled (`TitleHoldMenuPolicy.holdPlayMenuAvailable`).
+/// The button's own tap action still fires on a normal press; the menu is a `.contextMenu`, which
+/// tvOS opens on a long Select press.
+///
+/// The `.contextMenu` is attached UNCONDITIONALLY and only its content varies. An `if` around the
+/// modifier changed the Play button's view identity whenever the setting flipped, rebuilding the
+/// focused button after the first render.
+private struct HoldPlayChooseSourceMenu: ViewModifier {
+    let autoPlayFirstStreamOn: Bool
+    let isPlayEnabled: Bool
+    let chooseSource: () -> Void
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            if TitleHoldMenuPolicy.holdPlayMenuAvailable(autoPlayFirstStreamOn: autoPlayFirstStreamOn,
+                                                         isPlayEnabled: isPlayEnabled) {
+                Button(action: chooseSource) {
+                    Label("Choose Source…", systemImage: "list.and.film")
+                }
+            }
+        }
+    }
+}
+
+
+/// beta.18 verdict (BUG-127): Detail scrim stops + synopsis-panel constants, lifted out of
+/// `DetailView` so tests can pin them.
+/// UX-18 (review r1 P2-6): the Cinematic shelf as one bitmap, `DetailScrim.cinematicShelfAlpha`
+/// sampled on a 192 × 108 grid (a 20 px cell on the 3840 × 2160 box, well under the shelf's 0.04
+/// ramps) and rendered once per process; the overlay stretches it over the screen. A single texture
+/// draw where the masked pair of gradients cost an offscreen pass per frame.
+nonisolated enum DetailScrimShelf {
+    static let width = 192
+    static let height = 108
+
+    static let image: UIImage = {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cg = context.cgContext
+            for row in 0..<height {
+                let y = (Double(row) + 0.5) / Double(height)
+                for col in 0..<width {
+                    let x = (Double(col) + 0.5) / Double(width)
+                    let alpha = DetailScrim.cinematicShelfAlpha(x: x, y: y)
+                    guard alpha > 0 else { continue }
+                    cg.setFillColor(UIColor(white: 0, alpha: alpha).cgColor)
+                    cg.fill(CGRect(x: col, y: row, width: 1, height: 1))
+                }
+            }
+        }
+    }()
+}
+
+nonisolated enum DetailScrim {
+    static let horizontalLeading: Double = 0.80
+    static let horizontalMid: Double = 0.30
+    static let horizontalTrailing: Double = 0.18
+    static let horizontalTrailingOverPoster: Double = 0.26
+    static let verticalClearUntil: Double = 0.60
+    static let verticalBottom: Double = 0.70
+    static let panelGlassTint: Double = 0.30
+    static let panelFlatFill: Double = 0.55
+    static let panelWidth: CGFloat = 560
+    static let panelCornerRadius: CGFloat = 24
+    /// review r1 (P3-6): synopsis panel line cap (was 12, truncating long overviews).
+    static let panelMaxLines = 18
+
+    /// beta.19-rc1 verdict (D2, BUG-140): no `scrolling:` input — scrolling never changes glass.
+    static func panelUsesFlatFill(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        DetailView.panelUsesFlatFill(trailerActive: trailerActive, glassDisabled: glassDisabled)
+    }
+
+    // MARK: FEAT-35 Cinematic scrim
+
+    /// FEAT-35 (Detail revamp, Cinematic only): a lighter horizontal + vertical pair plus a radial
+    /// darkening centred bottom-leading under the text block, so the rest of the art stays brighter.
+    /// The classic stops above are the CEILING for the art: `cinematicCompositeAlpha` must never
+    /// exceed `classicCompositeAlpha` above y = 0.4 (`DetailScrimCinematicTests`). Batch C made the
+    /// bottom band darker than Classic on purpose; see the Batch C note below.
+    ///
+    /// beta.19-rc1 verdict (D3, BUG-127; Steven's Oak Street and Monstre photos): the Cinematic art
+    /// still read darkened, so every stop is at or below its beta.18 value (the trailing stop and
+    /// the vertical start are unchanged) and the darkness now sits under the text column instead of
+    /// across the whole left half:
+    ///   - leading 0.55 → 0.30 and mid 0.15 → 0.06: the top-left composite goes 0.599 → 0.332;
+    ///   - over-poster trailing 0.10 → 0.06;
+    ///   - vertical bottom 0.60 → 0.55;
+    ///   - radial opacity 0.55 → 0.50 and end radius 0.70 → 0.62 of the width: the bottom-left
+    ///     corner goes 0.919 → 0.8425 and the synopsis/meta block (x 0.03–0.30, y 0.55–0.75) goes
+    ///     from a mean of 0.646 to 0.485 (minimum 0.477 → 0.311), which is the floor the text still
+    ///     needs (`DetailScrimCinematicTests.testTextBlockFloor`); the art region (x 0.5–1, y 0–0.6)
+    ///     goes from a mean of 0.081 to 0.031.
+    ///
+    /// Batch C (Steven's rc2 reference photo, 2026-10-18): the vertical band starts at 0.40 and ends
+    /// at 0.85, so the text block's mean is 0.638 (minimum 0.457), the bottom quarter's mean 0.746
+    /// and the bottom-left corner 0.9475. Above y = 0.4 nothing changed (art mean 0.031 there); the
+    /// right edge at y = 0.6 now reads 0.28.
+    static let cinematicHorizontalLeading: Double = 0.30
+    static let cinematicHorizontalMid: Double = 0.06
+    static let cinematicHorizontalTrailing: Double = 0.00
+    static let cinematicHorizontalTrailingOverPoster: Double = 0.06
+    /// Batch C (Steven, rc2 2026-10-04, with a reference photo: "a darker area behind the synopsis
+    /// and at the bottom of the page"): the full-width bottom band starts higher and ends much
+    /// darker, so the meta line, synopsis, buttons and the row under them read on any art. Above
+    /// `cinematicVerticalClearUntil` nothing changed: the art keeps rc1's lighter look (D3).
+    static let cinematicVerticalClearUntil: Double = 0.40
+    static let cinematicVerticalBottom: Double = 0.85
+    /// Black at this opacity at the bottom-leading corner, fading linearly to clear.
+    static let cinematicRadialOpacity: Double = 0.50
+    /// The radial's end radius as a fraction of the screen WIDTH.
+    static let cinematicRadialEndRadiusFraction: Double = 0.62
+    /// UX-18 (2026-10-22): the shelf under the meta and ratings lines (see `cinematicScrimOverlay`).
+    /// Chosen on the composite grid: the meta band (x 0.03–0.30, y 0.44–0.54) goes from a mean of
+    /// 0.473 / minimum 0.323 to 0.594 / 0.417, the synopsis block and the art region do not move,
+    /// and no grid point exceeds the Classic ceiling (y ≤ 0.4) or build 284 (`DetailScrimCinematicTests`).
+    static let cinematicShelfOpacity: Double = 0.35
+    /// The shelf is clear from this fraction of the width rightward.
+    static let cinematicShelfEndX: Double = 0.50
+    static let cinematicShelfTop: Double = 0.42
+    static let cinematicShelfBottom: Double = 0.56
+    /// Linear ramps of this height above the top and below the bottom.
+    static let cinematicShelfSoftEdge: Double = 0.04
+    /// The aspect the composite math measures radial distance in (the tvOS screen).
+    static let compositeAspectWidth: Double = 1920
+    static let compositeAspectHeight: Double = 1080
+
+    /// Composite darkness (1 − Π(1 − aᵢ)) of the classic scrim at unit point (x, y), y = 0 at top.
+    static func classicCompositeAlpha(x: Double, y: Double, overPoster: Bool) -> Double {
+        let horizontal = threeStop(x, horizontalLeading, horizontalMid,
+                                   overPoster ? horizontalTrailingOverPoster : horizontalTrailing)
+        let vertical = verticalRamp(y, clearUntil: verticalClearUntil, bottom: verticalBottom)
+        return 1 - (1 - horizontal) * (1 - vertical)
+    }
+
+    /// Composite darkness of the Cinematic scrim at unit point (x, y), y = 0 at top.
+    static func cinematicCompositeAlpha(x: Double, y: Double, overPoster: Bool) -> Double {
+        let horizontal = threeStop(x, cinematicHorizontalLeading, cinematicHorizontalMid,
+                                   overPoster ? cinematicHorizontalTrailingOverPoster : cinematicHorizontalTrailing)
+        let vertical = verticalRamp(y, clearUntil: cinematicVerticalClearUntil, bottom: cinematicVerticalBottom)
+        let dx = x * compositeAspectWidth
+        let dy = (1 - y) * compositeAspectHeight
+        let endRadius = cinematicRadialEndRadiusFraction * compositeAspectWidth
+        let distance = (dx * dx + dy * dy).squareRoot()
+        let radial = cinematicRadialOpacity * max(0, 1 - distance / endRadius)
+        return 1 - (1 - horizontal) * (1 - vertical) * (1 - radial) * (1 - cinematicShelfAlpha(x: x, y: y))
+    }
+
+    /// UX-18: the shelf's own alpha at (x, y); `DetailScrimShelf.image` is this function sampled.
+    static func cinematicShelfAlpha(x: Double, y: Double) -> Double {
+        let tx = min(max(x, 0), 1)
+        let horizontal = tx >= cinematicShelfEndX ? 0 : cinematicShelfOpacity * (1 - tx / cinematicShelfEndX)
+        let ty = min(max(y, 0), 1)
+        let top = cinematicShelfTop, bottom = cinematicShelfBottom, soft = cinematicShelfSoftEdge
+        let vertical: Double
+        if ty < top - soft || ty > bottom + soft { vertical = 0 }
+        else if ty < top { vertical = (ty - (top - soft)) / soft }
+        else if ty <= bottom { vertical = 1 }
+        else { vertical = 1 - (ty - bottom) / soft }
+        return horizontal * vertical
+    }
+
+    /// Piecewise-linear through three equally spaced stops (x = 0, 0.5, 1), as `LinearGradient`
+    /// draws three colours.
+    private static func threeStop(_ x: Double, _ leading: Double, _ mid: Double, _ trailing: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t <= 0.5 ? leading + (mid - leading) * (t / 0.5) : mid + (trailing - mid) * ((t - 0.5) / 0.5)
+    }
+
+    /// Clear until `clearUntil`, then linear to `bottom` at y = 1.
+    private static func verticalRamp(_ y: Double, clearUntil: Double, bottom: Double) -> Double {
+        let t = min(max(y, 0), 1)
+        guard t > clearUntil, clearUntil < 1 else { return 0 }
+        return bottom * (t - clearUntil) / (1 - clearUntil)
     }
 }

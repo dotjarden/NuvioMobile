@@ -10,7 +10,7 @@ struct MediaBrowseView: View {
     var searchControls: AnyView? = nil
     var restoreSearchFocus: Int = 0
     @FocusState private var searchFocused: Bool
-    @StateObject private var discovery = SearchViewModel()
+    @StateObject private var discovery = MediaBrowseDiscovery()
     @State private var genre = "All genres"
     @State private var catalog = "All catalogs"
     @State private var order = "Recommended"
@@ -125,4 +125,65 @@ struct HomeBrowseConfiguration {
     let emptyState: AnyView
     let focusFilters: () -> Void
     let onItemFocus: (MetaPreview?) -> Void
+}
+
+/// The shared paginated Discover pipeline (`SearchRepository.discoverUiState`) for the browse
+/// surface's filters. Upstream moved Discover out of `SearchViewModel` into its own tab models;
+/// this keeps the combined Search browse page on the same repository calls.
+@MainActor
+final class MediaBrowseDiscovery: ObservableObject {
+    @Published private(set) var discover: DiscoverUiState?
+    private var discoverWatcher: FlowWatcher?
+    private var addonWatcher: FlowWatcher?
+    private var enabledAddons: [ManagedAddon] = []
+    private var lastAddonSignature: String?
+    private var started = false
+
+    func start() {
+        guard !started else { return }
+        started = true
+        discoverWatcher = FlowWatcherKt.watch(SearchRepository.shared.discoverUiState) { [weak self] emitted in
+            guard let self, self.started, let state = emitted as? DiscoverUiState else { return }
+            self.discover = state
+        }
+        addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
+            guard let self, self.started, let state = emitted as? AddonsUiState else { return }
+            self.enabledAddons = AddonModelsKt.enabledAddons(state.addons)
+            self.refreshIfNeeded()
+        }
+        AddonRepository.shared.initialize()
+    }
+
+    func stop() {
+        started = false
+        discoverWatcher?.cancel(); discoverWatcher = nil
+        addonWatcher?.cancel(); addonWatcher = nil
+        // Re-arm for the next start(); the repository still reuses unchanged Discover state.
+        lastAddonSignature = nil
+    }
+
+    private func refreshIfNeeded() {
+        let signature = enabledAddons
+            .map { "\($0.manifestUrl)|\($0.manifest != nil ? 1 : 0)|\($0.isRefreshing ? 1 : 0)" }
+            .sorted()
+            .joined(separator: ",")
+        guard signature != lastAddonSignature else { return }
+        lastAddonSignature = signature
+        SearchRepository.shared.refreshDiscover(addons: enabledAddons, forceRefresh: false)
+    }
+
+    func selectDiscoverType(_ type: String) { SearchRepository.shared.selectDiscoverType(type: type) }
+    func selectDiscoverCatalog(_ key: String) { SearchRepository.shared.selectDiscoverCatalog(catalogKey: key) }
+    func selectDiscoverGenre(_ genre: String?) { SearchRepository.shared.selectDiscoverGenre(genre: genre) }
+
+    /// Load-more sentinel: fire pagination as the grid approaches its end.
+    func discoverItemAppeared(at index: Int) {
+        guard let discover, discover.canLoadMore, !discover.isLoading else { return }
+        if index >= discover.items.count - 8 { SearchRepository.shared.loadMoreDiscover() }
+    }
+
+    deinit {
+        discoverWatcher?.cancel()
+        addonWatcher?.cancel()
+    }
 }

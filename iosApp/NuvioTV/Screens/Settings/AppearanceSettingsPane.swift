@@ -16,38 +16,43 @@ struct AppearanceSettingsPane: View {
     @ObservedObject var badges: BadgeSettingsViewModel
     /// Swatch to refocus after a theme-change remount; consumed by [ThemePickerRow].
     @Binding var pendingThemeSwatchFocus: String?
-    /// FEAT-30/31: which row ("navigation" / "typeface") should reclaim focus after a
-    /// theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below, same contract
-    /// as `pendingThemeSwatchFocus`/`ThemePickerRow`.
+    /// FEAT-30/31, H9: which row ("navigation" / "railVisibility" / "railPosition" / "typeface") should reclaim
+    /// focus after a theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below,
+    /// same contract as `pendingThemeSwatchFocus`/`ThemePickerRow`.
     @Binding var pendingAppearanceRowFocus: String?
-    /// Backs the `.focused($appearanceRowFocus, equals:)` modifiers on the Navigation and
+    /// Backs the `.focused($appearanceRowFocus, equals:)` modifiers on the Navigation, Rail and
     /// Typeface rows below. `SettingsPickerRow`'s own body is a single `Menu` (see
     /// `SettingsRowViews.swift`), so `.focused` applied to the row view — not to something inside
     /// it — still binds correctly: SwiftUI's `focused(_:equals:)` on a container reports focus
     /// when any focusable descendant (here, the row's `Menu`) has it, and there is exactly one
     /// such descendant per row.
     @FocusState private var appearanceRowFocus: String?
+    @State private var discoverPlacementRevision = 0
 
     /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
     /// on for testers who preferred the original behavior. Local-only, not synced.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
-    /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
-    @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
-    /// UX-4b: the muted background trailer on detail pages (distinct from auto-play above).
-    @AppStorage("detail_trailer_background") private var detailTrailerBackground = true
-    /// FEAT-8: mirrors DetailView's `detail_trailer_duration` key. 0 = play forever.
-    @AppStorage("detail_trailer_duration") private var detailTrailerDuration = 0
-    /// FEAT-9: mirrors DetailView's `detail_action_icons_only` key.
-    @AppStorage("detail_action_icons_only") private var detailActionIconsOnly = false
     /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
     /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
     @AppStorage("settings_style") private var settingsStyle = "default"
-    /// FEAT-30: device-local key, not synced. Owning reader is `TabBarImmersiveHideModifier`/
-    /// `SidebarOverlay` (Opus wave, concurrent with this file) — `"tabs"` (default) keeps the top
-    /// tab bar, `"sidebar"` swaps to the floating sidebar panel. Also folded into ContentView's
-    /// `.id` remount key alongside `theme`/`ui_font`, so writing this key remounts the tree.
-    @AppStorage("sidebar_style") private var sidebarStyle = "tabs"
+    /// H9 (FEAT-45, replacing FEAT-30's Sidebar): device-local key, not synced. Owning reader is
+    /// `NavigationChrome` (`TabBarImmersiveHideModifier`, `NavigationRail`) — `"tabs"` (default)
+    /// keeps the top tab bar, `"rail"` swaps it for the navigation rail; FEAT-30's stored
+    /// `"sidebar"` reads as Rail (and migrates once at launch). Folded into ContentView's `.id`
+    /// remount key alongside `theme`/`ui_font`, so writing this key remounts the tree.
+    @AppStorage(NavigationChrome.styleKey) private var navigationStyle = NavigationChrome.Style.tabs.rawValue
+    /// H9: the rail's visibility, device-local. `"always"` (default) reserves the rail's width on
+    /// every page; `"browsing"` floats it and slides it away while browsing. Also part of the `.id`
+    /// remount key (it changes every tab root's inset).
+    @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = NavigationChrome.RailVisibility.always.rawValue
+    @AppStorage(NavigationChrome.railPositionKey) private var railPosition = NavigationChrome.RailPosition.centre.rawValue
+    @AppStorage(NavigationChrome.railLabelsKey) private var railLabels = NavigationChrome.RailLabels.shown.rawValue
+    /// Batch P (P2): Floating / Edge. Device-local; changes no layout inset, so no remount.
+    @AppStorage(NavigationChrome.railStyleKey) private var railStyle = NavigationChrome.RailStyle.floating.rawValue
+    /// Home Stage & Strip (P3 #22): Hide Hero Artwork While Browsing only means something in
+    /// Classic, so the row hides in Stage. Live, like every Home Layout reader.
+    @AppStorage(HomeLayout.defaultsKey) private var homeLayoutRaw = HomeLayout.defaultValue.rawValue
     /// FEAT-31: device-local key, not synced. Owning reader is `Theme.Font` (DesignSystem/Theme.swift)
     /// — `"system"` (default) or `"openSans"`. Also folded into ContentView's `.id` remount key, so
     /// writing this key remounts the tree the same way a theme change does.
@@ -56,26 +61,59 @@ struct AppearanceSettingsPane: View {
     /// Default OFF — off must render byte-identical to the pre-FEAT-14 tree, so PosterCard reads
     /// this same key independently rather than through a passed-down flag.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// FEAT-46 (rc14, Steven rc13 verdict, 2026-09-30): the accent ring takes the focused poster's
+    /// dominant color instead of the accent. Default OFF; only offered while `accentFocusRing` is
+    /// on. The card views read this same key independently (same pattern as the ring above).
+    @AppStorage("focus_ring_poster_color") private var focusRingPosterColor = false
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the card-depth edge rail takes each
+    /// poster's dominant color instead of white. Default OFF; only offered while Card Depth is on.
+    /// The four card views (poster, landscape, saga, folder tile) read this same key independently.
+    @AppStorage("depth_rail_poster_color") private var depthRailPosterColor = false
     /// BUG-36: opt-in "focus without motion" for artwork cards (PosterCard/LandscapeCard). Default
     /// OFF — off keeps the two existing treatments (system lift, or the accent ring's manual
     /// scale). Same independent-read pattern as the ring above; the cards resolve both keys into a
     /// single `CardFocusMode`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// beta.19-rc1 verdict (F, FEAT-54): the row edge fade, promoted from the Developer pane's
+    /// BUG-118 A/B. Device-local, live: every row's `RowEdgeEffectStyleModifier` reads the same key,
+    /// so a change applies at once. Off by default (`RowEdgeFadeSetting.defaultValue`).
+    @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
+    /// B1 (BUG-145 + FEAT-67): Show Catalog Details in Headings, device-local, live: the Stage,
+    /// Discover, Classic Home and the folder page read the same key (`HeadingDetailsSetting`).
+    @AppStorage(HeadingDetailsSetting.defaultsKey) private var catalogDetailsInHeadings = HeadingDetailsSetting.defaultValue
 
     private static let settingsStyleOptions: [(value: String, label: String)] = [
         ("default", String(localized: "Default")),
         ("minimal", String(localized: "Minimal")),
     ]
-    private static let trailerDurationOptions: [(value: Int, label: String)] = [
-        (30, String(localized: "30s")),
-        (60, String(localized: "1 min")),
-        (90, String(localized: "90s")),
-        (0, String(localized: "Always")),
-    ]
-    /// FEAT-30 row options. Values are the raw `sidebar_style` UserDefaults strings.
+    /// H9 row options. Values are the raw `sidebar_style` UserDefaults strings (`NavigationChrome
+    /// .Style`); the binding below normalises FEAT-30's "sidebar" to "rail" on read.
     private static let navigationOptions: [(value: String, label: String)] = [
-        ("tabs", String(localized: "Top Tabs")),
-        ("sidebar", String(localized: "Sidebar")),
+        (NavigationChrome.Style.tabs.rawValue, String(localized: "Top Tabs")),
+        (NavigationChrome.Style.rail.rawValue, String(localized: "Rail")),
+    ]
+    /// H9 Rail row options. Values are the raw `rail_visibility` strings. FEAT-62 (Steven,
+    /// beta.19-rc3 follow-up 2026-10-08: "hide it on the first line, show it on Left/Back") adds
+    /// Hidden: off screen at rest, revealed by Left from the first card or Menu.
+    /// FEAT-80 (Steven rc7) options. Values are the raw `rail_position` / `rail_labels` strings.
+    /// Batch N: Corner (Steven's 2026-10-19 mock) replaced rc8's Top; a stored "top" reads as Corner.
+    private static let railPositionOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailPosition.centre.rawValue, String(localized: "Centre")),
+        (NavigationChrome.RailPosition.corner.rawValue, String(localized: "Corner")),
+    ]
+    private static let railStyleOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailStyle.floating.rawValue, String(localized: "Floating")),
+        (NavigationChrome.RailStyle.edge.rawValue, String(localized: "Edge")),
+    ]
+    private static let railLabelsOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailLabels.shown.rawValue, String(localized: "Shown")),
+        (NavigationChrome.RailLabels.iconsOnly.rawValue, String(localized: "Icons Only")),
+    ]
+
+    private static let railVisibilityOptions: [(value: String, label: String)] = [
+        (NavigationChrome.RailVisibility.always.rawValue, String(localized: "Always Visible")),
+        (NavigationChrome.RailVisibility.whileBrowsing.rawValue, String(localized: "Hide While Browsing")),
+        (NavigationChrome.RailVisibility.hidden.rawValue, String(localized: "Hidden")),
     ]
     /// FEAT-31 row options. Values are `Theme.AppFontFamily.rawValue`, so the picker never drifts
     /// from the type the storage key actually feeds.
@@ -83,19 +121,64 @@ struct AppearanceSettingsPane: View {
         ($0.rawValue, $0.displayName)
     }
 
-    /// Wraps `sidebarStyle` so picking a navigation style arms the focus-restore hint BEFORE the
+    /// Wraps `navigationStyle` so picking a navigation style arms the focus-restore hint BEFORE the
     /// `@AppStorage` write — the write is what re-identifies ContentView's `.id()`-keyed tree, so
     /// anything set after it belongs to a view already being torn down (same ordering rule as
-    /// `pendingThemeSwatchFocus` in `ThemePickerRow.onSelect` above).
-    private var sidebarStyleBinding: Binding<String> {
+    /// `pendingThemeSwatchFocus` in `ThemePickerRow.onSelect` above). Normalises on get (P4 §4.1):
+    /// a launch-argument "sidebar" shows "Rail", not a blank pill.
+    private var navigationStyleBinding: Binding<String> {
         Binding(
-            get: { sidebarStyle },
+            get: { NavigationChrome.style(raw: navigationStyle).rawValue },
             set: { newValue in
                 // Codex r2: a re-pick of the current value changes no `.id`, so no remount would
                 // consume the hint — it would then steal focus on the next unrelated remount.
-                guard newValue != sidebarStyle else { return }
+                guard newValue != NavigationChrome.style(raw: navigationStyle).rawValue else { return }
                 pendingAppearanceRowFocus = "navigation"
-                sidebarStyle = newValue
+                navigationStyle = newValue
+            }
+        )
+    }
+
+    /// Same wrapper for the Rail row (its write remounts the tree too).
+    private var railVisibilityBinding: Binding<String> {
+        Binding(
+            get: { NavigationChrome.railVisibility(raw: railVisibility).rawValue },
+            set: { newValue in
+                guard newValue != NavigationChrome.railVisibility(raw: railVisibility).rawValue else { return }
+                pendingAppearanceRowFocus = "railVisibility"
+                railVisibility = newValue
+            }
+        )
+    }
+
+    /// FEAT-80 (Batch N): the Rail Position row. Corner reserves no leading width, so the position
+    /// joined `ContentView`'s remount key and this write remounts the tree too: same wrapper. The
+    /// getter normalises (rc8's "top" shows as Corner), and re-picking Corner over a stored "top"
+    /// writes nothing, as it changes no resolved value.
+    private var railPositionBinding: Binding<String> {
+        Binding(
+            get: { NavigationChrome.railPosition(raw: railPosition).rawValue },
+            set: { newValue in
+                guard newValue != NavigationChrome.railPosition(raw: railPosition).rawValue else { return }
+                pendingAppearanceRowFocus = "railPosition"
+                railPosition = newValue
+            }
+        )
+    }
+
+    /// Search & Discover batch (A5): Discover placement. The write remounts the tab tree (a tab
+    /// appears or goes), so arm the focus-restore hint first, same ordering rule as Navigation.
+    /// `discoverPlacementRevision` forces a re-read of `DiscoverPlacement.settingValue()` (the
+    /// stored value and the synced flag are not `@AppStorage`). `settingValue()`, not `current()`:
+    /// the DEBUG `-discover_placement` override must not lock the picker (review r1 P3-6).
+    private var discoverPlacementBinding: Binding<DiscoverPlacement> {
+        Binding(
+            get: { _ = discoverPlacementRevision; return DiscoverPlacement.settingValue() },
+            set: { newValue in
+                guard newValue != DiscoverPlacement.settingValue() else { return }
+                pendingAppearanceRowFocus = "discoverPlacement"
+                model.setDiscoverPlacement(newValue)
+                discoverPlacementRevision += 1
             }
         )
     }
@@ -137,7 +220,11 @@ struct AppearanceSettingsPane: View {
 
     @ViewBuilder
     private var content: some View {
-        SettingsSection(nil) {
+        SettingsSection(String(localized: "Theme")) {
+            Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
             ThemePickerRow(
                 selectedName: model.themeName,
                 pendingFocus: $pendingThemeSwatchFocus
@@ -158,17 +245,90 @@ struct AppearanceSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Accent Focus Ring"),
                 subtitle: String(localized: "Focused artwork shows a ring in your accent color"),
-                isOn: $accentFocusRing
+                isOn: $accentFocusRing,
+                descriptionID: .appearanceAccentFocusRing
             )
+            // FEAT-46 (rc14, Steven rc13 verdict, 2026-09-30): only meaningful while the ring itself is on.
+            // rc14 FEAT-46 — shown whenever a ring can draw (the accent ring, or No Zoom's still
+            // ring), since the cards honour the setting for both (review r1 P3).
+            if accentFocusRing || noZoomOnFocus {
+                SettingsToggleRow(
+                    title: String(localized: "Ring Takes Poster Color"),
+                    subtitle: String(localized: "The focus ring uses the focused poster's dominant color"),
+                    isOn: $focusRingPosterColor,
+                    descriptionID: .appearanceRingPosterColor
+                )
+            }
+            // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color".
+            // Gated on Card Depth itself: with depth off there is no rail to colour.
+            if model.cardDepth.enabled {
+                SettingsToggleRow(
+                    title: String(localized: "Depth Takes Poster Color"),
+                    // review r1 (P3-7): cards already on screen recolor when their artwork reloads.
+                    subtitle: String(localized: "Card depth edges take each poster's dominant color as artwork loads"),
+                    isOn: $depthRailPosterColor,
+                    descriptionID: .appearanceDepthPosterColor
+                )
+            }
 
-            // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
-            // turns the zoom off outright — the card holds its size and marks focus with the
-            // ring (or a highlight border when the ring is off) and a shadow instead. Default
-            // OFF, so the stock focus motion is unchanged for everyone else.
+            // F (beta.19-rc1 verdict): No Zoom and Row Edge Fade share one `Group` so this
+            // section's builder keeps the ten direct children it had. The Group adds no layout of its
+            // own: a `Section` flattens it into two rows.
+            Group {
+                // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
+                // turns the zoom off outright — the card holds its size and marks focus with the
+                // ring (or a highlight border when the ring is off) and a shadow instead. Default
+                // OFF, so the stock focus motion is unchanged for everyone else.
+                SettingsToggleRow(
+                    title: String(localized: "No Zoom on Focus"),
+                    subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
+                    isOn: $noZoomOnFocus,
+                    descriptionID: .appearanceNoZoomOnFocus
+                )
+
+                // F (Steven beta.19-rc1 verdict, 2026-10-03; FEAT-54): how the left and right edges
+                // of rows fade. Soft is the app-drawn eased fade, System is tvOS's own scroll-edge
+                // effect, Off draws none (the default since the F.5 frame-time gate). An unknown stored value reads as the default,
+                // so the picker always shows one of the three.
+                SettingsPickerRow(
+                    title: String(localized: "Row Edge Fade"),
+                    selection: Binding(
+                        get: { RowEdgeFadeSetting.resolve(rowEdgeFade) },
+                        set: { rowEdgeFade = $0.rawValue }
+                    ),
+                    options: RowEdgeFadeSetting.allCases,
+                    descriptionID: .appearanceRowEdgeFade,
+                    label: { $0.label }
+                )
+                .accessibilityIdentifier("appearance_row_edge_fade")
+
+                // B1 (BUG-145 + BUG-159 + FEAT-67; Steven, beta.19-rc4 verdict 2026-10-16, "a
+                // no-go"): the add-on name after Stage and Discover row headings and the
+                // "Aventure · 8 sources" line under a focused collection folder on both Homes.
+                // Default OFF (name only); ON is rc4's behaviour.
+                SettingsToggleRow(
+                    title: String(localized: "Show Catalog Details in Headings"),
+                    subtitle: catalogDetailsInHeadings
+                        ? String(localized: "Row headings name their add-on; folders show their source count")
+                        : String(localized: "Headings and folders show the name only"),
+                    isOn: $catalogDetailsInHeadings,
+                    descriptionID: .appearanceHeadingDetails
+                )
+                .accessibilityIdentifier("appearance_heading_details")
+            }
+
+            // FEAT-38: pure black background for OLED screens. Backed by
+            // `ThemeSettingsRepository.amoledEnabled` (profile-scoped, synced) via
+            // `SettingsViewModel.amoledEnabled`/`setAmoled(_:)`; applied to `Theme.Palette.background`
+            // by `AppThemeModel`. `surface`/`surfaceElevated` are untouched, so cards keep contrast.
             SettingsToggleRow(
-                title: String(localized: "No Zoom on Focus"),
-                subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
-                isOn: $noZoomOnFocus
+                title: String(localized: "OLED True Black"),
+                subtitle: String(localized: "Pure black background for OLED screens"),
+                isOn: Binding(
+                    get: { model.amoledEnabled },
+                    set: { model.setAmoled($0) }
+                ),
+                descriptionID: .appearanceOledBlack
             )
 
             // FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal
@@ -178,21 +338,89 @@ struct AppearanceSettingsPane: View {
                 title: String(localized: "Settings Style"),
                 selection: $settingsStyle,
                 options: Self.settingsStyleOptions.map(\.value),
+                descriptionID: .appearanceSettingsStyle,
                 label: { value in Self.settingsStyleOptions.first { $0.value == value }?.label ?? value }
             )
 
-            // FEAT-30: opt-in floating sidebar in place of the top tab bar. Default "tabs" is
-            // byte-identical to today; the Opus wave building SidebarOverlay/TabBarImmersiveHideModifier
-            // reads this same key independently.
-            SettingsPickerRow(
-                title: String(localized: "Navigation"),
-                subtitle: String(localized: "Sidebar hides the top tab bar behind a floating panel"),
-                selection: sidebarStyleBinding,
-                options: Self.navigationOptions.map(\.value),
-                label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
-            )
-            .accessibilityIdentifier("appearance_row_navigation")
-            .focused($appearanceRowFocus, equals: "navigation")
+            // H9 (FEAT-45): Top Tabs or the navigation rail, plus the Rail row directly below it,
+            // shown only with Rail. One `Group`, so this section's builder keeps the ten direct
+            // children it had (the Row Edge Fade group above follows the same rule). Default
+            // "tabs" is byte-identical to today.
+            Group {
+                SettingsPickerRow(
+                    title: String(localized: "Navigation"),
+                    subtitle: String(localized: "Rail swaps the top tab bar for a column of icons on the left."),
+                    selection: navigationStyleBinding,
+                    options: Self.navigationOptions.map(\.value),
+                    descriptionID: .appearanceNavigation,
+                    label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
+                )
+                .accessibilityIdentifier("appearance_row_navigation")
+                .focused($appearanceRowFocus, equals: "navigation")
+
+                if NavigationChrome.style(raw: navigationStyle) == .rail {
+                    SettingsPickerRow(
+                        title: String(localized: "Rail"),
+                        selection: railVisibilityBinding,
+                        options: Self.railVisibilityOptions.map(\.value),
+                        descriptionID: .appearanceRail,
+                        label: { value in Self.railVisibilityOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail")
+                    .focused($appearanceRowFocus, equals: "railVisibility")
+
+                    // FEAT-80 (Batch N): Centre / Corner. Remounts the tree (Corner reserves no
+                    // width), so the row reclaims focus like the Rail row above.
+                    SettingsPickerRow(
+                        title: String(localized: "Rail Position"),
+                        selection: railPositionBinding,
+                        options: Self.railPositionOptions.map(\.value),
+                        descriptionID: .appearanceRailPosition,
+                        label: { value in Self.railPositionOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail_position")
+                    .focused($appearanceRowFocus, equals: "railPosition")
+
+                    // Batch P (P2): Floating / Edge. Padding and shape only, no remount. W3-11
+                    // (D1): Centre only. Corner's glass is flush whatever the style, so the row
+                    // hides while Position = Corner (the stored value is kept for Centre).
+                    if NavigationChrome.railPosition(raw: railPosition) == .centre {
+                        SettingsPickerRow(
+                            title: String(localized: "Rail Style"),
+                            selection: Binding(
+                                get: { NavigationChrome.railStyle(raw: railStyle).rawValue },
+                                set: { railStyle = $0 }),
+                            options: Self.railStyleOptions.map(\.value),
+                            descriptionID: .appearanceRailStyle,
+                            label: { value in Self.railStyleOptions.first { $0.value == value }?.label ?? value }
+                        )
+                        .accessibilityIdentifier("appearance_row_rail_style")
+                    }
+
+                    SettingsPickerRow(
+                        title: String(localized: "Rail Labels"),
+                        selection: Binding(
+                            get: { NavigationChrome.railLabels(raw: railLabels).rawValue },
+                            set: { railLabels = $0 }),
+                        options: Self.railLabelsOptions.map(\.value),
+                        descriptionID: .appearanceRailLabels,
+                        label: { value in Self.railLabelsOptions.first { $0.value == value }?.label ?? value }
+                    )
+                    .accessibilityIdentifier("appearance_row_rail_labels")
+                }
+
+                // Search & Discover batch (A5): Own Tab / Under Search / Off. Off syncs as Hide
+                // Discover; the other two are this Apple TV only.
+                SettingsPickerRow(
+                    title: String(localized: "Discover"),
+                    selection: discoverPlacementBinding,
+                    options: DiscoverPlacement.allCases,
+                    descriptionID: .appearanceDiscoverPlacement,
+                    label: { $0.label }
+                )
+                .accessibilityIdentifier("appearance_row_discover")
+                .focused($appearanceRowFocus, equals: "discoverPlacement")
+            }
 
             // FEAT-31: opt-in Open Sans typeface. The binding's setter applies the font family
             // BEFORE writing `uiFont` — ContentView's `.id` remount key reads `ui_font` from
@@ -202,13 +430,14 @@ struct AppearanceSettingsPane: View {
                 title: String(localized: "Typeface"),
                 selection: uiFontBinding,
                 options: Self.typefaceOptions.map(\.value),
+                descriptionID: .appearanceTypeface,
                 label: { value in Self.typefaceOptions.first { $0.value == value }?.label ?? value }
             )
             .accessibilityIdentifier("appearance_row_typeface")
             .focused($appearanceRowFocus, equals: "typeface")
         }
 
-        SettingsExpandableSection(String(localized: "Poster Style"), id: "posters") {
+        SettingsSection(String(localized: "Poster Style")) {
             PosterStyleControls(
                 widthDp: model.posterWidthDp,
                 cornerDp: model.posterCornerRadiusDp,
@@ -220,9 +449,6 @@ struct AppearanceSettingsPane: View {
                 onLandscape: { model.setPosterLandscapeRows($0) },
                 onReset: { model.resetPosterStyle() }
             )
-        }
-
-        SettingsExpandableSection(String(localized: "Artwork & Trailers"), id: "detailAppearance") {
             // Default (off) always shows the Home hero's backdrop artwork — a beta
             // tester read the old focus-only fade as a bug ("hero posts don't
             // work"). This restores that original fade for anyone who preferred it.
@@ -230,41 +456,29 @@ struct AppearanceSettingsPane: View {
             // testers in opposite directions — one asked for the OFF behavior thinking it
             // was missing (UX-1), one reported the toggle "does nothing" while describing
             // exactly what ON does (BUG-24). The name now states the action.
-            SettingsToggleRow(
-                title: String(localized: "Hide Hero Artwork While Browsing"),
-                subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
-                isOn: $heroPosterFocusOnly
-            )
-            SettingsToggleRow(
-                title: String(localized: "Auto-Play Trailer on Detail"),
-                subtitle: String(localized: "Play the trailer full screen shortly after opening a title"),
-                isOn: $detailTrailerAutoplay
-            )
-            // UX-4b (tester ask): the auto-play toggle above never controlled the muted
-            // trailer looping BEHIND the detail description — that had no switch at all.
-            SettingsToggleRow(
-                title: String(localized: "Background Trailer on Detail"),
-                subtitle: String(localized: "A muted trailer plays behind the description on detail pages"),
-                isOn: $detailTrailerBackground
-            )
-            // FEAT-8: only meaningful while the background trailer itself is on.
-            if detailTrailerBackground {
-                SettingsPickerRow(
-                    title: String(localized: "Trailer Duration"),
-                    selection: $detailTrailerDuration,
-                    options: Self.trailerDurationOptions.map(\.value),
-                    label: { value in Self.trailerDurationOptions.first { $0.value == value }?.label ?? "\(value)" }
+            // Home Stage & Strip (P3 #22): Classic only — Stage has no hero carousel to fade.
+            if HomeLayout.resolve(homeLayoutRaw) == .classic {
+                SettingsToggleRow(
+                    title: String(localized: "Hide Hero Artwork While Browsing"),
+                    subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
+                    isOn: $heroPosterFocusOnly,
+                    descriptionID: .appearanceHideHeroArtwork
                 )
             }
-            // FEAT-9
-            SettingsToggleRow(
-                title: String(localized: "Icon-Only Detail Buttons"),
-                subtitle: String(localized: "Buttons show icons only"),
-                isOn: $detailActionIconsOnly
-            )
         }
 
-        SettingsExpandableSection(String(localized: "Card Depth"), id: "depth") {
+        SettingsSection(String(localized: "Custom Posters")) {
+            SettingsLinkRow(
+                title: String(localized: "Custom Posters"),
+                subtitle: String(localized: "Use a poster service like RPDB for artwork."),
+                systemImage: "photo.on.rectangle",
+                descriptionID: .appearanceCustomPosters
+            ) {
+                CustomPostersSettingsView()
+            }
+        }
+
+        SettingsSection(String(localized: "Card Depth")) {
             CardDepthControls(
                 style: model.cardDepth,
                 onEnabled: { model.setCardDepthEnabled($0) },
@@ -276,7 +490,7 @@ struct AppearanceSettingsPane: View {
             )
         }
 
-        SettingsExpandableSection(String(localized: "Stream Badges"), id: "badges") {
+        SettingsSection(String(localized: "Stream Badges")) {
             StreamBadgesSection(badges: badges)
         }
     }
@@ -334,7 +548,7 @@ private struct ThemePickerRow: View {
 
 /// A single theme swatch: colored circle + name. Selection wears a full-strength ring; focus
 /// wears a slightly lighter ring in the same swatch-contrast color and brightens the label
-/// (platter-free — `.borderless` gives only the system lift, no scale of our own). BUG-65: the
+/// (platter-free — `.borderless` gives only the system lift; D-8 adds our own x1.2 lift). BUG-65: the
 /// focused state used to be label-brightening alone, which the reporter couldn't see; the ring
 /// makes focus self-describing on every swatch including White (`onColor(forFillHex:)` picks a
 /// shade that contrasts the fill, so it can never vanish into it).
@@ -362,6 +576,12 @@ private struct SwatchLabel: View {
                         lineWidth: isSelected ? 4 : 3
                     )
                 )
+                // D-8 (design review 2026-10-22): with White selected, the focused and the selected
+                // swatch read alike at TV distance (both wear a ring). The W3-5 subtitle-swatch
+                // treatment: focus also lifts the circle (x1.2 + a shadow), which holds whether or
+                // not the swatch is the selected one. `.borderless` lifts only images, so a plain
+                // circle gets no system cue on the Apple TV.
+                .modifier(ThemeSwatchFocusLift())
             Text(label)
                 .font(Theme.Font.caption)
                 // BUG-58 (beta.11 regression from the BUG-50 sweep, device-verified from
@@ -378,6 +598,23 @@ private struct SwatchLabel: View {
         }
         .padding(Theme.Spacing.sm)
         .animation(.easeOut(duration: 0.15), value: isFocused)
+        // All seven swatches share one id/title, so walking them publishes to the explainer once.
+        .settingsDescription(.appearanceTheme, title: String(localized: "Theme"), systemImage: "paintpalette")
+    }
+}
+
+/// D-8: focus lift for the theme swatches, a copy of `SubtitleSwatchFocusLift` (W3-5). At 56 pt the
+/// x1.2 scale grows each side by 5.6 pt, inside the swatch's `Spacing.sm` padding; the animation is
+/// dropped under Reduce Motion (the scale and shadow still apply, instantly).
+private struct ThemeSwatchFocusLift: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isFocused ? 1.2 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.55 : 0), radius: isFocused ? 14 : 0, y: isFocused ? 8 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 }
 
@@ -397,8 +634,13 @@ private struct PosterStyleControls: View {
     let onLandscape: (Bool) -> Void
     let onReset: () -> Void
 
+    // FEAT-39 (u/mrStevenx3, 2026-09-11): "Large is too big, Medium too small" — 134 dp is the
+    // mobile app's own "comfort" preset, so the synced payload stays legal on both platforms;
+    // above 335 pt it takes the Large hero-compression dial (see `PinnedRowGeometry`), so it
+    // trades one description line for the size.
     private let sizes: [(name: String, dp: Int32)] = [
-        (String(localized: "Small"), 105), (String(localized: "Medium"), 126), (String(localized: "Large"), 154)
+        (String(localized: "Small"), 105), (String(localized: "Medium"), 126),
+        (String(localized: "Medium+"), 134), (String(localized: "Large"), 154)
     ]
     private let corners: [(name: String, dp: Int32)] = [
         (String(localized: "Square"), 0), (String(localized: "Rounded"), 12), (String(localized: "Round"), 28)
@@ -409,27 +651,31 @@ private struct PosterStyleControls: View {
             title: String(localized: "Size"),
             selection: Binding(get: { widthDp }, set: { onSize($0) }),
             options: sizes.map(\.dp),
+            descriptionID: .appearancePosterSize,
             label: { dp in sizes.first { $0.dp == dp }?.name ?? "\(dp)" }
         )
         SettingsPickerRow(
             title: String(localized: "Corners"),
             selection: Binding(get: { cornerDp }, set: { onCorner($0) }),
             options: corners.map(\.dp),
+            descriptionID: .appearancePosterCorners,
             label: { dp in corners.first { $0.dp == dp }?.name ?? "\(dp)" }
         )
 
         SettingsToggleRow(
             title: String(localized: "Hide Titles"),
             subtitle: String(localized: "Show posters without a title label"),
-            isOn: Binding(get: { hideLabels }, set: { onHideLabels($0) })
+            isOn: Binding(get: { hideLabels }, set: { onHideLabels($0) }),
+            descriptionID: .appearanceHideTitles
         )
         SettingsToggleRow(
             title: String(localized: "Landscape Rows"),
             subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"),
-            isOn: Binding(get: { landscapeRows }, set: { onLandscape($0) })
+            isOn: Binding(get: { landscapeRows }, set: { onLandscape($0) }),
+            descriptionID: .appearanceLandscapeRows
         )
 
-        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", descriptionID: .appearancePosterReset, action: onReset)
     }
 }
 
@@ -448,7 +694,14 @@ private struct CardDepthControls: View {
     let onSurface: (CardDepthSurface, Bool) -> Void
     let onReset: () -> Void
 
+    // BUG-110 (rc12): "Off" leads the list so the strength picker itself can switch the rail off
+    // without touching the master "Card Depth" toggle (which also silences the sheen). `0` was
+    // already a legal synced value — the picker just never offered it — so this is additive: no
+    // reset-default or storage-contract change (`CardDepthStyle.edgeStrength` still defaults to 28).
+    // Reuses the "Off" string `sheenOptions` below already carries; xcstrings has one shared entry
+    // for both (confirmed translated in all 5 locales), so no new key was needed.
     private let edgeOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Off"), 0),
         (String(localized: "Subtle"), 28), (String(localized: "Balanced"), 42), (String(localized: "Bold"), 56)
     ]
     private let sheenOptions: [(name: String, value: Int32)] = [
@@ -473,7 +726,8 @@ private struct CardDepthControls: View {
         SettingsToggleRow(
             title: String(localized: "Card Depth"),
             subtitle: String(localized: "Enable the edge highlight and top sheen"),
-            isOn: Binding(get: { style.enabled }, set: { onEnabled($0) })
+            isOn: Binding(get: { style.enabled }, set: { onEnabled($0) }),
+            descriptionID: .appearanceCardDepth
         )
 
         if style.enabled {
@@ -481,18 +735,21 @@ private struct CardDepthControls: View {
                 title: String(localized: "Edge"),
                 selection: Binding(get: { Int32(style.edgeStrength) }, set: { onEdge($0) }),
                 options: edgeOptions.map(\.value),
+                descriptionID: .appearanceCardDepthEdge,
                 label: { value in edgeOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
             SettingsPickerRow(
                 title: String(localized: "Sheen"),
                 selection: Binding(get: { Int32(style.sheenStrength) }, set: { onSheen($0) }),
                 options: sheenOptions.map(\.value),
+                descriptionID: .appearanceCardDepthSheen,
                 label: { value in sheenOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
             SettingsPickerRow(
                 title: String(localized: "Edge Coverage"),
                 selection: Binding(get: { Int32(style.edgeCoverage) }, set: { onCoverage($0) }),
                 options: coverageOptions.map(\.value),
+                descriptionID: .appearanceCardDepthCoverage,
                 label: { value in coverageOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
 
@@ -503,12 +760,13 @@ private struct CardDepthControls: View {
                 SettingsToggleRow(
                     title: entry.name,
                     subtitle: entry.subtitle,
-                    isOn: Binding(get: { isOn(entry.surface) }, set: { onSurface(entry.surface, $0) })
+                    isOn: Binding(get: { isOn(entry.surface) }, set: { onSurface(entry.surface, $0) }),
+                    descriptionID: .appearanceCardDepthSurface
                 )
             }
         }
 
-        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", descriptionID: .appearanceCardDepthReset, action: onReset)
     }
 
     private func isOn(_ surface: CardDepthSurface) -> Bool {

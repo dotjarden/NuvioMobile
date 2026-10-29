@@ -31,23 +31,28 @@ struct ContentView: View {
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
-    /// Which Settings category the split view is showing. Owned HERE, above the
-    /// `.id(appTheme.themeName)` rebuild boundary, for exactly the reason `selectedTab` is: picking
-    /// a theme swatch re-identifies the whole tree, and while this was a plain `@State` inside
-    /// `SettingsView` the split snapped back to the first category (Account & Services) on every
-    /// theme change — so pressing a colour looked like it had done nothing at all, which is how the
-    /// "the theme picker doesn't work" report reads on screen.
-    @State private var settingsCategory: SettingsCategory = .accountServices
+    /// Which Settings pane is open (the Settings `NavigationStack` path; empty = the category
+    /// root). Owned HERE, above the `.id(...)` rebuild boundary, for exactly the reason
+    /// `selectedTab` is: picking a theme swatch re-identifies the whole tree, and while the old
+    /// split's category was a plain `@State` inside `SettingsView` it snapped back to the first
+    /// category on every theme change — so pressing a colour looked like it had done nothing at
+    /// all, which is how the "the theme picker doesn't work" report reads on screen. With the path
+    /// held here, the rebuilt stack starts on Appearance again (FEAT-50).
+    @State private var settingsPath: [SettingsCategory] = []
+    /// The Settings category last opened: the root's preferred focus after a pop or a remount.
+    /// Same ownership reason as `settingsPath`.
+    @State private var settingsLastCategory: SettingsCategory? = nil
     /// Set when the user picks a theme swatch, cleared once the Appearance pane has taken focus
-    /// back. Owned HERE for the same reason as `settingsCategory`: the swatch press re-identifies
+    /// back. Owned HERE for the same reason as `settingsPath`: the swatch press re-identifies
     /// the whole tree, and focus — unlike state — cannot survive a remount at all, so it fell to
     /// the tab bar and the user was thrown to the top of Settings. The hint lets the rebuilt pane
     /// put focus back on the swatch it was on. Not persisted: a cold launch must never steal
     /// focus into Appearance.
     @State private var pendingThemeSwatchFocus: String?
-    /// FEAT-30/31: same job as `pendingThemeSwatchFocus`, for the two Appearance rows that also
-    /// remount the whole tree when pressed — the navigation-style picker (tabs ↔ sidebar) and the
-    /// UI-font picker (see the `.id` below). Owned HERE for the identical reason: focus cannot
+    /// FEAT-30/31: same job as `pendingThemeSwatchFocus`, for the Appearance rows that also
+    /// remount the whole tree when pressed — the navigation-style picker (tabs ↔ rail), the rail
+    /// visibility picker (H9) and the UI-font picker (see the `.id` below). Owned HERE for the
+    /// identical reason: focus cannot
     /// survive a remount at all, so without a hint the rebuilt pane drops the user at the top of
     /// Settings and the row they just changed looks like it did nothing.
     ///
@@ -55,19 +60,75 @@ struct ContentView: View {
     /// files belong to another wave, so `SettingsView`'s signature is deliberately untouched here.
     /// Not persisted: a cold launch must never steal focus into Appearance.
     @State private var pendingAppearanceRowFocus: String?
-    /// FEAT-30: the navigation chrome mode (`"tabs"` default / `"sidebar"`). Read here for ONE
-    /// purpose — it is part of the rebuild key below. `SidebarChrome.isEnabled()` is what the
-    /// shell's own call sites read.
-    @AppStorage(SidebarChrome.defaultsKey) private var sidebarStyle = "tabs"
+    /// H9 (FEAT-45, replacing FEAT-30's Sidebar): the navigation chrome mode (`"tabs"` default /
+    /// `"rail"`; FEAT-30's stored `"sidebar"` reads as Rail and migrates once at launch). Read here
+    /// for ONE purpose — it is part of the rebuild key below. `NavigationChrome.isRail()` is what
+    /// the shell's own call sites read.
+    @AppStorage(NavigationChrome.styleKey) private var navigationStyle = "tabs"
+    /// H9: the rail's visibility (`"always"` default / `"browsing"` / FEAT-62's `"hidden"`), also a rebuild-key input only.
+    /// It changes the `Tab` closures structurally (Always Visible's inset), so it may only switch
+    /// across a remount (T3 / BUG-66, the same reasoning as the style).
+    @AppStorage(NavigationChrome.railVisibilityKey) private var railVisibility = "always"
+    /// FEAT-80 (Batch N): the rail's position, a rebuild-key input for the same reason as the
+    /// visibility: Corner reserves no leading width, Centre's Always Visible does. Joined RESOLVED
+    /// (rc8's stored "top" and "corner" are the same key), so no remount when nothing changed.
+    @AppStorage(NavigationChrome.railPositionKey) private var railPosition = NavigationChrome.RailPosition.centre.rawValue
     /// FEAT-31: the UI font family (`"system"` default / `"openSans"`). Also purely a rebuild-key
     /// input — `Theme.Font` resolves the family itself, and its tokens are static reads that only
     /// re-evaluate when the tree is re-identified, exactly like `Theme.Palette.accent`.
     @AppStorage(Theme.AppFontFamily.defaultsKey) private var uiFont = "system"
+    /// Search & Discover batch 2026-10-06 (A5): where Discover lives. Tab presence must be
+    /// launch-constant (T3), so the stored value joins the remount key below and `MainTabView`
+    /// resolves `showsDiscoverTab` once per tree (and hands it to the rail). A value that arrives
+    /// by sync (`hideDiscover`) is read inside the tree and takes effect at the next remount or
+    /// launch.
+    @AppStorage(DiscoverPlacement.defaultsKey) private var discoverPlacementRaw = ""
+    /// Review r1 P2-1: bumped by every Settings pick, so a pick that leaves the stored string
+    /// unchanged (it only cleared the synced flag) still remounts the tree.
+    @AppStorage(DiscoverPlacement.revisionKey) private var discoverPlacementRevision = 0
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
     @State private var pendingDeepLinkURL: URL?
+    /// An external player's (Infuse) x-callback return that arrived before the profile gate was
+    /// passed; replayed through `ExternalPlaybackReturnRouter` once `entered`, like
+    /// `pendingDeepLinkURL` but never presented as a cover.
+    @State private var pendingExternalReturnURL: URL?
+    #if DEBUG
+    /// rc13 (test68): one-shot latch for `-debug.openDeepLink <url>` so the `.task(id: entered)`
+    /// below fires the debug link exactly once per launch, not on every later `entered` toggle
+    /// (switch-profile, sign-out/in) a long-running UI test session might produce.
+    @State private var debugDeepLinkConsumed = false
+    #endif
     @Environment(\.scenePhase) private var scenePhase
+    /// FEAT-65: the "Open Last Profile at Launch" decision runs at most once per PROCESS, at the
+    /// first time the auth gate turns `.main` (a restored session at cold launch). A `static`, not
+    /// `@State`: nothing about the view's identity may re-arm it. Also consumed by any visit to the
+    /// Welcome gate, so a sign-out → sign-in (or a first sign-in after a signed-out cold launch)
+    /// always shows the picker instead of jumping into whatever profile payload is on disk.
+    @MainActor private static var profileAutoEnterConsumed = false
+
+    /// FEAT-65 (Steven, beta.19-rc3 follow-up 2026-10-08): skip the "Who's watching?" picker and
+    /// enter the profile used last, when Settings › Account & Profiles › Open Last Profile at
+    /// Launch is on (upstream's `rememberLastProfileEnabled`, rule in `ProfileAutoEnter`). Does
+    /// exactly what the picker's own tap does (`ProfileSelectionView.perform(.select)` →
+    /// `model.select(profile)`, then `onSelected` = `appTheme.reseedNow(); entered = true`), so the
+    /// pull, the periodic sync, the theme reseed and the deep-link replay all run as they would
+    /// from a tap. "Switch Profile" sets `entered = false` and never comes back here: the latch is
+    /// already consumed.
+    private func autoEnterRememberedProfileIfNeeded() {
+        guard !entered else { return }
+        let consumed = Self.profileAutoEnterConsumed
+        Self.profileAutoEnterConsumed = true
+        // Idempotent; loads a guest's cached payload synchronously so the decision reads it (the
+        // picker's own `onAppear` calls it too).
+        profiles.start()
+        guard let profile = profiles.rememberedStartupProfile(alreadyFiredThisLaunch: consumed) else { return }
+        print("[ProfileSelect] auto-enter profile \(profile.profileIndex)")
+        profiles.select(profile)
+        appTheme.reseedNow()
+        entered = true
+    }
 
     var body: some View {
         Group {
@@ -89,7 +150,8 @@ struct ContentView: View {
                         home: home,
                         onSwitchProfile: { entered = false },
                         selectedTab: $selectedTab,
-                        settingsCategory: $settingsCategory,
+                        settingsPath: $settingsPath,
+                        settingsLastCategory: $settingsLastCategory,
                         pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                         pendingAppearanceRowFocus: $pendingAppearanceRowFocus,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
@@ -99,6 +161,9 @@ struct ContentView: View {
                         rootCoverActive: deepLink != nil
                     )
                     .environmentObject(auth)
+                    // FEAT-64: once a profile is entered, like Library/Detail's own
+                    // `WatchedRepository.ensureLoaded()` (never before the profile is known).
+                    .onAppear { WatchedBadgeIndex.shared.start() }
                 } else {
                     // `reseedNow()` BEFORE `entered = true`: the chosen profile's theme must be
                     // applied while only this picker is mounted, or MainTabView mounts under the
@@ -110,6 +175,10 @@ struct ContentView: View {
         }
         .environment(\.posterStyle, posterStyle.style)
         .environment(\.cardDepthStyle, cardDepth.style)
+        // FEAT-64: the watched tick's one index (`WatchedBadgeIndex`), read per card by
+        // `WatchedBadgeReader`. Started with the main shell (below); the repository's own profile
+        // and sign-out resets flow through it.
+        .environment(WatchedBadgeIndex.shared)
         // NOTE — deliberately NO app-root `.tint(Theme.Palette.accent)`. It looks like the obvious
         // way to make stock controls follow the theme, and it was tried (2026-08-25, sim-verified
         // via test43's `43b` capture): on tvOS it repaints the `Menu { Picker }` row's LABEL PILL
@@ -120,20 +189,24 @@ struct ContentView: View {
         // background.
         // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
         // Focus resets on change; the state that would visibly strand the user — the selected tab
-        // and the Settings category — is held above this boundary so it survives.
+        // and the Settings path — is held above this boundary so it survives.
         //
-        // FEAT-30/31 join the key. Both are rare, deliberate user actions in Appearance, and both
-        // change something a mid-session flip cannot safely carry:
-        //  * `sidebarStyle` decides the resolved `.toolbarVisibility` preference for the tab bar.
+        // FEAT-30/31 (and H9's rail visibility) join the key. All are rare, deliberate user actions
+        // in Appearance, and all change something a mid-session flip cannot safely carry:
+        //  * `navigationStyle` decides the resolved `.toolbarVisibility` preference for the tab bar.
         //    Changing a resolved toolbar preference while the shell is live is the BUG-66 latch
         //    class exactly — three device rounds proved a hidden→shown bar can freeze mid-slide on
         //    hardware — so the mode switches the only way that has ever been safe: the shell is
         //    rebuilt, and the new tree resolves one constant value for its whole lifetime.
+        //  * `railVisibility` decides whether the shell reserves the rail's leading width (the tab
+        //    controller's UIKit safe area, set by the rail) and what `.railTabRoot` hands down as
+        //    `\.railLeadingInset` / `\.rowEdgeMargins` (H9, P4 §4.3).
+        //  * `railPosition` (FEAT-80): Corner reserves nothing, so it moves the same inset.
         //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
-        // Selected tab, Settings category and the two focus hints above are all held ABOVE this
+        // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.themeName)|\(sidebarStyle)|\(uiFont)")
+        .id("\(appTheme.paletteKey)|\(navigationStyle)|\(railVisibility)|\(NavigationChrome.railPosition(raw: railPosition).rawValue)|\(uiFont)|\(discoverPlacementRaw)|\(discoverPlacementRevision)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -145,7 +218,7 @@ struct ContentView: View {
             // error and returns false; a declared scheme with no installed handler returns
             // false silently — so this output distinguishes plist problems from the target
             // player simply not registering its URL scheme on tvOS.
-            for scheme in ["infuse", "vlc-x-callback", "outplayer", "open-vidhub", "vidhub"] {
+            for scheme in ["infuse", "vlc-x-callback", "outplayer", "open-vidhub", "vidhub", "senplayer", "nativeplayer"] {
                 if let url = URL(string: "\(scheme)://") {
                     print("[ExtPlayerProbe] canOpenURL(\(scheme)://) = \(UIApplication.shared.canOpenURL(url))")
                 }
@@ -155,9 +228,13 @@ struct ContentView: View {
             #endif
         }
         .onChange(of: auth.gate) { _, newGate in
+            if newGate == .welcome { Self.profileAutoEnterConsumed = true }
+            if newGate == .main { autoEnterRememberedProfileIfNeeded() }
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main {
                 entered = false
+                // Empty the Top Shelf now; don't rely on the wipe's emission racing `stop()`.
+                topShelf.clearForSignOut()
                 // H-1B-ii: hard teardown of Home's (profile-scoped) watchers. `home` now outlives
                 // `HomeView`, so leaving the signed-in state no longer implicitly stops them the
                 // way the old view-lifetime `onDisappear → model.stop()` did. Redundant with the
@@ -174,6 +251,10 @@ struct ContentView: View {
                 if let url = pendingDeepLinkURL {
                     pendingDeepLinkURL = nil
                     deepLink = DeepLink.parse(url)
+                }
+                if let url = pendingExternalReturnURL {
+                    pendingExternalReturnURL = nil
+                    ExternalPlaybackReturnRouter.handle(url)
                 }
             } else {
                 // Sign-out wipes local progress first, so the watcher's final emission already
@@ -194,13 +275,31 @@ struct ContentView: View {
             }
         }
         .onOpenURL { url in
-            if auth.gate == .main, entered {
-                deepLink = DeepLink.parse(url)
-            } else {
-                // Cold launch from the Top Shelf: apply once the profile gate is passed.
-                pendingDeepLinkURL = url
-            }
+            handleDeepLink(url)
         }
+        #if DEBUG
+        // rc13 (test68, BUG-117 season-poster shelf-width harness): a UI test has no way to
+        // trigger a real `onOpenURL` (there is no Top Shelf/Springboard to click through in the
+        // sim), so `-debug.openDeepLink <url>` drives the identical `handleDeepLink(_:)` path a
+        // real deep link takes. Gated on `entered` — same as `pendingDeepLinkURL`'s replay above —
+        // so it never fires ahead of the profile gate, plus a ~1 s settle so it lands after Home's
+        // initial catalog fan-out rather than racing it.
+        .task(id: entered) {
+            guard entered, !debugDeepLinkConsumed,
+                  let raw = UserDefaults.standard.string(forKey: "debug.openDeepLink"),
+                  let url = URL(string: raw)
+            else { return }
+            debugDeepLinkConsumed = true
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                // Cancelled (e.g. `entered` flipped again mid-sleep, tearing this task down) —
+                // don't fire a deep link the test/device state has already moved past.
+                return
+            }
+            handleDeepLink(url)
+        }
+        #endif
         .fullScreenCover(item: $deepLink) { link in
             switch link {
             case .resume(let type, let videoId, let title, let parentMetaId, let season, let episode):
@@ -250,6 +349,36 @@ struct ContentView: View {
         .modifier(MPVSmokeModifier())
         #endif
     }
+
+    /// Shared by `.onOpenURL` (a real Top Shelf launch) and, in DEBUG builds, the
+    /// `-debug.openDeepLink` test hook above — one code path so a UI test exercises exactly what a
+    /// device deep link does, not a parallel imitation of it.
+    private func handleDeepLink(_ url: URL) {
+        // An external player's x-callback return (Infuse) is consumed here, before `DeepLink.parse`,
+        // and never assigns `deepLink`: an unrecognised URL would nil it and close an open Top Shelf
+        // cover. Before the profile gate it waits for `entered` (the position write and the sync
+        // that follows want a restored session), then replays through the same router.
+        if ExternalPlaybackReturnRouter.isCallback(url) {
+            // FEAT-56 device diagnostic, behind the same knob the shared player probe reads: which
+            // query parameters the returning player sends (SenPlayer's position parameter name is
+            // unverified). `lastPlayedUrl` is redacted — it can carry a debrid token.
+            if UserDefaults.standard.bool(forKey: "debug.extPlayerProbe") {
+                print("[ExtPlayerProbe] return url=\(ExternalPlaybackReturnRouter.redactedForProbe(url))")
+            }
+            if auth.gate == .main, entered {
+                ExternalPlaybackReturnRouter.handle(url)
+            } else {
+                pendingExternalReturnURL = url
+            }
+            return
+        }
+        if auth.gate == .main, entered {
+            deepLink = DeepLink.parse(url)
+        } else {
+            // Cold launch from the Top Shelf: apply once the profile gate is passed.
+            pendingDeepLinkURL = url
+        }
+    }
 }
 
 /// The main app shell once a profile is selected.
@@ -268,11 +397,13 @@ struct MainTabView: View {
     /// Settings doesn't dump the user back onto the Home tab.
     @Binding var selectedTab: Int
     /// Also owned by ContentView (above the theme `.id()` boundary), same reasoning as
-    /// `selectedTab`: a theme change must not dump the user out of the Settings category they were
+    /// `selectedTab`: a theme change must not dump the user out of the Settings pane they were
     /// standing in. Passed straight through to `SettingsView`.
-    @Binding var settingsCategory: SettingsCategory
+    @Binding var settingsPath: [SettingsCategory]
+    /// Root focus restore for Settings; see `ContentView.settingsLastCategory`.
+    @Binding var settingsLastCategory: SettingsCategory?
     /// See `ContentView.pendingThemeSwatchFocus` — threaded through for the same reason
-    /// `settingsCategory` is: it must live above the theme rebuild boundary.
+    /// `settingsPath` is: it must live above the theme rebuild boundary.
     @Binding var pendingThemeSwatchFocus: String?
     /// FEAT-30/31: see `ContentView.pendingAppearanceRowFocus`. Threaded to here now so the state
     /// already lives above the rebuild boundary; the consumer is Wave 2's Settings work.
@@ -289,45 +420,81 @@ struct MainTabView: View {
     /// TabBarPresentation alone subscribes to immersive visibility and owns the native bar.
     @State private var tabBarVisibility = TabBarVisibility()
 
-    /// FEAT-30: the sidebar's shared state, provided to every tab root alongside
+    /// H9: the navigation rail's shared state, provided to every tab root alongside
     /// `tabBarVisibility` below. `@State` on a reference type for the SAME load-bearing reason as
-    /// the property above (T3 / BUG-66) — see `SidebarChromeModel`'s own doc comment: observing it
-    /// here would put every scroll crossing on every tab back into the shell's invalidation path,
+    /// the property above (T3 / BUG-66) — see `NavigationChromeModel`'s own doc comment: observing
+    /// it here would put every scroll crossing on every tab back into the shell's invalidation path,
     /// which is precisely what re-resolved `.toolbarVisibility` mid-transition. Only
-    /// `SidebarOverlay` observes it.
-    @State private var sidebarChrome = SidebarChromeModel()
-    /// FEAT-30: focus scope over the whole tab shell, so the sidebar can hand focus back to content
-    /// with `resetFocus(in:)` after a row press (see `SidebarOverlay.handOffFocusToContent`).
+    /// `NavigationRail` observes it.
+    @State private var navigationChrome = NavigationChromeModel()
+    /// FEAT-30 / H9: focus scope over the whole tab shell, so the rail can hand focus back to
+    /// content with `resetFocus(in:)` (see `NavigationRail.fallbackHandOff`).
     @Namespace private var shellFocusScope
+    /// A6: resolved once per tree identity (`@State`'s initial value), never re-read while this
+    /// shell lives, so the set of tabs is constant for the tree's lifetime (T3). The rail's item
+    /// list is fed from this same value.
+    @State private var discoverPlacement = DiscoverPlacement.current()
+    /// Own Tab adds `Tab(value: 6)` and the rail item; derived from the same once-per-tree value
+    /// Search reads through `\.discoverPlacementResolved` (review r2 P3-1).
+    private var showsDiscoverTab: Bool { discoverPlacement == .ownTab }
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
         // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
+            // H9 (P4 §5.1): `.railTabRoot(value)` in every closure —
+            // the tab index for return routes, Always Visible's leading inset and the per-tab gate
+            // fallback. Structurally absent in Tabs mode, and launch-constant (T3).
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView(model: home)
+                    .railTabRoot(0)
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView(home: home)
+                    // Review r2 P3-1: Search's entry row reads the same once-per-tree value.
+                    .environment(\.discoverPlacementResolved, discoverPlacement)
+                    .railTabRoot(1)
             }
-            Tab("Live TV", systemImage: "tv", value: 6) {
+            // Search & Discover batch 2026-10-06 (O3 Stage Discover, A6): the seventh tab, value
+            // 6 so Profile keeps 5 (return routes, rail ids and tests key on it). Present only
+            // when the placement setting resolves to Own Tab; `showsDiscoverTab` is resolved once
+            // per tree (T3) and the placement key is part of the remount `.id` in `ContentView`.
+            // Title and symbol must match `RailItem.discover`.
+            if showsDiscoverTab {
+                Tab("Discover", systemImage: "safari", value: 6) {
+                    DiscoverTabRoot()
+                            .railTabRoot(6)
+                }
+            }
+            // dotjarden fork: Live TV, value 7 (6 is upstream's Discover). Title and symbol must
+            // match `RailItem.liveTV`.
+            Tab("Live TV", systemImage: "tv", value: 7) {
                 LiveTVView(profile: liveProfileKey)
                     .id(liveProfileKey)
+                    .railTabRoot(7)
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
+                    .railTabRoot(2)
             }
             // Tab roots never change the native bar's visibility independently.
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView(
-                    selectedCategory: $settingsCategory,
+                    path: $settingsPath,
+                    lastCategory: $settingsLastCategory,
                     pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                     pendingAppearanceRowFocus: $pendingAppearanceRowFocus
                 )
+                    .railTabRoot(4)
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {
                 ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile,
-                               onAccountSettings: { settingsCategory = .accountServices; selectedTab = 4 })
+                               onAccountSettings: {
+                                   selectedTab = 4
+                                   settingsPath = [.accountProfiles]
+                                   settingsLastCategory = .accountProfiles
+                               })
+                    .railTabRoot(5)
             }
         }
         .background {
@@ -335,8 +502,17 @@ struct MainTabView: View {
                 .frame(width: 0, height: 0)
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
-        .environment(\.sidebarChrome, sidebarChrome)
-        // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets. Sidebar mode only, so
+        .environment(\.navigationChrome, navigationChrome)
+        // BUG-66 evidence probe (2026-09-10): arms `TabBarStateProbe`'s on-device tab-bar geometry
+        // sampler once this view lands in a window. Hosted here (rather than inside a `Tab`
+        // closure, or in `HomeView.swift`, which this task may not edit) because `MainTabView`'s
+        // `TabView` is reachable from every tab and mounted exactly once for the whole shell —
+        // zero-sized and a no-op when the probe's toggle is off. Mounted in EVERY build, not just
+        // DEBUG: `TabBarStateProbe.enabled` is a launch-latched read of `debug.tabBarStateProbe`
+        // (TabBarStateProbe.swift) which the About pane's toggle writes in Release too, so a
+        // DEBUG-only armer meant every rc sample logged `NOT-FOUND state=unknown`.
+        .background(TabBarProbeArmer())
+        // FEAT-30 / H9: the shell-wide focus scope `resetFocus(in:)` targets. Rail mode only, so
         // tabs mode carries no new modifier at all (the byte-identical promise; test54's row walk
         // stopped finding tiles in the one run where this scope was declared in both modes).
         .modifier(ShellFocusScopeModifier(scope: shellFocusScope))
@@ -344,12 +520,14 @@ struct MainTabView: View {
         // bar moves the shell's top safe area. Ships as a no-op (the constant is 0 and the
         // modifier then applies nothing at all, in either mode) until the device spike measures
         // the delta — see that constant's doc comment.
-        .sidebarTopCompensation()
-        // FEAT-30: the sidebar is mounted HERE — on the TabView and deliberately OUTSIDE every
-        // `Tab` closure. Inside one it would live in that tab's kept-alive subtree: pruned or
-        // deferred with it, re-created per tab, and re-evaluated on every `Tab` closure rebuild —
-        // the T3 class again. As an overlay it is a pure floating layer, so nothing behind it
-        // reflows and tabs mode gets no view at all.
+        .railTopCompensation()
+        // H9: the rail is mounted HERE — on the TabView and deliberately OUTSIDE every `Tab`
+        // closure (FEAT-30's sidebar sat in the same place). Inside one it would live in that
+        // tab's kept-alive subtree: pruned or deferred with it, re-created per tab, and
+        // re-evaluated on every `Tab` closure rebuild — the T3 class again. As an overlay it is a
+        // floating layer; the only content geometry it changes is Always Visible's leading inset,
+        // UIKit safe area on the tab controller (`HiddenTabBarFocusBlocker.setReservedLeadingInset`)
+        // plus `.railTabRoot`'s environment values, and tabs mode gets no view at all.
         //
         // BOTH shared objects are handed over as explicit parameters, and `tabBarVisibility` has
         // to be (rc2 fix, 2026-09-06). The `.environment(\.tabBarVisibility,)` above does NOT
@@ -362,18 +540,18 @@ struct MainTabView: View {
         // on a visibility publish) is unchanged, and the overlay keeps the one narrow
         // `onReceive($immersiveHidden)`.
         //
-        // The overlay places itself in the top-left SCREEN corner (`SidebarMetrics.cornerLeading`
-        // / `cornerTop`, safe area ignored on those two edges) rather than being padded here —
-        // rc2 feedback asked for higher and further left, and the numbers belong next to the
-        // panel's own layout constants.
+        // The rail places itself (16 pt from the bezel, vertically centred, safe area ignored)
+        // rather than being padded here: the numbers belong next to its own layout constants.
         .overlay(alignment: .topLeading) {
-            if SidebarChrome.isEnabled() {
-                SidebarOverlay(
+            if NavigationChrome.isRail() {
+                NavigationRail(
                     selectedTab: $selectedTab,
+                    activeProfile: activeProfile,
                     rootCoverActive: rootCoverActive,
                     shellFocusScope: shellFocusScope,
-                    chrome: sidebarChrome,
-                    tabBarVisibility: tabBarVisibility
+                    chrome: navigationChrome,
+                    tabBarVisibility: tabBarVisibility,
+                    showsDiscover: showsDiscoverTab
                 )
             }
         }
@@ -388,9 +566,25 @@ struct MainTabView: View {
         .onChange(of: rootCoverActive) { _, active in
             tabBarVisibility.setRootCoverActive(active)
         }
+        // Search & Discover batch 2026-10-06 (B3 g): Search's "All search sources are off" empty
+        // state offers "Open Search Sources". The Search tab can't reach the Settings stack, so it
+        // posts `.nuvioOpenSettings` with the category and this always-mounted shell does the jump.
+        .onReceive(NotificationCenter.default.publisher(for: .nuvioOpenSettings)) { note in
+            let raw = note.userInfo?["category"] as? String
+            let category = raw.flatMap(SettingsCategory.init(rawValue:))
+            selectedTab = 4
+            if let category {
+                settingsPath = [category]
+                settingsLastCategory = category
+            }
+        }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
             tabBarVisibility.setBrowseTabSelected(tab == 1)
+            // beta.18 verdict (BUG-66): `r=tab` now and `r=tab2` 0.6 s later in the Tab Bar
+            // Geometry pane — what the bar tracks after a switch is the half of BUG-66 the cold
+            // launch never showed. No-op unless that probe is armed.
+            TabBarStateProbe.noteTabSelected(tab)
         }
     }
 }
@@ -426,19 +620,27 @@ struct ProfileTabView: View {
                     }
                 }
             }.padding(80)
-        }.sidebarMenuReveal()
+        }.railMenuReveal()
     }
 }
 
-/// FEAT-30: `.focusScope` over the tab shell, structurally absent in tabs mode.
+/// FEAT-30 / H9: `.focusScope` over the tab shell, structurally absent in tabs mode.
 private struct ShellFocusScopeModifier: ViewModifier {
     let scope: Namespace.ID
     @ViewBuilder
     func body(content: Content) -> some View {
-        if SidebarChrome.isEnabled() {
+        if NavigationChrome.isRail() {
             content.focusScope(scope)
         } else {
             content
         }
     }
+}
+
+// MARK: - Cross-tab requests
+
+extension Notification.Name {
+    /// Posted by a tab that wants the shell to open Settings. `userInfo["category"]` carries a
+    /// `SettingsCategory` raw value (optional). Search & Discover batch 2026-10-06.
+    static let nuvioOpenSettings = Notification.Name("com.nuvio.tv.openSettings")
 }

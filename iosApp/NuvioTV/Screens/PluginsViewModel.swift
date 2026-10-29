@@ -74,11 +74,37 @@ final class PluginsViewModel: ObservableObject {
 
     func removeRepository(_ repo: PluginRepositoryItem) {
         PluginRepository.shared.removeRepository(manifestUrl: repo.manifestUrl)
+        statusMessage = nil
     }
 
     /// Scrapers grouped under their repository, preserving repo order.
     func scrapers(in repo: PluginRepositoryItem) -> [PluginScraper] {
         scrapers.filter { $0.repositoryUrl == repo.manifestUrl }
+    }
+
+    /// Display order for providers: Finder-style (case-insensitive, natural numbers, so
+    /// "Provider 2" lists before "Provider 10"); equal names keep their incoming order.
+    nonisolated static func sortedScrapers(_ scrapers: [PluginScraper]) -> [PluginScraper] {
+        sortedByName(scrapers, name: \.name)
+    }
+
+    /// Generic seam behind `sortedScrapers` so the ordering rule is testable without
+    /// constructing Kotlin `PluginScraper` objects.
+    nonisolated static func sortedByName<T>(_ items: [T], name: KeyPath<T, String>) -> [T] {
+        items.enumerated().sorted { a, b in
+            switch a.element[keyPath: name].localizedStandardCompare(b.element[keyPath: name]) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    /// Whether a repository's provider list is open: the viewer's own choice when they made one,
+    /// otherwise open only for a lone repository. Storing the choice (not a flip against the
+    /// default) keeps it stable when the repository count crosses 1.
+    nonisolated static func isRepositoryExpanded(stored: Bool?, repositoryCount: Int) -> Bool {
+        stored ?? (repositoryCount == 1)
     }
 
     deinit {

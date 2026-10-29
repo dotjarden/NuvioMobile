@@ -30,6 +30,32 @@ private struct RowCardBottomReachKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+/// BUG-87/89 (rc11): a MINIMUM height for the focusable card label, in points, applied inside the
+/// label after the two reaches. 0 (the default) everywhere except Home's LAST pinned row.
+///
+/// tvOS scrolls to reveal the focused LABEL frame and nothing else, so the set of rests the engine
+/// will tolerate for a row is exactly
+///
+///     rowTop ∈ [−shelfTopPad, viewport − shelfTopPad − labelFrameHeight]
+///
+/// — a SHORT label (the mixed-shape collection row's square/landscape folder tiles, whose artwork is
+/// `style.width`, not `style.height`) widens that set by the difference and lets a Down step park the
+/// row ~134pt deep with its title far below the band. No correction can hold: the deep rest is legal,
+/// so the engine re-reveals straight back to it (`pullback=1`, three rounds, `pullBackDisarmed`).
+/// Floor the label at `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)` — the LARGER of the regime's
+/// own `Plan.linkFrame` and `viewport − Theme.Spacing.lg` — and the last row's rest interval is
+/// confined to `[24, 48]` in margin terms: the band's full width and no more, which is inside the
+/// band by construction wherever `plan.fits`. `linkFrame` alone is NOT enough (rc11 → rc11 (Codex r1) fix): a
+/// regime whose own `restRange` runs past 24 (the hero-OFF panel at Large/Medium+ carries 32; Small
+/// without captions carries 72) would otherwise let the last row rest with margin up to `24 +
+/// restRange`, past the band's 48 upper edge.
+///
+/// Transparent padding below the caption: it changes no artwork, no caption, no ring, and no
+/// `focusedLockupExtent` (CollectionsUI) — only the rectangle the focus engine reveals.
+private struct RowCardLinkFrameFloorKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 /// Home's "Trailer Location: Hero" mode: the focused title's trailer plays in the PINNED HERO
 /// backdrop (which already follows focus), so the focused poster must NOT morph into an inline
 /// trailer tile — two surfaces cannot share the single player slot, and the hero is the one the
@@ -43,6 +69,22 @@ private struct TrailerPlaysInHeroKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// Home Stage & Strip (P1 §5, W2-A): the Stage strip (and Discover) asks its catalog rows to follow
+/// the heading with the add-on's name in secondary text ("Popular · Cinemeta"), one line, only when
+/// Show Catalog Details in Headings is on (B1, `HeadingDetailsSetting`, default off: Steven's rc4
+/// no-go). False everywhere else, so Classic Home, Search, Library and every other `CatalogRowView`
+/// host keep the plain heading.
+private struct RowHeadingShowsAddonKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var rowHeadingShowsAddon: Bool {
+        get { self[RowHeadingShowsAddonKey.self] }
+        set { self[RowHeadingShowsAddonKey.self] = newValue }
+    }
+}
+
 extension EnvironmentValues {
     var rowCardTopReach: CGFloat {
         get { self[RowCardTopReachKey.self] }
@@ -51,6 +93,10 @@ extension EnvironmentValues {
     var rowCardBottomReach: CGFloat {
         get { self[RowCardBottomReachKey.self] }
         set { self[RowCardBottomReachKey.self] = newValue }
+    }
+    var rowCardLinkFrameFloor: CGFloat {
+        get { self[RowCardLinkFrameFloorKey.self] }
+        set { self[RowCardLinkFrameFloorKey.self] = newValue }
     }
     var trailerPlaysInHero: Bool {
         get { self[TrailerPlaysInHeroKey.self] }
@@ -75,6 +121,31 @@ extension EnvironmentValues {
 /// back (same precedent as `ProfilesViewModel.select(_:)`).
 enum HomeGeometryProbe {
     nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
+
+    /// Folder-return Up-skip (device pass 2026-10-17): one `[Focus]` line per focus update (the
+    /// newly focused view's type, window frame and label), so a device log says where focus went
+    /// when no row or the hero reported it. Installed once, only with the probe on.
+    @MainActor static func installFocusLogger() {
+        guard enabled, focusObserver == nil else { return }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            let view = context?.nextFocusedView
+            let frame = view.flatMap { v in v.window.map { v.convert(v.bounds, to: $0) } } ?? .zero
+            let label = view?.accessibilityLabel ?? "-"
+            NSLog("[Focus] next=%@ frame=%@ label=%@ heading=%d",
+                  view.map { String(describing: type(of: $0)) } ?? "nil",
+                  NSCoder.string(for: frame), label, Int(context?.focusHeading.rawValue ?? 0))
+            // The focused ITEM: a SwiftUI focus item is not a view, so `next` above is only its
+            // nearest hosting view (a `LazyVStack` placeholder shows as the rows container).
+            if let item = context?.nextFocusedItem {
+                NSLog("[Focus] item=%@ local=%@", String(describing: type(of: item)), NSCoder.string(for: item.frame))
+            }
+            }
+        }
+    }
+    @MainActor private static var focusObserver: NSObjectProtocol?
 }
 
 // MARK: - Pinned row title tracking (BUG-37)
@@ -243,8 +314,9 @@ enum PinnedRowTitle {
     /// One row's two clearances. Both are "title bottom → artwork top at slide 0"; they differ by
     /// which card is being measured against (Codex r4 P1).
     ///
-    ///     atRest  = (Spacing.lg + reach) − (titleInset + titleHeight)      ≈ 26pt
-    ///     focused = max(atRest − lift, 0)
+    ///     atRest     = (Spacing.lg + reach) − (titleInset + titleHeight)   ≈ 26pt
+    ///     focused    = max(atRest − lift, 0)
+    ///     focusedRaw = atRest − lift                                       (BUG-87/89, unclamped)
     ///
     /// The focus treatment raises the FOCUSED card's artwork while the title stays put, so the
     /// card the title actually rides over has that much less room than the row's resting geometry
@@ -261,27 +333,32 @@ enum PinnedRowTitle {
         /// What was subtracted — `focusLiftAllowance` for the ACTIVE focus mode. Carried so the
         /// settle log can name it: `focused` alone hides the magnitude once the clamp bites.
         var lift: CGFloat
+        /// BUG-87/89: `focused` is CLAMPED at 0 because both consumers — the corrector's `bandLow`
+        /// and the belt's `intrusion` — are written in "how much slide is free" units, where a
+        /// negative free travel is meaningless. That clamp is also how an 18pt PERMANENT overlap at
+        /// Large read as a clean 0 for a whole release. This is the unclamped value: negative means
+        /// the focused card's artwork sits that far OVER the settled title's bottom at every rest,
+        /// which no correction can fix. Reported on every settle line as `clearanceLiftRaw=`, and
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` is where it is kept non-negative —
+        /// against the ACTIVE font's title metric as of rc10, which is what stopped Open Sans from
+        /// reproducing the exact deficit that floor exists to remove.
+        var focusedRaw: CGFloat
     }
 
-    /// Which focus treatment a ROW's cards actually wear — not every pinned row's cards resolve
-    /// through `CardFocusMode` (Codex r9 P2).
+    /// Which focus treatment a ROW's cards actually wear. Since BUG-108 every pinned row's cards
+    /// resolve through `CardFocusMode` — the collection folder row's `FolderTile` now carries
+    /// `CardArtworkFocusLift` too (`PlainLabelRing.lift`) — so there is only the one case left; kept
+    /// as an enum rather than collapsed away because `focusLiftAllowance`'s and
+    /// `pinnedRowTitleTracking`'s signatures still take a `treatment:` and a future row shape may
+    /// need a second case again.
     // `nonisolated`: same @Sendable-transform requirement as `Reading` below.
     nonisolated enum RowCardTreatment: Equatable, Sendable {
-        /// Cards that go through `CardFocusTreatment`, so their lift follows
+        /// Cards that go through `CardFocusTreatment` (or, for `FolderTile`/`CastCard`,
+        /// `CardArtworkFocusLift` directly via `PlainLabelRing.lift`), so their lift follows
         /// `CardFocusMode.resolve` in all three modes: `PosterCard` (catalog rows, PosterCard.swift
-        /// ~L604) and `LandscapeCard` (Continue Watching, Upcoming — PosterCard.swift ~L766).
+        /// ~L604), `LandscapeCard` (Continue Watching, Upcoming — PosterCard.swift ~L766), and the
+        /// collection folder-tile row (`CollectionsUI.swift`) since BUG-108.
         case cardTreatment
-        /// Cards whose zoom-on branch is a bare `.borderless` button and nothing else, so they get
-        /// the NATIVE system lift whatever the accent-ring setting says.
-        ///
-        /// This is the collection folder-tile row (`CollectionsUI.swift` ~L169-184). `FolderTile`
-        /// draws its own still-mode shrink-and-ring and never adopts `CardFocusTreatment`, so
-        /// `.manualScale` simply does not exist for it — `cardFocusButtonStyle`'s zoom-on branch is
-        /// "exactly the bare `.borderless` it always was" (PosterCard.swift ~L87-98). Treating it
-        /// as `.manualScale` computed a scale-derived lift off the row's SHORTEST tile, which is
-        /// smaller than the ~20pt native lift the focused folder actually gets — an
-        /// under-correction that left the title on the focused folder's artwork with the ring on.
-        case plainBorderless
     }
 
     /// The two Appearance settings `CardFocusMode.resolve` branches on, carried as a value so the
@@ -299,6 +376,31 @@ enum PinnedRowTitle {
     nonisolated struct FocusModeFlags: Equatable, Sendable {
         var noZoom: Bool
         var accentRing: Bool
+        /// BUG-87 rc12 follow-up: the No Zoom reach hold (`AboutSettingsPane`'s "No Zoom Row Reach
+        /// (A/B)" row, backing key `PinnedRowTitle.noZoomReachHoldsLiftKey`). The memberwise default
+        /// stays `false` for source compatibility, but the APP default is ON since 2026-09-30
+        /// (device A/B decided it); app call sites resolve it via `resolveReachHoldsLift`. See
+        /// `reachHoldsLiftEffective` for the gate and `PinnedRowGeometry.plan`'s `floorLift` for
+        /// where this actually spends — never through `focusLiftAllowance` below.
+        var reachHoldsLift: Bool = false
+
+        /// Inert unless `noZoom` is also true, exactly like `accentRing`'s inertness with zoom on:
+        /// the hold only means something when No Zoom's own treatment is the reason the reach floor
+        /// would otherwise reserve zero room for a lift.
+        nonisolated var reachHoldsLiftEffective: Bool { reachHoldsLift && noZoom }
+
+        /// BUG-87/89 zoom-on reach hold (2026-09-30, `zoom-on-title-fix-plan.md` option A; backing
+        /// key `PinnedRowTitle.zoomReachHoldKey`, no Settings row yet). Memberwise default `false`
+        /// for source compatibility — the APP default is ON, resolved via `resolveZoomReachHold`.
+        /// When effective, `PinnedRowGeometry.plan` raises the top-reach floor by
+        /// `Theme.Size.heroPinnedRowZoomReachHold` (capped at `heroPinnedRowTopReachHoldCap`) so
+        /// the engine's own −12 rest lands inside the zoom-on band. Like `reachHoldsLift`, it never
+        /// reaches `focusLiftAllowance`: the lift is unchanged, only the reach grows.
+        var zoomReachHold: Bool = false
+
+        /// The mirror of `reachHoldsLiftEffective`: inert in No Zoom, whose own hold already rests
+        /// in band (the extra 6pt would only cost rest range there).
+        nonisolated var zoomReachHoldEffective: Bool { zoomReachHold && !noZoom }
 
         /// Live snapshot for call sites with no SwiftUI context to observe from. This is the
         /// DEFAULT, not the primary path: every call that matters — `reading` from the tracking
@@ -306,8 +408,56 @@ enum PinnedRowTitle {
         /// modifier-side republish that keeps `PinnedRowSettle.clearances` coherent with them.
         nonisolated static var current: FocusModeFlags {
             FocusModeFlags(noZoom: UserDefaults.standard.bool(forKey: "no_zoom_on_focus"),
-                           accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"))
+                           accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"),
+                           reachHoldsLift: resolveReachHoldsLift(),
+                           zoomReachHold: resolveZoomReachHold())
         }
+    }
+
+    /// Backing key for the rc12 No Zoom reach-hold A/B (`FocusModeFlags.reachHoldsLift`,
+    /// `AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, `PinnedRowTitleTracking`'s
+    /// `@AppStorage`).
+    nonisolated static let noZoomReachHoldsLiftKey = "debug.pinnedNoZoomReachHoldsLift"
+
+    /// Launch-latched twin of the `@AppStorage` reads, resolved via `bool(forKey:)` rather than
+    /// `@AppStorage<Bool>` because the latter does not coerce a UI test's argument-domain "YES" the
+    /// way `bool(forKey:)` does — same precedent as `AboutSettingsPane`'s
+    /// `collectionFrameProbe || CollectionFocusFrameProbe.enabled`. Every SwiftUI reader ORs this in
+    /// alongside its own `@AppStorage` read so a UI test's launch argument and a live Settings flip
+    /// both work.
+    nonisolated static var reachHoldsLiftKnob: Bool {
+        resolveReachHoldsLift()
+    }
+
+    /// Default ON since 2026-09-30 (BUG-87 device A/B: hold OFF gave 50+ `UNEXPECTED-WITH-FIT`
+    /// nudges and title fades, hold ON gave none). TRUE when the key was never written; otherwise
+    /// `bool(forKey:)`, which also coerces a UI test's argument-domain "YES"/"NO" string.
+    nonisolated static func resolveReachHoldsLift(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: noZoomReachHoldsLiftKey) == nil ? true : defaults.bool(forKey: noZoomReachHoldsLiftKey)
+    }
+
+    /// View-side form: referencing the `@AppStorage` value keeps the view observing the key so a
+    /// toggle flip re-renders; the resolved value is what is used.
+    nonisolated static func resolveReachHoldsLift(observing stored: Bool) -> Bool {
+        _ = stored
+        return resolveReachHoldsLift()
+    }
+
+    /// Backing key for the zoom-on reach hold (`FocusModeFlags.zoomReachHold`, 2026-09-30). No
+    /// About row today; a UI test flips it with `-debug.pinnedZoomReachHold NO`.
+    nonisolated static let zoomReachHoldKey = "debug.pinnedZoomReachHold"
+
+    /// Default ON: TRUE when the key was never written; otherwise `bool(forKey:)`, which also
+    /// coerces a UI test's argument-domain "YES"/"NO" string. Same shape as `resolveReachHoldsLift`.
+    nonisolated static func resolveZoomReachHold(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: zoomReachHoldKey) == nil ? true : defaults.bool(forKey: zoomReachHoldKey)
+    }
+
+    /// View-side form: referencing the `@AppStorage` value keeps the view observing the key; the
+    /// resolved value (launch argument and never-written default included) is what is used.
+    nonisolated static func resolveZoomReachHold(observing stored: Bool) -> Bool {
+        _ = stored
+        return resolveZoomReachHold()
     }
 
     /// How far the ACTIVE focus treatment raises a focused card's artwork.
@@ -344,6 +494,14 @@ enum PinnedRowTitle {
     /// the same values `maxSlide` and `clearances` need), the ring's rise was height-dependent as
     /// recently as beta.17, and a future treatment that is height-dependent again should not have
     /// to be re-threaded through four call sites to say so.
+    ///
+    /// `mode.reachHoldsLift` (BUG-87 rc12 follow-up) never reaches this function, on purpose: this
+    /// still returns 0 in No Zoom whether or not the hold is on. The hold's job is to reserve ROOM
+    /// in the reach for a lift that still-mode genuinely never produces — charging that lift here
+    /// too would raise `lift` AND the reach floor for the same 20pt, leaving `bandLow` at −4
+    /// (`focused = atRest − lift`) exactly as before the hold existed: the Wave 7 / BUG-93
+    /// fabricated-intrusion bug, reintroduced. `PinnedRowGeometry.plan`'s `floorLift` is the one and
+    /// only place `reachHoldsLiftEffective` is read.
     nonisolated static func focusLiftAllowance(artworkHeight: CGFloat?,
                                                captionVisible: Bool,
                                                treatment: RowCardTreatment,
@@ -351,8 +509,8 @@ enum PinnedRowTitle {
         // No-zoom wins over the ring everywhere, checked first exactly as `CardFocusMode.resolve`
         // does. Card treatments get `.still` (nothing scales); folder tiles get
         // `cardFocusButtonStyle`'s `StillCardButtonStyle` + `focusEffectDisabled`, which likewise
-        // cannot lift. Every other combination — system lift, ring, and the bare `.borderless`
-        // folder tile — rises by the one measured constant.
+        // cannot lift. Every other combination — system lift, ring, and (since BUG-108) the folder
+        // tile's own manual scale — rises by the one measured constant.
         mode.noZoom ? 0 : Theme.Size.heroPinnedRowFocusLiftAllowance
     }
 
@@ -383,7 +541,10 @@ enum PinnedRowTitle {
                                       captionVisible: captionVisible,
                                       treatment: treatment,
                                       mode: mode)
-        return Clearances(atRest: atRest, focused: max(atRest - lift, 0), lift: lift)
+        return Clearances(atRest: atRest,
+                          focused: max(atRest - lift, 0),
+                          lift: lift,
+                          focusedRaw: atRest - lift)
     }
 
     /// How far the title must ride DOWN to stay fully inside the rows viewport, clamped.
@@ -451,6 +612,12 @@ enum PinnedRowTitle {
         /// Carried for the belt's probe lines; it is an affine function of `slide`, which is
         /// already here, so it adds no `onGeometryChange` fires of its own.
         var intrusion: CGFloat
+        /// rc14 round 4 (verification workflow F3): `stillOnScreen` — whether the title's rendered
+        /// band is still inside the viewport after sliding. The APPLIED slide is derived from
+        /// this (off screen → 0) rather than from the sibling geometry observer's cache, so the
+        /// seed and the gated apply no longer depend on the order SwiftUI runs the two observers'
+        /// actions in. Flips once per edge crossing, so it adds no fires of its own.
+        var onScreen: Bool = true
     }
 
     /// A `Reading` stamped with the tracking modifier's `remeasureTick` (Wave W5, BUG-87).
@@ -574,7 +741,8 @@ enum PinnedRowTitle {
                        clearances: clearances,
                        hideCandidate: stillOnScreen && (overshoot > 1 || intrusion > fadeIntrusionArm),
                        showAgain: overshoot <= 0 && intrusion <= 0,
-                       intrusion: intrusion)
+                       intrusion: intrusion,
+                       onScreen: stillOnScreen)
     }
 
     /// How far the pinned hero must yield, in points, so the focused row FITS at the canonical
@@ -596,13 +764,19 @@ enum PinnedRowTitle {
     ///
     /// Small and Medium compute to exactly 0, so their layout is bit-identical to Wave 9 — see the
     /// arithmetic table on `Theme.Size.heroPinnedRowsSettledCushion`.
-    nonisolated static func pinnedHeroCompression(rowArtworkHeight: CGFloat) -> CGFloat {
+    ///
+    /// `showsCTA` (2026-09-30) picks the viewport budget of the hero form on screen — the panel's is
+    /// 38pt taller (`Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`). `PinnedRowGeometry.plan`
+    /// deliberately calls this with `showsCTA: true` for its SCOPE GATE (which Poster Sizes enter
+    /// the structural fit at all) and with the real form for its unsatisfiable fallback.
+    nonisolated static func pinnedHeroCompression(rowArtworkHeight: CGFloat,
+                                                  showsCTA: Bool) -> CGFloat {
         guard !heroCompressionDisabledByKnob else { return 0 }
         let requiredRowExtent = Theme.Spacing.lg
             + Theme.Size.heroPinnedRowTopPad
             + rowArtworkHeight
             + Theme.Size.heroPinnedRowsSettledCushion
-        let raw = max(requiredRowExtent - Theme.Size.heroPinnedRowsViewportBudget, 0)
+        let raw = max(requiredRowExtent - Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA), 0)
         let capped = min(raw, Theme.Size.heroPinnedCompressionCap)
         if raw > capped, cappedCompressionLogged != rowArtworkHeight {
             cappedCompressionLogged = rowArtworkHeight
@@ -639,9 +813,12 @@ enum PinnedRowTitle {
     /// Verification for the constant `heroPinnedRowsViewportBudget` rests on: the live rows
     /// viewport should be exactly `budget + compression`. Logged once per distinct disagreement so
     /// a drifted platform metric shows up in a device log instead of silently mis-sizing the hero.
-    nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat) {
+    nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat,
+                                                 showsCTA: Bool) {
         guard HomeGeometryProbe.enabled else { return }
-        let expected = Theme.Size.heroPinnedRowsViewportBudget + compression
+        // 2026-09-30: the budget depends on the hero form (the panel has no page-dots row).
+        let budget = Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA)
+        let expected = budget + compression
         // Positive confirmation for device passes (FEAT-30 spike onward): one line per distinct
         // live viewport, so a log with no MISMATCH line is "matched", not "never measured".
         let liveKey = liveViewport.rounded()
@@ -656,7 +833,7 @@ enum PinnedRowTitle {
         viewportBudgetMismatchLogged = key
         NSLog("[HomeScrollProbe] hero %@",
               "viewport BUDGET MISMATCH live=\(Int(liveViewport.rounded())) expected=\(Int(expected.rounded()))"
-                + " (budget \(Int(Theme.Size.heroPinnedRowsViewportBudget)) + compression \(Int(compression.rounded())))")
+                + " (budget \(Int(budget)) + compression \(Int(compression.rounded())) showsCTA=\(showsCTA ? 1 : 0))")
     }
 
     nonisolated(unsafe) private static var viewportBudgetMismatchLogged: CGFloat?
@@ -668,6 +845,26 @@ enum PinnedRowTitle {
     /// the rounding noise around the corrected fixpoint (intrusion 0), which is the rest the belt
     /// must never fire on.
     nonisolated static let fadeIntrusionArm: CGFloat = 4
+
+    /// rc14: the slide a title actually APPLIES for a measured one — 0 when the title would be
+    /// off screen even after sliding (`visibleMinY >= titleHeight + measured`, the complement of
+    /// `reading`'s `stillOnScreen`), otherwise the measurement. Shared by the seed and the gated
+    /// apply path so a recycled row re-mounting above the viewport cannot carry a stale 72 into
+    /// its next Up approach. Pure, for the unit test.
+    nonisolated static func appliedSlide(visibleMinY: CGFloat, titleHeight: CGFloat, measured: CGFloat) -> CGFloat {
+        visibleMinY >= titleHeight + measured ? 0 : measured
+    }
+
+    /// The draw-time slide for the one frame before the first measurement lands (round 4, F3):
+    /// the raw `slide(_:artworkHeight:cardTopReach:)` with the off-screen rule applied, so even
+    /// that frame cannot paint a title 72pt down on a row that is entirely above the viewport.
+    nonisolated static func preSeedSlide(_ proxy: GeometryProxy,
+                                         artworkHeight: CGFloat?,
+                                         cardTopReach: CGFloat) -> CGFloat {
+        let raw = slide(proxy, artworkHeight: artworkHeight, cardTopReach: cardTopReach)
+        guard let visible = visibleBounds(proxy) else { return raw }
+        return appliedSlide(visibleMinY: visible.minY, titleHeight: proxy.size.height, measured: raw)
+    }
 
     /// Signed clearance between the title's top and the viewport's top edge BEFORE sliding —
     /// negative means the rest fell short far enough to cut the title (BUG-37 reproducing).
@@ -700,11 +897,13 @@ extension View {
     /// changes constantly, and discarding the title's `slide`/`faded` state on every D-pad step
     /// would reintroduce the snap this modifier exists to remove.
     ///
-    /// `treatment` is which focus treatment this row's CARDS wear, and it defaults to the case
-    /// three of the four pinned rows are in — `PosterCard`/`LandscapeCard`, whose lift genuinely
-    /// follows `CardFocusMode.resolve`. The one exception is the collection folder-tile row, which
-    /// must pass `.plainBorderless`; see `PinnedRowTitle.RowCardTreatment` for why a folder tile's
-    /// lift is not the ring-mode one (Codex r9 P2).
+    /// `treatment` is which focus treatment this row's CARDS wear, and it defaults to (and, since
+    /// BUG-108, is) the only case — `PosterCard`/`LandscapeCard`, and now the collection folder-tile
+    /// row too, all of which genuinely follow `CardFocusMode.resolve`. Before BUG-108 the folder row
+    /// passed a since-removed `.plainBorderless` because `FolderTile` kept the native `.borderless`
+    /// lift in ring mode; giving it `CardArtworkFocusLift` (`PlainLabelRing.lift`) put it on the same
+    /// footing as every other pinned row's cards, so the one-case enum in
+    /// `PinnedRowTitle.RowCardTreatment` covers it too (Codex r9 P2 named the split this closes).
     func pinnedRowTitleTracking(rowKey: String,
                                 artworkHeight: CGFloat? = nil,
                                 isFocused: Bool,
@@ -760,7 +959,9 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     /// `slide`/`hasSeeded` state onto a title that was never actually mid-slide. Folding `rowKey`
     /// into the id scopes the reset to the row it actually belongs to.
     private var styleKey: String {
-        "\(rowKey)-\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
+        // BUG-162: `shape…` keeps the two landscape kinds apart (global 360×203 vs a per-row
+        // shape card at the poster height), whose card frames differ.
+        "\(rowKey)-\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-shape\(style.landscapeFromShape)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
     }
 
     func body(content: Content) -> some View {
@@ -775,6 +976,105 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
                                              treatment: treatment))
             .id(styleKey)
     }
+}
+
+// ── beta.18 verdict (BUG-87/89, R1): the slide hold's verdict and clock ───────────────────────
+//
+// Pure and `nonisolated` so `PinnedRowSlideHoldTests` covers the exact logic
+// `PinnedRowTitleTracking.commitSlide` runs, and the constants it times against.
+extension PinnedRowTitle {
+    nonisolated enum SlideHoldVerdict: Equatable, Sendable {
+        /// Apply the target now (eased, or snapped under Reduce Motion).
+        case apply
+        /// W3-14 (BUG-209): apply the target now WITHOUT animation, because the rows are still
+        /// moving and this is the focused row's in-band slide — the title tracks the clip edge
+        /// frame by frame and lands with its posters.
+        case track
+        /// Set the slide to 0 with no animation.
+        case snapToZero
+        /// Keep the target pending until the rest is decided (or the fallback fires).
+        case hold
+    }
+
+    /// W3-14 (BUG-209): the slack on the slide's in-band test. The same ±2 the settle corrector's
+    /// `inBand` membership test carries (`PinnedRowSettle.settlePlan`, "the probe's own 2pt
+    /// quantization"): with `margin = −visibleMinY` and `slide = max(visibleMinY, 0)`, the
+    /// corrector's low edge `margin ≥ −clearance.focused − 2` is exactly
+    /// `slide ≤ clearance.focused + 2`. A focused row whose slide is inside it is never nudged up.
+    nonisolated static let slideBandSlack: CGFloat = 2
+
+    /// W3-14 (BUG-209): whether a slide target keeps the title within the focused card's lifted
+    /// clearance (plus `slideBandSlack`) — the band the corrector leaves alone, and the bound on
+    /// how far a title tracked mid-motion can ride onto the focused card's artwork.
+    nonisolated static func slideInBand(target: CGFloat, clearances: Clearances) -> Bool {
+        target <= clearances.focused + slideBandSlack
+    }
+
+    /// - A 0 target while the rows MOVE snaps (round 4 F2's "0 is never held", without the 0.22s
+    ///   ease that let the title detach from a row still travelling); at rest it eases as before.
+    ///   Checked first, whatever the other inputs say.
+    /// - W3-14 (BUG-209, Steven's rc11 video: on Classic + Hide Titles every Down's incoming heading
+    ///   landed high, then dropped a notch): the FOCUSED row (`focused`) with an IN-BAND target
+    ///   (`inBand`, `slideInBand`) and no hold episode already running (`!holding`) no longer waits
+    ///   — while the rows move it `.track`s (applied unanimated, so the heading rides the clip edge
+    ///   over the reveal's last ~10pt and lands once, with the posters), and still it `.apply`s
+    ///   (the 0.22s ease) even if a decision is pending: an in-band focused rest is one the
+    ///   corrector never nudges, so the decision could only ever say "clean".
+    ///   - Focused only: an unfocused row is the one a nudge or a departing scroll carries, and
+    ///     tracking it reopens rc14's "title painted across a departing row".
+    ///   - In band only: a deeper target is one the corrector may nudge (beta.18's double ease),
+    ///     and tracking it mid-motion would paint the title onto the focused card's artwork.
+    ///   - Not while `holding`: a hold that started out of band (an Up approach coming down from
+    ///     above the clip edge) has left the title at a stale slide; tracking from there would pop
+    ///     it down by the whole band in one frame. That episode keeps the release below.
+    /// - Any other nonzero target waits while the rows move OR a settle decision is still to come:
+    ///   the decision may be a nudge, and a title applied before it eases a second time after it.
+    nonisolated static func slideHoldVerdict(target: CGFloat, current: CGFloat,
+                                             moving: Bool, restPending: Bool,
+                                             focused: Bool, inBand: Bool,
+                                             holding: Bool) -> SlideHoldVerdict {
+        slideHoldDecision(target: target, current: current, moving: moving, restPending: restPending,
+                          focused: focused, inBand: inBand, holding: holding).verdict
+    }
+
+    /// Review r1 P3-5 (BUG-209): the verdict plus which rule produced it, so the probe's `exempt=`
+    /// flag reads the decision rather than restating its predicate. `exempt` is true exactly when
+    /// the W3-14 focused in-band exemption returned the verdict (`.track` while moving, `.apply`
+    /// at rest).
+    nonisolated struct SlideHoldDecision: Equatable, Sendable {
+        let verdict: SlideHoldVerdict
+        let exempt: Bool
+    }
+
+    /// `slideHoldVerdict`'s rules (documented there), returning the rule as well as the verdict.
+    /// `commitSlide` runs this; `slideHoldVerdict` is its `.verdict`.
+    nonisolated static func slideHoldDecision(target: CGFloat, current: CGFloat,
+                                              moving: Bool, restPending: Bool,
+                                              focused: Bool, inBand: Bool,
+                                              holding: Bool) -> SlideHoldDecision {
+        if target == 0 {
+            return SlideHoldDecision(verdict: (moving && current != 0) ? .snapToZero : .apply, exempt: false)
+        }
+        if focused, inBand, !holding {
+            return SlideHoldDecision(verdict: moving ? .track : .apply, exempt: true)
+        }
+        return SlideHoldDecision(verdict: (moving || restPending) ? .hold : .apply, exempt: false)
+    }
+
+    /// rc14: "moving" = the rows scroll's own stamp or this title's frame changed inside this
+    /// window. beta.18 verdict (BUG-87/89, R1): no longer the release clock — the per-row settle
+    /// decision (`PinnedRowSettle.observeRestDecision`) is the primary release, and this is only the
+    /// motion test and the FALLBACK chain's re-check cadence.
+    nonisolated static let slideMotionHold: TimeInterval = 0.12
+    /// beta.18 verdict (BUG-87/89, R1): wall-clock fallback for a hold still waiting on a decision.
+    /// Longer than `settleDelay + nudgeDuration` (0.5s) so a decision that comes always wins.
+    nonisolated static let slideHoldMax: TimeInterval = 0.6
+    /// beta.18 verdict (BUG-87/89, R1): hard ceiling per hold EPISODE, from its first hold. Past it
+    /// the pending target applies whatever the rows are doing — a title is never held forever.
+    /// review r1 (P3-5): the FIRST ceiling applies only if the rows are still; if they are still
+    /// moving the episode clock restarts once (`ceilingRestarted`), and the SECOND ceiling applies
+    /// regardless. So the worst-case hold is ≈ 2 x this value (plus up to two re-check ticks).
+    nonisolated static let slideHoldCeiling: TimeInterval = 1.5
 }
 
 private struct PinnedRowTitleTracking: ViewModifier {
@@ -843,6 +1143,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// Token for this title's stand-down subscription, so teardown clears only its own — see
     /// `PinnedRowSettle.observeStandDown`. Written once on appear.
     @State private var standDownObserverID = 0
+    /// beta.18 verdict (BUG-87/89, R1): token for this title's rest-decision subscription — see
+    /// `PinnedRowSettle.observeRestDecision`. Written once on appear.
+    @State private var restObserverID = 0
 
     // ── Wave W5 (BUG-87: the title that vanished on a cold launch and only came back on relaunch) ──
     //
@@ -957,6 +1260,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// not guaranteed to re-run the geometry transform.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// BUG-87 rc12 follow-up (`AboutSettingsPane`'s "No Zoom Row Reach" toggle), default ON since
+    /// 2026-09-30. Observed here; the value used is `PinnedRowTitle.resolveReachHoldsLift()` in `focusMode` below — see that static's doc for why the
+    /// bare `@AppStorage` read alone would miss a UI test's launch argument.
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
+    /// 2026-09-30 zoom-on reach hold, default ON; observed here, resolved via
+    /// `PinnedRowTitle.resolveZoomReachHold(observing:)` like the No Zoom hold above.
+    @AppStorage(PinnedRowTitle.zoomReachHoldKey) private var zoomReachHold = true
 
     /// Last geometry this title measured plus its live focus state, so an out-of-band trigger — a
     /// focus-mode change, or the corrector's stand-down — can re-derive a full `Reading` with no
@@ -966,7 +1276,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
     @State private var tracking = TitleTrackingCache()
 
     private var focusMode: PinnedRowTitle.FocusModeFlags {
-        PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus, accentRing: accentFocusRing)
+        PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
+                                      accentRing: accentFocusRing,
+                                      reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift),
+                                      zoomReachHold: PinnedRowTitle.resolveZoomReachHold(observing: zoomReachHold))
     }
 
     func body(content: Content) -> some View {
@@ -1003,7 +1316,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             .visualEffect { effect, proxy in
                 effect.offset(y: hasSeeded
                     ? slide
-                    : PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
+                    : PinnedRowTitle.preSeedSlide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
             }
             // Codex r10 P2: caches the raw geometry a `Reading` is derived from, so a focus-mode
             // toggle — which moves nothing and so may never produce another geometry pass — can
@@ -1017,7 +1330,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 return PinnedRowTitle.TitleGeometry(visibleMinY: visible.minY,
                                                     titleHeight: proxy.size.height)
             }, action: { newValue in
-                if let newValue { tracking.geometry = newValue }
+                if let newValue {
+                    tracking.geometry = newValue
+                    // rc14 device round 2: the title's own motion stamp — see
+                    // `TitleTrackingCache.lastGeometryChangeAt`. `onGeometryChange` fires only on
+                    // a CHANGE, so this is exactly "the title moved this frame".
+                    tracking.lastGeometryChangeAt = ProcessInfo.processInfo.systemUptime
+                }
             })
             // Wave W5: the value type is `TickedReading?`, not `Reading?` — see that type's doc for
             // why a tick has to ride along. The `TitleGeometry` observer ABOVE deliberately does
@@ -1053,13 +1372,34 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 // otherwise the first REAL change would take the unanimated seed path and snap,
                 // which is the exact defect this modifier exists to remove.
                 let isFirst = !hasSeeded
-                if isFirst || reduceMotion {
+                if isFirst {
                     // Store BEFORE flipping `hasSeeded` so the frame that switches paths already
                     // carries the measured value in `slide`.
-                    slide = newValue.slide
+                    //
+                    // rc14 device round 3 (Christian's Up walk, console `slide apply … from=72
+                    // to=8`): a row the LazyVStack recycled and re-mounted ABOVE the viewport took
+                    // this path with a measured 72 and no gate, so its title rode the posters for
+                    // the whole Up approach and eased 72 → 8 at the rest. The seed now obeys the
+                    // same two rules `applySlide` does: an off-screen title seeds 0, and a title
+                    // that mounts while the rows are moving seeds 0 and takes its slide at the
+                    // rest — a title that mounts at rest (cold launch) still seeds its measured
+                    // value so nothing visibly settles.
+                    //
+                    // Round 4 (verification workflow F3): ordering-independent. The mount itself
+                    // stamps the title-geometry signal in the same pass, so only the SCROLL stamp
+                    // decides "moving" here, and the off-screen rule reads the Reading's own
+                    // `onScreen` rather than the sibling observer's cache (nil in one ordering,
+                    // which made `appliedSlide(0, 0, 72)` fail open to 72). A seed taken while
+                    // moving also arms the ordinary hold chain, so a title that mounts clipped and
+                    // then rests takes its slide at that rest instead of waiting for the next
+                    // geometry change.
+                    let scrollMoving = PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold
+                    slide = scrollMoving ? 0 : (newValue.onScreen ? newValue.slide : 0)
                     hasSeeded = true
-                } else if slide != newValue.slide {
-                    withAnimation(.easeOut(duration: 0.22)) { slide = newValue.slide }
+                    tracking.pendingSlide = nil
+                    if scrollMoving { applySlide(newValue) }
+                } else {
+                    applySlide(newValue)
                 }
                 updateFade(previous: oldValue, current: newValue)
                 // Hand this row's measured clearances to the settle re-reveal, which sizes its
@@ -1093,6 +1433,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 standDownObserverID = PinnedRowSettle.observeStandDown(rowKey: rowKey) {
                     standDownFastPath()
                 }
+                // beta.18 verdict (BUG-87/89, R1): the corrector's rest decision is what releases
+                // a held slide — one landing, after any nudge, instead of one per clock.
+                restObserverID = PinnedRowSettle.observeRestDecision(rowKey: rowKey) {
+                    releaseHeldSlideAtRest()
+                }
             }
             // Keeps the mirror current for the escaping observer above — `onChange` rather than a
             // write in `body` so this stays a side-effect-free render, matching how `liftMode` is
@@ -1115,6 +1460,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             }
             .onDisappear {
                 PinnedRowSettle.stopObservingStandDown(rowKey: rowKey, token: standDownObserverID)
+                PinnedRowSettle.stopObservingRestDecision(rowKey: rowKey, token: restObserverID)
                 fadeToken &+= 1
                 // Wave W5: the same argument `fadeToken` gets here applies to both Wave W5 timers —
                 // a grace bump or a watchdog tick that outlives its row is a state write against a
@@ -1127,6 +1473,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 sawFirstReading = false
                 graceHold = false
                 remeasureFromWatchdog = false
+                // rc14 (review r1): a held slide target dies with the view too — a retained subtree
+                // coming back would otherwise apply a value measured against a layout that is gone.
+                tracking.pendingSlide = nil
+                tracking.slideHoldToken &+= 1
                 PinnedRowSettle.clearBeltFaded(rowKey: rowKey)
                 // Codex Wave 9 r3: reset the LOCAL verdict too, not just the shared key. A
                 // retained subtree — leaving Home without destruction — comes back with its
@@ -1150,6 +1500,220 @@ private struct PinnedRowTitleTracking: ViewModifier {
                                           treatment: treatment,
                                           mode: liftMode,
                                           enabled: HomeGeometryProbe.enabled))
+    }
+
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the BUG-37 slide is a REST remedy — a settled rest
+    /// deep enough to clip the title gets the title pushed down so it stays readable — and it was
+    /// being applied per frame while the rows MOVED. A row scrolling away under the hero had its
+    /// title pinned at the clip edge and slid down over its own posters (his fast pane: every
+    /// departing row `belt arm margin=-89..-107 slide=72`; the video at 22.8 s shows "Top 10 des
+    /// films" painted across the departing row), and the eased 0.22 s animation retargeted on
+    /// every reading, which on a quick press cadence reads as the title bouncing. A slow walk
+    /// shows the same mechanism in miniature (`margin=-18..-38`), which is why he could not see it
+    /// there.
+    ///
+    /// So: a slide target measured while the rows scroll is still in motion (`PinnedRowSettle`'s
+    /// own last-move stamp, the same signal the belt's deferred hide consults) is HELD, and
+    /// applied once the scroll has been still for `slideMotionHold`. During the scroll the title
+    /// keeps whatever slide its last rest had and clips naturally as its row leaves; at the next
+    /// rest it eases once, by the measured amount (≈8pt on a held-regime rest). Rest behaviour is
+    /// byte-identical to before — only motion is excluded.
+    ///
+    /// W3-14 (BUG-209): that "eases once" was itself the notch Steven filmed on every Down — the
+    /// incoming row's heading landed clipped, then dropped ≈10pt a quarter-second later. The
+    /// FOCUSED row's in-band slide is now exempt from the hold and tracks the clip edge
+    /// unanimated while the rows move (see `PinnedRowTitle.slideHoldVerdict`); every other row
+    /// keeps the hold exactly as described here.
+    ///
+    /// Cost: one `asyncAfter` chain per hold episode, not per frame — `slideHoldToken` dedups
+    /// re-arms while a check is already pending, and the pending target is a reference-box write.
+    ///
+    /// beta.18 verdict (BUG-87/89, R1): the release is now the settle corrector's DECISION, not
+    /// this title's own quiet clock — see `PinnedRowTitle.slideHoldVerdict` and `commitSlide`.
+    /// `PinnedRowTitle.slideMotionHold` remains the motion test and the fallback cadence.
+    private static var slideMotionHold: TimeInterval { PinnedRowTitle.slideMotionHold }
+
+    /// Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
+    /// cap) with its title entirely off screen. Applying that at rest is invisible — but on the
+    /// next Up walk the same row comes back DOWN as the focused row carrying that 72, held by the
+    /// motion gate for the whole approach, so its title would sit on its posters until the rest and
+    /// then ease 72 → 8. A title that is off screen even after sliding (`Reading.onScreen`) gets 0
+    /// instead, so an arriving row clips naturally and eases 0 → 8 exactly once at its rest.
+    /// Round 4 (verification workflow F3): the off-screen verdict comes from the Reading itself,
+    /// not from the sibling geometry observer's cache, so it does not depend on the order SwiftUI
+    /// runs the two observers' actions in.
+    private func applySlide(_ reading: PinnedRowTitle.Reading) {
+        // W3-14 (BUG-209): the Reading rides along for its clearances — the in-band test is
+        // judged against the focused card's lifted clearance (`PinnedRowTitle.slideInBand`).
+        commitSlide(target: reading.onScreen ? reading.slide : 0, measured: reading.slide, reading: reading)
+    }
+
+    /// The two motion signals, either one counts (device round 2): the rows scroll's own stamp,
+    /// and this title's frame having changed inside the window — see `lastGeometryChangeAt`.
+    private func slideMotion() -> (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval) {
+        let sinceScroll = PinnedRowSettle.secondsSinceMotion()
+        let sinceTitle = ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt
+        return (sinceScroll < Self.slideMotionHold || sinceTitle < Self.slideMotionHold,
+                sinceScroll, sinceTitle)
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the hold is released by the settle corrector's DECISION
+    /// (`releaseHeldSlideAtRest`, via `PinnedRowSettle.observeRestDecision`), not by this title's
+    /// own 0.12s quiet clock. That clock released before the corrector's 0.25s decision; a nudge
+    /// then moved the rows again, re-held the title, and it eased a second time — Steven's beta.18
+    /// "titles bounce again" and the ~1s collection name. Now the title lands once, after the nudge.
+    ///
+    /// W3-14 (BUG-209): except the FOCUSED row's in-band slide, which the corrector never nudges —
+    /// it tracks the clip edge unanimated while the rows move and eases only at rest, never waiting
+    /// on the decision. `tracking.isFocused` (the live mirror, not the captured `isFocused`) is the
+    /// focus test; `tracking.pendingSlide != nil` is "a hold episode is already running".
+    private func commitSlide(target: CGFloat, measured: CGFloat, reading: PinnedRowTitle.Reading) {
+        let motion = slideMotion()
+        let restPending = PinnedRowSettle.isRestPending
+        let focused = tracking.isFocused
+        let inBand = PinnedRowTitle.slideInBand(target: target, clearances: reading.clearances)
+        let holding = tracking.pendingSlide != nil
+        let decision = PinnedRowTitle.slideHoldDecision(target: target, current: slide,
+                                                        moving: motion.moving, restPending: restPending,
+                                                        focused: focused, inBand: inBand, holding: holding)
+        switch decision.verdict {
+        case .snapToZero:
+            // beta.18 verdict (BUG-87/89, R1): round 4 F2 already never HELD a 0 target, but it
+            // eased it over 0.22s while the row still travelled, so the title visibly detached
+            // from its row. In motion it now snaps; at rest a 0 target keeps the eased path.
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] slide %@",
+                      "snap0 row=\(rowKey) from=\(Int(slide.rounded())) measured=\(Int(measured.rounded()))")
+            }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { slide = 0 }
+        case .hold:
+            let alreadyPending = tracking.pendingSlide != nil
+            tracking.pendingSlide = target
+            guard !alreadyPending else { return }
+            // First hold of an episode: stamp the episode (the ceiling is per episode) and start
+            // the fallback chain. A decision normally releases first; see `scheduleSlideHoldFallback`.
+            tracking.slideHoldStartedAt = ProcessInfo.processInfo.systemUptime
+            tracking.ceilingRestarted = false // review r1 (P3-5): new episode, one restart again
+            tracking.slideHoldToken &+= 1
+            scheduleSlideHoldFallback(token: tracking.slideHoldToken, after: Self.slideMotionHold)
+        case .track:
+            // W3-14 (BUG-209): unanimated, one state write per changed reading — at most the
+            // reveal's last ~10 frames, on this title's subtree only. No hold chain is running
+            // (`!holding`), so the token bump only keeps the invariant that an apply ends one.
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
+                             animated: false, exempt: decision.exempt, restPending: restPending)
+        case .apply:
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            // Review r1 P3-5: `exempt=` is the decision's own rule, not a restatement of it.
+            applySlideTarget(target, measured: measured, via: "immediate", motion: motion,
+                             exempt: decision.exempt, restPending: restPending)
+        }
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the wall-clock FALLBACK for a held slide, re-checked on
+    /// the `slideMotionHold` cadence (a handful of main-queue hops per episode, never per frame).
+    /// It releases:
+    /// - `quiet`: the rows are still AND no decision is coming (`!isRestPending`) — the rc14 rest
+    ///   rule, kept for holds that start after the corrector has already decided (the title's own
+    ///   end-of-reveal creep), which would otherwise always wait the full `slideHoldMax`;
+    /// - `fallback`: a decision was expected but has not come by `slideHoldMax` and the rows are
+    ///   still;
+    /// - `ceiling` (review r1 P3-5): the episode has reached `slideHoldCeiling` and the rows are
+    ///   still, or it reached it a second time after one restart (`slide hold-restart`).
+    private func scheduleSlideHoldFallback(token: Int, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard token == tracking.slideHoldToken, tracking.pendingSlide != nil else { return }
+            let elapsed = ProcessInfo.processInfo.systemUptime - tracking.slideHoldStartedAt
+            // review r1 (P3-5): at the ceiling apply only when the rows are still, so a row
+            // that stays on screen through a long held-direction walk does not get its slide
+            // applied mid-motion. Still moving: restart the episode clock ONCE (probe line, not a
+            // release); the second ceiling applies regardless.
+            if elapsed >= PinnedRowTitle.slideHoldCeiling {
+                if tracking.ceilingRestarted || !slideMotion().moving {
+                    releaseHeldSlide(via: "ceiling")
+                    return
+                }
+                tracking.ceilingRestarted = true
+                tracking.slideHoldStartedAt = ProcessInfo.processInfo.systemUptime
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] slide %@", "hold-restart row=\(rowKey)")
+                }
+                scheduleSlideHoldFallback(token: token, after: Self.slideMotionHold)
+                return
+            }
+            if !slideMotion().moving {
+                if !PinnedRowSettle.isRestPending {
+                    releaseHeldSlide(via: "quiet")
+                    return
+                }
+                if elapsed >= PinnedRowTitle.slideHoldMax {
+                    releaseHeldSlide(via: "fallback")
+                    return
+                }
+            }
+            scheduleSlideHoldFallback(token: token, after: Self.slideMotionHold)
+        }
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the rest-decision observer. The decision says the rows will
+    /// not be corrected; it does not say THIS title has stopped (the engine's end-of-reveal creep
+    /// is uncounted by `noteScroll` — rc14 device round 2), so a title still moving keeps its hold
+    /// and the fallback chain releases it on the first quiet re-check.
+    private func releaseHeldSlideAtRest() {
+        guard tracking.pendingSlide != nil else { return }
+        guard !slideMotion().moving else { return }
+        releaseHeldSlide(via: "settle")
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): applies the held target, once. Bumping the token kills the
+    /// fallback chain; `via=` on the probe line says which release won.
+    private func releaseHeldSlide(via: String) {
+        guard let pending = tracking.pendingSlide else { return }
+        tracking.pendingSlide = nil
+        tracking.slideHoldToken &+= 1
+        applySlideTarget(pending, measured: pending, via: via, motion: slideMotion())
+    }
+
+    /// W3-14 (BUG-209): `animated: false` is the `.track` apply — the slide follows the clip edge
+    /// with animations disabled, the same transaction `snapToZero` uses. The probe line says which:
+    /// `via=` is still who released it (`immediate` = applied on the reading, `settle`/`quiet`/
+    /// `fallback`/`ceiling` = a held target released later), `anim=` how (`track` unanimated while
+    /// moving, `ease` the 0.22s curve, `none` under Reduce Motion), and on an immediate apply
+    /// `exempt=1` marks the focused in-band exemption and `restPending=1` a decision it did not
+    /// wait for. On a device pass, BUG-209 fixed reads as a run of
+    /// `slide apply … via=immediate anim=track exempt=1` lines per Down and no `via=settle` line
+    /// for the focused row.
+    private func applySlideTarget(_ target: CGFloat, measured: CGFloat, via: String,
+                                  motion: (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval),
+                                  animated: Bool = true, exempt: Bool? = nil, restPending: Bool? = nil) {
+        if HomeGeometryProbe.enabled, slide != target {
+            let anim = reduceMotion ? "none" : (animated ? "ease" : "track")
+            NSLog("[HomeScrollProbe] slide %@",
+                  "apply row=\(rowKey) from=\(Int(slide.rounded())) to=\(Int(target.rounded()))"
+                    + " measured=\(Int(measured.rounded()))"
+                    + " sinceScroll=\(Int((min(motion.sinceScroll, 99) * 1000).rounded()))ms"
+                    + " sinceTitle=\(Int((min(motion.sinceTitle, 99) * 1000).rounded()))ms"
+                    + " via=\(via) anim=\(anim)"
+                    + (exempt.map { " exempt=\($0 ? 1 : 0)" } ?? "")
+                    + (restPending.map { " restPending=\($0 ? 1 : 0)" } ?? ""))
+        }
+        guard slide != target else { return }
+        if reduceMotion {
+            slide = target
+        } else if !animated {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { slide = target }
+        } else {
+            withAnimation(.easeOut(duration: 0.22)) { slide = target }
+        }
     }
 
     /// Re-derives this title's `Reading` under a new focus mode, from the geometry last measured,
@@ -1613,10 +2177,13 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///  1. **It only ever runs from a settled rest, and only after real motion.** `noteScroll` arms a
 ///     single debounce and now REQUIRES motion to arm at all; a real scroll (motion beyond
 ///     `driftTolerance`, or a path length beyond `motionWindowDisplacement`) re-arms it, so
-///     nothing fires while the page moves and nothing fires when the page has not moved. The three
+///     nothing fires while the page moves and nothing fires when the page has not moved. The four
 ///     backstops that legitimately arm without motion (`invalidateEpoch`, `noteClearances`,
-///     `noteBeltFaded`) call `rearm(source:)` directly and are unaffected; `armSrc=` on the settle
-///     line names which one did.
+///     `noteBeltFaded`, and `setCovered(false)`'s uncover) call `rearm(source:)` directly and are
+///     unaffected; `armSrc=` on the settle line names which one did. Every one of them hands its
+///     token to the registered `scheduler` — arming without scheduling leaves a settle nobody will
+///     ever run, which is the class of bug Codex r6 found on the clearance path and rc10 found on
+///     the uncover path.
 ///  2. **The target is a legibility BAND, not a point.** Both edges come from the row's own
 ///     geometry:
 ///
@@ -1643,6 +2210,8 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///         Large    403.3     558.8          523.3    [−26,  4.5]    sim +24          1 × 23.5
 ///         Large    403.3     558.8          523.3    [−26,  4.5]    device −31.5     1 × 9.5
 ///
+///     Medium+ 351: takes the Large dial (FEAT-39) — not separately measured above.
+///
 ///     Large's corrected rests are Wave 10's to the point (+24 → 0.5; BUG-84 still holds because
 ///     the whole band is at or above `bandLow`), while Medium and Small stop being dragged to 0.
 ///     That is the one intended visual change: their titles now sit fully visible with a taller
@@ -1663,13 +2232,18 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///     brake the consecutive-failure counter could not be: the loop's corrections all succeed.
 ///     `standDown(reason: "budget")`, `budget=1`. `consecutiveNudges` survives only as the `n=`
 ///     field and nothing branches on it.
-///  5. **A PULL-BACK detector.** Each correction records the margin it was fired FROM. If the next
-///     settle for the same row lands within `pullBackTolerance` of that margin inside two seconds,
-///     the correction achieved nothing and repeating it would achieve nothing either: log
-///     `PULLBACK`, `standDown(reason: "pullback")` so the belt hides the title within ~0.25s, and
-///     report `pullback=1` (the running total is the line's own `pull=` field). Two pull-backs in
-///     a session set `pullBackDisarmed` with a loud `DISARMED-PULLBACK` line and the corrector is
-///     off for good, belt only. The ACTION sits after the in-band branch, so a rest that landed
+///  5. **A PULL-BACK detector, scoped per WALK DIRECTION (BUG-112 Item B).** Each correction
+///     records the margin it was fired FROM. If the next settle for the same row lands within
+///     `pullBackTolerance` of that margin inside two seconds, the correction achieved nothing and
+///     repeating it would achieve nothing either: log `PULLBACK`, `standDown(reason: "pullback")`
+///     so the belt hides the title within ~0.25s, and report `pullback=1` (the running total is
+///     the line's own `pull=` field, `pullBack.total` across every direction). Two pull-backs in
+///     one WALK DIRECTION disarm that direction, with a loud `DISARMED-PULLBACK` line, and the
+///     corrector falls back to the belt for it — but a settle that then reverses direction
+///     RE-ARMS: the brake belongs to the direction that fought the corrections, not to the
+///     session, because BUG-112's rest asymmetry (rows parked ~100pt deeper walking UP than DOWN
+///     on hardware) means the down-walk's pull-backs say nothing about the up-walk's corrections.
+///     See `PullBackLedger`. The ACTION sits after the in-band branch, so a rest that landed
 ///     inside the band is never scored as a fight.
 ///
 ///     Worst case on a device that fights: one 0.5s nudge-and-return per row for two rows, then
@@ -1755,19 +2329,24 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// rest can cost; and a motionless pass no longer arms anything at all.
 ///
 /// **The settle line** (`[HomeScrollProbe] settle …`, mirrored into the DEBUG `debug_pinned` AX
-/// probe the UI tests read). Append-only by contract — test47/test48 parse it — and every field is
-/// `key=value`, order not significant:
+/// probe the UI tests read). Append-only by contract — test47/test48/test58/test61/test63 parse
+/// it — and every field is `key=value`, order not significant to any of those parsers (they all
+/// scan for an exact key; none reads this line positionally). That said, the order below is the
+/// ACTUAL order the code emits, kept accurate deliberately (see the placement rule after the
+/// block) so this comment can be trusted as a map of the real line rather than an aspirational one:
 ///
 ///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
-///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
-///     clearance= clearanceLift= lift= intr= intrLifted= err= deficit= bandLo= bandHi= inBand=
-///     [ nudge= bound= n= | nudge=0 <outcome> ]
+///     rowH= last= lastRowShaped= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
+///     dir= rearm=
+///     clearance= clearanceLift= clearanceLiftRaw= lift= intr= intrLifted= err= deficit=
+///     bandLo= bandHi= inBand=
+///     [ nudge= bound= roomUp= n= | nudge=0 <outcome> ]
 ///
 /// where `<outcome>` is one of `clearance=?`, `budget=1`, `unsat=1`, `pull=N`, `disarmed=1`,
 /// `knobDisarm=1`, `inflight=1`, `pullback=1`, `endOfContent=1 room=`, `bound=`, `room=`, or
 /// nothing at all for a rest that is in band. `seq` is a monotonic settle counter (an idle sample whose `seq` climbs
 /// with nobody touching the remote is BUG-87 reproducing); `armSrc ∈ scroll|epoch|clearance|belt|
-/// retry` names what armed it; `corrN` is this row's corrections inside the window. The
+/// retry|external` names what armed it; `corrN` is this row's corrections inside the window. The
 /// clearance-dependent trio (`bandLo`/`bandHi`/`inBand`) is absent on a `clearance=?` line for the
 /// same reason `deficit=` is — the band cannot be computed before the row's title has measured
 /// itself.
@@ -1778,6 +2357,30 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// `UNEXPECTED-WITH-FIT` and writes a loud line of its own — with a fitting frame both band edges
 /// are satisfiable by construction, so a correction there is a device-anchoring surprise rather
 /// than routine work.
+///
+/// **Where a new field goes.** BUG-112 (Item B) appended `dir=` and `rearm=` right after `fits=` —
+/// not at the very end of the line, and that placement is deliberate, not a shortcut. A NEW field
+/// describing this rest's WALK (which row, what offset, what geometry regime, and now which
+/// direction) belongs with that group, inserted right after `fits=`, before the clearance block;
+/// nothing existing moves. The clearance/band fields and the bracketed `<outcome>` tail stay LAST
+/// on purpose and are never where a new field lands: they are the branch-specific fields that
+/// identify what THIS PARTICULAR settle's plan resolved to — whether a correction fired, why one
+/// didn't, how far short it landed (`disarmed=1`, `lastRowShaped=1 room=`, `pullback=1`, …) — and
+/// several call sites and every UI test that reads this line treat it as a suffix (tailing the
+/// fields after `inBand=`, reading whichever `<outcome>` token is present last). Splitting that
+/// tail with an unrelated field would make "the last thing on the line" stop meaning "how this
+/// settle resolved."
+///
+/// **Two `settle` lines on the pane are NOT this line** (rc13, BUG-112's remaining half). The
+/// About pane's Row Settle list also carries `settle row=… epochRearm=1 …` (a token superseded by
+/// a fresh epoch, re-checked a beat later) and `settle row=… hops=0 abandoned=1 …` (a re-check
+/// chain that spent its hop budget — see `abandonChain`). Both are CONTROL FLOW, not a measured
+/// rest: neither carries `margin=`, neither ever reaches `report`, and therefore neither reaches
+/// `debug_pinned` or any UI test's oracle. They exist because on a device the absence of a settle
+/// line is ambiguous — nothing armed, something armed and superseded, and something resolved
+/// clean all photograph identically — and rc12's pane showed exactly that absence on the walk up.
+/// A reader of the photo distinguishes them by the missing `margin=`, the same filter the mirror
+/// in `PinnedRowSettleRevealModifier.scheduleSettle` applies.
 ///
 /// Storage is plain static rather than `@State` for the same reason `HomeScrollProbeRest`'s is:
 /// every writer is a SwiftUI geometry callback on the main thread, and a state write here would
@@ -1818,6 +2421,24 @@ enum PinnedRowSettle {
         /// it came from the exempt row or from a mid-list row whose range had unexpectedly run out,
         /// which the corrector alone could never tell apart. See `PinnedRowEnvironment.swift`.
         var isLastRow: Bool = false
+
+        /// BUG-87/89 (rc11), carrying the VALUE rather than a Bool since Codex r2 on rc11: the
+        /// `rowCardLinkFrameFloor` this row's cards are carrying — i.e. the label-height floor the
+        /// FRAME SHAPING applies, or 0 where shaping is inactive. Read from the same environment the
+        /// cards read, so it cannot disagree with what is actually laid out.
+        ///
+        /// A bare Bool only said a floor EXISTED, not that it GOVERNS the focused label — see
+        /// `PinnedRowSettle.lastRowExemptionApplies(lockupExtent:linkFrameFloor:)`, which needs the
+        /// actual number to compare against `lockupExtent`.
+        var linkFrameFloor: CGFloat = 0
+
+        /// Whether the frame-shaping floor is active on the LAST row — kept for the settle report
+        /// line, whose `lastRowShaped=` field predates the value-carrying fix and is parsed by
+        /// device traces (and test63) as a 0/1 flag, not a magnitude. rc14 (BUG-122): the floor is
+        /// also published on short middle rows now, which report `shortShaped=1` instead so the
+        /// last-row flag keeps meaning what every trace so far has read it as.
+        var lastRowShaped: Bool { isLastRow && linkFrameFloor > 0 }
+        var shortRowShaped: Bool { !isLastRow && linkFrameFloor > 0 }
 
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
@@ -1860,6 +2481,127 @@ enum PinnedRowSettle {
         /// height the band target is sized against, independent of where the row is currently
         /// parked. `protectedBottom` is the same quantity in viewport coordinates.
         var lockupExtent: CGFloat { protectedBottom - rowTop }
+    }
+
+    /// BUG-87/89 (rc11, Codex r2): the last-row exemption may fire only when the label floor actually
+    /// GOVERNS the focused label — i.e. the label's natural lockup extent is no taller than the floored
+    /// frame. A collection row in Landscape Rows mode can hold a PORTRAIT folder whose natural label
+    /// (535 at Large) exceeds both the plan's landscape link frame and the floor (431): its reveal is
+    /// then bounded by its own height, the frame can clip at the top-anchored rest, and the ordinary
+    /// upward correction is the right answer. `lockupExtent` is the focused card's measured lockup
+    /// (`Measurement.lockupExtent`, top of the row to the bottom of the focused card's caption);
+    /// `linkFrameFloor` is `rowCardLinkFrameFloor`.
+    ///
+    /// `lockupExtent` is `Theme.Spacing.lg + topReach + artwork + captionChrome` — see
+    /// `Measurement.protectedBottom`/`lockupExtent` for the uniform-row derivation and
+    /// `CollectionRowView.focusedTileLockupExtent` (CollectionsUI.swift) for the mixed-shape one; BOTH
+    /// start from the shelf's top `Spacing.lg` pad, so `lockupExtent` already carries it. `linkFrameFloor`,
+    /// by contrast, is the floor `rowCardLinkFrameFloor` applies to the card's LABEL — the region
+    /// INSIDE that same `lg` pad — so it is compared against `lockupExtent` only after adding the pad
+    /// back: `lockupExtent <= lg + linkFrameFloor`. (`lockupExtent` deliberately excludes the trailing
+    /// `rowCardBottomReach` below the caption — `protectedBottom`'s own header calls that band
+    /// transparent and free to leave the viewport without hiding anything, so it plays no part in
+    /// whether the floor governs the VISIBLE label either.) `0.5` absorbs point-rounding in the two
+    /// independent derivations without opening the door to a real 1pt+ overshoot.
+    nonisolated static func lastRowExemptionApplies(lockupExtent: CGFloat, linkFrameFloor: CGFloat) -> Bool {
+        linkFrameFloor > 0 && lockupExtent <= Theme.Spacing.lg + linkFrameFloor + 0.5
+    }
+
+    /// rc14 (BUG-121): a settle whose title sits more than the row's own height below the clip
+    /// edge is a rest the engine has not produced yet (late content: the row realised after focus
+    /// landed on it) — see the deferral in `settlePlan`. Pure, for the unit test.
+    nonisolated static func lateRestDeferral(margin: CGFloat, rowHeight: CGFloat) -> Bool {
+        rowHeight > 0 && margin > rowHeight
+    }
+
+    /// rc14 (BUG-122): a rest at the scroll view's true top whose row sits BELOW the band is the
+    /// layout's own position for the first row; correcting it means scrolling the first row under
+    /// the hero. Pure, for the unit test. `offsetY` is the rows scroll offset (0 at the top).
+    nonisolated static func topRestExempt(offsetY: CGFloat, margin: CGFloat, bandHigh: CGFloat) -> Bool {
+        offsetY <= 0.5 && margin > bandHigh
+    }
+
+    /// T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): Steven's Tab Bar
+    /// Geometry pane read `y=-13 st=part` at rest. A linked tab bar moves 1:1 with the rows'
+    /// offset, so one reading (H1) is that the FIRST row rested a few points below the true top.
+    /// With `TabBarRestFix.leg == 2` the settle corrector scrolls that row back to offset 0, after
+    /// which the next settle lands on `topRestExempt` like any rest at the true top.
+    ///
+    /// The first row is recognised from its own frame: its top in CONTENT coordinates
+    /// (`rowTop + offsetY`) is the rows list's top inset, `heroPinnedRowsHeadroom` (8). `topSnapMax`
+    /// keeps the snap to "a few points": a deeper first-row rest is the up-walk deep park, which the
+    /// ordinary corrector and the Up-into-hero reveal own. Pure, for `PinnedRowTopSnapTests`.
+    nonisolated static let topSnapMax: CGFloat = 48
+
+    nonisolated static func topSnapApplies(leg: Int, offsetY: CGFloat, rowContentTop: CGFloat,
+                                           headroom: CGFloat) -> Bool {
+        leg == 2 && offsetY > 0.5 && offsetY <= topSnapMax && rowContentTop <= headroom + 1
+    }
+
+    /// T1 leg 2: why an applicable top snap does not fire this settle, or nil when it may. The
+    /// snap is planned BEFORE the band verdict (the rest it fixes is usually inside the band), so
+    /// it checks the corrector's brakes itself instead of inheriting them from the branches below:
+    ///  - `knob`: `debug.pinnedSettleDisarm`, a corrector that never engages;
+    ///  - `undone`: the engine already put a top snap back this session (`topSnapLatched`), so the
+    ///    first row's deep rest is the engine's own reveal and a snap would only bob;
+    ///  - `returned`: this settle found the last correction pulled back or dropped;
+    ///  - `disarmed`: the MISS latch or the walk direction's pull-back brake;
+    ///  - `budget`: the row's wall-clock window is spent (a snap spends it like any correction);
+    ///  - `bound`: moving the row down by `offsetY` would push the focused card's lockup past the
+    ///    fold (`bottomRoom`, the bound every downward correction obeys).
+    nonisolated static func topSnapHold(knobDisarmed: Bool, latched: Bool, returned: Bool,
+                                        disarmed: Bool, budgetSpent: Bool,
+                                        bottomRoom: CGFloat, offsetY: CGFloat) -> String? {
+        if knobDisarmed { return "knob" }
+        if latched { return "undone" }
+        if returned { return "returned" }
+        if disarmed { return "disarmed" }
+        if budgetSpent { return "budget" }
+        if bottomRoom < offsetY - 0.5 { return "bound" }
+        return nil
+    }
+
+    /// T1 leg 2: the snap fires on the SECOND of two consecutive settles that read the same
+    /// first-row offset. A focus move from the hero into row 1 arms its settle through the epoch
+    /// (`invalidateEpoch`, `settleDelay` after the focus change), and a reveal of a few points moves
+    /// in steps too small for `noteScroll` to call motion, so that first settle can land while the
+    /// engine's own scroll is still running. Snapping then would race the reveal (and an engine
+    /// tail that wins reads as an undone snap). The first applicable settle records a candidate and
+    /// asks for one re-check; the re-check, `settleSeq` exactly one later on the same row within
+    /// ±0.5 pt, fires. Pure, for `PinnedRowTopSnapTests`.
+    nonisolated struct TopSnapCandidate: Equatable, Sendable {
+        var seq: Int
+        var rowKey: String
+        var offsetY: CGFloat
+
+        func confirms(seq: Int, rowKey: String, offsetY: CGFloat) -> Bool {
+            seq == self.seq &+ 1 && rowKey == self.rowKey && abs(offsetY - self.offsetY) <= 0.5
+        }
+    }
+
+    /// rc14 (BUG-121): how many settle re-checks a late rest gets before the ordinary correction
+    /// path runs. Review r1 P2: the caller's chain budget (`PinnedRowSettleRevealModifier
+    /// .maxSettleHops`, 3) bounds the whole chain, so this must leave at least one hop for the
+    /// correction itself — two deferrals (0.5 s), then the third hop corrects a row the engine
+    /// genuinely never revealed.
+    nonisolated static let maxLateRestRetries = 2
+    nonisolated(unsafe) private static var lateRestRetries: (rowKey: String, count: Int) = ("", 0)
+
+    /// The correction `settlePlan` applies, as a pure function of the four quantities that bound
+    /// it. Extracted so the bound cases are unit-testable (BUG-112: on the tester's up-walk the
+    /// deficit EXCEEDS `bottomRoom`, and what matters is that the shortened correction still
+    /// FIRES — a correction cut by `bound` is still a correction, is still recorded in
+    /// `correctionsFired`/`lastCorrection`, and is still what the pull-back detector judges).
+    ///
+    /// `bounded` is diagnostic only: the caller reports `bound=`/`roomUp=` exactly as before.
+    nonisolated static func plannedCorrection(error: CGFloat,
+                                              deficit: CGFloat,
+                                              bottomRoom: CGFloat,
+                                              scrollRoomUp: CGFloat)
+    -> (magnitude: CGFloat, correction: CGFloat, bounded: Bool) {
+        let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
+        let magnitude = min(deficit, headroom, Theme.Size.heroPinnedRowSettleMaxNudge)
+        return (magnitude, error < 0 ? magnitude : -magnitude, magnitude < deficit)
     }
 
     /// What one pinned row's settle tracker saw this geometry pass (Wave 9(a)).
@@ -1907,6 +2649,199 @@ enum PinnedRowSettle {
         /// another one. Bounded by the caller's hop budget
         /// (`PinnedRowSettleRevealModifier.maxSettleHops`).
         var retryAfter: TimeInterval? = nil
+        /// rc13: a CONTROL-FLOW note for the photographable About pane only — never for `report`.
+        ///
+        /// A settle that resolves to "this token was superseded, re-check in a beat" measured no
+        /// rest, so it must not reach `debug_pinned`: that label is the harness oracle
+        /// (test47/test48/test58/test61/test63/test65 parse it) and a line with no `margin=`
+        /// sitting between two real ones would read as a rest that was measured and came back
+        /// empty. On a DEVICE that same non-event is the diagnosis: rc12's pane showed NOTHING
+        /// between two rows on the walk back up, and "nothing" could equally have meant no settle
+        /// was armed, one was armed and superseded, or one resolved clean. This says which.
+        ///
+        /// So it goes to `PinnedRowSettleProbe` (the pane) and nowhere else, and carries no
+        /// `margin=` by construction — which is exactly the filter the settle mirror applies to
+        /// `report` one line below where this is read.
+        var probeNote: String? = nil
+        /// rc13 review fix: `true` on exactly one plan — the SUPERSEDED/epoch-rearm branch of
+        /// `settlePlan` — the only one that returns above that function's own `armed = false`, so
+        /// it is the only chain that can still be leaving the corrector armed with nothing
+        /// scheduled by the time `abandonChain(spentPlan:)` sees it. Every other plan that sets
+        /// `retryAfter` (clearance-late, in-flight) runs AFTER `armed = false` has already executed
+        /// this settle epoch, so their `abandonChain` call has nothing left to clear — leaving this
+        /// `false` there is correct, not an oversight.
+        var leavesArmed: Bool = false
+    }
+
+    /// BUG-112 (Item B) — the pull-back brake, per WALK DIRECTION.
+    ///
+    /// The brake this replaces (`pullBacks` / `pullBackDisarmed`) was SESSION-wide: two pull-backs
+    /// anywhere and corrections were off until the next regime change. That is right about the
+    /// DEVICE ("an engine that fights corrections fights all of them") and wrong about this defect.
+    /// BUG-112's rest asymmetry is direction-bound — the tester's Row Settle pane shows the same
+    /// rows resting `margin≈-8` walking DOWN and `-102…-108` walking back UP, and the FA87
+    /// simulator shows the same shape at 22pt — so the corrections the up-walk needs are spent, and
+    /// disarmed, by the down-walk that precedes them (`pull=2 pbDisarm=1` by row 3 on the sim).
+    ///
+    /// Direction comes from the only signal the corrector has: the sign of the scroll offset delta
+    /// between two settles on DIFFERENT rows. `Measurement` carries no index (see its `rowKey`
+    /// doc), but a row hop moves the offset by a row height — hundreds of points — while a
+    /// correction is bounded by `bottomRoom` (≈93 at the tester's regime) and drift by
+    /// `driftTolerance`. `minHopDelta` sits well above both and well below any real hop.
+    ///
+    /// A value type on purpose: every branch here is unit-testable without a hosting controller,
+    /// which is what `settlePlan`'s own `nonisolated(unsafe) private static` state has never been
+    /// (see `PinnedRowSettleDirectionTests`).
+    nonisolated struct PullBackLedger: Equatable, Sendable {
+        /// +1 walking DOWN the page (offset increasing), −1 UP, 0 not yet known.
+        private(set) var direction = 0
+        private(set) var down = 0
+        private(set) var up = 0
+        /// Pull-backs recorded before any direction was known. They still count toward the hard
+        /// stop, but the first KNOWN direction starts with a clean per-direction count — an early
+        /// pull-back with no direction attached must not silently kill the session.
+        private(set) var unknown = 0
+        /// How many times a direction change has RELEASED the brake. Reported as `rearm=`.
+        private(set) var rearms = 0
+        private(set) var lastRowKey: String?
+        private(set) var lastOffsetY: CGFloat = 0
+
+        /// Below this, an offset change between two rows is not a walk step (a correction is
+        /// bounded by `bottomRoom`; drift by `driftTolerance` = 4).
+        static let minHopDelta: CGFloat = 24
+
+        /// `noteSettle`'s outcome. Two independent facts, not one — see the Codex finding this
+        /// type closes: a walk can reverse (`changed`) while the LEDGER itself was never disarmed
+        /// (`released == false`, e.g. an early pull-back split across `unknown` and one known
+        /// direction, neither of which alone reaches `maxPullBacksPerSession`). Collapsing both
+        /// into one Bool made `changed`-without-`released` invisible to every caller, including the
+        /// settle-line's verify-miss latch, which needs `changed` alone: on hardware a pull-back and
+        /// a verification MISS are the same event seen twice (see `settlePlan`'s call site), so the
+        /// latch has evidence of a genuine reversal even when the ledger's OWN count never crossed
+        /// its budget.
+        nonisolated struct SettleResult: Equatable, Sendable {
+            /// The walk changed direction to a new KNOWN direction (a real hop, not a re-settle on
+            /// the same row and not a sub-`minHopDelta` step). True whether or not the ledger was
+            /// disarmed before this settle.
+            var changed: Bool
+            /// `changed` was true AND it released a disarmed ledger — i.e. `rearms` was
+            /// incremented. Only ever true when `changed` is; the ledger's own `disarmed` flag went
+            /// from true to false as a direct result of this settle.
+            var released: Bool
+
+            static let none = SettleResult(changed: false, released: false)
+        }
+
+        var total: Int { down + up + unknown }
+
+        /// Pull-backs recorded for the CURRENT direction.
+        var count: Int {
+            switch direction {
+            case 1: return down
+            case -1: return up
+            default: return unknown
+            }
+        }
+
+        /// The oscillation bound a plain reset would lose: a user who reverses repeatedly
+        /// accumulates in both ledgers, and at twice the per-direction budget the corrector is off
+        /// for the session whatever the direction does.
+        var hardDisarmed: Bool { total >= 2 * PinnedRowSettle.maxPullBacksPerSession }
+
+        var disarmed: Bool { hardDisarmed || count >= PinnedRowSettle.maxPullBacksPerSession }
+
+        /// Records this settle's row and offset. `changed` is true whenever the walk turned to a
+        /// new KNOWN direction — regardless of whether the ledger itself was disarmed — because that
+        /// alone is evidence the caller can act on (see `SettleResult`). `released` is the narrower,
+        /// original signal: a flip that also took the ledger from disarmed to armed, which is what
+        /// `rearms` counts.
+        mutating func noteSettle(rowKey: String, offsetY: CGFloat) -> SettleResult {
+            defer { lastRowKey = rowKey; lastOffsetY = offsetY }
+            guard let lastRowKey, lastRowKey != rowKey else { return .none }
+            let delta = offsetY - lastOffsetY
+            guard abs(delta) >= Self.minHopDelta else { return .none }
+            let newDirection = delta > 0 ? 1 : -1
+            guard newDirection != direction else { return .none }
+            let wasDisarmed = disarmed
+            direction = newDirection
+            let released = wasDisarmed && !disarmed
+            if released { rearms += 1 }
+            return SettleResult(changed: true, released: released)
+        }
+
+        mutating func notePullBack() {
+            switch direction {
+            case 1: down += 1
+            case -1: up += 1
+            default: unknown += 1
+            }
+        }
+
+        /// A regime change invalidates every measurement the counts were gathered under, including
+        /// the hop the direction was derived from.
+        mutating func resetAll() { self = PullBackLedger() }
+
+        /// A host teardown invalidates the HOP (a new host's first offset is not comparable with
+        /// the old one's) but not the device evidence — same reasoning `resetHostScopedState`
+        /// already applies to `pullBacks`/`disarmed`.
+        mutating func forgetHop() { lastRowKey = nil; lastOffsetY = 0 }
+    }
+
+    /// 2026-09-30 (`zoom-on-title-fix-plan.md` §2.C(ii)): how far the rows scroll view actually
+    /// travelled TOWARD one fired correction's target before the next settle judged it.
+    ///
+    /// The pull-back detector reads "the row is back within `pullBackTolerance` of the margin the
+    /// correction was fired from" as the focus engine fighting the correction. The 2026-09-30
+    /// device walk showed a second way to end up there: the `scrollTo(y:)` animation lost to the
+    /// engine's own final tail step and the offset NEVER MOVED toward the target (4552 → 4553
+    /// against a 4540 target, twice). Counting those as pull-backs disarmed the corrector for the
+    /// whole walk direction and produced 26 title fades. So the offset is sampled from `noteScroll`
+    /// while the correction is outstanding and its BEST progress is kept: a real pull-back reaches
+    /// the target and is then moved back (progress ≈ 100 %), a dropped correction never gets
+    /// going (progress < `droppedFraction`). The value type keeps the classification unit-testable.
+    nonisolated struct CorrectionProgress: Equatable, Sendable {
+        /// Below this fraction of the issued nudge, the correction never applied.
+        static let droppedFraction: CGFloat = 0.25
+
+        var firedY: CGFloat
+        var targetY: CGFloat
+        /// Best signed travel toward `targetY` seen since firing (negative = moved away).
+        private(set) var maxProgress: CGFloat = 0
+
+        init(firedY: CGFloat, targetY: CGFloat) {
+            self.firedY = firedY
+            self.targetY = targetY
+        }
+
+        /// The signed nudge the correction asked for, in offset space.
+        var nudge: CGFloat { targetY - firedY }
+
+        mutating func note(offsetY: CGFloat) {
+            let direction: CGFloat = nudge >= 0 ? 1 : -1
+            maxProgress = max(maxProgress, (offsetY - firedY) * direction)
+        }
+
+        /// The correction never moved the offset a quarter of the way to its target.
+        var dropped: Bool { maxProgress < Self.droppedFraction * abs(nudge) }
+    }
+
+    /// What a rest back at a correction's origin margin turned out to be.
+    nonisolated enum CorrectionReturn: Equatable, Sendable {
+        /// The correction applied and the engine put the row back: a real pull-back.
+        case pulledBack
+        /// The correction never applied (`CorrectionProgress.dropped`): not the engine fighting
+        /// us, so it must not spend the direction's pull-back budget.
+        case dropped
+    }
+
+    /// Classifies a return to the origin margin and, ONLY for a real pull-back, records it in the
+    /// ledger. A dropped correction leaves `ledger` untouched. No retry is issued either way —
+    /// the caller stands the rest down to the belt exactly as it does for a pull-back.
+    nonisolated static func recordReturn(_ progress: CorrectionProgress,
+                                         into ledger: inout PullBackLedger) -> CorrectionReturn {
+        if progress.dropped { return .dropped }
+        ledger.notePullBack()
+        return .pulledBack
     }
 
     /// What one fired correction promised, so the next settle can check it landed.
@@ -1996,22 +2931,40 @@ enum PinnedRowSettle {
     /// own margin against this to detect the focus engine pulling the row straight back — see the
     /// pull-back paragraph in the header. Cleared by `invalidateEpoch` (a different row's rest can
     /// never be evidence about this one) but NOT by a good rest, which is the whole point.
-    nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date)?
-    /// Session totals, deliberately not host- or epoch-scoped: a device that pulls corrections
-    /// back does it everywhere, and the `disarmed` flag next to them has always been session-wide
-    /// for the same reason.
+    ///
+    /// `progress` (2026-09-30) is sampled by `noteScroll` while the correction is outstanding, so
+    /// the detector can tell a pull-back from a correction that never applied (`DROPPED`).
+    ///
+    /// `isTopSnap` (T1 leg 2): this correction was a top-rest snap. A snap is judged by its own
+    /// rule (`settlePlan`, "TOPSNAP-UNDONE") and never by the pull-back detector, so it cannot
+    /// spend the walk direction's pull-back budget that the ordinary corrector depends on. Always
+    /// false at legs 0 and 1.
+    nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date,
+                                                            progress: CorrectionProgress, isTopSnap: Bool)?
+    /// T1 leg 2: set when the engine undid a top snap (the first row went back below the top on
+    /// the same row epoch). From then on leg 2 holds (`topSnapHold` → `undone`) until a poster-size
+    /// regime change, so a first row the engine itself parks deep is snapped at most once instead
+    /// of bobbing on every horizontal move.
+    nonisolated(unsafe) private static var topSnapLatched = false
+    /// T1 leg 2: the settle that first saw an applicable top snap, waiting for its confirming
+    /// re-check (`TopSnapCandidate`). Valid only for the very next settle (`settleSeq` + 1), so it
+    /// needs no clearing anywhere else.
+    nonisolated(unsafe) private static var topSnapCandidate: TopSnapCandidate?
+    /// Session totals, not host-scoped: a device that pulls corrections back does it everywhere.
+    /// BUG-112 (Item B) scopes the brake itself per WALK DIRECTION rather than dropping the
+    /// session-wide framing entirely — see `PullBackLedger`.
     /// The margin the pull-back currently being reported was measured against — carried between
     /// the detection (which runs with the verification, so the settle line can report accurate
     /// counters) and the action below the in-band branch. Scratch storage, valid only within one
     /// `settlePlan` call.
     nonisolated(unsafe) private static var pullBackFrom: CGFloat = 0
-    nonisolated(unsafe) private static var pullBacks = 0
-    nonisolated(unsafe) private static var pullBackDisarmed = false
+    /// BUG-112 (Item B): the pull-back brake, now per WALK DIRECTION — see `PullBackLedger`.
+    nonisolated(unsafe) private static var pullBack = PullBackLedger()
     /// Monotonic settle counter, reported as `seq=` so a harness sampling `debug_pinned` over an
     /// idle window can tell "the same settle line, still the last word" from "the corrector keeps
     /// resolving settles" without inferring it from timing. Never reset.
     nonisolated(unsafe) private static var settleSeq = 0
-    /// What armed the settle currently being resolved — `scroll|epoch|clearance|belt|retry`,
+    /// What armed the settle currently being resolved — `scroll|epoch|clearance|belt|uncover|retry`,
     /// reported as `armSrc=`. A row that keeps producing settle lines with nothing touching the
     /// remote is the BUG-87 signature, and this names which backstop is doing it.
     nonisolated(unsafe) private static var armSource = "scroll"
@@ -2042,6 +2995,11 @@ enum PinnedRowSettle {
     /// overwrites its own key.
     nonisolated(unsafe) private static var standDownObservers: [String: (token: Int, notify: @MainActor () -> Void)] = [:]
     nonisolated(unsafe) private static var standDownObserverSeq = 0
+    /// beta.18 verdict (BUG-87/89, R1): per-row "the corrector has decided this rest" observers —
+    /// see `observeRestDecision`. Same keying, token scoping and host-swap rule as
+    /// `standDownObservers`; the difference is delivery, which is a BROADCAST (`notifyRestDecided`).
+    nonisolated(unsafe) private static var restObservers: [String: (token: Int, notify: @MainActor () -> Void)] = [:]
+    nonisolated(unsafe) private static var restObserverSeq = 0
     /// Wave W5 (BUG-89). The GEOMETRY REGIME the corrector's session-wide state was accumulated
     /// under — see `noteRegimeChange`. Published by Home (`plan.regimeKey`), reported as `regime=`.
     nonisolated(unsafe) private static var regimeKey: String?
@@ -2239,11 +3197,12 @@ enum PinnedRowSettle {
         // The brakes, released — every one of them is evidence gathered under `previous`.
         disarmed = false
         verifyFailures = 0
-        pullBacks = 0
-        pullBackDisarmed = false
+        pullBack.resetAll()
         pullBackFrom = 0
         correctionsFired.removeAll()
         lastCorrection = nil
+        // T1 leg 2: an undone top snap is evidence about the old regime's first-row rest too.
+        topSnapLatched = false
         // Siblings: an outstanding verification promises an offset measured under the OLD layout
         // (landing it would be judged against content that no longer exists — a false MISS, and two
         // of those are the session disarm this function just cleared), an in-flight window belongs
@@ -2270,6 +3229,73 @@ enum PinnedRowSettle {
         // 0, not `settleDelay` — see the doc above. Already on the main actor here (this is called
         // from a SwiftUI `onChange`), so no `assumeIsolated` is needed.
         scheduler(token, 0)
+    }
+
+    /// BUG-112 (Item A): Home moved the rows scroll itself — the Up-fallback reveal — so everything
+    /// the corrector is holding about the CURRENT rest describes a position that no longer exists.
+    ///
+    /// Three pieces have to go, each for a reason this file already documents elsewhere:
+    /// an outstanding VERIFICATION would be judged against an offset WE moved (a false MISS, and
+    /// two of those set the session-wide disarm); `lastCorrection` would let the pull-back
+    /// detector read our own scroll as the engine fighting a correction; and the in-flight NUDGE
+    /// window belongs to a correction this scroll has already invalidated. The hop is forgotten
+    /// too — a programmatic jump is not a walk step and must not be read as a direction.
+    ///
+    /// Then one fresh settle, `settleDelay` out, so the new rest is judged on its own interval.
+    /// `@MainActor` for the same reason `noteRegimeChange` is: the only caller is a SwiftUI handler.
+    @MainActor static func noteExternalScroll(reason: String) {
+        pendingVerification = nil
+        nudgeDeadline = nil
+        lastCorrection = nil
+        pullBack.forgetHop()
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "external-scroll reason=\(reason)")
+        }
+        guard let scheduler else { return }
+        scheduler(rearm(source: "external"), settleDelay)
+    }
+
+    /// rc13 (BUG-112, Steven's rc12 verdict): the Up fallback ASKED a row to take focus without
+    /// scrolling anything — rung 1 of `HomeView.beginUpFallback`'s ladder, the common case on
+    /// hardware, where the previous row is still mounted and the focus ENGINE performs the reveal.
+    ///
+    /// `noteExternalScroll` is the wrong notice for that rung and this function exists because of
+    /// exactly one line in it: `pullBack.forgetHop()`. Forgetting the hop drops the row key and
+    /// offset the NEXT settle's direction is derived from, so the first rest after a fallback-
+    /// entered hop reports `dir=` unchanged — the up-walk never flips to −1 and the direction-
+    /// scoped brake (Item B, the thing rc12 shipped) stays spent from the down-walk that preceded
+    /// it. That is right for a programmatic JUMP, which is not a walk step; it is wrong here,
+    /// because a focus hand-off to the row above IS a walk step — the same one the engine would
+    /// have made on its own had it found the candidate.
+    ///
+    /// Everything else `noteExternalScroll` drops is dropped here for its own reasons, unchanged:
+    /// an outstanding VERIFICATION would be judged against a rest the focus engine is about to
+    /// move (a false MISS, and two of those set the session-wide disarm); `lastCorrection` would
+    /// let the pull-back detector read the engine's own reveal as it fighting a correction; and
+    /// the in-flight NUDGE window belongs to a correction the hand-off has already invalidated.
+    ///
+    /// Then one fresh settle, `settleDelay` out. The engine's own reveal supersedes it per frame
+    /// through `noteScroll` (so a rest that the reveal actually moved is judged with
+    /// `armSrc=scroll`); when the reveal moves nothing at all — the row was already on screen —
+    /// the `external` token is what makes the rest evaluated and LOGGED at all. That second case
+    /// is the half of BUG-112 still open after rc12: his pane showed no `settle` line at all after
+    /// a fallback-entered rest, so the titles faded with nothing on the wire to explain it.
+    ///
+    /// `armSrc=external` is deliberately reused rather than given a new spelling — it is already a
+    /// documented value of that field (see the settle-line map above) and the probe's `upFallback`
+    /// line, emitted in the same breath by the caller, is what names the fallback.
+    ///
+    /// `@MainActor` for the same reason `noteExternalScroll` is: the only caller is a SwiftUI
+    /// handler (`HomeView.beginUpFallback`).
+    @MainActor static func noteFocusHop(reason: String) {
+        pendingVerification = nil
+        nudgeDeadline = nil
+        lastCorrection = nil
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "focus-hop reason=\(reason)")
+        }
+        guard let scheduler else { return }
+        scheduler(rearm(source: "external"), settleDelay)
     }
 
     /// Ends the current correction epoch: a different row has focus, so neither the oscillation
@@ -2345,6 +3371,8 @@ enum PinnedRowSettle {
     nonisolated static func noteScroll(_ newSample: ScrollSample) -> Int? {
         let previous = sample?.offsetY
         sample = newSample
+        // 2026-09-30 §2.C(ii): track how far an outstanding correction actually got.
+        lastCorrection?.progress.note(offsetY: newSample.offsetY)
         let now = Date()
         let step: CGFloat? = previous.map { abs(newSample.offsetY - $0) }
 
@@ -2450,6 +3478,7 @@ enum PinnedRowSettle {
         armed = false
         epochRearmPending = false
         clearanceLatePending = nil
+        lateRestRetries = ("", 0)
         consecutiveNudges = 0
         latest = nil
         sample = nil
@@ -2458,8 +3487,12 @@ enum PinnedRowSettle {
         standDownRow = nil
         lastCorrection = nil
         // Host-scoped, unlike the epoch case: every row key belonged to the outgoing host's rows
-        // and each of them is being torn down. The session-wide `pullBacks`/`pullBackDisarmed`
-        // stay, for the same reason `disarmed` does — they describe the DEVICE, not the host.
+        // and each of them is being torn down. The session-wide `pullBack` ledger's per-direction
+        // COUNTS stay, for the same reason `disarmed` does — they describe the DEVICE, not the
+        // host. But its HOP (`lastRowKey`/`lastOffsetY`) must go: a recreated host's first offset
+        // is not comparable with the outgoing host's, so a surviving hop would misread the new
+        // host's first sample as a real (or spuriously absent) direction change.
+        pullBack.forgetHop()
         correctionsFired.removeAll()
         beltFadeReasons.removeAll()
         // Belt state is host-scoped diagnostic state like everything else here: it describes titles
@@ -2510,6 +3543,158 @@ enum PinnedRowSettle {
         return generation
     }
 
+    /// rc13: the live token, read-only. No longer load-bearing for `abandonChain` (see that
+    /// function's header for why the generation interlock it used to back was replaced), kept
+    /// because it is a harmless, honest read of `generation` and nothing else in this enum exposes
+    /// one.
+    nonisolated static var currentGeneration: Int { generation }
+
+    /// rc13: the hop budget ran out on a chain that was still asking for a re-check — stand it
+    /// down rather than leaving it stranded. Called from `PinnedRowSettleRevealModifier
+    /// .scheduleSettle`'s exhausted branch, which is the only place that knows the budget, with the
+    /// exact `Plan` whose hops ran out.
+    ///
+    /// rc13 review fix: this used to guard the WHOLE function — including the pane log — on
+    /// `armSource == "epoch"`, on the mistaken belief (recorded in a since-deleted comment here)
+    /// that the SUPERSEDED/epoch-rearm branch of `settlePlan` was the only plan that ever reaches
+    /// this call site with `retryAfter` set. It is not: the clearance-late and in-flight branches
+    /// also set `retryAfter` and can also run out of hops, and neither of them sets
+    /// `armSource = "epoch"` — so every one of THEIR exhausted chains hit the guard, returned
+    /// immediately, and never logged `hops=0 abandoned=1` at all. The pane went silent for exactly
+    /// the chains a device reader most needs to see stand down, while the underlying state was
+    /// fine (those two branches run after `armed = false` has already executed for this epoch —
+    /// see `Plan.leavesArmed`).
+    ///
+    /// The fix separates "did this chain spend its budget" (always true here, always logged) from
+    /// "does standing it down need to clear anything" (only the epoch-rearm branch, which is the
+    /// only one that returns above `settlePlan`'s own `armed = false` and so is the only one that
+    /// can still be leaving the corrector armed with nothing scheduled — the "phantom armed" class
+    /// `setCovered`'s doc describes). `plan.leavesArmed` says which; `armSource == "epoch"` stays
+    /// as a belt on TOP of it — even a plan that claims `leavesArmed` should not clear a flag some
+    /// newer chain has since re-armed for its own reason.
+    ///
+    /// `epochRearmPending = false` goes with the clear, and the reasoning is the same one
+    /// `setCovered` makes on the way IN: the flag means "a pending block should ask for one
+    /// re-check", and there is no longer a pending block once this chain is declared spent. Left
+    /// standing, the next stale token to reach the superseded branch would consume it and request
+    /// yet another retry on behalf of a chain we have just abandoned — a budget that resets itself
+    /// is not a budget.
+    ///
+    /// The pane line carries `hops=0 abandoned=1 leavesArmed=<0|1>` and, by construction, no
+    /// `margin=` — it is control flow, exactly like `epochRearm=1`, and lands in the same
+    /// photographable place for the same reason: on a device, a corrector that gave up and a
+    /// corrector that was never armed look identical from the outside.
+    nonisolated static func abandonChain(spentPlan plan: Plan) {
+        if PinnedRowSettleProbe.enabled {
+            PinnedRowSettleProbe.log("settle row=\(latest?.rowKey ?? "-") hops=0 abandoned=1 leavesArmed=\(plan.leavesArmed ? 1 : 0) seq=\(settleSeq) armSrc=\(armSource)")
+        }
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "abandoned=1 row=\(latest?.rowKey ?? "-")")
+        }
+        // beta.18 verdict (BUG-87/89, R1): a spent chain will not move the rows either — release
+        // any held title slides now rather than at their wall-clock fallback. Notified BEFORE the
+        // guard so both abandon shapes release; an observer applies only if its title is still.
+        defer { notifyRestDecided(reason: "abandoned") }
+        guard plan.leavesArmed, armSource == "epoch" else { return }
+        armed = false
+        epochRearmPending = false
+    }
+
+    /// BUG-109: whether Home is currently COVERED by a pushed screen (folder page, Detail). A
+    /// correction that lands while covered scrolls a view the user cannot see, and native focus
+    /// restoration on the pop then resolves by geometry to whatever row now sits at the remembered
+    /// rect — the tester's "exiting a collection moves me back to the row above". Home's root gets
+    /// no `onDisappear` on a push (its own doc says so), so the host's teardown cancel never runs
+    /// for this case; this flag is the push-scoped equivalent. Set by HomeView from its
+    /// `NavigationPath` (via `setCovered`); read by `rejectCoveredSettle`, which the settle host
+    /// calls BEFORE it plans anything — not just before it applies a target (Codex rc10 P2).
+    // `nonisolated(unsafe)`: mutable static, same as every other piece of shared state in this
+    // enum (`armed`, `generation`, …) — read and written off the main actor's static-isolation
+    // guarantees by design, per the header note on those.
+    nonisolated(unsafe) static var hostCovered = false
+
+    /// One-shot latch for the covered-skip probe line, cleared on every cover transition below, so
+    /// one push writes ONE line instead of one per settle that happens to resolve while covered.
+    /// Same discipline as `stillIgnoredLogged`: the device pass needs to see that the branch fired,
+    /// not how many times.
+    nonisolated(unsafe) private static var coveredSkipLogged = false
+
+    /// Publishes the cover transition. Both directions do real work.
+    ///
+    /// **Covering** (Codex rc10 P2, Finding 2): a correction in flight when the push happens can
+    /// never be judged — whatever offset the rows hold when Home comes back is the product of
+    /// native focus restoration, not of the scroll API — and two false MISSes disarm the corrector
+    /// for the session. That is the same argument `hostDidDisappear` makes for a host that is
+    /// leaving, and a push is the case `onDisappear` never sees. So an epoch invalidation runs
+    /// here: it drops `pendingVerification`, the in-flight `nudgeDeadline`, the pull-back evidence
+    /// and the per-row latches, stales every token already scheduled, and (because focus has left
+    /// the rows) leaves nothing armed.
+    ///
+    /// **Uncovering** (Codex rc10 P2, Finding 1): the rest the user comes back to is likewise the
+    /// product of focus restoration rather than of a scroll the corrector chose, so it has to be
+    /// judged fresh. `rearm()` alone was not enough — it bumped `generation` (invalidating the
+    /// pending work item) and set `armed = true` with NOTHING scheduled to resolve the token, so a
+    /// stationary pop left the corrector permanently "armed" with no block behind it: the three
+    /// other backstops all guard on `!armed` and so declined to re-arm, and a motionless geometry
+    /// pass no longer arms at all (see `noteScroll`). Correction stalled until the user scrolled
+    /// for real. The token goes to the registered scheduler, exactly like every other backstop.
+    ///
+    /// `epochRearmPending` is cleared on the way IN deliberately: it means "a pending block should
+    /// ask for one re-check", and while covered there is nothing to re-check — the uncover above
+    /// schedules the fresh settle instead.
+    nonisolated static func setCovered(_ covered: Bool) {
+        guard covered != hostCovered else { return }
+        hostCovered = covered
+        coveredSkipLogged = false
+        guard !covered else {
+            invalidateEpoch(rowGainedFocus: false)
+            epochRearmPending = false
+            return
+        }
+        guard let scheduler else {
+            // No pinned rows ScrollView has registered one — nothing can resolve a settle in this
+            // configuration, so leave `armed` FALSE rather than stranding a phantom (same
+            // stand-down as `invalidateEpoch`'s and `noteClearances`' no-scheduler branches).
+            armed = false
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] settle %@", "uncover no-scheduler")
+            }
+            return
+        }
+        let token = rearm(source: "uncover")
+        // `MainActor.assumeIsolated` for the same reason `noteClearances` does it: this is called
+        // from HomeView's `NavigationPath` observation on the main thread, and the scheduler closure
+        // touches the settle host's `@State`.
+        MainActor.assumeIsolated { scheduler(token, settleDelay) }
+    }
+
+    /// BUG-109 / Codex rc10 P2 (Finding 2): rejects a deferred settle that has resolved while Home
+    /// is COVERED — and rejects it BEFORE `settlePlan` runs.
+    ///
+    /// The rc9 guard sat downstream of the planning call and only dropped the `targetY`. By then
+    /// `settlePlan` had already recorded `pendingVerification`, `nudgeDeadline`, this row's entry in
+    /// `correctionsFired` and `lastCorrection` for a scroll that was then never applied: the skipped
+    /// correction still spent the 8s per-row budget, and the verification it left behind was later
+    /// judged against movement that never happened — a false MISS, or a false PULLBACK, either of
+    /// which can disarm the mechanism for the session. Nothing after this point is stateful, so the
+    /// cheapest correct fix is to never plan at all.
+    ///
+    /// Identity comes from the latest measurement rather than from a plan (there is none yet), which
+    /// is the one thing the line loses; `row=` is still the token a reader of the photo starts from.
+    nonisolated static func rejectCoveredSettle() -> Bool {
+        guard hostCovered else { return false }
+        guard !coveredSkipLogged else { return true }
+        coveredSkipLogged = true
+        let row = latest?.rowKey ?? "-"
+        if PinnedRowSettleProbe.enabled {
+            PinnedRowSettleProbe.log("settle row=\(row) covered=1 skipped=1")
+        }
+        // Unguarded NSLog, like the corrector's other terminal lines: a push that would have
+        // scrolled the covered Home is exactly what the Row Settle pane device pass looks for.
+        NSLog("[HomeScrollProbe] settle covered=1 skipped=1 row=%@", row)
+        return true
+    }
+
     /// How long the rows scroll view has been still, in seconds — `.greatestFiniteMagnitude` when
     /// it has never moved this session (a title clipped at mount with no scrolling is at rest by
     /// any reading, and must still be allowed to fade).
@@ -2542,10 +3727,60 @@ enum PinnedRowSettle {
             // Empty report: this is control flow, not a measured rest. Reporting it would put a
             // line with no `margin=` into the harness oracle (`debug_pinned`) between two real
             // ones — see the caller's `report.isEmpty` skip.
-            return Plan(report: "", targetY: nil, retryAfter: settleDelay)
+            // rc13: `probeNote` (pane only, never `report`) so a device photo can tell this
+            // re-check apart from "no settle ever armed" — see `Plan.probeNote`.
+            // rc13 review fix: `leavesArmed: true` — this is the one branch that returns above
+            // this function's own `armed = false` below, so it is the one chain `abandonChain
+            // (spentPlan:)` must actually clear if it runs out of hops. See `Plan.leavesArmed`.
+            return Plan(report: "", targetY: nil, retryAfter: settleDelay,
+                        probeNote: "row=\(latest?.rowKey ?? "-") epochRearm=1 seq=\(settleSeq) armSrc=\(armSource)",
+                        leavesArmed: true)
         }
         armed = false
         settleSeq &+= 1
+
+        // BUG-112 (Item B): which way the walk is going, and whether that just released the
+        // pull-back brake. Derived from the offset delta across a ROW HOP — see `PullBackLedger`.
+        // Placed before the verification block so a release can also clear the verify-miss latch
+        // the OTHER direction's corrections produced (see below).
+        //
+        // Codex P2: gating the verify-miss release on `released` (the LEDGER's own disarm→armed
+        // transition) left it unreachable for a split pull-back — one recorded while direction was
+        // still `unknown` plus one recorded walking down gives `unknown=1 down=1 total=2`, so
+        // neither per-direction count ever reaches `maxPullBacksPerSession` and the ledger itself
+        // is never `disarmed` — while the two verification MISSes those same pull-backs produced on
+        // hardware DID set the (separate, static) verify-miss latch. `released` stays false in that
+        // case, `noteSettle` never fires, and the latch is stuck for the rest of the session. The
+        // fix reads `changed` instead: any settle that turns the walk to a new KNOWN direction is
+        // evidence a reversal happened, whether or not the ledger's own count crossed its budget.
+        let directionResult: PullBackLedger.SettleResult
+        if let rowKey = latest?.rowKey {
+            directionResult = pullBack.noteSettle(rowKey: rowKey, offsetY: sample.offsetY)
+        } else {
+            directionResult = .none
+        }
+        if directionResult.changed {
+            // The verify-miss latch is released too, and ONLY because the pull-back ledger has
+            // evidence (`pullBack.total > 0`): on hardware a pull-back and a MISS are the SAME
+            // event seen twice — the engine returns the row to its own rest, so the landed offset
+            // differs from the requested one by the whole correction (well past `verifyTolerance`),
+            // and the next settle both counts a MISS and detects the pull-back. That is therefore
+            // the evidence that the latch is the engine fighting a direction rather than the scroll
+            // API being broken; a session that disarmed with NO pull-backs is a genuine
+            // coordinate-space failure and stays off. Independent of `directionResult.released` —
+            // the ledger's own count can still be under budget (the split-pull-back case above) while
+            // this evidence holds. Cost of a wrong release is bounded: two more MISSes re-latch it,
+            // i.e. at most two extra ≤`bound` nudges per reversal, each visible as a `MISS` line.
+            if pullBack.total > 0 {
+                disarmed = false
+                verifyFailures = 0
+            }
+            NSLog("[HomeScrollProbe] settle REARM-DIRECTION dir=\(pullBack.direction)"
+                    + " row=\(latest?.rowKey ?? "-") pull=\(pullBack.total)"
+                    + " rearm=\(pullBack.rearms) released=\(directionResult.released ? 1 : 0)"
+                    + " y=\(Int(sample.offsetY.rounded()))"
+                    + " — the walk reversed; the pull-back brake belongs to the other direction")
+        }
 
         // Verify the PREVIOUS correction before planning another one.
         if let verification = pendingVerification {
@@ -2576,9 +3811,14 @@ enum PinnedRowSettle {
         }
 
         guard let m = latest else {
+            // BUG-112 (Item B), Codex P3: `dir=`/`rearm=` belong on every settle line, this one
+            // included — a reader tailing the probe across a focus-loss gap (a pop, a covered
+            // Home) should not see the walk-direction fields vanish and reappear. Same placement
+            // rule as the focused BASE line: right after `fits=`.
             return Plan(report: "row=- state=nofocus y=\(Int(sample.offsetY.rounded()))"
                             + " seq=\(settleSeq) armSrc=\(armSource)"
-                            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)",
+                            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)"
+                            + " dir=\(pullBack.direction) rearm=\(pullBack.rearms)",
                         targetY: nil)
         }
 
@@ -2600,16 +3840,47 @@ enum PinnedRowSettle {
         // fires from an OUT-of-band margin, so a landing within 4pt of it can only be in band
         // through the ±2 membership slack, and `standDownFastPath` re-checks the title's own
         // acceptability before hiding anything.
+        //
+        // 2026-09-30 (§2.C(ii)): a return to the origin margin whose correction never moved the
+        // offset a quarter of the way to its target is a DROPPED correction (the `scrollTo(y:)`
+        // animation lost to the engine's own tail), not a pull-back — it does NOT spend the walk
+        // direction's pull-back budget. It is handed to the belt like a pull-back and never
+        // re-issued.
         var pulledBack = false
+        var dropped: CorrectionProgress?
+        // T1 leg 2: `!last.isTopSnap` — a top snap is judged by its own rule just below, never
+        // here. Always true at legs 0 and 1, where no correction is a top snap.
         if let last = lastCorrection,
+           !last.isTopSnap,
            last.rowKey == m.rowKey,
            abs(m.margin - last.fromMargin) <= pullBackTolerance,
            Date().timeIntervalSince(last.at) < 2 {
-            pulledBack = true
             pullBackFrom = last.fromMargin
             lastCorrection = nil
-            pullBacks += 1
-            if pullBacks >= maxPullBacksPerSession { pullBackDisarmed = true }
+            switch recordReturn(last.progress, into: &pullBack) {
+            case .pulledBack: pulledBack = true
+            case .dropped: dropped = last.progress
+            }
+        }
+        // T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03): did the engine undo a top snap? The
+        // snap stays `lastCorrection` for the whole row epoch (a horizontal move does not end it),
+        // so a first row back below the true top on a LATER settle of the same row counts too,
+        // however long after the snap it came: that is the engine's own reveal re-parking the row,
+        // and snapping again would bob it on every move. Latch leg 2 off instead (`topSnapLatched`)
+        // and leave the rest to the ordinary path. Never while the snap's own scroll is still
+        // animating: a mid-flight offset is not a rest.
+        var topSnapNote = ""
+        if let last = lastCorrection, last.isTopSnap, last.rowKey == m.rowKey,
+           !(nudgeDeadline.map { Date() < $0 } ?? false),
+           sample.offsetY > 0.5 {
+            lastCorrection = nil
+            topSnapLatched = true
+            topSnapNote = " topSnapUndone=1"
+            NSLog("[HomeScrollProbe] settle %@",
+                  "TOPSNAP-UNDONE row=\(m.rowKey) y=\(Int(sample.offsetY.rounded()))"
+                    + " firedY=\(Int(last.progress.firedY.rounded()))"
+                    + " moved=\(Int(last.progress.maxProgress.rounded()))"
+                    + " — the first row went back below the top after a top snap; leg 2 holds for this session")
         }
 
         let cap = maxSlideCapForReport
@@ -2635,10 +3906,15 @@ enum PinnedRowSettle {
             // a row parked at the clip edge hides everything above it.
             + " rowH=\(Int(m.rowHeight.rounded()))"
             + " last=\(m.isLastRow ? 1 : 0)"
+            // BUG-87/89 (rc11): whether the frame-shaping floor was actually active on this row —
+            // see `EnvironmentValues.rowCardLinkFrameFloor` and the `settlePlan` exemption below.
+            + " lastRowShaped=\(m.lastRowShaped ? 1 : 0)"
+            // rc14 (BUG-122): a short middle row carrying the floor — see `Measurement.shortRowShaped`.
+            + " shortShaped=\(m.shortRowShaped ? 1 : 0)"
             + " prevHidden=\(m.rowTop <= 2 ? 1 : 0)"
             + " corrN=\(correctionsInWindow(m.rowKey))"
-            + " pull=\(pullBacks)"
-            + " pbDisarm=\(pullBackDisarmed ? 1 : 0)"
+            + " pull=\(pullBack.total)"
+            + " pbDisarm=\(pullBack.disarmed ? 1 : 0)"
             + " seq=\(settleSeq) armSrc=\(armSource)"
             // Wave W5 (BUG-89): which GEOMETRY REGIME this rest was measured under, and whether
             // that regime's frame fits the rows viewport — see `noteRegimeChange`. Appended at the
@@ -2646,6 +3922,21 @@ enum PinnedRowSettle {
             // `regime=-` means no host has published one: a non-Home `CatalogRowView`, or a build
             // whose HomeView predates the call site.
             + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)"
+            // BUG-112 (Item B), appended at the END of the field list (the append-only contract in
+            // this type's header — test47/48/58/61/63 parse `key=value`, order not significant):
+            // which direction the walk is going in (+1 down, −1 up, 0 not yet known) and how many
+            // times a reversal has released the pull-back brake this session.
+            + " dir=\(pullBack.direction)"
+            + " rearm=\(pullBack.rearms)"
+        // 2026-09-30 rest law (probe only, appended at the END per the contract above): the
+        // predicted title margin `−restRange/2 − 5.5` and how far this rest is from it.
+        // `restRange` is derived from THIS row's own frame — `vh − (rowH − 2·Spacing.lg)`, the
+        // shelf's vertical padding around the focusable label — which is exactly the plan's
+        // restRange for a uniform row and the floored label's for a shaped last row. A separate
+        // statement so the long concatenation above does not grow.
+        line += restLawFields(m)
+        // T1 leg 2: empty unless this settle found a top snap undone (see above).
+        line += topSnapNote
 
         // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
         // real constraints that the row's own geometry supplies, and every margin between them is
@@ -2707,6 +3998,75 @@ enum PinnedRowSettle {
                         retryAfter: settleDelay)
         }
         clearanceLatePending = nil
+        // rc14 (BUG-121, every 2026-09-30 walk): a late-content addon row's first settle fires at
+        // `margin=+410..+540` — the engine simply has not revealed the row yet (its content landed
+        // after focus did) — and the corrector spent two −220 nudges plus the next row's budget on
+        // it before the engine's own reveal arrived. A rest whose title sits more than a whole row
+        // height below the clip edge is not a rest the engine produced; defer it (bounded) and let
+        // the reveal happen. `retryAfter` re-checks on the settle cadence; after the budget the
+        // ordinary path runs so a genuinely stranded row is still corrected.
+        if PinnedRowSettle.lateRestDeferral(margin: m.margin, rowHeight: m.rowHeight) {
+            let retries = lateRestRetries.rowKey == m.rowKey ? lateRestRetries.count : 0
+            if retries < maxLateRestRetries {
+                lateRestRetries = (m.rowKey, retries + 1)
+                consecutiveNudges = 0
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@",
+                          "late-rest row=\(m.rowKey) margin=\(Int(m.margin.rounded()))"
+                            + " rowH=\(Int(m.rowHeight.rounded())) retry=\(retries + 1)")
+                }
+                return Plan(report: line + " nudge=0 lateRest=\(retries + 1)",
+                            targetY: nil,
+                            retryAfter: settleDelay)
+            }
+        } else if lateRestRetries.rowKey == m.rowKey {
+            lateRestRetries = ("", 0)
+        }
+        // BUG-87/89: a NEGATIVE unclamped focused clearance is not a bad rest, it is bad GEOMETRY.
+        // The band above the artwork is too short to hold the title AND the focus lift, so the
+        // focused card's picture is under the title at every margin, and a correction can only
+        // trade one out-of-band rest for another (it did help — 49.5pt of real overlap down to
+        // 18 — which is why it kept firing, and why the clamp then reported the result as a clean
+        // 0). Stand down instead: the belt owns an unfixable rest. Same dedup discipline as
+        // `standDown`'s own log — loud, but once per row.
+        //
+        // When this can still fire, now that `topReachFloor(lift:titleHeight:)` holds the lift
+        // against the ACTIVE font's title metric (rc10 Codex P2): only where the floor hits its 88pt
+        // cap AND the title is taller than ≈44pt, i.e. `24 + 88 − 48 − titleHeight − lift < 0` with
+        // the reach already at the ceiling that keeps focus resolution working. That is accessibility
+        // text sizes, in either font family — geometry no reach can cover — so reaching this branch
+        // there is the intended handoff rather than a floor bug. It is NOT reachable from an ordinary
+        // font choice any more: Open Sans at the cap leaves 1.8pt, which is short of the belt's arm
+        // but non-negative, so the corrector keeps its rest. (The `deficit=` line below still names
+        // the reach floor, because that is the right first suspect whenever it fires at a NORMAL
+        // type size.)
+        //
+        // A deficit smaller than the belt's own arm band (`PinnedRowTitle.fadeIntrusionArm`, 4pt) is
+        // absorbed by the belt's hysteresis rather than treated as unfixable geometry: `topReachFloor`
+        // reserves the FONT metric of the title, but the clearance here is judged against the LIVE
+        // rendered title height (`PinnedRowTitle.reading`'s `titleHeight`), and a fallback face (CJK,
+        // Thai, Arabic collection/addon names) can measure a few points taller than its font metric —
+        // enough to make `focusedRaw` slightly negative (e.g. −1.4) without the row actually being
+        // unfixable. Only a genuine over-band deficit (the rc4 18pt case, accessibility sizes) should
+        // disarm the corrector.
+        if clearance.focusedRaw < -PinnedRowTitle.fadeIntrusionArm {
+            let firstTime = standDownRow != m.rowKey
+            standDown(rowKey: m.rowKey, reason: "lift-deficit")
+            if firstTime {
+                NSLog("[HomeScrollProbe] settle %@",
+                      "LIFT-DEFICIT row=\(m.rowKey) regime=\(regimeKey ?? "-")"
+                        + " clearance=\(Int(clearance.atRest.rounded()))"
+                        + " lift=\(Int(clearance.lift.rounded()))"
+                        + " deficit=\(Int(clearance.focusedRaw.rounded()))"
+                        + " — the row's top band cannot hold the title AND the focus lift; no scroll"
+                        + " can fix it, so the reach floor is the bug (PinnedRowGeometry.topReachFloor)")
+            }
+            return Plan(report: line
+                        + " clearance=\(Int(clearance.atRest.rounded())) clearanceLift=0"
+                        + " clearanceLiftRaw=\(Int(clearance.focusedRaw.rounded()))"
+                        + " nudge=0 standDown=lift-deficit",
+                        targetY: nil)
+        }
         let liftedIntrusion = slide - clearance.focused
         // ── The band ─────────────────────────────────────────────────────────────────────────
         // See the block comment above for what each edge means and why a band replaced Wave 10's
@@ -2738,6 +4098,7 @@ enum PinnedRowSettle {
         // `lift=0 clearanceLift=26` — the whole point of Codex r7 P1.
         line += " clearance=\(Int(clearance.atRest.rounded()))"
             + " clearanceLift=\(Int(clearance.focused.rounded()))"
+            + " clearanceLiftRaw=\(Int(clearance.focusedRaw.rounded()))"
             + " lift=\(Int(clearance.lift.rounded()))"
             + " intr=\(Int((slide - clearance.atRest).rounded()))"
             + " intrLifted=\(Int(liftedIntrusion.rounded()))"
@@ -2746,6 +4107,99 @@ enum PinnedRowSettle {
             + " bandLo=\(Int(bandLow.rounded()))"
             + " bandHi=\(Int(bandHigh.rounded()))"
             + " inBand=\(inBand ? 1 : 0)"
+
+        // rc14 (BUG-122, the top of every 2026-09-30 walk): the FIRST row at scroll offset 0 reads
+        // `margin=+55/+56` against `bandHi=48` — that is the layout's own position (8pt headroom +
+        // 48 inset), and the only "correction" is to scroll the content UP by 12 and hide the
+        // top of the row under the hero, which the engine undoes on the next focus change. That
+        // was the jump at the top of every walk. A row sitting low at the true top is where the
+        // layout put it; leave it.
+        if !inBand, PinnedRowSettle.topRestExempt(offsetY: sample.offsetY, margin: m.margin, bandHigh: bandHigh) {
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 topRest=1") }
+            return Plan(report: line + " nudge=0 topRest=1", targetY: nil)
+        }
+
+        // T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): the top-rest snap.
+        // OFF unless `-debug.tabBarRestFix 2` (`TabBarRestFix.leg`). The FIRST row resting a few
+        // points below the true top (`topSnapApplies`) is scrolled back to offset 0, so a tab bar
+        // that follows the rows' offset 1:1 comes back fully on screen. Planned here, before the
+        // band verdict, because that rest is usually INSIDE the band (offset 13 puts the title at
+        // margin 43 against `bandHi` 48) and the in-band branch below would close it untouched.
+        // At offset 0 the first row's title sits at margin 56, above `bandHi` (never more than 48),
+        // so the next settle is the `topRest=1` exemption and the snap does not chain.
+        //
+        // A settle decision on a focused row like every other correction here: never a scroll fired
+        // by a focus change, and it needs a focused row (`state=nofocus` above returns first), so a
+        // half-shown bar while focus sits on the hero is leg 1's case, not this one's. The brakes
+        // the branches below would apply are checked by `topSnapHold`; a held snap falls through to
+        // the ordinary path unchanged, with `topSnapHeld=<why>` on the line. An unheld snap fires
+        // only once two consecutive settles agree on the offset (`TopSnapCandidate`), so it never
+        // races the engine's own reveal.
+        if PinnedRowSettle.topSnapApplies(leg: TabBarRestFix.leg,
+                                          offsetY: sample.offsetY,
+                                          rowContentTop: m.rowTop + sample.offsetY,
+                                          headroom: Theme.Size.heroPinnedRowsHeadroom) {
+            // Same rule as the ordinary path: never stack a correction on one still animating.
+            if let deadline = nudgeDeadline, Date() < deadline {
+                return Plan(report: line + " nudge=0 inflight=1",
+                            targetY: nil,
+                            retryAfter: max(deadline.timeIntervalSinceNow, 0) + 0.05)
+            }
+            let snapBottomRoom = m.viewportHeight - m.protectedBottom
+            let hold = PinnedRowSettle.topSnapHold(
+                knobDisarmed: disarmedByKnob,
+                latched: topSnapLatched,
+                returned: pulledBack || dropped != nil,
+                disarmed: disarmed || pullBack.disarmed,
+                budgetSpent: correctionsInWindow(m.rowKey) >= maxCorrectionsPerWindow,
+                bottomRoom: snapBottomRoom,
+                offsetY: sample.offsetY)
+            let confirmed = topSnapCandidate?.confirms(seq: settleSeq, rowKey: m.rowKey,
+                                                       offsetY: sample.offsetY) ?? false
+            topSnapCandidate = nil
+            if let hold {
+                line += " topSnapHeld=\(hold)"
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@",
+                          "topSnap held=\(hold) row=\(m.rowKey) y=\(Int(sample.offsetY.rounded()))"
+                            + " bound=\(Int(snapBottomRoom.rounded()))")
+                }
+            } else if !confirmed {
+                // First sighting: record it and re-check one `settleDelay` later (`TopSnapCandidate`).
+                // A retry plan, so no rest decision is announced and the title stays held for it.
+                // If the chain's hop budget runs out first, `abandonChain` ends it with no snap.
+                topSnapCandidate = TopSnapCandidate(seq: settleSeq, rowKey: m.rowKey, offsetY: sample.offsetY)
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 topSnapConfirm=1")
+                }
+                return Plan(report: line + " nudge=0 topSnapConfirm=1",
+                            targetY: nil,
+                            retryAfter: settleDelay)
+            } else {
+                // The ordinary correction tail (below), with the target pinned to the true top: the
+                // verification, the in-flight window and the row's wall-clock budget all apply, and
+                // `lastCorrection` marks it as a snap so the engine undoing it latches leg 2 off
+                // instead of spending the pull-back ledger.
+                let target: CGFloat = 0
+                consecutiveNudges += 1
+                nudgeDeadline = Date().addingTimeInterval(nudgeDuration + 0.2)
+                pendingVerification = Verification(expectedY: target, contentHeight: sample.contentHeight)
+                let firedAt = Date()
+                correctionsFired[m.rowKey, default: []].append(firedAt)
+                lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt,
+                                  progress: CorrectionProgress(firedY: sample.offsetY, targetY: target),
+                                  isTopSnap: true)
+                // Signed like the ordinary `nudge=`: positive moves the row DOWN.
+                line += " nudge=\(Int((sample.offsetY - target).rounded()))"
+                    + " bound=\(Int(snapBottomRoom.rounded()))"
+                    + " n=\(consecutiveNudges)"
+                    + " topSnap=1"
+                if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
+                return Plan(report: line, targetY: target)
+            }
+        }
 
         // A rest inside the band needs nothing. The epoch closes for the `n=` counter's sake, but
         // note what does NOT happen here any more: the per-row WINDOW BUDGET is not refunded. That
@@ -2758,7 +4212,21 @@ enum PinnedRowSettle {
             // unfixable rest — without it `standDown` would notify once per row per host and every
             // later episode would fall back to the belt's timers.
             if standDownRow == m.rowKey { standDownRow = nil }
+            // §2.C(iv): mirror the in-band decision to the console, not only the pane.
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0") }
             return Plan(report: line + " nudge=0", targetY: nil)
+        }
+        // §2.C(ii): the correction never applied. Same terminal handoff as a pull-back (the belt
+        // owns this rest, no re-issue), but the ledger was left untouched above.
+        if let dropped {
+            NSLog("[HomeScrollProbe] settle %@",
+                  "DROPPED row=\(m.rowKey) nudge=\(Int(dropped.nudge.rounded()))"
+                    + " moved=\(Int(dropped.maxProgress.rounded()))"
+                    + " from=\(Int(pullBackFrom.rounded())) landed=\(Int(m.margin.rounded()))"
+                    + " pull=\(pullBack.total)"
+                    + " — the correction never applied; not counted as a pull-back")
+            standDown(rowKey: m.rowKey, reason: "dropped")
+            return Plan(report: line + " nudge=0 dropped=1", targetY: nil)
         }
         // The pull-back detected above (the counters already moved, so `pull=`/`pbDisarm=` on this
         // line are current). Hand the rest to the belt at once — the title is what is at stake, and
@@ -2767,17 +4235,24 @@ enum PinnedRowSettle {
         if pulledBack {
             NSLog("[HomeScrollProbe] settle %@",
                   "PULLBACK row=\(m.rowKey) from=\(Int(pullBackFrom.rounded()))"
-                    + " landed=\(Int(m.margin.rounded())) count=\(pullBacks)")
+                    + " landed=\(Int(m.margin.rounded())) count=\(pullBack.total)")
             standDown(rowKey: m.rowKey, reason: "pullback")
-            if pullBackDisarmed {
+            if pullBack.disarmed {
                 NSLog("[HomeScrollProbe] settle DISARMED-PULLBACK — the focus engine returns rows to its own rest after every correction; corrections are off for this session, belt only")
             }
             return Plan(report: line + " nudge=0 pullback=1", targetY: nil)
         }
-        guard !disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        guard !disarmed else {
+            // §2.C(iv): console mirror, same text the pane gets.
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 disarmed=1") }
+            return Plan(report: line + " nudge=0 disarmed=1", targetY: nil)
+        }
         // Same terminal outcome as `disarmed`, different cause — `pbDisarm=1` on the line is what
         // tells the two apart, so the existing `disarmed=1` spelling is kept for both.
-        guard !pullBackDisarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        guard !pullBack.disarmed else {
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 disarmed=1") }
+            return Plan(report: line + " nudge=0 disarmed=1", targetY: nil)
+        }
         // Wave 10 gate knob: with the hero compression in place an unsatisfiable rest is no longer
         // reachable at Large by walking, so test48's premise needs a way to put one back. Disarming
         // the corrector leaves a deep park uncorrected, which is exactly the geometry the belt's
@@ -2867,14 +4342,52 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 endOfContent=1 room=\(Int(scrollRoomUp.rounded()))",
                         targetY: nil)
         }
-        let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
+        // BUG-87/89 (rc11, floor hardened by Codex r1 on rc11, governance-checked by Codex r2 on rc11 — Codex r2 P2): the
+        // exemption `PinnedRowEnvironment.swift` has promised since BUG-89. With the frame shaped
+        // (`rowCardLinkFrameFloor` == `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)`, the LARGER of
+        // `plan.linkFrame` and `viewport − Spacing.lg`), the engine's own reveal constraint already
+        // confines this row to `margin ∈ [24, 48]` — the band's own upper edge, not `24 + restRange`
+        // — so a rest ABOVE the band here means the shaping did not take — and a correction is
+        // exactly the wrong answer: the deep rest is legal for the engine, which re-reveals straight
+        // back to it (the rc10 `pullback=1` ×3 → `pullBackDisarmed` trace). Log it and let the belt
+        // judge the title.
+        //
+        // That guarantee only holds while the floor actually GOVERNS this focused label — a floor
+        // that EXISTS is not enough. A mixed-shape collection row in Landscape Rows mode can hold a
+        // PORTRAIT folder whose own natural label is taller than the regime's (landscape-shaped)
+        // floor; the label's `.frame(minHeight:)` then sizes to its own taller content instead of the
+        // floor, the `margin ∈ [24, 48]` promise is void for it, and — the rc11 (Codex r2) device finding — a
+        // top-anchored rest clips the artwork with `error > 0` and real scroll range to spend. Taller
+        // labels keep the normal correction path below rather than being waved through here.
+        // `lastRowExemptionApplies` is the governance check; see its own doc for the arithmetic.
+        //
+        // Strictly a GUARD, not the fix: when the shaping is in force AND governs this branch is
+        // unreachable (`deficit == 0` returns above). It earns its place in the regime where the
+        // floor is 0 — `!plan.fits`, or a Poster Size whose last row is already the plan's shape —
+        // and now also where the floor exists but a taller-than-floor label makes it moot.
+        //
+        // Upward only. `error < 0` means the row is parked ABOVE the band (title clipped), which the
+        // reveal constraint cannot produce and which the downward correction is still the right
+        // answer for if something else ever does.
+        if error > 0, m.isLastRow,
+           PinnedRowSettle.lastRowExemptionApplies(lockupExtent: m.lockupExtent,
+                                                   linkFrameFloor: m.linkFrameFloor) {
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            return Plan(report: line + " nudge=0 lastRowShaped=1 room=\(Int(scrollRoomUp.rounded()))",
+                        targetY: nil)
+        }
         // Magnitude first, then the sign of the correction we actually apply. Unbounded, this is
         // the FULL distance to the target, so a correction lands ON it; `min` can only ever
         // SHORTEN that, never invert or extend it — which is what makes this a contraction (see
-        // the anti-oscillation contract in the header).
-        let magnitude = min(deficit, headroom, Theme.Size.heroPinnedRowSettleMaxNudge)
+        // the anti-oscillation contract in the header). Extracted to `plannedCorrection` (BUG-112
+        // Item B) so the bound cases are unit-testable; behaviour here is unchanged.
+        let planned = PinnedRowSettle.plannedCorrection(error: error, deficit: deficit,
+                                                        bottomRoom: bottomRoom,
+                                                        scrollRoomUp: scrollRoomUp)
+        let magnitude = planned.magnitude
         // Positive = move content DOWN (raise `margin`); negative = move content UP (lower it).
-        let correction = error < 0 ? magnitude : -magnitude
+        let correction = planned.correction
         guard magnitude >= 2 else {
             // Reachable in BOTH directions now that the upward branch is bounded too, and the two
             // mean opposite things, so they must not share an outcome:
@@ -2910,10 +4423,17 @@ enum PinnedRowSettle {
         // next settle can tell "it landed and stayed" from "the engine put it straight back".
         let firedAt = Date()
         correctionsFired[m.rowKey, default: []].append(firedAt)
-        lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt)
+        lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt,
+                          progress: CorrectionProgress(firedY: sample.offsetY, targetY: target),
+                          isTopSnap: false)
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
-        line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
+        line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded()))"
+            // BUG-87/89 (rc11): `bound=` is the DOWNWARD bound; an upward nudge is bounded by
+            // `scrollRoomUp`. Printing both makes "the correction was cut short by range" separable
+            // from "the correction landed and the engine put the row back" (`pullback=`).
+            + " roomUp=\(Int(scrollRoomUp.rounded()))"
+            + " n=\(consecutiveNudges)"
         // Wave W5 (BUG-89): a correction fired while the regime FITS is a surprise worth a line of
         // its own. A fitting frame is one the rows viewport can show whole, and both band edges are
         // then satisfiable by construction — the focus engine's own rest should already be inside
@@ -2931,10 +4451,46 @@ enum PinnedRowSettle {
                     + " corrN=\(corrN) margin=\(Int(m.margin.rounded()))"
                     + " bandLo=\(Int(bandLow.rounded())) bandHi=\(Int(bandHigh.rounded()))"
                     + " vh=\(Int(m.viewportHeight.rounded())) lockup=\(Int(m.lockupExtent.rounded()))"
-                    + " — the regime reports a fitting frame, so this rest should already have been in band")
+                    + " — the regime reports a fitting frame, so this rest should already have been in band"
+                    + " — fits constrains the FRAME, not the band; read clearanceLiftRaw and bandLo first")
         }
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
+    }
+
+    /// rc14 (Steven's rc13 panes): the About pane renders each settle line with
+    /// `.truncationMode(.middle)`, so a field in the middle of the line is exactly the one a photo
+    /// never shows — and the rc13 DM asked him to read `restErr`, which `settlePlan` appends
+    /// mid-line (before the band fields, per the append-only contract the console parsers rely
+    /// on). For the PANE only, this moves the ` restPred=… restErr=…` pair to the end of the
+    /// report. Pure string surgery on a probe line; the console line is untouched, and a report
+    /// without the pair is returned as is.
+    nonisolated static func restLawToTail(_ report: String) -> String {
+        guard let start = report.range(of: " restPred=") else { return report }
+        // The pair is two fields: ` restPred=<n>` then ` restErr=<n>`; the span ends at the first
+        // space after `restErr=`'s value (or at the end of the line).
+        guard let errField = report.range(of: " restErr=", range: start.upperBound..<report.endIndex) else {
+            return report
+        }
+        let valueStart = errField.upperBound
+        let valueEnd = report[valueStart...].firstIndex(of: " ") ?? report.endIndex
+        let pair = String(report[start.lowerBound..<valueEnd])
+        var rest = report
+        rest.removeSubrange(start.lowerBound..<valueEnd)
+        return rest + pair
+    }
+
+    /// `restPred=` / `restErr=` for the settle line — see the call site and
+    /// `PinnedRowGeometry.predictedRestMargin(restRange:)`. One decimal each.
+    nonisolated static func restLawFields(_ m: Measurement) -> String {
+        // rc14 (review r1 P2): a floored SHORT row (BUG-122) reports its NATURAL height — the
+        // compensation padding cancels the floor's layout growth — but the engine reveals the
+        // floored label, so the prediction has to use the floor where it governs.
+        let label = max(m.rowHeight - 2 * Theme.Spacing.lg, m.linkFrameFloor)
+        let restRange = max(m.viewportHeight - label, 0)
+        let predicted = PinnedRowGeometry.predictedRestMargin(restRange: restRange)
+        return " restPred=\(String(format: "%.1f", Double(predicted)))"
+            + " restErr=\(String(format: "%.1f", Double(m.margin - predicted)))"
     }
 
     /// How many corrections this row has fired inside `correctionWindow`, pruning the record as it
@@ -3013,6 +4569,72 @@ enum PinnedRowSettle {
         standDownObservers.removeValue(forKey: rowKey)
     }
 
+    // ── beta.18 verdict (BUG-87/89, R1): the rest decision, published ──────────────────────────
+    //
+    // Steven's beta.18 report: titles bounce again and the collection name takes ~1s to settle
+    // after a row-to-row move. Two clocks moved the same title. The BUG-37 slide hold released on
+    // its own wall clock (0.12s of quiet), while this corrector decides 0.25s after the last move
+    // and may then NUDGE — and the nudge is motion, so the already-released title had eased once,
+    // got re-held by the nudge, and eased a second time (≈1.2s, two visible title motions).
+    //
+    // The fix makes the corrector the clock: a held title is released by the settle DECISION, the
+    // one moment the rows are known to be at rest with no correction coming.
+
+    /// Registers a title's "this rest is decided" callback; returns the token for
+    /// `stopObservingRestDecision`. Token-scoped for the same `.id()`-remount reason as
+    /// `observeStandDown`.
+    nonisolated static func observeRestDecision(rowKey: String,
+                                                _ notify: @escaping @MainActor () -> Void) -> Int {
+        restObserverSeq &+= 1
+        restObservers[rowKey] = (token: restObserverSeq, notify: notify)
+        return restObserverSeq
+    }
+
+    nonisolated static func stopObservingRestDecision(rowKey: String, token: Int) {
+        guard restObservers[rowKey]?.token == token else { return }
+        restObservers.removeValue(forKey: rowKey)
+    }
+
+    /// A settle chain ENDED without moving the rows: the rest is decided. Calls EVERY registered
+    /// title, not just the focused row's — a decision means all rows are at rest and the corrector
+    /// will not move them, and the non-focused rows never get a decision of their own. Returns how
+    /// many observers were called (the probe line's `released=`; tests assert it).
+    ///
+    /// Called from the main queue (the settle work item, `abandonChain`), like `standDown`.
+    @discardableResult
+    nonisolated static func notifyRestDecided(reason: String) -> Int {
+        // Snapshot first: an observer's state write must never be able to mutate the registry
+        // under the iteration.
+        let observers = Array(restObservers.values)
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "decided reason=\(reason) released=\(observers.count)")
+        }
+        MainActor.assumeIsolated {
+            for observer in observers { observer.notify() }
+        }
+        return observers.count
+    }
+
+    /// Whether a rest decision is still to come: a settle is armed, or a correction is in flight
+    /// (its own scroll will arm the next settle). A held slide target waits while this is true —
+    /// see `PinnedRowTitle.slideHoldVerdict`.
+    nonisolated static var isRestPending: Bool {
+        armed || (nudgeDeadline.map { Date() < $0 } ?? false)
+    }
+
+    /// The `reason=` for a settle plan that ended the chain without a correction, derived from its
+    /// report so the dozen `return Plan(…)` sites stay untouched: `nofocus`, `standdown`, the first
+    /// key after `nudge=0` (`topRest`, `dropped`, `pullback`, `budget`, `room`, …), else `clean`.
+    nonisolated static func restDecisionReason(report: String) -> String {
+        if report.contains("state=nofocus") { return "nofocus" }
+        if report.contains("standDown=") { return "standdown" }
+        guard let range = report.range(of: "nudge=0 ") else { return "clean" }
+        let tail = report[range.upperBound...]
+        let token = tail.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        let key = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? ""
+        return key.isEmpty ? "clean" : key
+    }
+
     /// The cap `net` is reported against — the same one `PinnedRowTitle.reading` binds with, so
     /// the settle line and the title line can never disagree about what "net" means.
     nonisolated private static var maxSlideCapForReport: CGFloat {
@@ -3054,6 +4676,9 @@ private struct PinnedRowSettleTracking: ViewModifier {
     /// row types that attach that modifier need no signature change and every non-Home host keeps
     /// the `false` default for free.
     @Environment(\.pinnedRowIsLast) private var isLastRow
+    /// BUG-87/89 (rc11), carrying the VALUE since Codex r2 on rc11 — see
+    /// `EnvironmentValues.rowCardLinkFrameFloor` and `PinnedRowSettle.Measurement.linkFrameFloor`.
+    @Environment(\.rowCardLinkFrameFloor) private var linkFrameFloor
 
     func body(content: Content) -> some View {
         // Captured by value so the geometry closure holds a plain String and a Bool rather than
@@ -3062,6 +4687,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
         let active = isFocused && cardTopReach > 0
         let lockupExtent = focusedLockupExtent
         let isLast = isLastRow
+        let floor = linkFrameFloor
         // Wave 9(a): THREE states, not two. Collapsing "this row is not focused" and "the enclosing
         // scroll view didn't resolve this pass" into one `nil` is what livelocked the corrector
         // against the belt on hardware — see `PinnedRowSettle.clear` and the device trace in the
@@ -3078,7 +4704,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
                                                          rowHeight: proxy.size.height,
                                                          viewportHeight: visible.height,
                                                          focusedLockupExtent: lockupExtent,
-                                                         isLastRow: isLast))
+                                                         isLastRow: isLast,
+                                                         linkFrameFloor: floor))
         }, action: { newValue in
             switch newValue {
             case .measured(let measurement):
@@ -3105,10 +4732,15 @@ private struct PinnedRowSettleTracking: ViewModifier {
 /// frame and never at the `heroItems` empty→loaded boundary, so it can't re-identify the rows.
 struct PinnedRowSettleRevealModifier: ViewModifier {
     let enabled: Bool
+    /// beta.18 verdict (BUG-66): one-shot latch for the `INSET-NONZERO` probe line.
+    nonisolated(unsafe) private static var loggedInsetNonzero = false
     /// Wave 10: the hero compression currently in effect, purely so this modifier — which already
     /// observes the rows scroll geometry, and is only enabled in the pinned container — can verify
     /// the constant the compression is sized against. Changes no behaviour.
     var compression: CGFloat = 0
+    /// 2026-09-30: which hero form is on screen, so the budget check uses that form's budget
+    /// (`Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`). Default is the carousel.
+    var showsCTA: Bool = true
     /// DEBUG-only sink for the harness oracle (`debug_pinned`); nil in release, where nothing is
     /// written anywhere and the whole path is a static-storage update plus one scroll request.
     var onSettle: ((String) -> Void)? = nil
@@ -3141,7 +4773,16 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                     // layout, it just says so in the log if the platform's rows viewport ever
                     // stops matching `budget + compression`.
                     PinnedRowTitle.verifyViewportBudget(liveViewport: sample.viewportHeight,
-                                                        compression: compression)
+                                                        compression: compression,
+                                                        showsCTA: showsCTA)
+                    // beta.18 verdict (BUG-66): the corrector's content-space math assumes the
+                    // pinned rows carry `contentInsets.top == 0`, and the tab-bar scroll link now
+                    // sets `contentInsetAdjustmentBehavior = .never` on this scroll view. Say so
+                    // ONCE, loudly, if the platform ever hands this container a top inset.
+                    if HomeGeometryProbe.enabled, abs(sample.insetTop) > 0.5, !Self.loggedInsetNonzero {
+                        Self.loggedInsetNonzero = true
+                        NSLog("[HomeScrollProbe] settle %@", "INSET-NONZERO inset=\(Int(sample.insetTop.rounded()))")
+                    }
                     // nil = a debounce is already armed and this sample is within the creep
                     // tolerance of it, so there is nothing to schedule (see `noteScroll`).
                     guard let token = PinnedRowSettle.noteScroll(sample) else { return }
@@ -3177,10 +4818,15 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 //
                 // Known limit, stated rather than implied: Home's own doc records that neither a
                 // Detail push nor a tab switch fires `onDisappear` on its root, so this covers
-                // teardown rather than every way the rows can stop being visible. A correction
-                // that lands during a push is bounded anyway — the pop re-reveals the focused card
-                // through the focus engine, and the returning focus change invalidates the epoch,
-                // which voids the verification it would otherwise have failed.
+                // teardown rather than every way the rows can stop being visible. BUG-109 showed a
+                // correction that lands during a push is NOT bounded by the pop's focus engine —
+                // `position.scrollTo(y:)` fires against the covered scroll view and native focus
+                // restoration on the pop then resolves by geometry to whatever row now sits at the
+                // remembered rect, not the row the user actually left. `PinnedRowSettle.hostCovered`
+                // (set by HomeView from its `NavigationPath`) now gates the whole evaluation, in
+                // `scheduleSettle` below — ahead of the planning call, so a skipped settle spends no
+                // correction state either (Codex rc10 P2); this `onDisappear` teardown stays
+                // as the belt-and-suspenders path for whatever DOES tear the host down.
                 .onDisappear {
                     settleWork.item?.cancel()
                     settleWork.item = nil
@@ -3214,7 +4860,37 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
     private func scheduleSettle(token: Int, after delay: TimeInterval, hops: Int) {
         settleWork.item?.cancel()
         let work = DispatchWorkItem {
+            // BUG-109: never scroll a covered Home — and never PLAN for one either. A pushed folder
+            // page (or Detail) clears focus from this row, and applying a correction while the rows
+            // scroll view is hidden behind that push moves a scroll position the user cannot see;
+            // native focus restoration on the pop then resolves by geometry to whatever row now sits
+            // at the remembered rect, which is what read as "leaving a collection moves me back to
+            // the row above".
+            //
+            // Codex rc10 P2: this check is FIRST, above `settlePlan`, because `settlePlan` is
+            // stateful — it records a verification, a nudge window, a per-row correction stamp and
+            // `lastCorrection` — and cancelling the work item afterwards undid none of that. A
+            // skipped scroll therefore spent the correction budget and left a verification to be
+            // judged against movement that never happened. `PinnedRowSettle.setCovered(false)`
+            // re-arms AND schedules a fresh settle once the pop restores focus, so nothing is lost
+            // by declining here.
+            if PinnedRowSettle.rejectCoveredSettle() {
+                settleWork.item?.cancel()
+                settleWork.item = nil
+                // beta.18 verdict (BUG-87/89, R1): a covered Home is never corrected, so its held
+                // titles must not wait on a decision that will not come.
+                PinnedRowSettle.notifyRestDecided(reason: "covered")
+                return
+            }
             guard let plan = PinnedRowSettle.settlePlan(token: token) else { return }
+            // beta.18 verdict (BUG-87/89, R1): a chain that ENDED without a correction is the rest
+            // decision held title slides wait for. A plan WITH a nudge notifies nothing: the nudge
+            // is motion, `noteScroll` arms the next settle, and THAT clean decision releases — so
+            // the title lands once, after the nudge, instead of easing twice.
+            if plan.targetY == nil, plan.retryAfter == nil {
+                PinnedRowSettle.notifyRestDecided(
+                    reason: PinnedRowSettle.restDecisionReason(report: plan.report))
+            }
             // Control-flow plans carry no measurement and must not reach the harness oracle.
             if !plan.report.isEmpty { onSettle?(plan.report) }
             // BUG-89 (rc2): the ONE place every settle DECISION passes through — exactly one line
@@ -3231,7 +4907,16 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             // the head (`row= margin= net= vh=`) and the tail (`nudge=… endOfContent=… room=…`),
             // which is the whole diagnosis.
             if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
-                PinnedRowSettleProbe.log("settle " + plan.report)
+                // rc14: the pane truncates the MIDDLE of a line, so the rest-law pair the tester is
+                // asked to read (`restErr=`) rides at the very end — see `restLawToTail`.
+                PinnedRowSettleProbe.log("settle " + PinnedRowSettle.restLawToTail(plan.report))
+            }
+            // rc13: the control-flow note, pane only. Deliberately a SEPARATE `if` from the one
+            // above rather than a fallback inside it: the two are mutually exclusive today (a plan
+            // has one or the other) but nothing in the type says so, and a future plan that
+            // carried both should log both rather than silently drop one.
+            if PinnedRowSettleProbe.enabled, let note = plan.probeNote {
+                PinnedRowSettleProbe.log("settle " + note)
             }
             if let target = plan.targetY {
                 if reduceMotion {
@@ -3243,8 +4928,25 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 }
                 return
             }
-            if hops > 0, let retry = plan.retryAfter {
+            // rc13: a plan that ASKED for a re-check and found the hop budget spent used to fall
+            // off the end of this function silently — and one of the three re-check plans leaves
+            // the corrector ARMED when it does. `settlePlan`'s superseded branch returns without
+            // ever reaching its own `armed = false` (that statement is below the token guard), so
+            // a superseded epoch re-check that runs out of hops leaves `armed == true` with no
+            // deferred block behind it: the "phantom armed" state `setCovered`'s own doc describes,
+            // where the three other backstops all guard on `!armed` and so decline to re-arm, and a
+            // motionless geometry pass no longer arms at all (`noteScroll`). Correction then stalls
+            // until the user scrolls for real — which on the walk UP is the one thing they are
+            // trying to do and cannot.
+            //
+            // Restructured rather than extended so the `else` can only ever be reached by a plan
+            // that actually wanted a retry: `retryAfter == nil` is a chain that ENDED, not one that
+            // was cut short, and abandoning it would be a lie on the pane.
+            guard let retry = plan.retryAfter else { return }
+            if hops > 0 {
                 scheduleSettle(token: PinnedRowSettle.rearm(source: "retry"), after: retry, hops: hops - 1)
+            } else {
+                PinnedRowSettle.abandonChain(spentPlan: plan)
             }
         }
         settleWork.item = work
@@ -3276,6 +4978,26 @@ private final class TitleTrackingCache {
     /// Live mirror of the row's focus state — see the class note. Drives which clearance the fast
     /// path judges by, which in the lift-bearing focus modes is a ~20pt difference.
     var isFocused = false
+    /// rc14 (Steven rc13 verdict — "the rows still bounce when I scroll quickly"): the slide
+    /// target measured while the rows were still MOVING, held back until they rest. Plain
+    /// reference-box fields, like `geometry`: written per frame during a scroll, so they must not
+    /// be `@State`. See `PinnedRowTitleTracking.applySlide`.
+    var pendingSlide: CGFloat?
+    var slideHoldToken = 0
+    /// beta.18 verdict (BUG-87/89, R1): when the current hold EPISODE began (its first hold), on
+    /// the `systemUptime` clock — what `PinnedRowTitle.slideHoldCeiling` is measured from.
+    var slideHoldStartedAt: TimeInterval = 0
+    /// review r1 (P3-5): whether this episode's ceiling clock was already restarted once.
+    var ceilingRestarted = false
+    /// rc14 device round 2 (Christian, Up walk): when this title's own geometry last changed —
+    /// the SECOND motion signal the slide gate consults. The scroll stamp (`noteScroll`) counts a
+    /// frame as motion only past `driftTolerance` (4pt) or the windowed displacement, and the
+    /// engine's Up reveal ends in a creep of 1–2pt steps that it does not count; the gate then
+    /// released ≈30pt early and the title eased 30 → 8 while the row was still moving — the
+    /// "overlap, then jumps into position" on every Up press. Any change to the title's frame is
+    /// motion as far as the title is concerned. Written per frame; a reference-box field, never
+    /// `@State`.
+    var lastGeometryChangeAt: TimeInterval = 0
 }
 
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the
@@ -3347,9 +5069,8 @@ struct EntityRoute: Hashable {
 /// One horizontal catalog (e.g. "Popular Movies", or a search-result group) as a focus-scrollable row
 /// of poster cards.
 ///
-/// By default each card is a `NavigationLink` to the title's detail screen (used on Home). Pass
-/// `onSelect` to instead handle taps manually — Search uses this to dismiss the keyboard before
-/// navigating.
+/// By default each card is a `NavigationLink` to the title's detail screen (Home and Search). Pass
+/// `onSelect` to handle taps manually instead.
 struct CatalogRowView: View {
     /// BUG-13: the Home fetch trims each row to `HOME_CATALOG_PREVIEW_FETCH_LIMIT` items
     /// (HomeRepository.kt) while `availableItemCount` keeps the addon's real first-page count. Rows
@@ -3366,6 +5087,12 @@ struct CatalogRowView: View {
     /// (`section:previewLimit:`) both compile unchanged. Gating and backdrop prefetch live in
     /// the callback (HomeView.reportRowFocus), not here.
     var onItemFocusChange: ((MetaPreview?) -> Void)? = nil
+    /// Search & Discover batch 2026-10-06, "Found in …" under the focused card. When non-nil,
+    /// every card reserves one fixed `Theme.Font.caption` line under its title caption (inside the
+    /// focusable label, so it rides the focus lift and nothing jumps when focus moves) and the
+    /// footnote text is drawn only on the currently focused card. Nil (the default) adds nothing:
+    /// Home, Library and the folder page lay out exactly as before.
+    var cardFootnote: ((MetaPreview) -> String?)? = nil
 
     /// Inline trailer previews on focus dwell (see `InlineTrailerCard`). Device-local on purpose —
     /// whether a living-room Apple TV should autoplay trailers is a per-device call, not a synced
@@ -3384,13 +5111,54 @@ struct CatalogRowView: View {
     @FocusState private var focusedItemId: String?
     @Environment(\.browsePositionMemory) private var positionMemory
 
-    /// Which card currently owns the single inline `AVPlayer`, published by the shared coordinator.
-    @ObservedObject private var trailerCoordinator = InlineTrailerCoordinator.shared
+    /// beta.19-rc1 verdict (M3, BUG-126): the coordinator's playing key, but ONLY when it belongs to
+    /// one of this row's items (nil otherwise). The row used to `@ObservedObject` the whole
+    /// coordinator, so every claim and release re-rendered every mounted row. Now each row
+    /// `.onReceive`s `playingKeySubject` and writes this only when its own answer changes: a row
+    /// that owns neither the old nor the new key writes nothing and does not re-render. Producers
+    /// are the card model AND, in Trailer Location: Hero, the hero model (which claims with the
+    /// focused card's own key while every card is `enabled: false`), so `muteToggle(for:)` keeps
+    /// working in both locations.
+    @State private var rowPlayingKey: String?
+
+    /// beta.19-rc1 verdict (M3): the row's horizontal scroll geometry, kept in a reference box (no
+    /// view state written per scroll frame), for the morph-scroll math and the `RowsMotionClock`
+    /// stamp. See `RowHScrollBox`.
+    @State private var hScroll = RowHScrollBox()
+    /// beta.19-rc1 verdict (M3): horizontal-only scroll target for the inline-trailer morph — a
+    /// horizontal `ScrollPosition` cannot move the enclosing vertical rows (see `RowMorphScroll`).
+    /// Not attached at all when `-debug.trailerMorphScrollProxy YES` arms the fallback. `body` never
+    /// reads it (see `expansionChanged`'s "Path shipped" note: the re-render check was not run).
+    @State private var rowPosition = ScrollPosition()
 
     /// BUG-29: an inline-trailer expansion widens its card in place without moving focus, so tvOS's
     /// automatic focus-driven scroll never fires — the row has to scroll itself, and Reduce Motion
     /// governs whether that scroll animates (see `expansionChanged(for:expanded:proxy:)`).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// beta.19-rc1 verdict (F, FEAT-54): the same live `row_edge_fade` setting
+    /// `RowEdgeEffectStyleModifier` reads (Appearance → Row Edge Fade, Off by default). In Soft the
+    /// row's own soft mask owns the leading edge, so the BUG-92 leading clip opens wide instead of
+    /// cutting it hard; System and Off keep the clip at `leadingEdgeAllowance`.
+    @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
+    /// beta.19-rc1 verdict (review r1, B P2-2): the same margins and ramp length this row's
+    /// `rowEdgeEffectStyle()` draws with (it passes no overrides, so it reads exactly these), for
+    /// the morph scroll's trailing inset. A host with other chrome (the Stage strip) sets them once
+    /// on its container and the inset follows.
+    @Environment(\.rowEdgeMargins) private var rowEdgeMargins
+    @Environment(\.rowEdgeRampLength) private var rowEdgeRampLength
+    /// Home Stage & Strip (P1 §3.3): the strip's per-row focus memory. nil outside the strip, which
+    /// leaves `restoreStripMemory` inert (Classic, Search, Library).
+    @Environment(\.stripFocusMemory) private var stripFocusMemory
+    /// beta.19-rc1 verdict (review r1, B P2-2): the item whose wide inline tile the morph scroll
+    /// could NOT bring clear of the Soft trailing ramp (clamped at the row's end, or a row too short
+    /// to scroll), so the row holds its trailing fade off while that tile is wide. Written at most
+    /// once per morph pass and once per collapse, never per frame. Applied only while that item
+    /// still holds focus (`holdsTrailingFade`), so a value left behind by a card that vanished
+    /// without reporting its collapse can never keep the fade off for ANOTHER card. For focus
+    /// coming back to that SAME card as a poster, the row's `.onDisappear` (where the cards abort
+    /// without reporting) clears the hold too (beta.19-rc1 verdict, review r2, P3-3).
+    @State private var trailingFadeHeldFor: String?
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
@@ -3423,6 +5191,27 @@ struct CatalogRowView: View {
     /// `rowCardBottomReach` for the mechanism. 0 (no-op) everywhere except Home's pinned mode.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last.
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    /// BUG-157: read for `shortRowCompensation` only.
+    @Environment(\.pinnedRowIsLast) private var isLastRow
+
+    /// BUG-157 (rc14 BUG-122's shape, `ContinueWatchingRow.shortRowCompensation`): a landscape-shape
+    /// catalog on a portrait Classic page is a SHORT row (203 pt cards under the poster regime's
+    /// reaches). If Home publishes the short-row floor on it, this cancels the floor's layout growth
+    /// so only the focusable frames grow, never the spacing to the next row. Non-zero only on a
+    /// landscape-shape catalog row that Home floors; 0 on Home's LAST row (by contract) and on every
+    /// uniform row, whose natural label already equals the floor. BUG-162 (Batch B): shape rows are
+    /// the poster height now and Home no longer floors them, so this is 0 everywhere today; it stays
+    /// as the guard for any short catalog row a host floors.
+    private var shortRowCompensation: CGFloat {
+        let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let natural = cardTopReach + rowArtworkHeight + caption + cardBottomReach
+        return PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                            naturalLabel: natural,
+                                                            isLastRow: isLastRow)
+    }
 
     /// Wave 4 item 6: the RESTING artwork height of this row's cards, handed to the pinned title's
     /// slide clamp so the title's intrusion is a fraction of the card rather than a fixed 46pt of
@@ -3432,14 +5221,47 @@ struct CatalogRowView: View {
     /// CONSTANT across the inline-trailer morph ("the height never changes so the row never
     /// breathes vertically"), so one number describes the row in both states. The caption slot
     /// (`style.showTitle`) is excluded: it sits BELOW the art and cannot be intruded on from above.
-    @Environment(\.posterStyle) private var posterStyle
+    @Environment(\.posterStyle) private var inheritedPosterStyle
+    /// BUG-157 (Steven, beta.19-rc3 follow-up 2026-10-14): an add-on catalog whose items say
+    /// `posterShape: "landscape"` drew portrait cards, because nothing on tvOS read the shape the
+    /// shared parser keeps per item. tvOS decides it per ROW (`PosterStyle.landscapeSection`: a
+    /// strict majority of the row's items), so one row never mixes card shapes, and turns this row
+    /// to landscape cards the same way the global Landscape Posters toggle does (an OR: the toggle
+    /// still forces every row). Every read in this view goes through this, and the row hands it
+    /// down (`.environment(\.posterStyle, posterStyle)` in `body`), so `InlineTrailerCard`,
+    /// `PosterCard` and the See All card follow from any host: Classic, the Stage strip, Discover,
+    /// the folder Rows page, Search. The image stays `item.poster`, as upstream draws it.
+    private var posterStyle: PosterStyle {
+        // Perf review 2026-10-17 (#4): memoised per (inherited style, section object). Every read
+        // used to bridge `section.items` (a Kotlin list) to a Swift array, and the body plus its
+        // helpers read this a dozen times per render. A section is an immutable snapshot, so the
+        // object identity is a sound key; the box holds the section strongly so the identity
+        // cannot be reused by a later allocation.
+        if let cached = resolvedStyle.value, resolvedStyle.section === section,
+           resolvedStyle.inherited == inheritedPosterStyle {
+            return cached
+        }
+        let value = inheritedPosterStyle.resolved(forSectionItems: section.items)
+        resolvedStyle.section = section
+        resolvedStyle.inherited = inheritedPosterStyle
+        resolvedStyle.value = value
+        return value
+    }
+    /// See `posterStyle`. A reference box, so writing it from `body` changes no view state.
+    @State private var resolvedStyle = CatalogRowResolvedStyleBox()
     private var rowArtworkHeight: CGFloat {
-        posterStyle.landscapeCatalogRows ? Theme.Size.landscapeHeight : posterStyle.height
+        // BUG-162 / D16: the row's artwork SLOT, `expandedCardHeight`: a shape-landscape card rests
+        // smaller (folder-tile size) at the slot's top and grows into it with its trailer, so the
+        // row, the pinned title clamp and the leading-edge allowance (sized off the grown 16:9
+        // tile) keep the portrait-height numbers. Equal to `cardHeight` on every other row.
+        posterStyle.expandedCardHeight
     }
 
     /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
     /// except Home in that mode, so Search and every other host keeps the inline morph.
     @Environment(\.trailerPlaysInHero) private var trailerPlaysInHero
+    /// Home Stage & Strip (P1 §5): the strip's "heading · add-on" form. False everywhere else.
+    @Environment(\.rowHeadingShowsAddon) private var rowHeadingShowsAddon
 
     /// H3 hardening (BUG-47): the previous version fired-and-forgot a detached `Task` per
     /// expansion. A rapid re-focus while one was still mid-flight (the 450ms deferred correction
@@ -3447,6 +5269,18 @@ struct CatalogRowView: View {
     /// scrolling into a `ScrollViewReader` whose `ScrollView` no longer exists. Tracking the task
     /// lets a new expansion supersede the old one and lets `.onDisappear` cancel it outright.
     @State private var expansionScrollTask: Task<Void, Never>?
+
+    /// BUG-158 (Steven, 10-09 photos, corrected 10-14 4:24 PM ET): the card whose inline trailer tile
+    /// is showing, reported by `InlineTrailerCard` through `InlineTrailerTileShowingKey`. In a
+    /// portrait row that card's link gets `CardSystemLiftStyle.lift` in its environment, which
+    /// switches the `.borderless` system focus treatment off (`CardFocusButtonStyle`), disables the
+    /// base artwork's hover effect (`CardArtworkFocusLift`) and lets the trailer tile draw its own
+    /// lift (`InlineTrailerCard.expandedTile`): the system effect's standing platter/specular edge,
+    /// hidden under an opaque poster, read as a thin doubled white outline around the landscape
+    /// tile once the portrait card had faded out under it (Zoom ON, accent ring OFF only). One card
+    /// per row shows a tile at a time. A row re-render per tile edge, the same cost `focusedItemId`
+    /// already pays.
+    @State private var tileShowingItemId: String?
 
     // ── BUG-92: the first card's bleed, clipped at the row's leading edge ────────────────────────
     //
@@ -3462,29 +5296,39 @@ struct CatalogRowView: View {
     /// `RowLeadingEdgeClip` opens for it. See that type's header for the whole BUG-92 argument;
     /// this is the attachment it documents and deliberately did not make itself.
     private var leadingEdgeAllowance: CGFloat {
-        // Codex beta.18 r4 (P2): the widest thing the first card can be is the EXPANDED inline trailer
-        // tile (`posterStyle.height * 16/9` for a portrait card, see InlineTrailerCard's tile
-        // geometry), and the focus lift scales that whole label — size the bleed off the maximum,
-        // not the resting poster width, or the first playing trailer gets a hard clipped edge.
-        let restingWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
-        let posterWidth = max(restingWidth, rowArtworkHeight * 16 / 9)
-        // No lift at all in No Zoom mode (`CardFocusMode.still` — `PosterCard.swift` swaps in
-        // `StillCardButtonStyle` + `.focusEffectDisabled(true)`, which scales nothing), so only the
-        // ring can bleed there. Otherwise this recomputes `PosterCard.swift`'s own
-        // `cardLiftScale(artworkHeight:)` from the SAME public constant, because that function is
-        // `private` to that file and one call site does not justify a new cross-file symbol. If it
-        // is ever made internal, call it instead of keeping two copies of the formula in step.
-        let liftScale = noZoomOnFocus ? 1 : 1 + 2 * Theme.Size.heroPinnedRowFocusLiftAllowance / rowArtworkHeight
-        // Mirrors `PosterCard.swift`'s `ringInset(accentFocusRing:noZoomOnFocus:)` — either ring
-        // reserves the same band, and neither reserves anything when both are off.
-        let ring: CGFloat = (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
-        return RowLeadingEdgeClip.allowance(posterWidth: posterWidth,
-                                            liftScale: liftScale,
-                                            ringWidth: ring)
+        // BUG-164 (Steven, rc4: the far-left poster cut on its left edge with No Zoom on Focus ON,
+        // and a glitch there while its trailer plays): the rule moved into
+        // `RowLeadingEdgeClip.rowAllowance`, a pure function with the measured numbers. Zoom-on is
+        // the formula this property used to inline (16:9 tile width × the lift, + accent ring +
+        // shadow), byte-identical; No Zoom opens for the still focus shadow's visible reach (44 pt)
+        // instead of ring + radius (26 pt), which cut the shadow into a hard line.
+        // BUG-162 / D16: the row's real resting card width (a shape-landscape card rests at
+        // `width × 16/9`); the grown tile's 16:9 width comes from `rowArtworkHeight` inside.
+        let restingWidth = posterStyle.cardWidth
+        return RowLeadingEdgeClip.rowAllowance(noZoomOnFocus: noZoomOnFocus,
+                                               accentFocusRing: accentFocusRing,
+                                               restingWidth: restingWidth,
+                                               artworkHeight: rowArtworkHeight,
+                                               liftRise: Theme.Size.heroPinnedRowFocusLiftAllowance)
+    }
+
+    /// beta.19-rc1 verdict (review r1, B P2-2): see `trailingFadeHeldFor`. Only while the held item
+    /// still has focus (a wide tile is always the focused card's).
+    private var holdsTrailingFade: Bool {
+        guard let held = trailingFadeHeldFor else { return false }
+        return held == focusedItemId
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        #if DEBUG
+        let _ = HomeBodyCounter.tick("CatalogRowView")
+        #endif
+        // Perf review 2026-10-17 (#4): the trailer gate (a UIAccessibility read plus the BUG-55
+        // probe) once per body, not once per card.
+        let trailersActive = inlineTrailersActive
+        // BUG-146 second trim (Steven, rc4: Stage headings "still slightly too high"): heading →
+        // shelf spacing is `StripGeometry.headingGap` (12) inside the strip, `md` (16) elsewhere.
+        VStack(alignment: .leading, spacing: StripGeometry.headingGap(inStrip: stripFocusMemory != nil)) {
             // Classic keeps the title as a plain sibling above the shelf. PINNED mode instead
             // overlays the title INSIDE the shelf's top reach band (below) so the focused
             // cards' frames — which the focus engine's scroll-to-reveal aligns — physically
@@ -3499,35 +5343,94 @@ struct CatalogRowView: View {
             // vertical focus travel could land on it and reveals would align its tiny frame —
             // degenerate rest positions (sliver rows, floating pill, art cut at the fold).
             if cardTopReach == 0 {
-                Text(section.title)
-                    .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                // Home Stage & Strip (P1 §5): in the Stage strip the heading names its add-on
+                // ("Popular · Cinemeta"), unless the name is blank or the title already carries it.
+                // One line, so the strip's row height (one heading line) holds. Everywhere else
+                // the flag is false and this is the plain heading, unchanged.
+                if rowHeadingShowsAddon,
+                   let addon = StageCopy.headingAddon(title: section.title, addonName: section.addonName) {
+                    Text(Self.headingWithAddon(title: section.title, addon: addon))
+                        .font(Theme.Font.sectionTitle)
+                        .lineLimit(1)
+                } else {
+                    Text(section.title)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .stripHeadingLineLimit()
+                }
             }
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.rowGap) {
+                    // BUG-162 / D16 + BUG-146 (Steven, rc5): TOP-aligned on every row, so every
+                    // card's art top sits on one line under the heading. A centre-aligned stack sank
+                    // the shorter cards whenever one card laid out taller (Search's focused footnote
+                    // card with Hide Titles ON is 16 pt taller; the See All tile on a shape-landscape
+                    // row is shorter than the slot its neighbours reserve). Rows whose cards are all
+                    // one height (Home's) lay out exactly as before.
+                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
                         ForEach(section.items, id: \.id) { item in
                             Group {
                                 if let onSelect {
                                     Button { onSelect(item) } label: {
-                                        card(for: item, proxy: proxy)
+                                        card(for: item, proxy: proxy, trailersActive: trailersActive)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
+                                            // BUG-87/89 (rc11): transparent floor on the REVEALED
+                                            // frame — 0 for every row but Home's last. `.top` so the
+                                            // artwork and caption do not move a point.
+                                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                                   alignment: .top)
                                     }
                                         .cardFocusButtonStyle()
                                         .posterButtonShape()
                                 } else {
                                     NavigationLink(value: TitleRoute(preview: item)) {
-                                        card(for: item, proxy: proxy)
+                                        card(for: item, proxy: proxy, trailersActive: trailersActive)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
+                                            // BUG-87/89 (rc11): transparent floor on the REVEALED
+                                            // frame — 0 for every row but Home's last. `.top` so the
+                                            // artwork and caption do not move a point.
+                                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                                   alignment: .top)
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()
+                                    // Orivio item 3: hold menu (Library / Watched). The card observes
+                                    // no store; the menu reads its own state (see TitleHoldMenu.swift).
+                                    .titleHoldMenu(preview: item)
                                 }
                             }
                             .focused($focusedItemId, equals: item.id)
+                            // BUG-158: see `tileShowingItemId`. Set on the whole link so the button
+                            // style, the artwork and the tile read it. Portrait rows only: in a
+                            // landscape row the base card never fades, the system lift raises card
+                            // and tile as one object and no edge shows (review r1 P2-1).
+                            // BUG-164: never in No Zoom on Focus (`CardSystemLiftStyle.resolve`): the
+                            // tile's manual lift scaled the far-left trailer 35.6 pt past the row's
+                            // leading clip, the rc4 "glitch on the left" while it plays.
+                            // BUG-163: a shape-landscape row (BUG-157) fades its base card under the
+                            // tile like a portrait row (`InlineTrailerCard.fadesBaseCard`), so it
+                            // takes the portrait rule: `landscapeRowGeometry` is the global toggle only.
+                            .environment(\.cardSystemLiftStyle,
+                                         CardSystemLiftStyle.resolve(tileShowing: tileShowingItemId == item.id,
+                                                                     landscapeRow: posterStyle.landscapeRowGeometry,
+                                                                     noZoomOnFocus: noZoomOnFocus))
+                            // A lift SwiftUI draws itself needs an explicit zIndex to sit above the
+                            // row neighbours (the FEAT-14/BUG-36 rule in PosterCard); the system
+                            // lift gets its own compositor layer and needs none.
+                            // Steven rc6 (photos 1 + 3): the FOCUSED card too, tile or not. The card's
+                            // own zIndex (PosterCard) only orders it inside `InlineTrailerCard`, so a
+                            // ring-mode lift on a wide card still drew under the next card's link.
+                            .zIndex(tileShowingItemId == item.id || focusedItemId == item.id ? 1 : 0)
+                            .onPreferenceChange(InlineTrailerTileShowingKey.self) { showing in
+                                if let showing {
+                                    tileShowingItemId = showing
+                                } else if tileShowingItemId == item.id {
+                                    tileShowingItemId = nil
+                                }
+                            }
                             // Mirrors Detail's hero trailer: the card's mute glyph isn't reachable by
                             // the focus engine, so play/pause is the toggle. Nil unless *this* focused
                             // card is the one playing — an unconditional handler would swallow
@@ -3543,6 +5446,11 @@ struct CatalogRowView: View {
                                 SeeAllCard()
                                     .padding(.top, cardTopReach)
                                     .padding(.bottom, cardBottomReach)
+                                    // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0
+                                    // for every row but Home's last. `.top` so the artwork and
+                                    // caption do not move a point.
+                                    .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                           alignment: .top)
                             }
                             // BUG-93: SeeAllCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
                             .cardFocusButtonStyle(lift: .plain)
@@ -3565,7 +5473,9 @@ struct CatalogRowView: View {
                     }
                     // ALWAYS positive — the reach lives inside the buttons' labels, the row's
                     // frame contains it whole, and nothing pokes outside the focus section.
-                    .padding(.vertical, Theme.Spacing.lg)
+                    // BUG-146: `lg` top and bottom everywhere but the Stage strip, whose top is
+                    // `sm` (see `StripShelfPadding` and `StripGeometry.shelfTopPadding`).
+                    .stripShelfPadding()
                     // BUG-92: clip ONLY the leading edge, and only by what a focused card's lift +
                     // ring can legitimately put outside its own frame. `.scrollClipDisabled()`
                     // below exists so a focused card's bleed can land over its LEFT NEIGHBOUR,
@@ -3579,7 +5489,13 @@ struct CatalogRowView: View {
                     // ~2000pt open, so this can never reach a direction BUG-92 was not about — a
                     // card's vertical lift, the row's reach band, or the inline trailer's rightward
                     // morph (UX-4a). See `RowLeadingEdgeClip`.
-                    .clipShape(RowLeadingEdgeClip(allowance: leadingEdgeAllowance))
+                    //
+                    // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge, so the
+                    // clip opens to `softModeAllowance` (beta.19-rc1 verdict F: Soft is an option of
+                    // the `row_edge_fade` setting).
+                    .clipShape(RowLeadingEdgeClip(allowance: RowEdgeFadeSetting.resolve(rowEdgeFade) == .soft
+                                                  ? RowLeadingEdgeClip.softModeAllowance
+                                                  : leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
                 .onAppear {
@@ -3587,6 +5503,23 @@ struct CatalogRowView: View {
                         proxy.scrollTo(saved, anchor: .leading)
                     }
                 }
+                // beta.19-rc1 verdict (M3, BUG-133): the row's horizontal geometry, into a reference
+                // box (never view state), for the morph-scroll math. `record` also stamps
+                // `RowsMotionClock` when the OFFSET moved ≥ 0.5 pt since the last stamp, so a
+                // horizontal step holds the trailer gate until the row is still, and the content
+                // growing under a morph never counts as motion.
+                .onScrollGeometryChange(for: RowHScrollSample.self, of: { geo in
+                    RowHScrollSample(geo)
+                }, action: { _, sample in
+                    hScroll.record(sample)
+                })
+                // M3: the horizontal-only morph scroll target (absent under the proxy fallback).
+                .modifier(RowMorphScrollPositionModifier(position: $rowPosition))
+                // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`
+                // is already on. beta.19-rc1 verdict (review r1, B P2-2): `holdsTrailingFade` keeps a
+                // wide inline tile the morph scroll could not clear out of the Soft trailing ramp.
+                .rowEdgeEffectStyle(leadingClipAllowance: leadingEdgeAllowance,
+                                    holdsTrailingFade: holdsTrailingFade)
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.
@@ -3613,92 +5546,352 @@ struct CatalogRowView: View {
                             .allowsHitTesting(false)
                     }
                 }
+                // Home Stage & Strip (P1 §3.3): see `restoreStripMemory`. Inert outside the strip.
+                .onAppear { restoreStripMemory(proxy: proxy) }
             }
         }
         .focusSection()
+        // BUG-157: see `shortRowCompensation` (0 unless Home floors a short catalog row). After
+        // `.focusSection()` and before the settle tracker, as on Continue Watching.
+        .padding(.bottom, -shortRowCompensation)
+        // BUG-157: the cards read the row's resolved style (see `posterStyle`). Identical to the
+        // inherited value for every row that is not a landscape-shape catalog.
+        .environment(\.posterStyle, posterStyle)
         // Settle re-reveal (2026-08-30): publishes this row's frame while it holds focus, so a
         // rest that parks its title under the pinned clip edge can be corrected once the scroll
         // settles. Inert in classic mode and while unfocused — see `pinnedRowSettleTracking`.
         // `focusedItemId != nil` covers the trailing See All tile too, via `seeAllFocusKey` —
         // that tile is part of this row and its rests need the same correction (Codex r3 P2-1).
         .pinnedRowSettleTracking(rowKey: section.key, isFocused: focusedItemId != nil)
-        .onChange(of: focusedItemId) { _, newId in
+        // BUG-112 (Item A): Home's Up fallback may ask this row to take focus. Inert in Search /
+        // Library / the catalog grid — only HomeView publishes `pinnedRowFocusRequest`.
+        .pinnedRowUpFallbackTarget(rowKey: section.key,
+                                   firstId: section.items.first?.id,
+                                   focus: $focusedItemId)
+        .onChange(of: focusedItemId) { oldId, newId in
             if let newId, newId != Self.seeAllFocusKey { positionMemory?.remember(newId, in: section.key) }
+            // beta.19-rc1 verdict (F, FEAT-54 frame-time gate): one frame-timing window per
+            // HORIZONTAL step inside this row (no-op unless `debug.collectionFrameProbe` is on).
+            // Both ids non-nil = a step within the row; a row hop (one side nil) is already armed by
+            // Home's own row-focus handler, so arming here too would cut that window short.
+            if oldId != nil, newId != nil {
+                CollectionFocusFrameSampler.shared.arm(rowKey: "h:\(section.key)", gif: false)
+            }
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
+        // beta.19-rc1 verdict (M3, BUG-126): see `rowPlayingKey`. The subject is a
+        // `CurrentValueSubject` that sends only on change, so a row mounting mid-playback syncs at
+        // once and a claim for another row's title costs this row one cheap scan and no render.
+        .onReceive(InlineTrailerCoordinator.shared.playingKeySubject) { key in
+            let mine = Self.rowPlayingKey(key, itemKeys: section.items.lazy.map {
+                TrailerResolutionCache.key(type: $0.type, id: $0.id)
+            })
+            if rowPlayingKey != mine { rowPlayingKey = mine }
+        }
         // H3: the row (and its ScrollViewReader) can disappear mid-flight — a pop while the
-        // deferred 450ms correction pass is still pending. Cancel rather than let it fire against
-        // a torn-down proxy.
-        .onDisappear { expansionScrollTask?.cancel() }
+        // deferred verification pass (M3: `morphDuration + 0.05` s) is still pending. Cancel
+        // rather than let it fire against a torn-down row. Review r1 (A-4): the cards abort on
+        // disappear and may not report the collapse, so forget the wide item too (a box write,
+        // no render).
+        // beta.19-rc1 verdict (review r2, P3-3): and the trailing-fade hold with it. A card that
+        // aborted without reporting its collapse left it set, and focus coming back to that same
+        // card (now a poster) drew the row's trailing side solid, as if Off, until the next morph
+        // pass or focus move. One write, and only when a hold is set.
+        .onDisappear {
+            expansionScrollTask?.cancel()
+            hScroll.wideItemId = nil
+            if trailingFadeHeldFor != nil { trailingFadeHeldFor = nil }
+        }
     }
 
     /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog
     /// rows — both rendered by `InlineTrailerCard`, which also grows the muted trailer preview once
     /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
     /// two cards, so the row is unchanged.
-    private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
-        InlineTrailerCard(item: item, enabled: inlineTrailersActive) { expanded in
-            expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+    @ViewBuilder
+    private func card(for item: MetaPreview, proxy: ScrollViewProxy, trailersActive: Bool) -> some View {
+        if let cardFootnote {
+            VStack(alignment: .leading, spacing: 0) {
+                // The footnote is drawn by the card itself, hanging under its caption so it
+                // follows the caption's focus drop (device pass 2026-10-06: a line laid out here
+                // collided with the dropped caption on the focused card).
+                // FEAT-64: the watched tick, read inside `WatchedBadgeReader`'s leaf so the row
+                // itself never observes the index. A mark republishes one deduped snapshot, which
+                // re-renders every visible card leaf once (acceptable at mark frequency).
+                WatchedBadgeReader(item: item) { badge in
+                    InlineTrailerCard(item: item,
+                                      enabled: trailersActive,
+                                      onExpansionChange: { expanded in
+                                          expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                                      },
+                                      footnote: focusedItemId == item.id ? cardFootnote(item) : nil,
+                                      watchBadge: badge)
+                }
+                // Fixed-height sizer (a hidden caption line): the row reserves the footnote's
+                // line so nothing below moves when focus changes.
+                Text(" ")
+                    .font(Theme.Font.caption)
+                    .lineLimit(1)
+                    .hidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            // FEAT-64: see the footnote branch above.
+            WatchedBadgeReader(item: item) { badge in
+                InlineTrailerCard(item: item, enabled: trailersActive, onExpansionChange: { expanded in
+                    expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+                }, watchBadge: badge)
+            }
         }
     }
 
     /// BUG-29: an inline-trailer expansion morphs the focused card wider **to the right** in place —
     /// focus never moves (it's still the same button), so tvOS never issues its usual focus-driven
-    /// scroll, and a card near a row's trailing edge grows straight off the visible strip. Ask the
-    /// `ScrollView` to bring the card back into view ourselves whenever it expands; a `nil` anchor
-    /// asks for the *minimal* scroll needed, so a card that already fits doesn't jump. Collapsing
-    /// needs no help — the row only ever overflows while a card is wide, never while it's back to
-    /// poster width.
+    /// scroll, and a card near a row's trailing edge grows straight off the visible strip. The row
+    /// has to scroll itself. Collapsing needs no help — the row only ever overflows while a card is
+    /// wide, never while it's back to poster width.
     ///
-    /// Deferred by one runloop hop so the scroll targets the tile's *expanded* geometry: `expanded`
-    /// flips the instant the morph starts (`InlineTrailerCardModel.setPhase`), not when it finishes,
-    /// so scrolling in the same tick would still measure the old, narrower frame. The morph itself
-    /// runs 0.35s (`InlineTrailerCardModel.morphAnimation`), so the deferred scroll still lands well
-    /// inside it and the two animate together visually.
+    /// beta.19-rc1 verdict (M3, BUG-133): rewritten as a HORIZONTAL-ONLY scroll that is DROPPED when
+    /// the tile already fits. The old version called `proxy.scrollTo(itemId)` twice (0 ms, 450 ms)
+    /// with a nil anchor (`.trailing` for the last card) at the card's `.id` Group, whose frame
+    /// carries the 88 pt pinned top reach — so whenever the proxy propagated to the enclosing
+    /// vertical rows `ScrollView` it could nudge the rows vertically mid-morph and re-arm the
+    /// settle corrector (signature: a `settle … armSrc=scroll` line 0.05–0.5 s after an
+    /// `expansionChanged fire` line, with no remote input). Now the target comes from
+    /// `RowMorphScroll.target` over the row's own geometry sample, and the scroll is a horizontal
+    /// `ScrollPosition.scrollTo(x:)`, which cannot touch the rows.
+    ///
+    /// Fires on the `.wide` edge (R2), i.e. when the width actually starts growing. Pass 1 runs on
+    /// the next main-actor turn (the geometry sample has usually caught up with the growth by
+    /// then; `contentAlreadyGrown` is MEASURED against the width before the edge, not assumed),
+    /// and the H3 task keeps one verification pass at `morphDuration + 0.05` s on the live sample.
+    ///
+    /// Path shipped: `ScrollPosition` (`.scrollPosition($rowPosition)` + `scrollTo(x:)`), the
+    /// default. Gate 1 showed `scrollTo(x:)` lands (pass-1 and pass-2 probe lines). The other check,
+    /// that `.scrollPosition` does not re-render this row on every frame of a focus-driven horizontal
+    /// scroll (a temporary `_printChanges()` in `body`), was NOT run; the body never reads
+    /// `rowPosition`, which is why it is expected to hold. Decision as it stands (beta.19-rc1
+    /// verdict, review r1 A-7): ship the `ScrollPosition` path. If the device BUG-126 frame sampler
+    /// shows per-frame row re-renders during horizontal focus scrolling, switch to the proxy
+    /// fallback with `-debug.trailerMorphScrollProxy YES` (see `RowMorphScroll`).
+    ///
+    /// beta.19-rc1 verdict (review r1, A-4): the COLLAPSE edge now cancels this item's pending
+    /// verification pass. It used to return at the guard below first, so after an abort (a fast Left
+    /// within 0.2 s of `.wide`) pass 2 still fired at `morphDuration + 0.05` s and scrolled the row
+    /// back right by up to the tile's growth, for a tile that was a poster again — pushing the newly
+    /// focused card toward the edge (critique #26's "second correcting motion"). `hScroll.wideItemId`
+    /// records which item is wide, so a late collapse report from a previous card never cancels the
+    /// current card's pass, and pass 2 itself re-checks it before scrolling.
     private func expansionChanged(itemId: String, expanded: Bool, proxy: ScrollViewProxy) {
-        guard expanded else { return }
-        // Device finding (BUG-29 round 2): a nil-anchor scrollTo at morph START is a no-op —
-        // the tile's pre-growth frame is still fully visible at that moment, so "minimal
-        // scroll" resolves to nothing and the tile then grows off the trailing edge anyway.
-        // Two-part fix: the LAST item deterministically needs its trailing edge pinned to the
-        // viewport (no geometry read needed), and every other item gets a correction pass
-        // AFTER the 0.35s morph settles, when scrollTo finally sees the expanded frame.
-        let anchor: UnitPoint? = itemId == section.items.last?.id ? .trailing : nil
-        // H3: supersede any still-pending correction pass from a previous expansion rather than
-        // letting both race the same proxy.
+        guard expanded else {
+            // Only this item's own pass: if another card has expanded since, `wideItemId` names it.
+            if hScroll.wideItemId == itemId {
+                hScroll.wideItemId = nil
+                expansionScrollTask?.cancel()
+                if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged collapse item=\(itemId) cancelled=1") }
+            }
+            // Review r1 B P2-2: the tile is no longer wide, so the trailing fade comes back.
+            if trailingFadeHeldFor == itemId { trailingFadeHeldFor = nil }
+            return
+        }
+        // D16 (rc5 verdict, review r1 P1): a shape-landscape card now GROWS (416×234 → 624×351 at
+        // Medium+), so it needs the morph scroll like a portrait card. Only the global Landscape
+        // Posters toggle (`landscapeRowGeometry`, 360 → 360, `plan` returns nil) is skipped.
+        guard !posterStyle.landscapeRowGeometry,
+              let index = section.items.firstIndex(where: { $0.id == itemId }) else { return }
+        hScroll.wideItemId = itemId
+        // H3: supersede any still-pending pass from a previous expansion rather than letting both
+        // race the same row.
         expansionScrollTask?.cancel()
-        if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged fire item=\(itemId)") }
+        let path = RowMorphScroll.useProxyFallback ? "proxy" : "position"
+        if CatalogGridProbe.enabled {
+            CatalogGridProbe.log("expansionChanged fire item=\(itemId) index=\(index) path=\(path)")
+        }
+        let widthBefore = hScroll.sample?.contentWidth
         expansionScrollTask = Task { @MainActor in
-            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
-            try? await Task.sleep(nanoseconds: 450_000_000)
+            // The fallback scrolls once, at morph end only.
+            if !RowMorphScroll.useProxyFallback {
+                morphScrollPass(index: index, itemId: itemId, widthBefore: widthBefore, pass: 1, proxy: proxy)
+            }
+            try? await Task.sleep(nanoseconds: UInt64((InlineTrailerCardModel.morphDuration + 0.05) * 1_000_000_000))
             // H3: the row may have disappeared (or a newer expansion may have superseded this
-            // task) during the sleep — bail instead of scrolling a proxy that could be gone.
+            // task) during the sleep — bail instead of scrolling a row that could be gone.
             guard !Task.isCancelled else {
                 if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged cancelled skip item=\(itemId)") }
                 return
             }
-            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
+            morphScrollPass(index: index, itemId: itemId, widthBefore: widthBefore, pass: 2, proxy: proxy)
         }
     }
 
-    private func scrollToExpanded(_ itemId: String, anchor: UnitPoint?, proxy: ScrollViewProxy) {
-        if reduceMotion {
-            proxy.scrollTo(itemId, anchor: anchor)
+    /// One morph-scroll pass (M3): nothing when the tile fits, else a horizontal scroll to the
+    /// target. The sample lives in `hScroll` in raw scroll coordinates; `RowMorphScroll` works in
+    /// padded-content space (x = 0 at the scroll view's leading edge at rest), so the inset is added
+    /// going in and taken off coming out (critique #24; the rows carry no horizontal inset today).
+    ///
+    /// beta.19-rc1 verdict (review r1):
+    /// - A-4: a pass for a card that is no longer wide (`hScroll.wideItemId`) does nothing — the
+    ///   tile width it would scroll for is gone.
+    /// - B P2-2: the tile must end `RowEdgeFade.trailingTileInset` inside the row's trailing edge
+    ///   (110 pt under the Soft fade, 0 in System/Off, the default), so the Soft ramp never dims a playing
+    ///   trailer's right side. When the row cannot scroll that far (the plan's `endsInsideInset`:
+    ///   clamped at the row's end), the row holds its trailing fade off while the tile is wide.
+    private func morphScrollPass(index: Int, itemId: String, widthBefore: CGFloat?, pass: Int,
+                                 proxy: ScrollViewProxy) {
+        guard hScroll.wideItemId == itemId else {
+            if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged pass=\(pass) notwide skip item=\(itemId)") }
+            return
+        }
+        guard let sample = hScroll.sample else {
+            if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged pass=\(pass) nosample item=\(itemId)") }
+            return
+        }
+        let grown = widthBefore.map { sample.contentWidth > $0 + 1 } ?? false
+        // The ScrollView's frame width is the mask's width (a mask is proposed the masked view's
+        // size), and this row passes `rowEdgeEffectStyle()` no overrides, so these are the exact
+        // margins and ramp the fade is drawn with.
+        let trailingInset = RowEdgeFade.trailingTileInset(setting: RowEdgeFadeSetting.resolve(rowEdgeFade),
+                                                          rowWidth: sample.viewportWidth,
+                                                          margins: rowEdgeMargins,
+                                                          rampLength: rowEdgeRampLength)
+        let plan = RowMorphScroll.plan(index: index,
+                                       // BUG-162 / D16: the card's own rest → `.wide` widths
+                                       // (`PosterStyle.artworkSize`): portrait 234 → 624, shape
+                                       // landscape 416 → 624 at Medium+, the global toggle's card
+                                       // 360 → 360 (it never grows, so nothing to scroll for).
+                                       restingWidth: posterStyle.cardWidth,
+                                       // Steven rc6 19:47Z: a shape-landscape card no longer grows.
+                                       expandedWidth: posterStyle.trailerCardWidth,
+                                       gap: Theme.Spacing.rowGap,
+                                       visibleMinX: sample.paddedVisibleMinX,
+                                       viewportWidth: sample.viewportWidth,
+                                       contentWidth: sample.paddedContentWidth,
+                                       insetLeading: sample.insetLeading,
+                                       contentAlreadyGrown: grown,
+                                       trailingInset: trailingInset)
+        let target = plan.offset
+        // The proxy fallback's item-anchored scroll can only bring the tile to the viewport edge,
+        // never `trailingInset` inside it, so under that path any tile that is not already clear
+        // stays in the ramp: hold the fade there too.
+        let hold = plan.endsInsideInset || (RowMorphScroll.useProxyFallback && target != nil)
+        if hold {
+            if trailingFadeHeldFor != itemId { trailingFadeHeldFor = itemId }
+        } else if trailingFadeHeldFor == itemId {
+            trailingFadeHeldFor = nil
+        }
+        if CatalogGridProbe.enabled {
+            let targetText = target.map { String(format: "%.1f", $0) } ?? "fits"
+            // Append-only: `tinset=` / `hold=` (review r1 B P2-2) go last.
+            CatalogGridProbe.log(String(format: "expansionChanged pass=%d item=%@ target=%@ minX=%.1f vw=%.1f cw=%.1f inset=%.1f grown=%d tinset=%.1f hold=%d",
+                                        pass, itemId, targetText, sample.paddedVisibleMinX, sample.viewportWidth,
+                                        sample.paddedContentWidth, sample.insetLeading, grown ? 1 : 0,
+                                        trailingInset, hold ? 1 : 0))
+        }
+        guard let target else { return }
+        if RowMorphScroll.useProxyFallback {
+            // Unchanged by review r1: the fallback still scrolls only on a real viewport overflow
+            // (its item-anchored scroll cannot honour the inset; the hold above covers the rest).
+            guard plan.overflowsViewport else { return }
+            // §1.6.4 fallback: the item-anchored scroll can reach the vertical rows, so tell the
+            // pinned settle corrector first (pinned Home only — `cardTopReach > 0` — so a Search
+            // row never touches Home's settle state).
+            if cardTopReach > 0 { PinnedRowSettle.noteExternalScroll(reason: "trailer-morph") }
+            if reduceMotion {
+                proxy.scrollTo(itemId, anchor: nil)
+            } else {
+                withAnimation(InlineTrailerCardModel.morphAnimation) { proxy.scrollTo(itemId, anchor: nil) }
+            }
         } else {
-            withAnimation(InlineTrailerCardModel.morphAnimation) {
-                proxy.scrollTo(itemId, anchor: anchor)
+            let offset = target - sample.insetLeading
+            if reduceMotion {
+                rowPosition.scrollTo(x: offset)
+            } else {
+                withAnimation(InlineTrailerCardModel.morphAnimation) { rowPosition.scrollTo(x: offset) }
             }
         }
+    }
+
+    /// Home Stage & Strip (P1 §3.3, remounted rows): the strip mounts this row only inside its window
+    /// (`StripMountWindow`), and a remount loses the horizontal offset, leaving the remembered card
+    /// unrealized for `.defaultFocus`. On a (re)mount with a remembered card that is not the first, it is
+    /// scrolled back into view on the next runloop with no animation (the minimal scroll; nothing
+    /// moves when it is already visible). Inert outside the strip.
+    ///
+    /// Through this row's own horizontal `rowPosition` (`StripRowRestore.offset`, the M3 morph-scroll
+    /// path), not the spec's `proxy.scrollTo(id)`: an item-anchored proxy scroll can spill into the
+    /// enclosing vertical scroll view (the M3 note on `RowMorphScroll`), and a remount happens while
+    /// the row is entering the strip, i.e. not vertically visible, so a spill would move the strip
+    /// off its page. Under `-debug.trailerMorphScrollProxy` (no `rowPosition` attached) the restore
+    /// falls back to the proxy. The geometry sample may not have landed on the first runloop after
+    /// a mount, so one retry follows 0.15 s later.
+    private func restoreStripMemory(proxy: ScrollViewProxy) {
+        guard let memory = stripFocusMemory, memory.drivesDefaultFocus,
+              let id = memory.itemId(for: section.key),
+              id != section.items.first?.id,
+              let index = section.items.firstIndex(where: { $0.id == id }) else { return }
+        DispatchQueue.main.async { applyStripMemoryScroll(id: id, index: index, attempt: 0, proxy: proxy) }
+    }
+
+    private func applyStripMemoryScroll(id: String, index: Int, attempt: Int, proxy: ScrollViewProxy) {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        if RowMorphScroll.useProxyFallback {
+            withTransaction(tx) { proxy.scrollTo(id) }
+            return
+        }
+        guard let sample = hScroll.sample else {
+            if attempt == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    applyStripMemoryScroll(id: id, index: index, attempt: 1, proxy: proxy)
+                }
+            }
+            return
+        }
+        let cardWidth = posterStyle.cardWidth  // BUG-162: the row's real card width
+        guard let x = StripRowRestore.offset(index: index, cardWidth: cardWidth,
+                                             gap: Theme.Spacing.rowGap, sample: sample) else { return }
+        withTransaction(tx) { rowPosition.scrollTo(x: x) }
     }
 
     /// Play/pause handler for `item`'s focusable button, or `nil` when this card isn't the focused,
     /// currently-playing one — `.onPlayPauseCommand(perform: nil)` leaves the command to whoever
     /// else is listening instead of consuming it.
+    ///
+    /// beta.19-rc1 verdict (M3): "playing" is the row's own `rowPlayingKey` (see its doc), which the
+    /// card model AND the hero model both feed, so this works unchanged for inline playback and for
+    /// Trailer Location: Hero (cards `enabled: false`).
     private func muteToggle(for item: MetaPreview) -> (() -> Void)? {
-        guard focusedItemId == item.id,
-              trailerCoordinator.playingKey == TrailerResolutionCache.key(type: item.type, id: item.id)
-        else { return nil }
-        return { HeroTrailerAudioState.shared.toggleMuted() }
+        guard focusedItemId == item.id else { return nil }
+        let key = TrailerResolutionCache.key(type: item.type, id: item.id)
+        guard rowPlayingKey == key else { return nil }
+        return {
+            HeroTrailerAudioState.shared.toggleMuted()
+            #if DEBUG
+            // Same read `TrailerHeroPlayerView` seeds the player with.
+            let muted = (HeroTrailerAudioState.shared.muted.value_ as? KotlinBoolean)?.boolValue ?? true
+            InlineTrailerDebugLog.shared.note("event=mute muted=\(muted ? 1 : 0) key=\(key)")
+            #endif
+        }
+    }
+
+    /// M3: `key` when this row holds an item with that key, else nil. Pure (unit-tested).
+    nonisolated static func rowPlayingKey(_ key: String?, itemKeys: some Sequence<String>) -> String? {
+        guard let key else { return nil }
+        return itemKeys.contains(key) ? key : nil
+    }
+
+    /// Home Stage & Strip (P1 §5): the strip's heading as ONE `Text`, the title in primary text and
+    /// " · <add-on>" in secondary, so a single `lineLimit(1)` truncates the add-on first. An
+    /// `AttributedString` rather than `Text + Text` (deprecated on tvOS 26) or `Text` interpolation
+    /// (that would turn the heading into a localization key): both halves are data.
+    private static func headingWithAddon(title: String, addon: String) -> AttributedString {
+        var heading = AttributedString(title)
+        heading[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = Theme.Palette.textPrimary
+        let suffixText: String = " \u{00B7} " + addon
+        var suffix = AttributedString(suffixText)
+        suffix[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = Theme.Palette.textSecondary
+        heading.append(suffix)
+        return heading
     }
 }
 
@@ -3715,12 +5908,11 @@ struct CatalogRowView: View {
 struct SeeAllCard: View {
     @Environment(\.posterStyle) private var style
 
-    private var tileWidth: CGFloat {
-        style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
-    }
-    private var tileHeight: CGFloat {
-        style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
-    }
+    // BUG-162 / D16: the row's RESTING card size, including a shape-landscape row's folder-tile
+    // size (`width × 16/9` × `width`). The row's stack is top-aligned, so this shorter tile's art
+    // top lines up with its neighbours' inside their poster-height slot.
+    private var tileWidth: CGFloat { style.cardWidth }
+    private var tileHeight: CGFloat { style.cardHeight }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -3755,8 +5947,20 @@ struct SeeAllCard: View {
 /// (cached artwork, shimmer, brand focus ring, focus-aware title).
 struct PosterCardView: View {
     let item: MetaPreview
+    /// See `PosterCard.footnote`.
+    var footnote: String? = nil
+    /// FEAT-64: see `PosterCard.watchBadge` (catalog rows pass it through `InlineTrailerCard`).
+    var watchBadge: PosterWatchBadge? = nil
 
     var body: some View {
-        PosterCard(title: item.name, imageURL: item.poster)
+        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl,
+                   watchBadge: watchBadge, footnote: footnote)
     }
+}
+
+/// `CatalogRowView.posterStyle`'s memo (perf review 2026-10-17, #4).
+final class CatalogRowResolvedStyleBox {
+    var section: HomeCatalogSection?
+    var inherited: PosterStyle?
+    var value: PosterStyle?
 }

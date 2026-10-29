@@ -59,6 +59,40 @@ final class HeroPresentArtWaitTests: XCTestCase {
         XCTAssertTrue(wait.logo === cachedLogo)
     }
 
+    /// 2026-09-08 finding: the deadline hand-off race. `deadlineElapsed()` finishes the wait first,
+    /// and only THEN does the stalled fetch resolve — the ordinary shape of the miss this class
+    /// exists to survive. `resolveBackdrop` still drops the image from THIS wait's own `backdrop`
+    /// (the assertion above already pins that), but it must no longer be lost outright: `present`'s
+    /// resolve task reads it back one turn later via `lateBackdrop` to adopt it onto the live hero.
+    @MainActor
+    func testDeadlineThenLateBackdropIsRetainedForAdoption() {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false)
+        wait.deadlineElapsed()
+        XCTAssertTrue(wait.hitDeadline)
+        XCTAssertNil(wait.backdrop, "the deadline already committed with nothing to show")
+
+        let image = makeImage()
+        wait.resolveBackdrop(image)
+        XCTAssertNil(wait.backdrop, "still dropped from THIS wait's own commit — existing contract")
+        XCTAssertTrue(wait.lateBackdrop === image, "but retained for the resolve task to adopt")
+    }
+
+    /// The other half of the same guard: a wait that ended via `cancelWait()` (a superseded
+    /// `present`, not a timeout) must not retain anything. There is no resolve task left that would
+    /// ever read `lateBackdrop` back, and retaining an image here would be silently pointless at
+    /// best and a stale reference at worst.
+    @MainActor
+    func testCancelledWaitNeverRetainsALateBackdrop() {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: true)
+        wait.cancelWait()
+        XCTAssertFalse(wait.hitDeadline, "cancellation is not a timeout")
+
+        wait.resolveBackdrop(makeImage())
+        XCTAssertNil(wait.lateBackdrop, "a superseded resolve has nothing waiting to adopt it")
+    }
+
     @MainActor
     func testBothFetchesLandingResumeBeforeTheDeadlineIsEverConsulted() async {
         let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
@@ -116,6 +150,46 @@ final class HeroPresentArtWaitTests: XCTestCase {
         // stop accepting arrivals so nothing can revive it.
         wait.resolveLogo(makeImage())
         XCTAssertNil(wait.logo)
+    }
+
+    // MARK: - FEAT-42: a late logo is dropped exactly like a late backdrop's OWN wait is dropped
+    //
+    // (the `adoptLateBackdrop` retention on the resolver side is a backdrop-only concern, argued
+    // in that method's own doc comment; a logo gets no such retention on either side — see
+    // `HeroLogoPlanTests` and the FEAT-42 task doc for why a late-arriving logo for an
+    // already-presented item stays dropped, the same BUG-90 rule this class has always enforced
+    // for the backdrop's raw miss.)
+
+    @MainActor
+    func testLogoThatLandsAfterTheDeadlineIsDropped() async {
+        let cachedBackdrop = makeImage()
+        // The shape of a `.pending` FEAT-42 resolve gone cold: backdrop already resident, logo
+        // still waiting on `TitleLogoStore` when the budget expires.
+        let wait = HeroPresentArtWait(backdrop: cachedBackdrop, logo: nil,
+                                      needsBackdrop: false, needsLogo: true)
+
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            wait.deadlineElapsed()
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+        deadline.cancel()
+
+        XCTAssertTrue(wait.hitDeadline, "the budget, not the lookup/fetch, ended this wait")
+        XCTAssertNil(wait.logo, "nothing landed in time, so the commit paints the text wordmark")
+        XCTAssertTrue(wait.backdrop === cachedBackdrop, "the already-resident backdrop is untouched")
+
+        // The `TitleLogoStore.awaitLogoURL` → `ArtworkStore.fetch` chain is never cancelled by the
+        // deadline (same contract as the backdrop's own stalled fetch), so it still reports here.
+        // By then the item has been presented with the text wordmark; swapping a logo in behind
+        // the reader's eyes is exactly the Text→Image repaint BUG-90 removed.
+        let lateLogo = makeImage()
+        wait.resolveLogo(lateLogo)
+        XCTAssertNil(wait.logo, "a logo that lands after the deadline is dropped, not adopted")
+        XCTAssertTrue(wait.backdrop === cachedBackdrop)
     }
 
     // MARK: - Poster fallback (Codex branch review)
@@ -262,5 +336,103 @@ final class HeroPresentArtWaitTests: XCTestCase {
         wait.resolvePosterFallback(makeImage())
         XCTAssertNil(wait.backdrop)
         XCTAssertFalse(wait.usedPosterFallback)
+    }
+
+    // MARK: - resolveDeadline (rc12, Codex Finding A)
+    //
+    // The budget belongs to the TARGET, not to a resolve. `present` is driven from two `.onChange`s
+    // and a same-identity payload update (a synopsis landing from TMDB) cancels the resolve in
+    // flight and starts another; the same-identity short-circuit further up only protects a title
+    // that is already PRESENTED, so before this each such update handed the new resolve a whole
+    // fresh `laterSwapDeadline`. Codex measured an update at 300 ms holding the PREVIOUS title on
+    // screen to 496 ms, where the pre-rc12 warm-backdrop case committed at once. `resolveDeadline`
+    // is the pure remainder: nonisolated and store-free, so the rule can be pinned with no view,
+    // no network and no clock of its own.
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAFirstPresentForATargetGetsTheWholeBudget() {
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: nil, now: Date(),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, HeroArtResolver.laterSwapDeadline,
+                       "a genuinely new target has no clock to inherit — it must get the full 400 ms")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testASameTargetUpdateInheritsTheRemainderOfTheOriginalBudget() {
+        let start = Date()
+        // The measured case: a metadata update 300 ms into a 400 ms budget.
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.3),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        // 100 ms left, ±1 ms for the Double round trip through TimeInterval.
+        XCTAssertEqual(Double(deadline), 100_000_000, accuracy: 1_000_000,
+                       "the restarted resolve must finish the ORIGINAL window, not open a second one")
+        XCTAssertLessThan(deadline, HeroArtResolver.laterSwapDeadline,
+                          "two stacked budgets is exactly the 496 ms hold this rule removes")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAnUpdateAfterTheBudgetIsSpentCommitsImmediately() {
+        let start = Date()
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.6),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, 0,
+                       "past the absolute deadline the wait must fire on the next turn and commit whatever is ready")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testTheFolderBudgetIsInheritedTheSameWay() {
+        let start = Date()
+        let budget: UInt64 = 1_500_000_000
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(0.5),
+                                                      budget: budget)
+        XCTAssertEqual(Double(deadline), 1_000_000_000, accuracy: 1_000_000,
+                       "a collection folder's longer budget is absolute in the same way — the rule is the caller's constant, not a second constant of its own")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testAClockThatMovedBackwardsFallsBackToTheWholeBudget() {
+        let start = Date()
+        let deadline = HeroArtResolver.resolveDeadline(previousStart: start,
+                                                      now: start.addingTimeInterval(-5),
+                                                      budget: HeroArtResolver.laterSwapDeadline)
+        XCTAssertEqual(deadline, HeroArtResolver.laterSwapDeadline,
+                       "a negative elapsed must never become a longer-than-budget wait (or an overflowing UInt64)")
+    }
+
+    // `laterSwapDeadline` is a static on a `@MainActor` type, so the case reads it from the
+    // main actor the way every other case in this file runs; `resolveDeadline` itself is
+    // `nonisolated static` and pure.
+    @MainActor
+    func testTheInheritedDeadlineIsMonotonicInElapsedTime() {
+        let start = Date()
+        var previous = HeroArtResolver.laterSwapDeadline + 1
+        for ms in [0, 50, 100, 200, 399, 400, 401, 10_000] {
+            let deadline = HeroArtResolver.resolveDeadline(
+                previousStart: start, now: start.addingTimeInterval(Double(ms) / 1000),
+                budget: HeroArtResolver.laterSwapDeadline
+            )
+            XCTAssertLessThanOrEqual(deadline, previous, "the remainder must never grow as time passes (at \(ms) ms)")
+            XCTAssertLessThanOrEqual(deadline, HeroArtResolver.laterSwapDeadline, "and never exceed the budget (at \(ms) ms)")
+            previous = deadline
+        }
+        XCTAssertEqual(previous, 0, "well past the window the remainder is spent")
     }
 }

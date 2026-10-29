@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SharedCore
 
@@ -23,6 +24,16 @@ enum PlayerTuning {
     /// them to 8.1 (the conversion discards FEL enhancement data; MEL converts losslessly and is
     /// unaffected by this preference).
     static let dvP7FelMpvKey = "player.dvP7FelPreferMpv"
+    /// What holding Left/Right does in the mpv player: "step" (default) or "scan". Device-local.
+    static let holdModeKey = "player.holdMode"
+    /// What one click on Left/Right does in the mpv player: "skip10" (default) or "chapter". Device-local.
+    static let edgeClickModeKey = "player.edgeClickMode"
+    /// Show the time of day while the mpv player controls are up. Device-local, off by default.
+    static let showClockKey = "player.showClock"
+    /// mpv only: extra loudness in dB (0, 2, 4, 6, 8, 10). Device-local, default 0.
+    static let boostDbKey = "player.boostDb"
+    /// mpv only: "off" (default) or "dialogue". Device-local.
+    static let audioModeKey = "player.audioMode"
 }
 
 /// Everything the player needs to render a stream and record watch progress for it.
@@ -52,24 +63,61 @@ struct PlaybackContext: Identifiable {
     /// which stays the catalog/series poster (the progress recorder persists `poster` as the
     /// parent artwork — a still must never leak into it). nil → the header shows `poster`.
     var episodeStill: String? = nil
+    /// BUG-184 (Steven, 2026-10-19: "the title logo pulsing on the loading screen is always in
+    /// English"): the title logo the opening screen shows (Detail's, TMDB-localized when TMDB is
+    /// on), for the loading overlay. nil falls back to metahub's English logo.
+    var logo: String? = nil
     /// Catalog metadata for the player's Info tab chip row (year · runtime · rating · genres). nil
     /// when the launch path has no meta at hand — the chips simply omit them.
     var meta: PlaybackMeta? = nil
     /// Declared file size of the playing stream (addon `behaviorHints.videoSize`), for the Info chips.
     var fileSizeBytes: Int64? = nil
+    /// `behaviorHints.audioDelayMs` of the playing stream (P5 N1), already clamped to ±60 s. mpv only.
+    var streamAudioDelayMs: Int? = nil
     /// Sanitized HTTP request headers the addon declared for this stream
     /// (`behaviorHints.proxyHeaders.request` via shared `sanitizePlaybackHeaders` — Referer /
     /// User-Agent a scraper CDN requires; GitHub issue #2 "Some video no stream"). Empty for the
     /// overwhelming majority of streams. Consumed by BOTH engines: mpv (`http-header-fields`)
     /// and the native path's FFmpeg source opens (MediaProbe + RemuxSession `headers` option).
     var requestHeaders: [String: String] = [:]
-    /// Live channels must never resume, scrobble, or enter movie/episode watch history.
+    /// Fork (Live TV): a live channel. Both engines skip watch progress, resume, scrobbling and
+    /// Up Next for it.
     var isLive: Bool = false
-    /// Title artwork and an explicit handoff position travel with the stream across engines.
-    var logo: String? = nil
-    var resumePosition: Double? = nil
-    /// Synthetic playback fixtures exercise controls without recording account activity.
+    /// Fork: false for sessions that must never touch watch history (UI-test fixtures).
     var recordsWatchProgress = true
+    /// Fork: whether this session may read or write watch progress and scrobble.
+    var tracksProgress: Bool { !isLive && recordsWatchProgress }
+    /// Who started this playback (orivio batch item 2): a viewer's own pick, the picker's
+    /// first-play auto-start, or the Up Next engine. Decides what a playback failure does next
+    /// (`PlaybackFailoverPolicy.response(for:)`), and the engines treat a placeholder clip as a
+    /// failure only outside `.manual`.
+    var launchSource: PlaybackLaunchSource = .manual
+    /// `StreamItem.playbackStreamKey` of the stream as LISTED (before any debrid resolve), so a
+    /// failure can be remembered against the link the pickers will see again. Empty for the test
+    /// stream and launch paths without a stream (Library, smoke tests): those are never remembered.
+    var streamKey: String = ""
+    /// "Start Over": both engines ignore saved progress for this playback.
+    var startFromBeginning: Bool = false
+    /// Failover attempt index for this visit (0 = first try). Joins `id` only when > 0, so two
+    /// candidates that resolve to the same URL still rebuild the player (and re-key the cover).
+    var attempt: Int = 0
+    /// The stream as listed (pre-resolve), so a failed debrid link's 15-minute resolve cache entry
+    /// can be dropped (`DirectDebridPlaybackResolver.invalidate` is keyed on the listed stream).
+    /// nil on launch paths without a stream.
+    var listedStream: StreamItem? = nil
+    /// Failure-alert retry ("Try with mpv" / "Try Native Player"): pins the engine for this attempt.
+    var forcedEngine: PlaybackEngine? = nil
+    /// Failure-alert retry: both engines resume from here instead of the saved progress (> 10 s).
+    var resumeAtSec: Double? = nil
+    /// Batch D U2: `url` was resolved on this device from an add-on `ytId`-only stream and expires
+    /// within hours, so it is session-only — neither engine writes it to the watch-progress
+    /// entry's `lastSourceUrl` (the field mobile's "reuse last link" reads back), see
+    /// `persistedSourceUrl`. The stream's identity for the failover memory is its `yt:` key.
+    var sessionOnlySourceUrl: Bool = false
+
+    /// What the progress writers store as `lastSourceUrl`: the playing URL, or nil for a
+    /// session-only link (`sessionOnlySourceUrl`).
+    var persistedSourceUrl: String? { sessionOnlySourceUrl ? nil : url.absoluteString }
 
     // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
     // share a URL but require different headers; StreamPickerView rebuilds the player and
@@ -85,14 +133,247 @@ struct PlaybackContext: Identifiable {
                 .sorted { $0.key < $1.key }
                 .map { "\($0.key)\u{1F}\($0.value)" }
                 .joined(separator: "\u{1E}")
-        return "\(videoId)|\(url.absoluteString)\(headerFingerprint)"
+        let attemptSuffix = attempt > 0 ? "|a\(attempt)" : ""
+        return "\(videoId)|\(url.absoluteString)\(headerFingerprint)\(attemptSuffix)"
+    }
+}
+
+/// Who started a playback (see `PlaybackContext.launchSource`).
+enum PlaybackLaunchSource: Equatable {
+    /// The viewer picked the stream (a picker row, "Try Next Source", the in-player source list).
+    case manual
+    /// The stream picker's first-play auto-start (`FirstPlayAutoPlayController`).
+    case autoPlay
+    /// The Up Next engine's next episode (`NextEpisodeEngine.makeNextContext`).
+    case nextEpisode
+}
+
+/// A playback that failed, as reported by either engine through `PlayerScreen.onPlaybackFailed`:
+/// the media never started, mpv hit a load error, a placeholder clip played in an automatic flow,
+/// or the stream ended well before its duration.
+struct PlaybackFailure: Equatable {
+    /// Engine-side diagnostic, shown verbatim in the manual-pick alert.
+    let reason: String
+    let positionSec: Double
+    /// Seconds actually played (native seconds before a fallback included).
+    let secondsPlayed: Double
+    let startedPlaying: Bool
+    /// Which engine reported it (set by `PlayerScreen`).
+    var engine: PlaybackEngine = .mpv
+    /// The other engine could take this stream: the failure alert offers it as a retry.
+    var otherEngineEligible = false
+    /// What kind of failure the producer saw (P4, BUG-143). Only kinds whose `remembersLink` is
+    /// true may put the link into the rejected-link memory; producers set it.
+    var kind: PlaybackFailureKind = .unknown
+    /// The HTTP status behind a `.http` failure, when known. Log / diagnostic only.
+    var httpStatus: Int? = nil
+}
+
+/// Classified cause of a playback failure (P4, BUG-143). The first group is positive evidence
+/// against the link and is remembered; the second is about the viewer's network or our own
+/// engine and is never remembered.
+enum PlaybackFailureKind: String, Equatable, Sendable {
+    // Remembered.
+    case http, decode, placeholder, endedEarly, noMedia, unknown
+    // Not remembered. `.local` = our own engine failed (the B17 item rebuild).
+    case network, offline, cancelled, local
+
+    var remembersLink: Bool {
+        switch self {
+        case .network, .offline, .cancelled, .local: false
+        default: true
+        }
+    }
+}
+
+/// Startup stage shown by the loading overlay (P4, B24). Declared here so the native coordinator
+/// can publish it; `Screens/Player/PlayerLoadingOverlay.swift` adds the views and status text.
+enum PlayerLoadingStage: Equatable {
+    /// `PlayerScreen` `.deciding` (MediaProbe).
+    case checking
+    /// Native: remux opening. mpv: loadfile → FILE_LOADED.
+    case connecting
+    /// Native: signaling known, waiting for map / init / first segment.
+    case preparing(dolbyVision: Bool)
+    /// Native: holding for the add-on subtitle fetch.
+    case subtitles
+    /// Native: item not playing yet. mpv: FILE_LOADED → first PLAYBACK_RESTART.
+    case buffering(percent: Int?)
+    /// The overlay fades out.
+    case started
+
+    /// Short token for logs and the DEBUG history label (`buffering(42)`, `preparing(dv)`).
+    var logToken: String {
+        switch self {
+        case .checking: "checking"
+        case .connecting: "connecting"
+        case .preparing(let dv): dv ? "preparing(dv)" : "preparing"
+        case .subtitles: "subtitles"
+        case .buffering(let p): p.map { "buffering(\($0))" } ?? "buffering"
+        case .started: "started"
+        }
+    }
+}
+
+/// The pure decisions behind next-link failover (orivio batch item 2). The picker and the Up Next
+/// engine act on these; `PlaybackFailoverPolicyTests` pins them.
+enum PlaybackFailoverPolicy {
+    /// A link that played this long is healthy: its failure is not remembered, and reaching it
+    /// clears an earlier rejection (`RejectedStreamLinks.keep`).
+    static let healthySeconds: Double = 300
+    /// Candidates an automatic flow may try per picker visit (first start + failovers).
+    static let maxAutoAttempts = 4
+
+    /// What the picker does when a playback it presented fails.
+    enum Response: Equatable {
+        /// Swap the next auto-play candidate into the open player.
+        case autoFailover
+        /// Close the player and open a stream picker for the episode that failed.
+        case nextEpisodePicker
+        /// Close the player and offer "Try Next Source" / "Back to Sources".
+        case manualAlert
+    }
+
+    static func response(for source: PlaybackLaunchSource) -> Response {
+        switch source {
+        case .autoPlay: return .autoFailover
+        case .nextEpisode: return .nextEpisodePicker
+        case .manual: return .manualAlert
+        }
+    }
+
+    /// Remember the failed link only when it never got going: a source that played for five
+    /// minutes and then died is not a bad link. P4 (BUG-143): and only on positive evidence
+    /// against the link: a network, offline, cancelled or local-engine failure is not remembered
+    /// (the failover walk still moves on).
+    static func shouldReject(_ failure: PlaybackFailure) -> Bool {
+        failure.secondsPlayed < healthySeconds && failure.kind.remembersLink
+    }
+
+    static func shouldKeep(secondsPlayed: Double) -> Bool {
+        secondsPlayed >= healthySeconds
+    }
+
+    /// A short placeholder clip (debrid "caching" stubs, error videos) counts as a failure only in
+    /// an automatic flow; a viewer who picked that link gets what they picked.
+    static func treatsPlaceholderClipAsFailure(_ source: PlaybackLaunchSource) -> Bool {
+        source != .manual
+    }
+
+    /// One listed stream, reduced to what the manual "Try Next Source" choice needs.
+    struct Entry: Equatable {
+        let key: String
+        let addonId: String
+    }
+
+    /// Index in `entries` (the list in display order) of the stream "Try Next Source" plays after
+    /// `failedKey`: only streams AFTER the failed one, the same add-on's first, then the rest in
+    /// list order; rejected keys and the failed key itself are skipped. A failed key that is no
+    /// longer in the list (it reloaded) considers the whole list. nil = nothing left to try.
+    static func nextManualIndex(entries: [Entry], failedKey: String, failedAddonId: String?,
+                                rejected: Set<String>) -> Int? {
+        let start = entries.firstIndex { $0.key == failedKey }.map { $0 + 1 } ?? 0
+        guard start < entries.count else { return nil }
+        let eligible = (start..<entries.count).filter { index in
+            let key = entries[index].key
+            return !key.isEmpty && key != failedKey && !rejected.contains(key)
+        }
+        if let failedAddonId, let sameAddon = eligible.first(where: { entries[$0].addonId == failedAddonId }) {
+            return sameAddon
+        }
+        return eligible.first
+    }
+
+    /// `nextManualIndex` over the listed streams themselves. Batch D review r1: a ytId-only stream
+    /// (`StreamPickerView.isYouTubeResolved`) is never the next source — "Try Next Source" is meant
+    /// to play at once, and a YouTube resolve takes seconds and may fail — so its key joins the
+    /// rejected set. The list stays whole, so the failed stream's own index is still found even
+    /// when ytId streams sit before it.
+    static func nextManualIndex(streams: [StreamItem], failedKey: String, failedAddonId: String?,
+                                rejected: Set<String>) -> Int? {
+        let entries = streams.map { Entry(key: $0.playbackStreamKey, addonId: $0.addonId) }
+        let youTubeKeys = Set(streams.filter { StreamPickerView.isYouTubeResolved($0) }.map(\.playbackStreamKey))
+        return nextManualIndex(entries: entries, failedKey: failedKey, failedAddonId: failedAddonId,
+                               rejected: rejected.union(youTubeKeys))
+    }
+}
+
+/// The key a stream link is remembered under (`RejectedStreamLinks`, `PlaybackContext.streamKey`).
+/// Shared by the stream picker, its auto-play controller and the Up Next engine so all three agree.
+///
+/// Keys are persisted (`RejectedStreamLinks`) and printed in `[AutoPlay]` / `[Failover]` lines, so
+/// no link text goes into one in the clear: Torrentio-style debrid links carry the debrid API key
+/// in the URL path (`/resolve/<service>/<API key>/…`), and an add-on's `addonId` is
+/// `addon:<manifest id>:<manifest URL>`, where a configured manifest URL can hold the same key.
+enum PlaybackStreamKey {
+    /// `infoHash#fileIdx` for torrent / debrid candidates (the same torrent from two add-ons is the
+    /// same file; an info hash is public). Otherwise `<add-on tag>|<link digest>`: the add-on tag
+    /// is the hex of the first 4 bytes of SHA-256 of `addonId`, the link digest the hex of the
+    /// first 16 bytes of SHA-256 of the stream URL's host+path. The query and fragment never join
+    /// the digest (they usually carry a per-session token, so a refreshed token keeps the key). A
+    /// stream with no URL but a YouTube video id (batch D U2, an add-on `ytId`-only stream) keys on
+    /// `yt:<video id>` — the video id is public and stable, whereas the URL the on-device extractor
+    /// resolves it to expires within hours and must never become the identity; one with none of
+    /// those digests its label instead; one with nothing has no key (""). Built from the stream as
+    /// listed: a debrid resolve's (or a YouTube resolve's) per-session link must not be the identity.
+    static func make(infoHash: String?, fileIdx: Int?, addonId: String, url: String?, label: String,
+                     youTubeId: String? = nil) -> String {
+        if let hash = infoHash?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hash.isEmpty {
+            return "\(hash)#\(fileIdx.map(String.init) ?? "")"
+        }
+        if let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let link: String
+            if let components = URLComponents(string: raw), let host = components.host, !host.isEmpty {
+                link = host.lowercased() + components.path
+            } else {
+                let bare = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+                    .map(String.init) ?? raw
+                link = bare.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first
+                    .map(String.init) ?? bare
+            }
+            return "\(digestHex(addonId, bytes: 4))|\(digestHex(link, bytes: 16))"
+        }
+        if let videoId = youTubeId?.trimmingCharacters(in: .whitespacesAndNewlines), !videoId.isEmpty {
+            return "\(digestHex(addonId, bytes: 4))|yt:\(videoId)"
+        }
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty else { return "" }
+        // The prefix keeps a label's digest apart from a link's.
+        return "\(digestHex(addonId, bytes: 4))|\(digestHex("label\u{1F}" + trimmedLabel, bytes: 16))"
+    }
+
+    /// Lowercase hex of the first `bytes` bytes of SHA-256 of `text` (UTF-8). The same on every
+    /// launch and device, which the persisted keys rely on.
+    static func digestHex(_ text: String, bytes: Int) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(bytes).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension StreamItem {
+    /// See `PlaybackStreamKey.make`. Uses the shared `p2pInfoHash` (top-level hash, the
+    /// `clientResolve` hash, a magnet or a `torrent://` URL, normalised) and the matching file index.
+    var playbackStreamKey: String {
+        let hash: String? = p2pInfoHash
+        let index: Int? = p2pFileIdx?.intValue ?? clientResolve?.fileIdx?.intValue
+        let rawUrl: String? = url
+        let rawExternal: String? = externalUrl
+        let rawName: String? = name
+        // Review r1: the id the stream would actually be PLAYED through (nil when a URL / hash /
+        // externalUrl exists), not the raw `ytId` an add-on may attach to an ordinary link.
+        let rawYouTubeId: String? = youTubeIdToResolve
+        return PlaybackStreamKey.make(
+            infoHash: hash,
+            fileIdx: index,
+            addonId: addonId,
+            url: rawUrl ?? rawExternal,
+            label: rawName ?? "",
+            youTubeId: rawYouTubeId
+        )
     }
 }
 
 /// Title-level catalog facts shown as chips in the player's Info tab.
 struct PlaybackMeta: Equatable {
-    var logo: String? = nil
-    var background: String? = nil
     var year: String? = nil
     var runtime: String? = nil
     var imdbRating: String? = nil
@@ -107,8 +388,6 @@ struct PlaybackMeta: Equatable {
     /// From a full catalog record (Detail / episode shelf launch paths).
     init(details: MetaDetails) {
         func nonEmpty(_ s: String?) -> String? { (s ?? "").isEmpty ? nil : s }
-        logo = nonEmpty(details.logo)
-        background = nonEmpty(details.background)
         year = nonEmpty(details.releaseInfo)
         runtime = nonEmpty(details.runtime)
         imdbRating = nonEmpty(details.imdbRating)
@@ -123,6 +402,29 @@ struct PlaybackMeta: Equatable {
          ageRating: String? = nil, genres: [String] = [], originalLanguage: String? = nil) {
         self.year = year; self.runtime = runtime; self.imdbRating = imdbRating
         self.ageRating = ageRating; self.genres = genres; self.originalLanguage = originalLanguage
+    }
+
+    /// Minutes in a catalog runtime string ("1h 30m", "90 min", "1:30", "90"); nil when it has
+    /// none. A Swift copy of the shared `parseRuntimeMinutes` (internal to SharedCore), used for
+    /// the external-player return's duration when no progress entry knows it yet.
+    static func runtimeMinutes(_ raw: String?) -> Int? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        func firstInt(_ pattern: String, group: Int = 1) -> Int? {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+                  let range = Range(match.range(at: group), in: value) else { return nil }
+            return Int(value[range])
+        }
+        if let hours = firstInt(#"^\s*(\d+)\s*:\s*(\d{1,2})\s*$"#),
+           let minutes = firstInt(#"^\s*(\d+)\s*:\s*(\d{1,2})\s*$"#, group: 2) {
+            return hours * 60 + minutes
+        }
+        let hoursToken = firstInt(#"(\d+)\s*h(?:ours?)?"#)
+        let minutesToken = firstInt(#"(\d+)\s*m(?:in(?:ute)?s?)?"#)
+        if hoursToken != nil || minutesToken != nil {
+            return max(hoursToken ?? 0, 0) * 60 + max(minutesToken ?? 0, 0)
+        }
+        return firstInt(#"^\s*(\d+)\s*$"#).map { max($0, 0) }
     }
 }
 

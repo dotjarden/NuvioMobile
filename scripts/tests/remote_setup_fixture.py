@@ -15,7 +15,7 @@ STATE = {'deviceName': 'Apple TV · Settings test', 'revision': '1',
          'rows': [{'key': 'movies', 'title': 'Popular Movies', 'enabled': True, 'isCollection': False},
                   {'key': 'shows', 'title': 'Popular Shows', 'enabled': True, 'isCollection': False},
                   {'key': 'collection', 'title': 'Weekend Favorites', 'enabled': False, 'isCollection': True}],
-         'badgePacks': [], 'tmdbKeySet': True, 'mdblistKeySet': False}
+         'badgePacks': [], 'mdblistKeySet': True, 'posterPatternSet': False}
 PENDING = None
 FINISHED = False
 
@@ -48,7 +48,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'rowOrder' in p:
                     STATE['rows'] = [dict(next(r for r in STATE['rows'] if r['key'] == k), enabled=k not in p.get('disabledRowKeys', [])) for k in p['rowOrder']]
                 STATE['badgePacks'] += p.get('badgeUrls', [])
-                for key in ('tmdbKey', 'mdblistKey'):
+                for key in ('mdblistKey', 'posterPattern'):
                     if key in p: STATE[key+'Set'] = True
                 STATE['revision'] = str(int(STATE['revision']) + 1)
                 FINISHED = True

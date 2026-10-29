@@ -1,6 +1,7 @@
 package com.nuvio.app.features.player.skip
 
 import com.nuvio.app.features.player.PlayerSettingsRepository
+import com.nuvio.app.features.tmdb.TmdbService
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
@@ -12,6 +13,29 @@ object SkipIntroRepository {
 
     private val introDbConfigured: Boolean
         get() = IntroDbConfig.URL.isNotBlank()
+
+    /**
+     * IntroDB movie segments (end credits + post-credits scene). Shares [cache] with the episode
+     * lookups (keys are `movie:<imdb>`), so the existing `clear()` also drops these. Upstream cbe4dc0a.
+     */
+    suspend fun getMovieSkipIntervals(
+        contentId: String?,
+        videoId: String?,
+        requireSkipIntroEnabled: Boolean = true,
+    ): List<SkipInterval> {
+        if (!introDbConfigured ||
+            (requireSkipIntroEnabled && !PlayerSettingsRepository.uiState.value.skipIntroEnabled)
+        ) return emptyList()
+        val imdbId = resolveMovieSkipImdbId(
+            contentId, videoId,
+            resolveTmdb = { TmdbService.tmdbToImdb(it, "movie") },
+            resolveAnime = { source, id -> SimklIdResolver.resolveIds(source, id)?.imdb },
+        ) ?: return emptyList()
+        val cacheKey = "movie:$imdbId"
+        cache[cacheKey]?.let { return it }
+        val data = SkipIntroApi.getIntroDbMovieSegments(imdbId) ?: return emptyList()
+        return data.movieSkipIntervals().also { cache[cacheKey] = it }
+    }
 
     suspend fun getSkipIntervals(
         imdbId: String?,
@@ -31,15 +55,30 @@ object SkipIntroRepository {
         }
         // Season-aware (Codex r2): an IMDb series spanning several anime seasons resolves to the
         // Simkl entry for THIS season, so AniSkip/Anime-Skip get the right MAL/AniList ids.
-        val simklIdsDeferred = async { SimklIdResolver.resolveIds("imdb", imdbId, season) }
+        // Upstream aa748fa8 adds a second pass on top of the fork's candidate scan: when the chosen
+        // anime entry maps to another TVDB season, follow the entry's `full_anime_seasons` siblings.
+        val simklIdsDeferred = async { SimklIdResolver.resolveIdsForImdbEpisode(imdbId, season, episode) }
         val simklIds = simklIdsDeferred.await()
         val malId = simklIds?.mal
         val anilistId = simklIds?.anilist
+
+        // Upstream aa748fa8: AniSkip/Anime-Skip number episodes per anime entry, not per TVDB
+        // season, so remap TVDB S/E → the entry's own episode (TVDB episode when unmapped).
+        // Fork: only fetch the episode map when an anime provider will actually be queried —
+        // upstream fetched it for every Simkl-resolved IMDB title, anime or not.
+        val animeEpisode = if (simklIds != null && (malId != null || anilistId != null)) {
+            SimklIdResolver.animeEpisodeFor(
+                SimklIdResolver.getEpisodeMapping(simklIds.simklId, simklIds.type),
+                season,
+                episode,
+            )
+        } else episode
+
         val aniSkipDeferred = async {
-            if (malId != null) fetchFromAniSkip(malId, episode) else emptyList()
+            if (malId != null) fetchFromAniSkip(malId, animeEpisode) else emptyList()
         }
         val animeSkipDeferred = async {
-            if (anilistId != null) fetchFromAnimeSkip(anilistId, episode, season = null) else emptyList()
+            if (anilistId != null) fetchFromAnimeSkip(anilistId, animeEpisode, season = null) else emptyList()
         }
 
         return@coroutineScope mergeByPriority(
@@ -360,5 +399,26 @@ object SkipIntroRepository {
         cache.clear()
         animeSkipShowIdCache.clear()
         SimklIdResolver.clearCache()
+    }
+}
+
+internal suspend fun resolveMovieSkipImdbId(
+    contentId: String?,
+    videoId: String?,
+    resolveTmdb: suspend (Int) -> String?,
+    resolveAnime: suspend (String, String) -> String?,
+): String? {
+    val ids = listOfNotNull(contentId, videoId).map(String::trim).distinct()
+    val imdbPattern = Regex("tt[0-9]+")
+    ids.map { it.substringBefore(':') }.firstOrNull { imdbPattern.matches(it) }?.let { return it }
+    return ids.firstNotNullOfOrNull { id ->
+        val parts = id.split(':')
+        val value = parts.getOrNull(1)?.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
+            ?: return@firstNotNullOfOrNull null
+        when (parts.first().lowercase()) {
+            "tmdb" -> value.toIntOrNull()?.takeIf { it > 0 }?.let { resolveTmdb(it) }
+            "mal", "kitsu" -> resolveAnime(parts.first().lowercase(), value)
+            else -> null
+        }?.trim()?.takeIf { imdbPattern.matches(it) }
     }
 }

@@ -3,6 +3,7 @@ import AVKit
 import Combine
 import Foundation
 import SharedCore
+import UIKit
 
 // Phase 3 of the hybrid player: ties Phase 2's remux + loopback server to an AVPlayer for one
 // PlaybackContext. Starts the remux, begins playback progressively as soon as the first segment is
@@ -31,6 +32,27 @@ nonisolated final class SelectedAudioBox: @unchecked Sendable {
     }
 }
 
+/// beta.19-rc1 verdict (P, BUG-139): the caption under the native player's preparing spinner.
+/// Pure so it unit-tests without a remux. Dolby Vision is the remux's own report: a Dolby Vision
+/// CODECS token (profile 5 is `dvh1.05.xx`, `dvhe` for the in-band variant) or a SUPPLEMENTAL-CODECS
+/// token (profile 8.x over an HDR10, SDR or HLG base). Anything else, and "not inspected yet", is
+/// plain playback.
+nonisolated enum NativePreparingLabel {
+    static func isDolbyVision(_ signaling: VideoSignaling?) -> Bool {
+        guard let signaling else { return false }
+        let codecs = signaling.codecs.lowercased()
+        if codecs.hasPrefix("dvh1") || codecs.hasPrefix("dvhe") { return true }
+        if let supplemental = signaling.supplementalCodecs, !supplemental.isEmpty { return true }
+        return false
+    }
+
+    static func text(for signaling: VideoSignaling?) -> String {
+        isDolbyVision(signaling)
+            ? String(localized: "Preparing Dolby Vision\u{2026}")
+            : String(localized: "Preparing playback\u{2026}")
+    }
+}
+
 @MainActor
 final class NativePlaybackCoordinator: ObservableObject {
     enum Phase: Equatable {
@@ -44,17 +66,69 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// `selected` flag follows the track the remux is producing (the system Audio tab drives
     /// switching — info-panel W3 — through the master's audio renditions).
     @Published private(set) var audioTracks: [NativeAudioTrack] = []
-    /// Caption under the preparing spinner.
-    @Published private(set) var preparingLabel = String(localized: "Preparing Dolby Vision\u{2026}")
+    /// Caption under the preparing spinner. beta.19-rc1 verdict (P, BUG-139): "Preparing
+    /// playback…" until the remux reports a Dolby Vision stream; it used to say "Preparing Dolby
+    /// Vision…" for every native-engine file, SDR and HDR10 included.
+    @Published private(set) var preparingLabel = NativePreparingLabel.text(for: nil)
+    /// Startup stage for the loading overlay (P4, B24): connecting → preparing → (subtitles) →
+    /// buffering → started. Moves forward only; a signaling retry or a later item never moves it
+    /// back. Each transition logs `[Loading] engine=native stage=… t=+…s`.
+    @Published private(set) var loadingStage: PlayerLoadingStage = .connecting
+    /// Uptime at `init`, the zero of the `[Loading]` log's `t=`.
+    private let loadingStartUptime = ProcessInfo.processInfo.systemUptime
+    /// Set once `play()` has been issued on a ready item: a later `.paused` status is then the
+    /// viewer's pause, which also ends startup (a ready, paused picture needs no overlay). [C-9]
+    private var playIssued = false
+    /// Classified cause of the failure behind `phase = .failed(...)` (P4, BUG-143). Nil until a
+    /// producer classifies one; the screen passes it on as `PlaybackFailure.kind`.
+    @Published private(set) var failureKind: PlaybackFailureKind?
+    /// The HTTP status behind a `.http` `failureKind`, when known (log / `PlaybackFailure.httpStatus`).
+    private(set) var failureHTTPStatus: Int?
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
     /// the next-episode engine.
     var onTick: ((Double, Double) -> Void)?
+    /// Fired every tick with (previous, current) position, before `onTick`: the system transport's
+    /// scrubs are invisible to us otherwise. The screen's `SkipSegmentPlanner.observeTick` decides
+    /// whether a jump was a user scrub (and marks it deliberate); returns true when it was one — the
+    /// stall budget resets on those. Unset: any jump > 10 s counts (the stall budget's old rule).
+    var onPositionTick: ((Double, Double) -> Bool)?
+    /// Fired with the target right BEFORE a resume seek is issued (either path below).
+    var onResumeSeekBegin: ((Double) -> Void)?
+    /// Fired with the actual position once AVPlayer confirms a resume seek finished.
+    var onResumeSeekCompleted: ((Double) -> Void)?
+    /// True once a resume seek has been issued (mpv's `didResumeSeek` equivalent).
+    private(set) var didResumeSeek = false
+
+    /// P5 B22: the current item played to its end (`AVPlayerItemDidPlayToEndTime`). The screen
+    /// shows the post-play cover while this is true and no Up Next hand-off is pending.
+    @Published private(set) var didPlayToEnd = false
+    private var endObserver: NSObjectProtocol?
 
     /// Last observed position/duration, used when falling back to mpv.
     private(set) var lastPositionSec: Double = 0
-    private var lastDurationSec: Double = 0
+    private var lastDurationSec: Double = 0 {
+        didSet { if durationSec != lastDurationSec { durationSec = lastDurationSec } }
+    }
+    /// The item's duration once known (0 before), updated on the playback tick. Published for the
+    /// screen (pause card remaining time, P4).
+    @Published private(set) var durationSec: Double = 0
+
+    /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
+    /// signaling retry or a later item never moves it).
+    private(set) var readyUptime: TimeInterval?
+    /// Accumulates play time only while `timeControlStatus == .playing`, sampled on the ~3 s
+    /// observation tick once the item is ready. Paused, buffering and stalled time does not count.
+    private var playClock = PlaybackHealthClock()
+    /// Seconds the stream actually played (0 before the item was ready) — the "how long did this
+    /// stream play" number the failover policy reads when the native path gives up, and the
+    /// 300 s healthy mark. Not a wall clock: a paused or stalled stretch is left out.
+    var secondsPlayed: Double { playClock.seconds }
+    /// Fired once per session, from the playback tick, when `secondsPlayed` first reaches 300 and the
+    /// player is playing — the stream has proven itself. Set by the screen (host: `PlayerScreen`).
+    var onPlaybackHealthy: ((Double) -> Void)?
+    private var healthyReported = false
 
     private let context: PlaybackContext
     private let recorder: PlaybackProgressRecorder
@@ -169,6 +243,62 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Embedded text tracks offered as renditions this session (Info tab row).
     private var embeddedSubtitleCount = 0
 
+    // MARK: - Item decoration (P4)
+
+    /// The app subtitle style snapshot (A9), read once in `resolveLanguagePlan`; a Settings change
+    /// applies from the next playback, like `stripSdh`.
+    private var subtitleStyleInput = NativeSubtitleStyle.Input.default
+    /// `externalMetadata` for every item (A8): the text items, plus the artwork once it lands.
+    private lazy var metadataTextItems = NativeNowPlayingMetadata.textItems(context: context)
+    private var artworkMetadata: AVMetadataItem?
+    private var artworkTask: Task<Void, Never>?
+    /// Container chapters on the served timeline (A6-native), trimmed at the duration; feeds the
+    /// panel's Chapters tab and the system bar's navigation markers.
+    @Published private(set) var chapters: [TransportChapter] = []
+    private var chapterGroups: [AVNavigationMarkersGroup] = []
+
+    // MARK: Late add-on subtitles (P4, B17)
+
+    /// Subtitle renditions/flags the server publishes right now (existing first, late appended).
+    private var currentSubtitleRenditions: [SubtitleRendition] = []
+    private var currentSubtitleFlags: [SubtitleRenditionFlags] = []
+    /// Add-on subtitle URLs already in the master (initial or late).
+    private var servedAddonURLs: Set<String> = []
+    private var lateDebounce: Task<Void, Never>?
+    private var lateRebuildsUsed = 0
+    /// True once the viewer changed the subtitle selection since the item became ready.
+    private var legibleTouched = false
+    /// Canonical name of the legible selection last seen (nil = Off); `.none` until the group loads.
+    private var legibleSnapshot: String??
+    /// The late rendition a lazy pick (or the auto decision) wants showing after the rebuild.
+    private var pendingLateSelection: String?
+    /// Uptime of the last user seek the tick saw (auto rebuilds wait 10 s after one).
+    private var lastUserSeekUptime: TimeInterval = 0
+    /// Late renditions not yet in the current item (the panel lists them; a pick rebuilds).
+    @Published private(set) var lateSubtitleRows: [SubtitleRendition] = []
+    @Published private(set) var isRebuildingItem = false
+    /// r1 P3: the last app-issued user seek (chapter pick, skip chip / auto-skip) while a B17
+    /// rebuild is in flight. The rebuild's corrective seek goes there instead of back to the
+    /// captured playhead, so the viewer's seek wins.
+    private var rebuildUserSeekSec: Double?
+    /// `none` / `published` / `rebuilt` (the DEBUG probe's `late=` field).
+    @Published private(set) var lateState = "none"
+    #if DEBUG
+    /// `-debug.nativeLateSubtitleURL`: a file injected after `-debug.nativeLateSubtitleDelaySec`,
+    /// kept apart from `addonSubtitles` (the watcher reassigns that list on every emission). [C-14]
+    private var debugLateSubtitles: [SubtitleFile] = []
+    #endif
+
+    /// What a B17 rebuild restores once the new item is ready.
+    private struct RebuildTarget {
+        let positionSec: Double
+        let wasPlaying: Bool
+        let audioName: String?
+        let subtitleName: String?
+        let reason: String
+        let startedUptime: TimeInterval
+    }
+
     init(context: PlaybackContext) {
         self.context = context
         self.recorder = PlaybackProgressRecorder(context: context)
@@ -178,6 +308,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func start() {
         guard remux == nil else { return }
+        logLoadingStage(loadingStage)
         // Addon-subtitle results. The completion signal is polled from `completedRequest` in
         // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
         // StateFlow replay also delivers results prefetched before this coordinator existed).
@@ -206,11 +337,16 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // Incremental emission: this may be just one addon's results, not the whole
                     // fetch — completion is decided solely by `subsFetchCompleted()` polling
                     // `completedRequest` against `subsRequestKey`, not by this arriving non-empty.
-                    print("[NativePlayer] addon subtitles updated: \(subs.count)\(self.server == nil ? "" : " (after master — too late this session)")")
+                    print("[NativePlayer] addon subtitles updated: \(subs.count)\(self.server == nil ? "" : " (after master — late path)")")
                 }
+                self.checkLateSubtitles()
             }
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        startArtworkFetch()
+        #if DEBUG
+        scheduleDebugLateSubtitle()
+        #endif
         launchRemux()
     }
 
@@ -221,6 +357,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         PlayerSettingsRepository.shared.ensureLoaded()
         guard let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState else { return }
         playerSettings = settings
+        subtitleStyleInput = NativeSubtitleStyle.input(from: settings.subtitleStyle)
         let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
         let audioTargets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
             preferredAudioLanguage: settings.preferredAudioLanguage,
@@ -229,9 +366,15 @@ final class NativePlaybackCoordinator: ObservableObject {
             // Title's original language for the "Original" audio preference (was nil = inert).
             contentOriginalLanguage: PlayerAudioLanguagePlan.originalLanguage(for: context)
         )
+        // FEAT-84 Off stays Off: no fallback subtitle language while Subtitles is Off (the shared
+        // resolver would return it), so the plan below is `subtitlesOff`. See
+        // `SubtitleFallbackGuard`.
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
-            secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
+            secondaryPreferredSubtitleLanguage: SubtitleFallbackGuard.effectiveSecondary(
+                primary: settings.preferredSubtitleLanguage,
+                secondary: settings.secondaryPreferredSubtitleLanguage
+            ),
             deviceLanguages: deviceLanguages
         )
         var plan = LanguagePlan()
@@ -292,11 +435,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     ///   AVPlayer's defaults can switch captions on;
     /// - otherwise renditions in a preferred language are AUTOSELECT=YES and the first match is
     ///   DEFAULT=YES (mpv parity: preferred subtitles start on), the rest AUTOSELECT=NO.
-    private func subtitleFlags(for renditions: [SubtitleRendition]) -> [SubtitleRenditionFlags] {
+    private func subtitleFlags(for renditions: [SubtitleRendition], defaultTaken seeded: Bool = false) -> [SubtitleRenditionFlags] {
         let plan = languagePlan
         // No DEFAULT when forced-only (addon subs carry no forced flag) or when the shared plan
         // deferred to player defaults; matches stay AUTOSELECT so the system may still pick them.
-        var defaultTaken = plan.leaveToPlayer
+        // `seeded`: late renditions (B17) never take DEFAULT when an existing one already has it.
+        var defaultTaken = plan.leaveToPlayer || seeded
         return renditions.map { rendition in
             // FORCED renditions are always auto-selectable: HLS requires AUTOSELECT=YES with
             // FORCED=YES (an invalid master is an admission failure), and forced tracks — foreign
@@ -376,16 +520,20 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func stop() {
         pollTask?.cancel(); pollTask = nil
+        lateDebounce?.cancel(); lateDebounce = nil
+        artworkTask?.cancel(); artworkTask = nil
         observeTask?.cancel(); observeTask = nil
         subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
         subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
         if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
+        removeEndObserver()
         timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
         }
         recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec)
+        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec)
         player?.pause()
         server?.stop(); server = nil
         remux?.stop()
@@ -417,22 +565,42 @@ final class NativePlaybackCoordinator: ObservableObject {
             let dir = remux.outputDir
             // The VOD master is rendered exactly once — subtitle renditions must exist by then. Give
             // the addon fetch a bounded head start beyond remux readiness; never hold startup longer.
-            let subsDeadline = Date().addingTimeInterval(8)
+            // P4 (B17): with a late path in place, hold at most `gate` (3 s, DEBUG
+            // -debug.nativeSubsGateSec) past remux readiness, and never past 8 s from poll start.
             let pollStart = Date()
+            let hardDeadline = pollStart.addingTimeInterval(8)
+            var gate: TimeInterval = 3
+            #if DEBUG
+            if UserDefaults.standard.object(forKey: "debug.nativeSubsGateSec") != nil {
+                gate = max(0, UserDefaults.standard.double(forKey: "debug.nativeSubsGateSec"))
+            }
+            #endif
+            var readyAt: Date?
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
+                // The worker publishes the video signaling when it inspects the streams, before the
+                // segment map exists; a Dolby Vision file flips the caption once, in the first few
+                // hundred milliseconds. (P, BUG-139)
+                self?.updatePreparingLabel(remux.videoSignaling)
+                if let signaling = remux.videoSignaling {
+                    self?.advanceLoadingStage(.preparing(dolbyVision: NativePreparingLabel.isDolbyVision(signaling)))
+                }
                 let hasMap = remux.segmentMap != nil
                 let hasInit = Self.fileSize(dir, "init.mp4") > 0
                 // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
                 let hasFirst = Self.fileSize(dir, RemuxSession.segmentName(1)) > 0 || remux.state == .ready
                 if hasMap && hasInit && hasFirst {
+                    let ready = readyAt ?? Date()
+                    readyAt = ready
+                    let subsDeadline = min(ready.addingTimeInterval(gate), hardDeadline)
                     if let self, !self.subsFetchCompleted(), Date() < subsDeadline {
+                        self.advanceLoadingStage(.subtitles)
                         try? await Task.sleep(nanoseconds: 250_000_000)   // waiting only on subtitles now
                         continue
                     }
                     if let self, !self.subsFetchDone {
-                        print("[NativePlayer] subs gate lapsed after \(String(format: "%.1f", Date().timeIntervalSince(pollStart)))s — starting without addon subtitles")
+                        print("[NativePlayer] subs gate lapsed after \(String(format: "%.1f", Date().timeIntervalSince(pollStart)))s gate=\(String(format: "%.1f", gate))s — starting without addon subtitles (late path armed)")
                     }
                     self?.beginPlayback(remux: remux)
                     return
@@ -443,6 +611,304 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
     }
 
+    /// Moves `loadingStage` forward (never back) and logs the transition once. A same-rank change
+    /// (the Dolby Vision flag of `.preparing`, a `.buffering` percentage) is applied too.
+    private func advanceLoadingStage(_ next: PlayerLoadingStage) {
+        guard next != loadingStage, Self.loadingRank(next) >= Self.loadingRank(loadingStage) else { return }
+        loadingStage = next
+        logLoadingStage(next)
+    }
+
+    private func logLoadingStage(_ stage: PlayerLoadingStage) {
+        let t = ProcessInfo.processInfo.systemUptime - loadingStartUptime
+        print("[Loading] engine=native stage=\(stage.logToken) t=+\(String(format: "%.2f", t))s")
+    }
+
+    private static func loadingRank(_ stage: PlayerLoadingStage) -> Int {
+        switch stage {
+        case .checking: 0
+        case .connecting: 1
+        case .preparing: 2
+        case .subtitles: 3
+        case .buffering: 4
+        case .started: 5
+        }
+    }
+
+    /// Assigns only on change, so the `@Published` caption does not re-render every poll tick.
+    private func updatePreparingLabel(_ signaling: VideoSignaling?) {
+        let text = NativePreparingLabel.text(for: signaling)
+        if text != preparingLabel { preparingLabel = text }
+    }
+
+    // MARK: - Late add-on subtitles (P4, B17)
+
+    #if DEBUG
+    private func scheduleDebugLateSubtitle() {
+        guard let url = UserDefaults.standard.string(forKey: "debug.nativeLateSubtitleURL"), !url.isEmpty else { return }
+        let delay = max(0, UserDefaults.standard.double(forKey: "debug.nativeLateSubtitleDelaySec"))
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            print("[Subs] DEBUG late subtitle injected after \(String(format: "%.1f", delay))s: \(url)")
+            self.debugLateSubtitles = [SubtitleFile(url: url, language: "en", name: "Late Test")]
+            self.checkLateSubtitles()
+        }
+    }
+    #endif
+
+    /// Add-on files the served master does not carry yet.
+    private var pendingLateFiles: [SubtitleFile] {
+        var files: [SubtitleFile] = []
+        if subsFetchDone || subsFetchCompleted() { files += addonSubtitles }
+        #if DEBUG
+        files += debugLateSubtitles
+        #endif
+        return files.filter { !servedAddonURLs.contains($0.url) }
+    }
+
+    /// Called from the add-on watcher and the playback tick: once the fetch has completed and some
+    /// file is not in the master, (re)start the 1 s debounce. At most one rebuild per session.
+    ///
+    /// r3 P2: both this and `applyLateSubtitles` wait for `playIssued`. `phase` turns `.playing`
+    /// before the first item is ready, so a slow add-on fetch landing while the first item loads
+    /// or during its resume seek could rebuild it then. `rebuildItem` captured
+    /// `wasPlaying = false` (no `play()` yet) and cancelled the observe task before its `play()`,
+    /// so `finishRebuild` never played: a frozen frame on "Buffering…", no tracker start. The
+    /// playback tick re-calls this every 200 ms, so a gated apply is deferred to the first tick
+    /// after `play()`, not lost (nothing is recorded in `servedAddonURLs` until the apply runs).
+    private func checkLateSubtitles() {
+        guard server != nil, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0,
+              !pendingLateFiles.isEmpty else { return }
+        lateDebounce?.cancel()
+        lateDebounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.lateDebounce = nil
+            self.applyLateSubtitles()
+        }
+    }
+
+    private func applyLateSubtitles() {
+        guard let server, phase == .playing, playIssued, !isRebuildingItem, lateRebuildsUsed == 0 else { return }
+        let files = pendingLateFiles
+        guard !files.isEmpty else { return }
+        files.forEach { servedAddonURLs.insert($0.url) }
+        let merged = LateSubtitlePlan.merge(existing: currentSubtitleRenditions, late: files)
+        let late = Array(merged.dropFirst(currentSubtitleRenditions.count))
+        guard !late.isEmpty else { return }
+        // C-14: existing flags verbatim, flags computed for the late ones only.
+        let lateFlags = subtitleFlags(for: late, defaultTaken: currentSubtitleFlags.contains(where: \.isDefault))
+        currentSubtitleRenditions = merged
+        currentSubtitleFlags += lateFlags
+        server.setSubtitles(merged, flags: currentSubtitleFlags)
+        for r in late { subtitleRenditionsByName[r.name] = r }
+        lateSubtitleRows += late
+        lateState = "published"
+        print("[Subs] late renditions +\(late.count) (\(late.map(\.name).joined(separator: ", ")))")
+        var action = LateSubtitlePlan.decide(late: late, flags: lateFlags, selectionShowing: currentSubtitleOption != nil,
+                                             legibleTouched: legibleTouched, rebuildsUsed: lateRebuildsUsed)
+        if case .autoRebuild = action, let deferral = autoRebuildDeferral() {
+            print("[Subs] late auto rebuild deferred (\(deferral))")
+            action = .publishOnly
+        }
+        switch action {
+        case .autoRebuild(let name):
+            print("[Subs] late mode=auto (\(name))")
+            pendingLateSelection = name
+            rebuildItem(reason: "auto")
+        case .publishOnly:
+            print("[Subs] late mode=lazy")
+        case .none:
+            break
+        }
+        selectionVersion &+= 1
+    }
+
+    /// C-14: moments the up-next card and skip seeks own — paused, the last 5 minutes, or within
+    /// 10 s of a seek. Nil = an auto rebuild may run now.
+    private func autoRebuildDeferral() -> String? {
+        if isPaused { return "paused" }
+        if durationSec > 0, durationSec - lastPositionSec < 300 { return "last 5 minutes" }
+        if ProcessInfo.processInfo.systemUptime - lastUserSeekUptime < 10 { return "recent seek" }
+        return nil
+    }
+
+    /// The panel picked a late row that is not in the current item yet: rebuild with it showing.
+    func selectLateSubtitle(name: String) {
+        guard lateSubtitleRows.contains(where: { $0.name == name }) else { return }
+        legibleTouched = true
+        pendingLateSelection = name
+        rebuildItem(reason: "pick")
+    }
+
+    /// How the rebuilt item is kept off t=0 ([C-1]): `tag` = `EXT-X-START` in the master (default),
+    /// `seek` = a pre-ready exact seek, `none` = neither (DEBUG A/B for the rig proof only).
+    private var rebuildStartMode: String {
+        #if DEBUG
+        if let mode = UserDefaults.standard.string(forKey: "debug.nativeRebuildStartMode"), ["tag", "seek", "none"].contains(mode) {
+            return mode
+        }
+        #endif
+        return "tag"
+    }
+
+    /// B17: the first mid-play item swap. At most once per session; restores position, play state,
+    /// audio and subtitles once the new item is ready (`finishRebuild`).
+    private func rebuildItem(reason: String) {
+        guard lateRebuildsUsed == 0, phase == .playing, !isRebuildingItem,
+              let player, let server, let servedURL else { return }
+        let pos = CMTimeGetSeconds(player.currentTime())
+        guard pos.isFinite else { return }
+        let target = RebuildTarget(
+            positionSec: pos, wasPlaying: player.timeControlStatus != .paused,
+            audioName: currentAudioOption.map(Self.renditionName(of:)),
+            subtitleName: pendingLateSelection ?? currentLegibleName,
+            reason: reason, startedUptime: ProcessInfo.processInfo.systemUptime)
+        isRebuildingItem = true
+        rebuildUserSeekSec = nil
+        observeTask?.cancel()
+        subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
+        subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
+        isRefetchingSubtitles = false
+        // C-2: the new item must not pick its own audio/subtitles (criteria are once per item).
+        player.setMediaSelectionCriteria(nil, forMediaCharacteristic: .audible)
+        player.setMediaSelectionCriteria(nil, forMediaCharacteristic: .legible)
+        let mode = rebuildStartMode
+        server.setStartOffset(mode == "tag" ? pos : nil)     // C-1: start AT the playhead
+        let url = URL(string: servedURL.absoluteString + "?late=1") ?? servedURL
+        let item = AVPlayerItem(url: url)
+        decorate(item)
+        playerItem = item
+        legibleGroup = nil
+        audibleGroup = nil
+        print("[Subs] late rebuild begin reason=\(reason) at \(String(format: "%.1f", pos))s start=\(mode)"
+              + " audio=\(target.audioName ?? "-") sub=\(target.subtitleName ?? "off")")
+        player.replaceCurrentItem(with: item)
+        if mode == "seek" {
+            item.seek(to: CMTime(seconds: pos, preferredTimescale: 600), toleranceBefore: .zero,
+                      toleranceAfter: .zero, completionHandler: nil)
+        }
+        observeMediaSelection(item: item, player: player)
+        observePlayback(player: player, item: item, rebuild: target)
+    }
+
+    private func finishRebuild(_ target: RebuildTarget, player: AVPlayer, item: AVPlayerItem) async {
+        server?.setStartOffset(nil)
+        lastPositionSec = target.positionSec                 // the skip planner sees no jump
+        let landed = CMTimeGetSeconds(player.currentTime())
+        print("[Subs] late rebuild item ready at \(String(format: "%.2f", landed))s (target \(String(format: "%.2f", target.positionSec))s)")
+        // r1 P2: every await below can be overtaken by `stop()` or a mid-play fallback to mpv
+        // (both cancel this task and hand the screen over). Without these guards the corrective
+        // seek could complete and `play()` restart a player that was already paused and released:
+        // up to the 24 s forward buffer of ghost audio over mpv's start, or after the viewer left.
+        // A user seek issued during the rebuild wins over the captured playhead (r1 P3).
+        let wanted = rebuildUserSeekSec ?? target.positionSec
+        if let user = rebuildUserSeekSec {
+            print("[Subs] late rebuild: user seek to \(String(format: "%.1f", user))s during the rebuild wins")
+        }
+        rebuildUserSeekSec = nil
+        if !landed.isFinite || abs(landed - wanted) > 0.5 {
+            await player.seek(to: CMTime(seconds: wanted, preferredTimescale: 600),
+                              toleranceBefore: .zero, toleranceAfter: .zero)
+            guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after seek") }
+        }
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("before play") }
+        if target.wasPlaying { player.play() }
+        let audible = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after audible") }
+        let legible = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
+        guard rebuildStillOwns(player: player, item: item) else { return abandonRebuild("after legible") }
+        if let audible, let name = target.audioName,
+           let option = audible.options.first(where: { Self.renditionName(of: $0) == name }) {
+            item.select(option, in: audible)
+        }
+        audibleGroup = audible
+        if let legible {
+            let option = target.subtitleName.flatMap { name in
+                legible.options.first {
+                    let n = Self.renditionName(of: $0)
+                    return Self.subtitleSlot(ofName: n) == 0 && Self.canonicalSubtitleName(n) == name
+                }
+            }
+            item.select(option, in: legible)
+        }
+        legibleGroup = legible
+        legibleSnapshot = .some(currentLegibleName)
+        isRebuildingItem = false
+        lateRebuildsUsed += 1
+        lateSubtitleRows = []
+        pendingLateSelection = nil
+        lateState = "rebuilt"
+        selectionVersion &+= 1
+        let took = ProcessInfo.processInfo.systemUptime - target.startedUptime
+        print("[Subs] late rebuild reason=\(target.reason) at \(String(format: "%.1f", target.positionSec))s"
+              + " took=\(String(format: "%.2f", took))s audio=\(currentAudioOption.map(Self.renditionName(of:)) ?? "-")"
+              + " sub=\(currentLegibleName ?? "off")")
+    }
+
+    /// r1 P2: the rebuild may only touch the player while this coordinator still owns it and the
+    /// rebuilt item is current: not cancelled, not stopped (`player` nil), not swapped, still
+    /// `.playing` (a fallback sets `.failed`).
+    private func rebuildStillOwns(player: AVPlayer, item: AVPlayerItem) -> Bool {
+        !Task.isCancelled && self.player === player && playerItem === item && phase == .playing
+    }
+
+    /// An abandoned rebuild never leaves `syncAudioSelection` / `checkLateSubtitles` gated.
+    private func abandonRebuild(_ at: String) {
+        isRebuildingItem = false
+        rebuildUserSeekSec = nil
+        print("[Subs] late rebuild abandoned \(at) (stopped, swapped or handed to mpv)")
+    }
+
+    /// Every `AVPlayerItem` this coordinator creates (first item, signaling retry, B17 rebuild)
+    /// goes through here; nothing else sets these properties.
+    private func decorate(_ item: AVPlayerItem) {
+        // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
+        // would otherwise race minutes past the ~realtime remux frontier and block on segments that
+        // don't exist yet, tripping CFNetwork's request timeout.
+        item.preferredForwardBufferDuration = 24
+        item.textStyleRules = NativeSubtitleStyle.rules(subtitleStyleInput)
+        item.externalMetadata = metadataTextItems + (artworkMetadata.map { [$0] } ?? [])
+        item.navigationMarkerGroups = chapterGroups
+    }
+
+    /// Chapters tab pick: an exact seek to the chapter start, kept inside the file. The screen's
+    /// skip planner reads the next tick's jump as a user scrub, so it is never auto-skipped back.
+    func seek(toChapter sec: Double) {
+        guard let player else { return }
+        let target = PlayerChapters.clampedSeek(sec, durationSec: lastDurationSec > 0 ? lastDurationSec : durationSec)
+        print("[Chapters] native seek → \(String(format: "%.1f", target))s")
+        noteUserSeek(to: target)
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// Every app-issued user seek reports its target here (chapter pick, the screen's skip seeks).
+    /// Outside a B17 rebuild it does nothing.
+    func noteUserSeek(to sec: Double) {
+        if didPlayToEnd { didPlayToEnd = false }
+        guard isRebuildingItem, sec.isFinite else { return }
+        rebuildUserSeekSec = sec
+    }
+
+    /// Fetches the Now Playing artwork once per coordinator (poster first, 400×600) and encodes it
+    /// off the main actor. When it lands after the item exists, the current item's metadata is
+    /// replaced once; later items pick it up in `decorate`.
+    private func startArtworkFetch() {
+        guard artworkTask == nil, let url = NativeNowPlayingMetadata.artworkURL(context: context) else { return }
+        artworkTask = Task { @MainActor [weak self] in
+            let request = ArtworkDecodeRequest(size: .points(width: 400, height: 600), fill: true, scale: 1)
+            guard let image = await ImageFallbackPlan.load(candidates: [url], request: request) else { return }
+            let jpeg = await Task.detached(priority: .utility) { image.jpegData(compressionQuality: 0.8) }.value
+            guard let self, !Task.isCancelled, let jpeg else { return }
+            self.artworkMetadata = NativeNowPlayingMetadata.artworkItem(jpeg: jpeg)
+            if let item = self.playerItem {
+                item.externalMetadata = self.metadataTextItems + [self.artworkMetadata!]
+            }
+            print("[NativePlayer] artwork attached (\(jpeg.count / 1024) KB)")
+        }
+    }
+
     private static func fileSize(_ dir: URL, _ name: String) -> Int {
         ((try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path))?[.size] as? Int) ?? 0
     }
@@ -450,6 +916,13 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
+        // Chapters (A6-native): libavformat's list, already on the playlist timeline; sorted,
+        // deduped and clamped like mpv's, then trimmed at the duration.
+        let raw = remux.chapters
+        chapters = PlayerChapters.trimmed(
+            PlayerChapters.parseIndexed(count: raw.count, title: { raw[$0].title }, time: { raw[$0].sec }),
+            durationSec: map.totalDurationSec)
+        chapterGroups = NativeChapterMarkers.groups(chapters, durationSec: map.totalDurationSec)
         // Audio menu data (D4): the worker published the full track list with its selection when it
         // inspected the streams — always before the map exists, so it's complete here.
         audioTracks = remux.audioTracks.map {
@@ -505,6 +978,10 @@ final class NativePlaybackCoordinator: ObservableObject {
                 label: track.title ?? track.language ?? "",
                 language: track.language, isSelected: true)
         })
+        let initialFlags = subtitleFlags(for: subtitleRenditions)
+        currentSubtitleRenditions = subtitleRenditions
+        currentSubtitleFlags = initialFlags
+        servedAddonURLs = Set((context.externalSubtitles + addonSubtitles).map(\.url))
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
                                     audioRenditions: audioRenditions,
@@ -513,10 +990,16 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     requestAudioTrack: { remux.selectAudio(streamIndex: $0, atSegment: $1) },
                                     bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
-                                    subtitleFlags: subtitleFlags(for: subtitleRenditions),
+                                    subtitleFlags: initialFlags,
                                     // SDH stripping, native path (mpv sets sub-filter-sdh instead) —
                                     // applies to the addon-VTT conversions this server performs.
                                     stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false,
+                                    // Player P3: the I-frame rendition (FF/RW scan) follows Developer ›
+                                    // Seek Preview Frames; Off = the pre-P3 master. Read per playback.
+                                    // BUG-168: and only with Developer › Native I-frame Scan (A/B) on
+                                    // (off by default), because AVKit's scrub preview never asks for
+                                    // an I-frame on tvOS 27 and shows an empty box instead.
+                                    iFrames: SeekPreviewMode.currentAllowsNativeIFrames(),
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server
@@ -533,21 +1016,8 @@ final class NativePlaybackCoordinator: ObservableObject {
             print("[NativePlayer] serving \(url.absoluteString)")
             self.servedURL = url
             let item = AVPlayerItem(url: url)
-            var metadata: [AVMetadataItem] = []
-            func addMetadata(_ identifier: AVMetadataIdentifier, _ value: String) {
-                let entry = AVMutableMetadataItem()
-                entry.identifier = identifier
-                entry.value = value as NSString
-                entry.extendedLanguageTag = "und"
-                metadata.append(entry)
-            }
-            addMetadata(.commonIdentifierTitle, self.context.title)
-            if let subtitle = self.context.transportSubtitle { addMetadata(.iTunesMetadataTrackSubTitle, subtitle) }
-            item.externalMetadata = metadata
-            // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
-            // would otherwise race minutes past the ~realtime remux frontier and block on segments that
-            // don't exist yet, tripping CFNetwork's request timeout.
-            item.preferredForwardBufferDuration = 24
+            self.decorate(item)
+            print(NativeSubtitleStyle.logLine(self.subtitleStyleInput))
             let player = AVPlayer(playerItem: item)
             self.applyLanguagePlan(to: player)
             self.playerItem = item
@@ -561,6 +1031,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if status == .playing { self.hasStartedPlaying = true }
+                    if status == .playing || (status == .paused && self.playIssued) {
+                        self.advanceLoadingStage(.started)
+                    }
                     guard self.hasStartedPlaying else { return }
                     let paused = status == .paused
                     if self.isPaused != paused { self.isPaused = paused }
@@ -568,6 +1041,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
+            self.advanceLoadingStage(.buffering(percent: nil))
             self.observePlayback(player: player, item: item)
             #if DEBUG
             self.startSubtitleDelaySpike()
@@ -578,8 +1052,17 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Item failed before playback ever started. Attempt 0 → retry once with minimal signaling
     /// (some AVPlayer builds reject the full CODECS/SUPPLEMENTAL form at the master stage);
     /// attempt 1 → give up and hand the context to mpv.
+    /// P5 Wave 3 (2026-10-20, from the S2 spike): the one signaling retry exists to drop
+    /// SUPPLEMENTAL-CODECS for AVPlayer builds that reject the DV supplemental form. When the
+    /// master never carried one (P5, HDR10, SDR, H.264) the retry replays the same playlist and
+    /// costs a second ~20 s item failure before the mpv failover (console-s1b: ~50 s in all).
+    nonisolated static func signalingRetryAllowed(attempt: Int, supplementalCodecs: String?) -> Bool {
+        attempt == 0 && !(supplementalCodecs ?? "").isEmpty
+    }
+
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
-        for name in ["master.m3u8", "media.m3u8"] {
+        // iframe.m3u8 renders nil (skipped) when the I-frame rendition is off.
+        for name in ["master.m3u8", "media.m3u8", SegmentMap.iFramePlaylistName] {
             guard let playlist = server?.renderedPlaylist(named: name) else { continue }
             // Prefix every line so console filters on "NativePlayer" keep the playlist content. The
             // media playlist can be long (one line per segment) — cap the dump.
@@ -591,8 +1074,24 @@ final class NativePlaybackCoordinator: ObservableObject {
             let listing = names.sorted().prefix(24).map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
             print("[NativePlayer] output dir: \(listing)")
         }
-        guard signalingAttempt == 0, let servedURL else {
+        // P5 spike (2026-10-20): the CoreMedia code alone told the story (-12927 admission, -4 no
+        // parameter sets, -16041 mangled samples); print the chain so the next one does too.
+        if let err = player.currentItem?.error as NSError? {
+            var chain: [String] = []
+            var cur: NSError? = err
+            while let e = cur {
+                chain.append("\(e.domain) \(e.code) \(e.userInfo.filter { $0.key != NSUnderlyingErrorKey })")
+                cur = e.userInfo[NSUnderlyingErrorKey] as? NSError
+            }
+            print("[NativePlayer] item error chain: " + chain.joined(separator: " ← "))
+        }
+        let retryAllowed = Self.signalingRetryAllowed(attempt: signalingAttempt,
+                                                      supplementalCodecs: remux?.videoSignaling?.supplementalCodecs)
+        guard retryAllowed, let servedURL else {
+            if signalingAttempt == 0 { print("[NativePlayer] no SUPPLEMENTAL-CODECS to drop — skipping the signaling retry") }
             print("[NativePlayer] failing over to mpv (item failed before playback started)")
+            // C-7: AVPlayer's errors here are about our loopback origin.
+            classifyFailure(PlaybackFailureClassifier.fromNSError(player.currentItem?.error, origin: .loopback))
             phase = .failed("item failed before start")
             return
         }
@@ -609,7 +1108,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
         let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
         let item = AVPlayerItem(url: retryURL)
-        item.preferredForwardBufferDuration = 24
+        decorate(item)
         playerItem = item
         legibleGroup = nil
         audibleGroup = nil            // per-item groups; the retry item gets its own observer too
@@ -618,30 +1117,104 @@ final class NativePlaybackCoordinator: ObservableObject {
         observePlayback(player: player, item: item)
     }
 
+    // MARK: - End of item (P5 B22)
+
+    /// Observes `AVPlayerItemDidPlayToEndTime` for the CURRENT item only: every item swap calls
+    /// `observePlayback`, which replaces the observer. The served playlist carries
+    /// `EXT-X-ENDLIST`, so the notification fires at the real end.
+    private func installEndObserver(for item: AVPlayerItem) {
+        removeEndObserver()
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.playerItem === item else { return }
+                print("[NativePlayer] item played to end")
+                self.didPlayToEnd = true
+            }
+        }
+    }
+
+    private func removeEndObserver() {
+        if let o = endObserver { NotificationCenter.default.removeObserver(o); endObserver = nil }
+    }
+
+    /// Post-play "Play Again": back to the start, playing.
+    func replayFromStart() {
+        didPlayToEnd = false
+        guard let player else { return }
+        noteUserSeek(to: 0)
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            Task { @MainActor in player.play() }
+        }
+    }
+
+    /// The post-play cover went away without a replay.
+    func clearEnded() {
+        didPlayToEnd = false
+    }
+
     // MARK: - AVPlayer observation (resume + progress + Trakt)
 
-    private func observePlayback(player: AVPlayer, item: AVPlayerItem) {
+    private func observePlayback(player: AVPlayer, item: AVPlayerItem, rebuild: RebuildTarget? = nil) {
+        installEndObserver(for: item)
         observeTask = Task { @MainActor [weak self] in
             var readied = false
             var waitingTicks = 0
             var notReadyTicks = 0
             var lastProducingSeg = 0
+            var pendingResumePercent: Double?
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
-                if !readied, item.status == .readyToPlay {
+                if !readied, item.status == .readyToPlay, let rebuild {
+                    readied = true
+                    await self.finishRebuild(rebuild, player: player, item: item)
+                    guard !Task.isCancelled, self.player === player else { return }
+                } else if !readied, item.status == .readyToPlay {
                     readied = true
                     print("[NativePlayer] item readyToPlay")
+                    if self.readyUptime == nil { self.readyUptime = ProcessInfo.processInfo.systemUptime }
                     let duration = CMTimeGetSeconds(item.duration)
-                    let resume = self.recorder.resumePositionSec()
+                    // Publish the duration as soon as the item knows it (the tick keeps it current);
+                    // `lastDurationSec` stays tick-driven so `stop()`'s final record is unchanged.
+                    if duration.isFinite, duration > 0, self.durationSec != duration { self.durationSec = duration }
+                    // A failure-alert retry resumes where the failed attempt stopped, Start Over
+                    // included (mpv's `computeResumePosition` rule). Otherwise Start Over ignores saved
+                    // progress (gated here: `PlaybackProgressRecorder` is untouched).
+                    let retryResume = self.context.resumeAtSec.flatMap { $0 > 10 ? $0 : nil }
+                    let startOver = retryResume == nil && self.context.startFromBeginning
+                    if startOver { print("[Failover] start over: ignoring saved progress") }
+                    let resume: Double? = startOver
+                        ? nil
+                        : (retryResume ?? self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0))
+                    // Percentage-only row and no finite duration yet: apply on the first tick that has one.
+                    if resume == nil, !startOver, !(duration.isFinite && duration > 0) {
+                        pendingResumePercent = self.recorder.pendingResumePercent()
+                    }
                     if let resume {
+                        // The resume seek (user-initiated for skip logic).
+                        self.didResumeSeek = true
+                        self.onResumeSeekBegin?(resume)
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+                        // r2 P3: `stop()` (Menu during the resume seek) or a mid-play fallback can
+                        // overtake the await. Without this, `play()` restarted a released player
+                        // and a tracker "start" went out after `stop()`'s "stop".
+                        guard !Task.isCancelled, self.player === player, self.playerItem === item,
+                              self.phase == .playing else {
+                            print("[NativePlayer] resume seek overtaken (stopped, swapped or handed to mpv)")
+                            return
+                        }
                         self.lastPositionSec = resume
+                        // Where it really landed (default tolerance: can be past the target).
+                        self.onResumeSeekCompleted?(CMTimeGetSeconds(player.currentTime()))
                     }
                     player.play()
+                    self.playIssued = true
                     if !self.traktStarted {
                         self.traktStarted = true
                         self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
+                        self.recorder.startTrackers(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
                     }
                     self.loadLegibleSelection(item: item)
                 } else if item.status == .failed {
@@ -651,12 +1224,18 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // (Keyed on the item, not lifetime state: after an audio-switch rebuild the
                     // coordinator has a duration from the previous item, but a pre-ready failure of
                     // the new one still belongs to the signaling retry path.)
-                    if !readied {
+                    if !readied, rebuild != nil {
+                        // A B17 rebuild that failed is our swap, not the link (C3): never the
+                        // signaling retry, never remembered.
+                        self.classifyFailure(.init(.local))
+                        self.fallbackMidPlay("late subtitle rebuild failed")
+                    } else if !readied {
                         self.handlePrePlaybackItemFailure(player: player)
                     } else {
                         // Failed AFTER playback started — e.g. a forward seek past the linear remux
                         // frontier that the JIT server fast-503'd until AVPlayer gave up. Hand to mpv
                         // (which seeks anywhere via its own demuxer) at the current/target position.
+                        self.classifyFailure(PlaybackFailureClassifier.fromNSError(item.error, origin: .loopback, midPlay: true))
                         self.fallbackMidPlay("item failed mid-play")
                     }
                     return
@@ -664,6 +1243,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // Blind-spot coverage: the item can sit in .unknown forever (bad playlist, codec
                     // rejection) with no state change to observe. Surface why every ~10s.
                     notReadyTicks += 1
+                    if rebuild != nil, notReadyTicks >= 60 {   // 12 s without ready: the picture is frozen
+                        self.classifyFailure(.init(.local))
+                        self.fallbackMidPlay("late subtitle rebuild failed")
+                        return
+                    }
                     if notReadyTicks % 50 == 0 {          // 50 ticks × 200ms ≈ 10s
                         print("[NativePlayer] item still not ready after ~\(notReadyTicks / 5)s (status=\(item.status.rawValue))")
                         Self.dumpItemLogs(item)
@@ -671,22 +1255,59 @@ final class NativePlaybackCoordinator: ObservableObject {
                 }
 
                 if readied {
-                    let pos = CMTimeGetSeconds(player.currentTime())
+                    // Sampled before anything below can await (the resume seek): `secondsPlayed`
+                    // counts only ticks that both begin and end with the player actually playing.
+                    self.playClock.note(playing: player.timeControlStatus == .playing,
+                                        at: ProcessInfo.processInfo.systemUptime)
+                    var pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
-                    // A position jump = a user seek. Reset the stall budget so back-to-back scrubs
-                    // (each costing a ~10s reposition) can't accumulate into a false mpv fallback.
-                    if pos.isFinite, abs(pos - self.lastPositionSec) > 10 {
-                        waitingTicks = 0
+                    // A position jump that is not the app's own seek = a user seek. Reset the stall
+                    // budget so back-to-back scrubs (each costing a ~10s reposition) can't
+                    // accumulate into a false mpv fallback.
+                    if pos.isFinite {
+                        let userSeek = self.onPositionTick?(self.lastPositionSec, pos)
+                            ?? (abs(pos - self.lastPositionSec) > SkipSegmentPlanner.userJumpThresholdSec)
+                        if userSeek { waitingTicks = 0; self.lastUserSeekUptime = ProcessInfo.processInfo.systemUptime }
+                    }
+                    if let pct = pendingResumePercent, pos.isFinite, dur.isFinite, dur > 0 {
+                        pendingResumePercent = nil
+                        // Only while still near the start, so a user scrub is never overridden.
+                        if pos < 30 {
+                            let target = dur * pct / 100
+                            if target > 10 {
+                                // The pending-percentage resume seek (user-initiated for skip logic).
+                                self.didResumeSeek = true
+                                self.onResumeSeekBegin?(target)
+                                await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                                self.lastPositionSec = target
+                                // `pos` was read before the seek: use the real landing, not a stale
+                                // pre-seek position the skip planner could auto-skip from.
+                                let landed = CMTimeGetSeconds(player.currentTime())
+                                pos = landed.isFinite ? landed : target
+                                self.onResumeSeekCompleted?(pos)
+                            }
+                        }
                     }
                     if pos.isFinite, dur.isFinite, dur > 0 {
                         let paused = player.timeControlStatus != .playing
                         self.lastPositionSec = pos
                         self.lastDurationSec = dur
+                        if self.didPlayToEnd, pos < dur - 2, player.timeControlStatus == .playing { self.didPlayToEnd = false }
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false)
                         self.refreshActiveAudioTrack()
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
                         else { self.syncAudioSelection(item: item, player: player) }
                         self.onTick?(pos, dur)
+                    }
+                    self.checkLateSubtitles()
+
+                    // The stream has now played for 5 minutes: tell the host once (failover policy).
+                    if !self.healthyReported, let onPlaybackHealthy = self.onPlaybackHealthy,
+                       player.timeControlStatus == .playing,
+                       self.secondsPlayed >= PlaybackFailoverPolicy.healthySeconds {
+                        self.healthyReported = true
+                        print("[Failover] native healthy after \(Int(self.secondsPlayed)) s")
+                        onPlaybackHealthy(self.secondsPlayed)
                     }
 
                     // Stall diagnostics: if the player sits in a waiting state across several ticks,
@@ -710,6 +1331,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         // Sustained stall (~30s at 3s/tick) with NO remux progress: dead/stalled
                         // source. Hand to mpv at the current position rather than spin forever.
                         if waitingTicks >= 10 {
+                            self.classifyFailure(.init(.network))
                             self.fallbackMidPlay("stalled ~30s with no remux progress")
                             return
                         }
@@ -739,6 +1361,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func handleMediaSelectionChange(item: AVPlayerItem, player: AVPlayer) {
         guard playerItem === item else { return }
         selectionVersion &+= 1
+        noteLegibleSelection()
         if audibleGroup == nil {
             Task { @MainActor [weak self] in
                 let group = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
@@ -754,6 +1377,9 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Compare AVPlayer's audible selection with what we last relayed; on a change, relay it to the
     /// server/worker. Cheap — called on every tick and on the media-selection notification.
     private func syncAudioSelection(item: AVPlayerItem, player: AVPlayer) {
+        // C-2: while a B17 rebuild restores the selection, the new item's initial pick must not
+        // reach the worker.
+        guard !isRebuildingItem else { return }
         guard let group = audibleGroup,
               let option = item.currentMediaSelection.selectedMediaOption(in: group),
               let stream = Self.renditionStream(for: option, byName: audioRenditionsByName,
@@ -788,6 +1414,22 @@ final class NativePlaybackCoordinator: ObservableObject {
             guard let self, self.playerItem === item else { return }
             self.legibleGroup = group
             self.selectionVersion &+= 1
+            if self.legibleSnapshot == nil { self.legibleSnapshot = .some(self.currentLegibleName) }
+        }
+    }
+
+    private var currentLegibleName: String? {
+        currentSubtitleOption.map { Self.canonicalSubtitleName(Self.renditionName(of: $0)) }
+    }
+
+    /// B17: a legible selection that differs from the last one seen (the system popover included)
+    /// marks the selection as touched. Our own rebuild restore is excluded.
+    private func noteLegibleSelection() {
+        guard !isRebuildingItem, let snapshot = legibleSnapshot, legibleGroup != nil else { return }
+        let now = currentLegibleName
+        if now != snapshot {
+            legibleTouched = true
+            legibleSnapshot = .some(now)
         }
     }
 
@@ -795,6 +1437,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Select a legible option (nil = Off). AVPlayer honours manual picks over the criteria.
     func select(subtitle option: AVMediaSelectionOption?) {
+        legibleTouched = true
         subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
         isRefetchingSubtitles = false
         guard let item = playerItem, let group = legibleGroup else { return }
@@ -845,6 +1488,22 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Reset the delay to zero (panel's Reset chip). Writes 0 rather than deleting the key, so a
     /// deliberate reset survives a relaunch instead of falling back to a stale value.
     func resetSubtitleDelay() { setSubtitleDelay(ms: 0) }
+
+    // MARK: - Sync Line (P5 B19)
+
+    /// The playback position in ms, read at the moment Sync Line is pressed. `lastPositionSec` only
+    /// moves on the 3 s tick, so ask the player.
+    func currentPositionMs() -> Int64 {
+        guard let t = player?.currentTime(), t.isValid, t.seconds.isFinite, t.seconds >= 0 else { return 0 }
+        return Int64((t.seconds * 1000).rounded())
+    }
+
+    /// Cues of the selected add-on subtitle; nil when none is selected, it is embedded, or loading failed.
+    func selectedAddonSubtitleCues() async -> [SubtitleSyncCue]? {
+        guard let name = currentLegibleName, let r = subtitleRenditionsByName[name], !r.isEmbedded else { return nil }
+        return await SyncLineCueLoader.load(vtt: server?.cachedBaseVTT(index: r.index), fallbackURL: r.sourceURL,
+                                           stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false)
+    }
 
     /// Make AVPlayer re-read the selected subtitle rendition's body at the current delay.
     private func forceSubtitleRefetch() {
@@ -1182,18 +1841,32 @@ final class NativePlaybackCoordinator: ObservableObject {
             // never appear, so JIT requests would block until playback stalls. Hand to mpv now rather
             // than wait for the stall watchdog.
             print("[NativePlayer] remux failed MID-PLAY at \(stage) — handing to mpv")
+            classifyFailure(PlaybackFailureClassifier.fromNativeStage(stage, errorCode: remux?.lastErrorCode, atOpen: false))
             fallbackMidPlay("remux failed mid-play: \(stage)")
             return
         }
         if case .failed = phase { return }
         print("[NativePlayer] pre-playback failure: \(stage) — falling back to mpv")
+        // r1 P3: our engine's own limits (no keyframe index, no segment map, bind) are `.local`.
+        classifyFailure(PlaybackFailureClassifier.fromNativeStage(
+            stage, errorCode: remux?.lastErrorCode, atOpen: remux?.lastErrorAtOpen ?? false))
         phase = .failed(stage)
     }
 
     /// Mid-play escalation to mpv: the native path started but can no longer make progress (a seek past
     /// the linear remux frontier, or the source truncated). Flipping `phase` to `.failed` makes
-    /// `NativePlayerScreen` call `onFallback(lastPositionSec)`, which re-presents mpv at the same
+    /// `NativePlayerScreen` call `onFallback(lastPositionSec, secondsPlayed)`, which re-presents mpv at the same
     /// position — mpv seeks anywhere via its own demuxer. No-op unless we are actually playing.
+    /// BUG-143: records the classified kind of the failure about to set `phase = .failed` (the
+    /// first classification wins), with the offline override applied.
+    private func classifyFailure(_ verdict: PlaybackFailureClassifier.Verdict) {
+        guard failureKind == nil else { return }
+        let v = PlaybackFailureClassifier.applyingPath(verdict, pathSatisfied: NetworkPathMonitor.shared.isSatisfied)
+        failureKind = v.kind
+        failureHTTPStatus = v.httpStatus
+        print("[Failover] native failure kind=\(v.kind.rawValue) http=\(v.httpStatus.map(String.init) ?? "-")")
+    }
+
     private func fallbackMidPlay(_ reason: String) {
         guard phase == .playing else { return }
         observeTask?.cancel()

@@ -1,0 +1,181 @@
+import AVFoundation
+import XCTest
+@testable import NuvioTV
+
+/// P4 (BUG-143): engine evidence → failure kind; only positive link evidence is remembered.
+final class PlaybackFailureClassifierTests: XCTestCase {
+    typealias C = PlaybackFailureClassifier
+
+    private func log(_ lines: [String], watchdog: Bool = false) -> C.Verdict {
+        C.fromMpvLog(lines, endFileError: "loading failed", watchdogFired: watchdog)
+    }
+
+    func testMpvHTTPLines() {
+        XCTAssertEqual(log(["ffmpeg: HTTP error 404 Not Found"]), C.Verdict(.http, http: 404))
+        XCTAssertEqual(log(["ffmpeg: Server returned 403 Forbidden (access denied)"]), C.Verdict(.http, http: 403))
+        XCTAssertEqual(log(["ffmpeg: Server returned 4XX Client Error, but not one of 40{0,1,3,4}"]), C.Verdict(.http, http: 400))
+        XCTAssertEqual(log(["ffmpeg: Server returned 5XX Server Error reply"]), C.Verdict(.http, http: 500))
+        XCTAssertEqual(log(["stream: 401 Unauthorized"]), C.Verdict(.http, http: 401))
+        XCTAssertEqual(log(["stream: 400 Bad Request"]), C.Verdict(.http, http: 400))
+    }
+
+    func testMixedRingHTTPWins() {
+        XCTAssertEqual(log(["tcp: Connection refused", "ffmpeg: HTTP error 404"]), C.Verdict(.http, http: 404))
+    }
+
+    func testMpvNetworkLines() {
+        for line in ["tcp: Connection refused", "tcp: Connection timed out", "tcp: Operation timed out",
+                     "tcp: Failed to resolve hostname x.example", "tcp: Network is unreachable", "tcp: No route to host",
+                     "tcp: Host is down", "tls: Connection reset by peer", "tls: TLS handshake failed", "tls: SSL error",
+                     "gnutls: handshake failed"] {
+            XCTAssertEqual(log([line]).kind, .network, line)
+        }
+        XCTAssertEqual(log(["ffmpeg: HTTP error 404"], watchdog: true).kind, .http)
+    }
+
+    /// Spec decision 17 (r1 P2): a start watchdog that fired with the host reachable and nothing
+    /// network-side in the ring is evidence against the link, so it is remembered.
+    func testWatchdogWithoutNetworkEvidenceIsRemembered() {
+        let quiet = C.fromMpvLog([], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(quiet.kind, .unknown)
+        XCTAssertTrue(C.applyingPath(quiet, pathSatisfied: true).kind.remembersLink)
+        let noise = C.fromMpvLog(["cplayer: something unrelated"], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(noise.kind, .unknown)
+        // A network line in the ring keeps it transient.
+        let net = C.fromMpvLog(["tcp: Connection timed out"], endFileError: nil, watchdogFired: true)
+        XCTAssertEqual(net.kind, .network)
+        XCTAssertFalse(net.kind.remembersLink)
+        // No network path: offline, never remembered.
+        XCTAssertEqual(C.applyingPath(quiet, pathSatisfied: false).kind, .offline)
+        XCTAssertFalse(C.applyingPath(quiet, pathSatisfied: false).kind.remembersLink)
+    }
+
+    func testMpvDecodeAndUnknown() {
+        for line in ["ffmpeg: Invalid data found when processing input", "demux: Failed to recognize file format.",
+                     "vd: could not find codec parameters", "cplayer: No video or audio streams selected."] {
+            XCTAssertEqual(log([line]).kind, .decode, line)
+        }
+        XCTAssertEqual(log(["something else"]).kind, .unknown)
+    }
+
+    func testAVErrors() {
+        XCTAssertEqual(C.fromAVError(C.httpNotFound), C.Verdict(.http, http: 404))
+        XCTAssertEqual(C.fromAVError(C.httpForbidden), C.Verdict(.http, http: 403))
+        XCTAssertEqual(C.fromAVError(C.httpUnauthorized), C.Verdict(.http, http: 401))
+        XCTAssertEqual(C.fromAVError(C.httpBadRequest), C.Verdict(.http, http: 400))
+        XCTAssertEqual(C.fromAVError(C.httpOther4xx), C.Verdict(.http, http: 400))
+        XCTAssertEqual(C.fromAVError(C.httpServerError), C.Verdict(.http, http: 500))
+        for code: Int32 in [-61, -60, -51, -65, -54, -64] { XCTAssertEqual(C.fromAVError(code).kind, .network) }
+        XCTAssertEqual(C.fromAVError(-5, atOpen: true).kind, .network)
+        XCTAssertEqual(C.fromAVError(-5).kind, .unknown)
+        for code in [C.invalidData, C.decoderNotFound, C.demuxerNotFound] { XCTAssertEqual(C.fromAVError(code).kind, .decode) }
+        XCTAssertEqual(C.fromAVError(C.exit).kind, .cancelled)
+        XCTAssertEqual(C.fromAVError(-12345).kind, .unknown)
+        // FFERRTAG spot check against the C value of AVERROR_HTTP_NOT_FOUND.
+        XCTAssertEqual(C.httpNotFound, -0x3430_34F8)
+        XCTAssertEqual(C.exit, -0x5449_5845)
+    }
+
+    func testNSErrors() {
+        let remote = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        XCTAssertEqual(C.fromNSError(remote, origin: .remote).kind, .network)
+        XCTAssertEqual(C.fromNSError(remote, origin: .loopback).kind, .noMedia)
+        for code in [-1001, -1003, -1004, -1005, -1009, -1200, -1201, -1202, -1203, -1204, -1205, -1206] {
+            XCTAssertEqual(C.fromNSError(NSError(domain: NSURLErrorDomain, code: code), origin: .remote).kind, .network, "\(code)")
+        }
+        XCTAssertEqual(C.fromNSError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled), origin: .remote).kind, .cancelled)
+        let nested = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue,
+                             userInfo: [NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: -1004)])
+        XCTAssertEqual(C.fromNSError(nested, origin: .remote).kind, .network)
+        let decode = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue,
+                             userInfo: [NSUnderlyingErrorKey: NSError(domain: "CoreMediaErrorDomain", code: -12927)])
+        XCTAssertEqual(C.fromNSError(decode, origin: .loopback).kind, .decode)
+        XCTAssertEqual(C.fromNSError(URLError(.notConnectedToInternet), origin: .remote).kind, .network)
+        XCTAssertEqual(C.fromNSError(nil, origin: .remote).kind, .unknown)
+    }
+
+    func testOfflineOverride() {
+        XCTAssertEqual(C.applyingPath(C.Verdict(.http, http: 404), pathSatisfied: false).kind, .offline)
+        XCTAssertEqual(C.applyingPath(C.Verdict(.http, http: 404), pathSatisfied: true), C.Verdict(.http, http: 404))
+    }
+
+    /// r1 P3: our own engine's failures on the native path are `.local`, never link evidence.
+    func testNativeEngineFailuresAreLocal() {
+        let loop503 = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue,
+                              userInfo: [NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse)])
+        XCTAssertEqual(C.fromNSError(loop503, origin: .loopback, midPlay: true).kind, .local)
+        XCTAssertFalse(C.fromNSError(loop503, origin: .loopback, midPlay: true).kind.remembersLink)
+        XCTAssertEqual(C.fromNSError(loop503, origin: .loopback).kind, .noMedia)   // before start
+        XCTAssertEqual(C.fromNSError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled),
+                                     origin: .loopback, midPlay: true).kind, .cancelled)
+        for stage in ["no usable keyframe index", "no segment map", "server bind failed", "audio transcoder init",
+                      "DV P7 converter init (extradata not hvcC)",
+                      "extract extradata", "video stream", "no video stream"] {   // r2 P3
+            XCTAssertEqual(C.fromNativeStage(stage, errorCode: nil, atOpen: false).kind, .local, stage)
+            XCTAssertEqual(C.fromNativeStage(stage, errorCode: C.httpNotFound, atOpen: false).kind, .local, stage)
+        }
+        XCTAssertEqual(C.fromNativeStage("no segments produced", errorCode: nil, atOpen: false).kind, .noMedia)
+        XCTAssertEqual(C.fromNativeStage("avformat_open_input", errorCode: C.httpNotFound, atOpen: true),
+                       C.Verdict(.http, http: 404))
+        XCTAssertEqual(C.fromNativeStage("truncated remux (3/9 segments)", errorCode: nil, atOpen: false).kind, .unknown)
+    }
+
+    /// r1 P3: subtitle-side lines never reach the ring; a file load clears it.
+    func testLogRingKeepsOnlyMainStreamEvidence() {
+        let ring = MPVLogRing()
+        ring.append(prefix: "sub", text: "Connection timed out")
+        ring.append(prefix: "sd_ass", text: "Connection reset by peer")
+        ring.append(prefix: "osd", text: "TLS handshake failed")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out while opening https://subs.example/x.srt")
+        ring.append(prefix: "cplayer", text: "Can not open external file https://subs.example/a.vtt?t=1.")
+        ring.append(prefix: "ffmpeg", text: "HTTP error 404 for https://subs.example/b.ass")
+        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+        // A watchdog fire with only subtitle noise is therefore not network.
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: true).kind, .unknown)
+
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        ring.append(prefix: "stream", text: "HTTP error 403 Forbidden")
+        XCTAssertEqual(ring.snapshot.count, 2)
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: false), C.Verdict(.http, http: 403))
+
+        ring.clear()
+        XCTAssertTrue(ring.snapshot.isEmpty)
+    }
+
+    /// r2 P3: a main-stream line is kept even when its URL or host looks like a subtitle; a
+    /// subtitle demuxer's line (FFmpeg context `srt:`, as in the 10-15 device log) is dropped.
+    func testLogRingJudgesTheSourceNotTheURLWords() {
+        let ring = MPVLogRing()
+        ring.append(prefix: "stream", text: "Failed to open https://cdn.example/Movie.2024.MULTi.SUB.1080p.mkv")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out while opening https://x.sub.example/v.mkv")
+        ring.append(prefix: "stream", text: "HTTP error 404 Not Found for https://subtitlecdn.example/Show.S01E01.mkv")
+        XCTAssertEqual(ring.snapshot.count, 3, "\(ring.snapshot)")
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: false), C.Verdict(.http, http: 404))
+
+        ring.clear()
+        ring.append(prefix: "ffmpeg/demuxer", text: "srt: Dropping 17 duplicated subtitle events")
+        ring.append(prefix: "ffmpeg/demuxer", text: "webvtt: Invalid data found when processing input")
+        XCTAssertTrue(ring.snapshot.isEmpty, "\(ring.snapshot)")
+
+        // An in-core sub-add's URL-less protocol lines, drained inside the attribution window.
+        ring.subtitleLoadBegan()
+        ring.append(prefix: "ffmpeg", text: "tls: Error decoding the received TLS packet.")
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        ring.append(prefix: "ffmpeg", text: "crypto: Invalid key")
+        // r3 P3: a main-stream demuxer line drained inside the window is kept.
+        ring.append(prefix: "ffmpeg/demuxer", text: "matroska,webm: Read error at pos. 123")
+        ring.subtitleLoadDrained()
+        XCTAssertEqual(ring.snapshot, ["ffmpeg/demuxer: matroska,webm: Read error at pos. 123"])
+        ring.clear()
+        // The same lines outside the window are the stream's.
+        ring.append(prefix: "ffmpeg", text: "tcp: Connection timed out")
+        XCTAssertEqual(C.fromMpvLog(ring.snapshot, endFileError: nil, watchdogFired: true).kind, .network)
+    }
+
+    func testRemembersLinkTruthTable() {
+        let remembered: [PlaybackFailureKind] = [.http, .decode, .placeholder, .endedEarly, .noMedia, .unknown]
+        let transient: [PlaybackFailureKind] = [.network, .offline, .cancelled, .local]
+        remembered.forEach { XCTAssertTrue($0.remembersLink, $0.rawValue) }
+        transient.forEach { XCTAssertFalse($0.remembersLink, $0.rawValue) }
+    }
+}

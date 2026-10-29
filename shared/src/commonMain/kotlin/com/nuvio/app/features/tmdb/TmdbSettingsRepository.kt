@@ -31,6 +31,9 @@ object TmdbSettingsRepository {
     private var useMoreLikeThis = true
     private var useCollections = true
 
+    // DEBUG harness seam (ui-legs, 2026-10-22). See [setDebugEnabledOverride].
+    private var debugEnabledOverrideValue: Boolean? = null
+
     fun ensureLoaded() {
         if (hasLoaded) return
         loadFromDisk()
@@ -45,27 +48,55 @@ object TmdbSettingsRepository {
         return _uiState.value
     }
 
-    fun setEnabled(value: Boolean) {
-        ensureLoaded()
-        if (value && apiKey.isBlank()) return
-        if (enabled == value) return
-        enabled = value
-        publish()
-        TmdbSettingsStorage.saveEnabled(value)
-        invalidateHeroEnrichment()
-    }
+    /**
+     * The key every TMDB request should use: the profile's personal override when one is set,
+     * otherwise the bundled build-time key (upstream df589078). Safe from non-suspend callers
+     * (the plugin host function); loads the repository on first use.
+     */
+    fun effectiveApiKey(): String = snapshot().apiKey.ifBlank { TmdbConfig.API_KEY }
 
+    /**
+     * Sets (or, with a blank value, clears) the personal TMDB key override. Clearing falls back to
+     * the bundled key and deliberately leaves [TmdbSettings.enabled] alone. Synced across devices
+     * by `ProviderCredentialSync` as the "tmdb" provider — never by the settings blob.
+     */
     fun setApiKey(value: String) {
         ensureLoaded()
         val normalized = value.trim()
         if (apiKey == normalized) return
         apiKey = normalized
-        if (apiKey.isBlank()) {
-            enabled = false
-            TmdbSettingsStorage.saveEnabled(false)
-        }
         publish()
         TmdbSettingsStorage.saveApiKey(normalized)
+        // Everything TMDB-enriched was fetched with the previous key (a different account can
+        // see different results, and a bad key yields none), so drop it.
+        invalidateReleaseDateMetadata()
+        invalidateHeroEnrichment()
+    }
+
+    /**
+     * DEBUG harness seam (ui-legs, 2026-10-22): when [value] is non-null it stands in for the
+     * persisted `tmdb_enabled` in the [TmdbSettings] this repository publishes, for this process
+     * only (it survives profile switches, which reload from storage). It is never written to
+     * [TmdbSettingsStorage], and the profile-settings sync export
+     * ([TmdbSettingsStorage.exportToSyncPayload]) reads storage, so the account's payload keeps
+     * the persisted value. Only the tvOS app's DEBUG build calls this (`TmdbDebugOverride`, the
+     * `-debug.tmdbEnabledOverride YES|NO` launch argument); Release never does. null clears it.
+     */
+    fun setDebugEnabledOverride(value: Boolean?) {
+        if (debugEnabledOverrideValue == value) return
+        debugEnabledOverrideValue = value
+        if (hasLoaded) loadFromDisk()
+    }
+
+    /** The active DEBUG override of `tmdb_enabled`, or null (see [setDebugEnabledOverride]). */
+    fun currentDebugEnabledOverride(): Boolean? = debugEnabledOverrideValue
+
+    fun setEnabled(value: Boolean) {
+        ensureLoaded()
+        if (enabled == value) return
+        enabled = value
+        publish()
+        TmdbSettingsStorage.saveEnabled(value)
         invalidateHeroEnrichment()
     }
 
@@ -212,8 +243,12 @@ object TmdbSettingsRepository {
         val previousLanguage = language
         val previousUseReleaseDates = useReleaseDates
         hasLoaded = true
+        // Upstream 60ee0160: no `&& apiKey.isNotBlank()` gate any more — the key is bundled, so
+        // a stored/synced `tmdb_enabled=true` now takes effect on its own. Default stays opt-in.
+        // ui-legs: the DEBUG override (in memory only) is consulted before the persisted value.
+        enabled = debugEnabledOverrideValue ?: TmdbSettingsStorage.loadEnabled() ?: false
+        // Upstream df589078: the personal key is back as an optional override of the bundled one.
         apiKey = TmdbSettingsStorage.loadApiKey()?.trim().orEmpty()
-        enabled = (TmdbSettingsStorage.loadEnabled() ?: false) && apiKey.isNotBlank()
         val storedLanguage = TmdbSettingsStorage.loadLanguage()
         language = if (storedLanguage == null) {
             normalizeLanguage(DeviceLanguagePreferences.preferredLanguageCodes().firstOrNull() ?: "en")
@@ -233,10 +268,10 @@ object TmdbSettingsRepository {
         useMoreLikeThis = TmdbSettingsStorage.loadUseMoreLikeThis() ?: true
         useCollections = TmdbSettingsStorage.loadUseCollections() ?: true
         publish()
-        if (wasLoaded && previousUseReleaseDates != useReleaseDates) {
+        if (wasLoaded && (previousApiKey != apiKey || previousUseReleaseDates != useReleaseDates)) {
             invalidateReleaseDateMetadata()
         }
-        if (wasLoaded && (previousEnabled != enabled || previousApiKey != apiKey || previousLanguage != language)) {
+        if (wasLoaded && (previousEnabled != enabled || previousLanguage != language || previousApiKey != apiKey)) {
             invalidateHeroEnrichment()
         }
         // BUG-63: a profile switch can change the language through this path (not the setters);
@@ -266,6 +301,8 @@ object TmdbSettingsRepository {
         )
     }
 
+    // Upstream df589078 renames this `invalidateMetadata` (it now also runs on a key change);
+    // the fork keeps the old name to keep the diff small.
     private fun invalidateReleaseDateMetadata() {
         MetaDetailsRepository.clear()
         ContinueWatchingEnrichmentCache.clearAll(ProfileRepository.activeProfileId)

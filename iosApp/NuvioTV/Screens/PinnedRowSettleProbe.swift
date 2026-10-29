@@ -103,4 +103,72 @@ enum PinnedRowSettleProbe {
         display.append(contentsOf: tailLines)
         UserDefaults.standard.set(display, forKey: linesKey)
     }
+
+    /// BUG-100 (rc6, Steven's tester photo): the About pane renders this buffer inside a native
+    /// `List` row, which clips to the row's own height and cannot be scrolled — only the first
+    /// ~6 lines were ever photographable. Those 6 lines are always the frozen launch head (the
+    /// `regime`/`plan` pair and the first couple of rests), never the tail, which is exactly
+    /// where a walk's LATER row settles live — the evidence the pane exists to capture was
+    /// permanently below the fold. Decision (Christian, 09-08): render newest first, so the
+    /// photographable top of the pane shows what the tester just did, not what happened at
+    /// launch three minutes earlier.
+    ///
+    /// Pure and stateless: takes whatever `linesKey` currently holds, in the PERSISTED,
+    /// chronological order `log(_:)` writes (frozen head, one elision marker once the tail has
+    /// started rolling, then the rolling tail, oldest to newest) and returns a VIEW order for
+    /// `AboutSettingsPane` to render. The persisted order itself is untouched by this function —
+    /// `log(_:)` and the harness's `settle_probe_blob` overlay both still read/write the
+    /// chronological order, which is load-bearing for `PinnedRowSettleProbeBufferTests` and for
+    /// any device-log cross-reference a tester's report makes against `[HomeScrollProbe]` lines.
+    ///
+    /// Reordering, split at the elision marker (a line containing "lines elided"):
+    /// - With a marker: everything before it is `head`, everything after is `tail`. The result is
+    ///   `tail.reversed() + [marker] + head.reversed()` — the whole array reads newest-first end
+    ///   to end. The most recent tail line (the walk's last settle) lands first, at the top of
+    ///   the visible fold; the very first line ever logged (the launch `regime`/`plan` pair) lands
+    ///   last, at the bottom, past where the clipped row is scrolled anyway.
+    /// - Without a marker (the buffer hasn't started evicting yet — an early-in-the-walk photo,
+    ///   or any caller feeding this function a raw unmarked array): there is no tail to
+    ///   prioritize over the head, but the pane's caption still promises "Newest first" — so even
+    ///   a short, still-all-head buffer (7-12 lines, no marker) is reversed newest-first rather
+    ///   than left in persisted (oldest-first) order. Decision (Christian, 09-09, review finding
+    ///   8): a tester photographing mid-walk, before eviction has ever started, should still see
+    ///   their most recent settle at the top, not buried under the launch `regime`/`plan` pair. If
+    ///   the input is at or under `headMaxLines`, just reverse it whole. Otherwise split it exactly
+    ///   as `log(_:)` would (first `headMaxLines` lines are head, the rest is tail) and apply the
+    ///   same newest-first reordering.
+    nonisolated static func displayOrder(_ persisted: [String]) -> [String] {
+        if let markerIndex = persisted.firstIndex(where: { $0.contains("lines elided") }) {
+            let head = Array(persisted[..<markerIndex])
+            let marker = persisted[markerIndex]
+            let tail = Array(persisted[(markerIndex + 1)...])
+            return Array(tail.reversed()) + [marker] + Array(head.reversed())
+        }
+        guard persisted.count > headMaxLines else { return Array(persisted.reversed()) }
+        let head = Array(persisted.prefix(headMaxLines))
+        let tail = Array(persisted.suffix(from: headMaxLines))
+        return Array(tail.reversed()) + Array(head.reversed())
+    }
+
+    /// BUG-102 (rc7, Steven's tester photo): newest-first (`displayOrder` above) fixed WHICH lines
+    /// land at the top, but not how many are ever visible — the List row still clips after about
+    /// three lines once the "Newest first" caption takes one, so the 28-line rolling tail stayed
+    /// unphotographable in one shot. Decision (Christian, 09-09): stop trying to fit the whole
+    /// buffer in one clipped block. Instead PAGE it — `AboutSettingsPane` renders one List row PER
+    /// PAGE, a few lines each, so the tester scrolls the About LIST itself (native, focus-driven
+    /// scrolling that isn't clipped) and photographs one page at a time.
+    ///
+    /// Pure: chunks `displayOrder(persisted)` — already newest-first — into `linesPerPage`-line
+    /// pages, in order. Page 1 therefore starts with the newest persisted line, same as
+    /// `displayOrder`'s own head; the last page is shorter whenever the count doesn't divide
+    /// evenly; an empty buffer produces zero pages, not one empty page, so the caller's
+    /// `!rowSettleProbeLines.isEmpty` gate stays the only thing deciding whether the block renders
+    /// at all.
+    nonisolated static func displayPages(_ persisted: [String], linesPerPage: Int = 5) -> [[String]] {
+        let ordered = displayOrder(persisted)
+        guard !ordered.isEmpty else { return [] }
+        return stride(from: 0, to: ordered.count, by: linesPerPage).map {
+            Array(ordered[$0..<Swift.min($0 + linesPerPage, ordered.count)])
+        }
+    }
 }

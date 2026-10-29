@@ -11,6 +11,10 @@ import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.catalog.fetchCatalogPage
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.reapplyCustomPosterUrls
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.collection.Collection
 import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.CollectionSource
@@ -901,12 +905,17 @@ object HomeRepository {
         val tmdb = TmdbSettingsRepository.snapshot()
         // snapshot() first so a not-yet-loaded settings store cannot report an empty signature.
         HomeCatalogSettingsRepository.snapshot()
+        // Custom poster overlay: a pattern or per-screen toggle change must republish Home, or the
+        // rows keep the previous overlay until something else moves the signature.
+        CustomPosterUrlRepository.ensureLoaded()
         return buildString {
             append(HomeCatalogSettingsRepository.uiState.value.signature)
+            append("|poster=")
+            append(CustomPosterUrlRepository.pattern.value)
+            append(':')
+            append(CustomPosterScreen.toKeys(CustomPosterUrlRepository.enabledScreens.value).sorted().joinToString(separator = ","))
             append("|tmdb=")
             append(tmdb.enabled)
-            append(':')
-            append(tmdb.hasApiKey)
             append(':')
             append(tmdb.language)
             append(':')
@@ -921,7 +930,7 @@ object HomeRepository {
     }
 
     /**
-     * Called when TMDB settings (enabled/apiKey/language) change so the hero overlay is rebuilt
+     * Called when TMDB settings (enabled/language) change so the hero overlay is rebuilt
      * under the new settings instead of continuing to show enrichment fetched under the old ones.
      */
     fun onTmdbSettingsChanged() {
@@ -1005,8 +1014,17 @@ object HomeRepository {
         val snapshot = HomeCatalogSettingsRepository.snapshot()
         val preferences = snapshot.preferences
         val todayIsoDate = if (snapshot.hideUnreleasedContent) CurrentDateProvider.todayIsoDate() else null
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME)
+        // Custom poster overlay (HOME screen). reapply restores from rawPosterUrl first, so cached
+        // sections that already carry an older pattern's URLs are re-resolved, never compounded.
+        // Runs BEFORE the release filter (which only drops whole items) on every list below.
+        fun HomeCatalogSection.withPosterOverlay(): HomeCatalogSection =
+            copy(items = items.reapplyCustomPosterUrls(posterPattern))
         fun HomeCatalogSection.withReleaseFilter(): HomeCatalogSection =
-            if (todayIsoDate == null) this else filterReleasedItems(todayIsoDate)
+            withPosterOverlay().let { overlaid ->
+                if (todayIsoDate == null) overlaid else overlaid.filterReleasedItems(todayIsoDate)
+            }
 
         val sections = currentDefinitions
             .sortedBy { definition -> preferences[definition.key]?.order ?: Int.MAX_VALUE }
@@ -1372,7 +1390,7 @@ object HomeRepository {
      * so text cannot swap under the user the way BUG-86 described.
      */
     private fun MetaPreview.withCommittedGapFill(settings: TmdbSettings): MetaPreview {
-        if (!settings.enabled || !settings.hasApiKey || !settings.useBasicInfo) return this
+        if (!settings.enabled || !settings.useBasicInfo) return this
         if (!description.isNullOrBlank() && genres.isNotEmpty()) return this
         val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
         var updated = this
@@ -1402,7 +1420,7 @@ object HomeRepository {
      * resident overlay entries passes through untouched.
      */
     private fun HomeCatalogSection.withTmdbEnrichment(settings: TmdbSettings): HomeCatalogSection {
-        if (!settings.enabled || !settings.hasApiKey || heroEnrichmentOverlay.isEmpty()) return this
+        if (!settings.enabled || heroEnrichmentOverlay.isEmpty()) return this
         if (items.none { item -> item.heroEnrichmentKey(settings) in heroEnrichmentOverlay }) return this
         return copy(items = items.map { item -> item.withTmdbEnrichment(settings) })
     }
@@ -1413,7 +1431,7 @@ object HomeRepository {
      * those identify and route the card.
      */
     private fun MetaPreview.withTmdbEnrichment(settings: TmdbSettings): MetaPreview {
-        if (!settings.enabled || !settings.hasApiKey) return this
+        if (!settings.enabled) return this
         val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
 
         var updated = this
@@ -1443,7 +1461,7 @@ object HomeRepository {
         items: List<MetaPreview>,
         settings: TmdbSettings,
     ): List<MetaPreview> {
-        if (!settings.enabled || !settings.hasApiKey) return emptyList()
+        if (!settings.enabled) return emptyList()
         if (!settings.useBasicInfo && !settings.useArtwork) return emptyList()
         return items.filter { item ->
             val key = item.heroEnrichmentKey(settings)
@@ -1510,7 +1528,7 @@ object HomeRepository {
      */
     fun requestRowEnrichment(sectionKey: String) {
         val settings = TmdbSettingsRepository.snapshot()
-        if (!settings.enabled || !settings.hasApiKey) return
+        if (!settings.enabled) return
         // Same gate the hero path applies (heroItemsAwaitingEnrichment): with both output
         // categories off, a fetch could not change a single rendered field — don't spend it.
         if (!settings.useBasicInfo && !settings.useArtwork) return
@@ -1625,7 +1643,8 @@ object HomeRepository {
             maxItems = HOME_CATALOG_PREVIEW_FETCH_LIMIT,
             forceRefresh = forceRefresh,
         )
-        val items = page.items
+        CustomPosterUrlRepository.ensureLoaded()
+        val items = page.items.withCustomPosterUrls(CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME))
         if (items.isEmpty()) {
             return HomeCatalogSection(
                 key = key,

@@ -18,6 +18,11 @@ data class MetaPreview(
     val voteCount: Int? = null,
     val imdbRating: String? = null,
     val genres: List<String> = emptyList(),
+    val rawPosterUrl: String? = null,
+    val landscapePoster: String? = null,
+    val rawLandscapePosterUrl: String? = null,
+    /** True once a custom poster overlay recorded the originals (so a null original is restorable). */
+    val customPosterApplied: Boolean = false,
 )
 
 fun MetaPreview.stableKey(): String = "$type:$id"

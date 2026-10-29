@@ -32,7 +32,7 @@ import XCTest
 /// wrong state, and name the change that would fix it. That is test47's precedent verbatim.
 ///
 /// Helper methods here are a trimmed COPY of `NuvioTVUITests`' (`shot`, `pause`, `press`,
-/// `launchToHome`, `moveFocus`, `moveToSidebarRow`, `openTab`, `focusedButton`, `probeValue`,
+/// `launchToHome`, `moveFocus`, `openSettingsCategory`, `openTab`, `focusedButton`, `probeValue`,
 /// `probeToken`) rather than a shared import — they are `private` to that file, and this harness
 /// already accepts duplication over factoring out cross-file test helpers (the rationale
 /// `TrailerSoakTests`, `RowLeadingEdgeTests` and `HeroOffLaunchTests` all state in their own type
@@ -70,14 +70,17 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
     @discardableResult
     private func launchToHome(extraArguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
+        // Home Stage & Strip (W3, 2026-10-05): Stage is the app's default Home now, and this file
+        // measures Classic Home (the pinned rows' settle corrector), so every launch pins Classic.
+        app.launchArguments += ["-home_layout", "classic"]
         app.launchArguments += extraArguments
         app.launch()
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90),
                       "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
-            if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
-            remote.press(.select)
+            // ui-legs: the shared verified step (Select only once "Chris" reads focused).
+            DetailEntryRoute.selectChrisTile(self, app, timeout: 5)
         }
         pause(10) // Home catalog fan-out
         return app
@@ -91,24 +94,6 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
             pause(0.7)
         }
         return element.exists && element.hasFocus
-    }
-
-    /// Settings SIDEBAR row by name. Copy of `NuvioTVUITests.moveToSidebarRow` — including the
-    /// beta.15 §C5 finding it exists for: the native List's "Focused" trait lives on the row's
-    /// wrapping `Cell`, not on the inner Button this harness queries by label, so a plain
-    /// `moveFocus(until: app.buttons[title])` never detects arrival and silently overshoots.
-    @discardableResult
-    private func moveToSidebarRow(_ app: XCUIApplication, _ direction: XCUIRemote.Button,
-                                  named title: String, max: Int = 12) -> Bool {
-        let button = app.buttons[title]
-        let cell = app.cells[title]
-        func focused() -> Bool { button.hasFocus || (cell.exists && cell.hasFocus) }
-        for _ in 0..<max {
-            if button.exists && focused() { return true }
-            remote.press(direction)
-            pause(0.7)
-        }
-        return button.exists && focused()
     }
 
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it. Copy of
@@ -129,6 +114,136 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
         remote.press(.select)
         pause(2)
         press(.down, times: 1)
+    }
+
+    // MARK: - Settings root navigation (detail-settings-revamp W3-C, FEAT-50)
+    //
+    // Settings is a `NavigationStack`: a root `List` of ten categories (`settings_root_list`, each
+    // row `settings_category_<raw>`) and one pushed pane per category (`settings_pane_<raw>`).
+    // Select on a root row pushes the pane and focus lands on the pane's FIRST focusable row; Menu
+    // inside a pane pops back to the root with focus on the category just left. There is no
+    // sidebar and no Right-into-the-pane step any more. Duplicated per file (house rule: every UI
+    // test file owns its helpers).
+
+    /// The fixed root order, mirroring `SettingsCategory.allCases` (SettingsView.swift).
+    private static let settingsRootOrder: [(title: String, raw: String)] = [
+        ("Account & Profiles", "accountProfiles"), ("Services", "services"), ("Appearance", "appearance"),
+        ("Home Screen", "homeScreen"), ("Detail Page", "detailPage"), ("Player", "player"),
+        ("Sources", "sources"), ("Subtitles & Audio", "subtitlesAudio"), ("About", "about"),
+        ("Developer", "developer"),
+    ]
+
+    /// Whether the Settings ROOT list is on screen (a pushed pane removes it from the tree).
+    private func settingsRootPresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_root_list"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_category_'"))
+                .firstMatch.exists
+    }
+
+    /// Whether a pushed Settings pane is on screen.
+    private func settingsPanePresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_pane_title"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_pane_'"))
+                .firstMatch.exists
+    }
+
+    /// Identifier + label of every element that reports focus, from ONE snapshot (a List row's
+    /// focus can sit on its wrapping Cell or on the inner Button; reading both in one pass avoids
+    /// the per-element `hasFocus` sweep).
+    private func focusedNodes(_ app: XCUIApplication) -> [(identifier: String, label: String)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(identifier: String, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append((node.identifier, node.label)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// The title of the focused Settings ROOT row, or nil. Detected by the row's identifier
+    /// (`settings_category_<raw>`) or by a focused element whose label begins with a category
+    /// title (corrections F9).
+    private func focusedSettingsRootTitle(_ app: XCUIApplication) -> String? {
+        let nodes = focusedNodes(app)
+        for node in nodes where node.identifier.hasPrefix("settings_category_") {
+            let raw = String(node.identifier.dropFirst("settings_category_".count))
+            if let entry = Self.settingsRootOrder.first(where: { $0.raw == raw }) { return entry.title }
+        }
+        for node in nodes {
+            if let entry = Self.settingsRootOrder.first(where: { node.label.hasPrefix($0.title) }) { return entry.title }
+        }
+        return nil
+    }
+
+    /// Opens the Settings tab and makes sure the ROOT list is showing: pops any pane the persisted
+    /// path left open (Menu only while a pane is up and the root is absent — Menu AT the root
+    /// reveals the sidebar or leaves the app). Returns whether the root is on screen.
+    @discardableResult
+    private func enterSettingsRoot(_ app: XCUIApplication) -> Bool {
+        openTab(app, named: "Settings")
+        pause(0.8)
+        for _ in 0..<3 where !settingsRootPresent(app) && settingsPanePresent(app) {
+            remote.press(.menu)
+            pause(1.2)
+        }
+        return settingsRootPresent(app)
+    }
+
+    /// With the root showing, puts focus on the root row `title` WITHOUT pushing it.
+    ///
+    /// Arrival is detected by identifier / focused label; when detection never fires the walk falls
+    /// back to the fixed root order: Down ×12 parks on the LAST row (Down from the last row does
+    /// nothing), then Up by the distance. (Up ×12 to the tab bar then Down is NOT deterministic:
+    /// Down from the tab bar lands on the root's preferred row, which is the last category opened,
+    /// not the first.) Returns whether arrival was DETECTED (false after a blind fallback).
+    @discardableResult
+    private func focusSettingsRootRow(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let index = Self.settingsRootOrder.firstIndex(where: { $0.title == title }) else {
+            XCTFail("focusSettingsRootRow: unknown category '\(title)'")
+            return false
+        }
+        if focusedSettingsRootTitle(app) == title { return true }
+        for _ in 0..<10 {
+            remote.press(.down)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        for _ in 0..<10 {
+            remote.press(.up)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        press(.down, times: 12, gap: 0.4)
+        press(.up, times: Self.settingsRootOrder.count - 1 - index, gap: 0.6)
+        pause(0.6)
+        return focusedSettingsRootTitle(app) == title
+    }
+
+    /// Opens Settings, returns to the root, focuses the category `title` and pushes it. Returns
+    /// whether `settings_pane_<raw>` appeared.
+    @discardableResult
+    private func openSettingsCategory(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let entry = Self.settingsRootOrder.first(where: { $0.title == title }) else {
+            XCTFail("openSettingsCategory: unknown category '\(title)'")
+            return false
+        }
+        guard enterSettingsRoot(app) else {
+            XCTFail("openSettingsCategory(\(title)): the Settings root list never appeared")
+            return false
+        }
+        focusSettingsRootRow(app, named: title)
+        remote.press(.select)
+        pause(1.5)
+        return app.descendants(matching: .any)["settings_pane_\(entry.raw)"].waitForExistence(timeout: 4)
+    }
+
+    /// Settings › Developer (the probe readouts moved here from About in the revamp).
+    @discardableResult
+    private func openDeveloper(_ app: XCUIApplication) -> Bool {
+        openSettingsCategory(app, named: "Developer")
     }
 
     /// Whatever currently reports focus, across the four element kinds a Settings row can resolve
@@ -226,8 +341,12 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
         // Large transition specifically. Poster Size is synced profile state, so this can only be
         // read and reported on — see the type doc.
         guard let startWidth = posterWidth(app) else { return }
-        guard startWidth >= 200, startWidth < 260 else {
-            throw XCTSkip("FIXTURE ASSUMPTION UNMET — Poster Size is not Medium (debug_env w=\(startWidth); Medium is ~220pt, Large ~269). This leg drives the Medium → Large transition the tester reported, so it has to start at Medium. Set Settings > Appearance > Poster Size to Medium on this fixture and rerun.")
+        // FEAT-39: 212…228 keeps Medium+ (~234) out of this band, matching
+        // `FixtureSetupTests.testSetPosterSizeMedium`'s tightened Medium gate — the old 200..<260
+        // gate admitted Medium+ (~234) as "Medium", and this leg's Medium → Large premise silently
+        // ran as a Medium+ → Large one instead.
+        guard startWidth > 212, startWidth < 228 else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — Poster Size is not Medium (debug_env w=\(startWidth); Medium is ~220pt, Medium+ ~234, Large ~269). This leg drives the Medium → Large transition the tester reported, so it has to start at Medium. Set Settings > Appearance > Poster Size to Medium on this fixture and rerun.")
         }
 
         // Walk into a poster row so a pinned row is actually focused and publishing settles —
@@ -244,6 +363,13 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
         }
         guard let beforeRegime = Self.probeToken(beforeLine, key: "regime"), beforeRegime != "-" else {
             throw XCTSkip("the settle line carries no usable `regime=` ('\(beforeLine)') — that field is published by HomeView's `.onChange(of: plan.regimeKey)` into `PinnedRowSettle.noteRegimeChange`, so this build predates the Wave W5 call site (or is running a host that never publishes a regime). Nothing to compare; rebuild and rerun.")
+        }
+        // Belt and suspenders on top of the width gate above: `regime=`'s own tag
+        // (`PinnedRowGeometry.regimeKey`'s leading `S`/`M`/`P`/`L`/`X`) is the app's own account of
+        // which Poster Size it thinks it is running, so confirm it agrees with the width probe
+        // before trusting the Medium-start premise at all.
+        guard beforeRegime.hasPrefix("M") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the settle line's regime tag ('\(beforeRegime)') is not Medium ('M…') even though debug_env's width gate passed (w=\(startWidth)); the two probes disagree, most likely Medium+ ('P…'). Run `testSetPosterSizeMedium` (FixtureSetupTests) to restore the fixture to Medium and rerun.")
         }
 
         // ── Drive the real setting ───────────────────────────────────────────────────────────
@@ -423,20 +549,14 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
     /// the menu, then focus the wanted option inside it and Select again. "Size" is a unique row-title
     /// prefix in the Appearance pane, which is what makes the focused-label walk below safe.
     private func selectPosterSize(_ app: XCUIApplication, named name: String) throws -> Bool {
-        openTab(app, named: "Settings")
-        guard moveToSidebarRow(app, .down, named: "Appearance", max: 10) else {
-            throw XCTSkip("could not reach the Appearance sidebar category — the Settings sidebar's row order or labels changed. Poster Size can only be set through the real UI (it is synced profile state with no launch-argument override), so there is no fallback.")
+        guard openSettingsCategory(app, named: "Appearance") else {
+            throw XCTSkip("could not push the Appearance pane from the Settings root category list — the root's row order or labels changed. Poster Size can only be set through the real UI (it is synced profile state with no launch-argument override), so there is no fallback.")
         }
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)      // sidebar → pane
-        pause(1.0)
         shot(app, "w5a_appearance_pane")
 
-        // Entering the pane lands focus on the row nearest the sidebar item's Y, never reliably the
-        // first one (`walkToRowByTreeIndex`'s own finding). Climb to the top first — Up past the top
-        // is a no-op — then walk down looking for the row.
-        press(.up, times: 25, gap: 0.25)
+        // Revamp (FEAT-50): the push lands on the pane's FIRST row (the theme swatches), so there
+        // is no climb any more — and Up from the first row would leave the pane for the tab bar.
+        // Walk down looking for the row.
         var found = false
         for _ in 0..<30 {
             if let label = focusedElement(app)?.label, label.hasPrefix("Size") { found = true; break }

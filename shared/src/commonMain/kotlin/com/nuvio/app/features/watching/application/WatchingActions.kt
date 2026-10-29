@@ -1,5 +1,6 @@
 package com.nuvio.app.features.watching.application
 
+import co.touchlab.kermit.Logger
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
@@ -15,6 +16,7 @@ import com.nuvio.app.features.watched.toWatchedItem
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,6 +24,23 @@ import kotlinx.coroutines.launch
 
 object WatchingActions {
     private val actionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("WatchingActions"))
+    private val log = Logger.withTag("WatchingActions")
+
+    /**
+     * Fork (tvOS): fire-and-forget [togglePosterWatched] for Swift, launched on [actionScope].
+     * Failures are logged, never thrown.
+     */
+    fun togglePosterWatchedAsync(preview: MetaPreview) {
+        actionScope.launch {
+            try {
+                togglePosterWatched(preview)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                log.e(error) { "Toggling watched state for ${preview.type}:${preview.id} failed" }
+            }
+        }
+    }
 
     suspend fun togglePosterWatched(preview: MetaPreview) {
         if (!preview.type.isSeriesLikeType()) {
@@ -161,15 +180,8 @@ object WatchingActions {
     fun onProgressEntryUpdated(entry: WatchProgressEntry, syncRemote: Boolean = true) {
         if (!entry.isCompleted) return
 
-        val watchedItem = WatchedItem(
-            id = entry.parentMetaId,
-            type = entry.parentMetaType,
-            name = entry.title,
-            poster = entry.poster,
-            season = entry.seasonNumber,
-            episode = entry.episodeNumber,
-            markedAtEpochMs = entry.lastUpdatedEpochMs,
-        )
+        // Seeds the stamp from the entry; WatchedRepository restamps the mark time on write (review r2 #6).
+        val watchedItem = watchedItemFromProgress(entry, markedAtEpochMs = entry.lastUpdatedEpochMs)
         WatchedRepository.markWatchedFromPlaybackCompletion(watchedItem, syncRemote = syncRemote)
 
         if (!syncRemote || !entry.isEpisode) return
@@ -208,6 +220,23 @@ object WatchingActions {
         reconcileSeriesWatchedState(meta)
     }
 }
+
+/**
+ * The watched-history item a progress [entry] stands for (movie, or one episode when the entry
+ * carries season/episode), stamped [markedAtEpochMs]. The caller chooses the stamp: playback
+ * completion passes the entry's own `lastUpdatedEpochMs`; a manual "Mark Watched" from the
+ * Continue Watching menu passes the current time. There is deliberately no default.
+ */
+fun watchedItemFromProgress(entry: WatchProgressEntry, markedAtEpochMs: Long): WatchedItem =
+    WatchedItem(
+        id = entry.parentMetaId,
+        type = entry.parentMetaType,
+        name = entry.title,
+        poster = entry.poster,
+        season = entry.seasonNumber,
+        episode = entry.episodeNumber,
+        markedAtEpochMs = markedAtEpochMs,
+    )
 
 private fun String.isSeriesLikeType(): Boolean =
     trim().lowercase() in setOf("series", "show", "tv", "tvshow")

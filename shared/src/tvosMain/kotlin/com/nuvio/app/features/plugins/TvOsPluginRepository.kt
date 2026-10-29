@@ -340,7 +340,13 @@ object PluginRepository {
             PluginRuntime.executePlugin(
                 code = scraper.code,
                 tmdbId = resolvedTmdbId,
-                mediaType = normalizePluginType(mediaType),
+                // Upstream NuvioTV 8b60bdfe1: plugins that declare "series" get "series" back.
+                mediaType = jsPluginMediaType(
+                    mediaType = normalizePluginType(mediaType),
+                    supportedTypes = scraper.supportedTypes,
+                    season = season,
+                    episode = episode,
+                ),
                 season = season,
                 episode = episode,
                 scraperId = scraper.id,
